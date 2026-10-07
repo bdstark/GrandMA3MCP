@@ -50,7 +50,9 @@ The `At Plugin <n>` part is required: without a target slot the import reports `
 The command line history and System Monitor show `MCP Bridge: listening on 127.0.0.1:9800`, and the same
 messages are appended to `gma3_2.5.1/onpc/temp/gma3_mcp_bridge.log`. The plugin keeps running (it yields
 every frame, like MA's own webserver example) until you run `Plugin "gma3_mcp_bridge" "stop"`.
-`Plugin "gma3_mcp_bridge" "9801"` starts it on another port.
+`Plugin "gma3_mcp_bridge" "9801"` starts it on another port. The port number is the only accepted
+argument: the bridge always binds to `127.0.0.1` and refuses a `<host>:<port>` argument, because it has no
+authentication. To use it from another machine, see [Remote access over SSH](#remote-access-over-ssh).
 
 The plugin is stored in the show file, so after the first import you only need `Plugin "gma3_mcp_bridge"`
 (for example from a macro) each time the show is loaded. Remember to save the show if you want to keep it.
@@ -117,10 +119,71 @@ Claude Desktop / Claude Code configuration:
 ```
 
 The image defaults `GMA3_BRIDGE_HOST` and `GMA3_OSC_HOST` to `host.docker.internal`. On Docker Desktop
-(macOS/Windows) that reaches the plugin even though it binds to `127.0.0.1`. On Linux either run with
-`--network host`, or start the plugin on all interfaces with `Plugin "gma3_mcp_bridge" "0.0.0.0:9800"`
-(this exposes unauthenticated console control to the network, so only do it on a trusted network).
+(macOS/Windows) that reaches the plugin even though it binds to `127.0.0.1`. On Linux there is no
+`host.docker.internal` route to the host's loopback, so run the container with `--network host` and point
+both variables at `127.0.0.1`:
+
+```json
+"args": ["run", "-i", "--rm", "--network", "host",
+         "-e", "GMA3_BRIDGE_HOST=127.0.0.1", "-e", "GMA3_OSC_HOST=127.0.0.1", "gma3-mcp"]
+```
+
 The volume mount is optional; it only enables `gma3_help`.
+
+### Remote access over SSH
+
+The bridge never listens on anything but `127.0.0.1`, so the only way to reach it from another machine
+is a tunnel that terminates on the console host and authenticates the client. SSH does exactly that and
+is already available on every platform onPC runs on.
+
+**On the grandMA3 host**, enable an SSH server:
+
+* macOS: System Settings > General > Sharing > Remote Login.
+* Windows: Settings > System > Optional features > add *OpenSSH Server*, then start the `sshd` service.
+* Linux: install and enable `openssh-server`.
+
+Use key-based authentication (`ssh-copy-id user@console-host`) and keep password login off if the host is
+on a shared network.
+
+**On the machine running the MCP client**, open a tunnel that forwards a local port to the bridge on the
+console host's loopback interface:
+
+```bash
+ssh -N -L 9800:127.0.0.1:9800 user@console-host
+```
+
+Leave it running (or use `-f` to background it, and `autossh` if you want it to reconnect). The MCP server
+runs on the client machine as usual and connects to `127.0.0.1:9800`, which is the near end of the tunnel,
+so no configuration change is needed. If port 9800 is taken locally, forward a different local port and
+set `GMA3_BRIDGE_PORT` to match:
+
+```bash
+ssh -N -L 19800:127.0.0.1:9800 user@console-host
+```
+
+```json
+{
+  "mcpServers": {
+    "gma3": {
+      "command": "node",
+      "args": ["/path/to/gma3-mcp/dist/index.js"],
+      "env": { "GMA3_BRIDGE_PORT": "19800" }
+    }
+  }
+}
+```
+
+Check the tunnel with `node scripts/bridge-cli.mjs ping` (with `GMA3_BRIDGE_PORT` set if you changed it).
+
+Limits of the tunnel:
+
+* The OSC fallback and `gma3_start_bridge` use UDP, which `ssh -L` does not forward. Over a tunnel the
+  bridge is the only transport; start the plugin on the console (from the command line or a show macro)
+  before connecting. Do not point `GMA3_OSC_HOST` at the console's network address, since onPC's OSC input
+  is equally unauthenticated.
+* Never substitute a port-forwarding rule on a router, a VPN without per-host authentication, or a
+  `socat`/`ncat` relay for the SSH tunnel: each of those republishes the unauthenticated bridge. The
+  plugin rejects a bind address on purpose, and nothing in this project will help you work around that.
 
 ### Environment variables
 
@@ -177,8 +240,9 @@ Ops: `ping`, `cmd`, `lua`, `object`, `children`, `objects`, `dump`, `set`, `setf
 
 * Everything the server does happens in the live show. `gma3_set_property`, `Store`, `Delete` and similar
   commands change show data; nothing is written to disk unless `SaveShow` is executed.
-* The bridge binds to localhost only. There is no authentication; anything that can reach the port can run
-  commands in the console.
+* The bridge binds to `127.0.0.1` only and cannot be told to bind elsewhere; it also drops any accepted
+  connection whose peer is not loopback. There is no authentication, so anything running on the console
+  host can run commands in the console. Remote use goes through [an SSH tunnel](#remote-access-over-ssh).
 * `Cmd()` runs synchronously in the Lua task; a command that opens a blocking dialog can stall the plugin.
   Prefer `/NoConfirmation` options.
 

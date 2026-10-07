@@ -7,9 +7,12 @@
 -- Usage from the command line:
 --   Plugin "gma3_mcp_bridge"            start on the default port (9800)
 --   Plugin "gma3_mcp_bridge" "9801"     start on a custom port
---   Plugin "gma3_mcp_bridge" "0.0.0.0:9800"  bind to all interfaces (e.g. for a Docker client on Linux)
 --   Plugin "gma3_mcp_bridge" "stop"     stop the bridge
 --   Plugin "gma3_mcp_bridge" "status"   print status
+--
+-- The bridge only ever listens on 127.0.0.1. It has no authentication, so it is never exposed
+-- to the network; a "<host>:<port>" argument is rejected. For remote access forward the port
+-- over SSH (see README.md, "Remote access over SSH").
 --
 -- Protocol (one JSON document per line, both directions):
 --   request  {"id": "<any>", "op": "<name>", "args": {...}}
@@ -26,7 +29,7 @@ local json   = require("json")
 
 local VERSION      = "0.1.0"
 local DEFAULT_PORT = 9800
-local BIND_HOST    = "127.0.0.1"
+local BIND_HOST    = "127.0.0.1"  -- fixed: the bridge is unauthenticated and must never leave loopback
 local MAX_DEPTH    = 6
 
 -- State survives repeated Plugin calls (file-level locals are re-created on ReloadAllPlugins only).
@@ -594,10 +597,19 @@ local function serverMain()
     -- accept new clients
     local c = server:accept()
     if c then
-      c:settimeout(0)
-      pcall(function() c:setoption("tcp-nodelay", true) end)
-      table.insert(state.clients, { sock = c, buf = "" })
-      log("client connected (%d total)", #state.clients)
+      -- Belt and braces: the socket is bound to loopback, so a non-loopback peer should be
+      -- impossible. Refuse it anyway rather than hand out console control.
+      local peer = nil
+      pcall(function() peer = c:getpeername() end)
+      if peer ~= nil and peer ~= "127.0.0.1" then
+        logerr("rejected connection from %s: the bridge only accepts loopback clients", tostring(peer))
+        pcall(function() c:close() end)
+      else
+        c:settimeout(0)
+        pcall(function() c:setoption("tcp-nodelay", true) end)
+        table.insert(state.clients, { sock = c, buf = "" })
+        log("client connected (%d total)", #state.clients)
+      end
     end
 
     -- service existing clients
@@ -663,20 +675,24 @@ local function MainImpl(display_handle, argument)
     return
   end
 
-  -- argument may be "<port>" or "<host>:<port>"
-  local host, port = BIND_HOST, DEFAULT_PORT
+  -- The only accepted argument is a port number. The bind address is always 127.0.0.1:
+  -- the bridge has no authentication, so it must never be reachable from the network.
+  -- Remote clients forward the port over SSH instead (README.md, "Remote access over SSH").
+  local port = DEFAULT_PORT
   if argument and argument ~= "" then
-    local h, pt = tostring(argument):match("^([%d%.%a]+):(%d+)$")
-    if h then
-      host, port = h, tonumber(pt)
-    else
-      port = tonumber(argument) or DEFAULT_PORT
+    local a = tostring(argument)
+    if a:find(":", 1, true) then
+      logerr("refusing to start: \"%s\" looks like a bind address, but the bridge only listens on 127.0.0.1. " ..
+             "Pass just a port number; for remote access use an SSH tunnel (ssh -L 9800:127.0.0.1:9800 ...).", a)
+      return
+    end
+    port = tonumber(a)
+    if not port or port < 1 or port > 65535 or port ~= math.floor(port) then
+      logerr("refusing to start: \"%s\" is not a valid port number (expected 1-65535, \"stop\" or \"status\")", a)
+      return
     end
   end
-  if host ~= "127.0.0.1" and host ~= "localhost" then
-    log("WARNING: binding to %s exposes unauthenticated console control to the network", host)
-  end
-  state.host = host
+  state.host = BIND_HOST
   state.port = port
   state.running = true
   state.stopRequested = false
