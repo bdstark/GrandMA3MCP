@@ -308,7 +308,17 @@ console's budget, never loosen it.
 ```bash
 npm run dev        # run from source with tsx
 npm run build      # compile to dist/
+npm test           # run the test suite (node:test via tsx)
+npm run coverage   # tests plus a line/branch/function coverage table for src/
 ```
+
+The suite in `test/` has no extra dependencies. It covers the bridge client (`bridge.ts`), manual lookup
+(`help.ts`, including the path and symlink checks), and an end-to-end run of the MCP server over stdio
+against a fake bridge and a UDP listener standing in for OSC input. `test/lua/bridge_plugin_test.lua`
+exercises the console plugin (Lua execution gate, budget, sandbox hardening, argument parsing) under a
+stock Lua 5.4+ interpreter with the grandMA3 API stubbed; `npm test` runs it when `lua` is on PATH and
+skips it otherwise (`brew install lua` on macOS). `npm run coverage:lcov` additionally writes
+`coverage/lcov.info` for editor and CI integrations. Lua coverage is not measured.
 
 Help pages, OSC and Lua API details were taken from the manual bundled with onPC 2.5.1
 (`~/MALightingTechnology/gma3_2.5.1/shared/language/HTML`).

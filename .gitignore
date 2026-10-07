@@ -16,3 +16,6 @@ npm-debug.log*
 
 # Scratch
 tmp/
+
+# Test coverage output
+coverage/

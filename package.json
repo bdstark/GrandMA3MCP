@@ -16,6 +16,10 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
+    "test": "node --import tsx --test",
+    "test:lua": "lua test/lua/bridge_plugin_test.lua",
+    "coverage": "node --import tsx --enable-source-maps --test --experimental-test-coverage --test-coverage-include='src/**'",
+    "coverage:lcov": "mkdir -p coverage && node --import tsx --enable-source-maps --test --experimental-test-coverage --test-coverage-include='src/**' --test-reporter=spec --test-reporter-destination=stdout --test-reporter=lcov --test-reporter-destination=coverage/lcov.info",
     "install-plugin": "sh scripts/install-plugin.sh"
   },
   "engines": {
