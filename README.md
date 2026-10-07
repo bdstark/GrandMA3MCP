@@ -300,3 +300,8 @@ Help pages, OSC and Lua API details were taken from the manual bundled with onPC
 ## License
 
 [MIT](LICENSE)
+
+grandMA3 and MA Lighting are trademarks of MA Lighting Technology GmbH. This project is independent and is
+not affiliated with, endorsed by, or supported by MA Lighting. No MA Lighting documentation, code, or
+libraries are redistributed here: the help tool reads the manual from your own onPC installation at runtime,
+and the bridge plugin uses the LuaSocket and JSON libraries already shipped inside onPC.
