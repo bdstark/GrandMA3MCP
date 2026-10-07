@@ -85,7 +85,10 @@ export function listHelpPages(): HelpPage[] {
   return fs
     .readdirSync(dir)
     .filter((f) => f.endsWith(".html"))
-    .map((f) => ({ file: f, title: titleOf(path.join(dir, f)) }));
+    .flatMap((f) => {
+      const file = helpFile(dir, f);
+      return file ? [{ file: f, title: titleOf(file) }] : [];
+    });
 }
 
 function titleOf(file: string): string {
@@ -106,7 +109,16 @@ function helpFile(dir: string, name: string): string | null {
   const root = path.resolve(dir);
   const file = path.resolve(root, name);
   if (path.dirname(file) !== root || path.basename(file) !== name) return null;
-  return file;
+  // Follow symlinks on both sides: a link inside the manual folder must not
+  // lead to a file outside it. realpathSync throws if the file is missing.
+  try {
+    const realRoot = fs.realpathSync(root);
+    const realFile = fs.realpathSync(file);
+    if (path.dirname(realFile) !== realRoot) return null;
+    return realFile;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -123,7 +135,7 @@ export function lookupHelp(topic: string, maxChars = 12000): { page?: string; te
   const candidates = [`keyword_${q}.html`, `${q}.html`, `keyword_${q.replace(/\s+/g, "")}.html`, `${q.replace(/\s+/g, "_")}.html`];
   for (const c of candidates) {
     const file = helpFile(dir, c);
-    if (file && fs.existsSync(file)) {
+    if (file) {
       const text = htmlToText(fs.readFileSync(file, "utf8"));
       return { page: c, text: text.length > maxChars ? text.slice(0, maxChars) + "\n…(truncated)" : text };
     }
