@@ -1,0 +1,34 @@
+{
+  "name": "gma3-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for grandMA3 onPC: command line, Lua, and show data access via an in-console Lua bridge plugin",
+  "type": "module",
+  "bin": {
+    "gma3-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "plugin",
+    "docs",
+    "scripts"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "install-plugin": "sh scripts/install-plugin.sh"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24",
+    "tsx": "^4",
+    "typescript": "^5"
+  }
+}

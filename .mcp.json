@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "gma3": {
+      "command": "node",
+      "args": ["/Users/bstark/Development/GrandMA3/dist/index.js"]
+    }
+  }
+}

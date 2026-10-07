@@ -1,0 +1,18 @@
+# Dependencies and build output
+node_modules/
+dist/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment and editor files
+.env
+.env.*
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Scratch
+tmp/
