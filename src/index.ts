@@ -159,7 +159,7 @@ server.registerTool(
             // execute it twice (e.g. Go+ advancing two cues), so report instead of retrying.
             throw new BridgeError(
               `${err.message}. The command was sent to the bridge but its outcome is unknown; it was NOT resent over OSC to avoid executing it twice. ` +
-                `Check the console state (gma3_status, gma3_playback) before resending, or call again with via "osc" if you are sure it did not run.`,
+                `Inspect the console state with a read-only query (gma3_sequences, gma3_get_object) before resending, or call again with via "osc" if you are sure it did not run.`,
               err.op,
               true,
             );
