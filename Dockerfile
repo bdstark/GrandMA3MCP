@@ -31,5 +31,6 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
 COPY plugin ./plugin
 COPY scripts ./scripts
+COPY LICENSE README.md ./
 USER node
 ENTRYPOINT ["node", "dist/index.js"]
