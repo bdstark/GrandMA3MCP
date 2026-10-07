@@ -17,7 +17,8 @@ MCP client ──stdio──▶ gma3-mcp (Node/TypeScript) ──TCP 127.0.0.1:9
 1. **`plugin/gma3_mcp_bridge.lua`** runs *inside* onPC as a plugin. It listens on `127.0.0.1:9800` and
    answers JSON requests using the grandMA3 Lua API (`Cmd`, `ObjectList`, `Get`, `Children`, `SetFader`, ...).
 2. **`src/`** is the MCP server. Every tool is a thin wrapper over a bridge request. If the bridge is not
-   running, `gma3_command` can still fire commands over OSC (no feedback), and `gma3_start_bridge` can start
+   running, `gma3_command` can still fire commands over OSC (no feedback; only when the bridge cannot be reached
+   before the command is sent, never as a retry after the bridge accepted it), and `gma3_start_bridge` can start
    the plugin over OSC if OSC input is enabled in onPC.
 
 ## Setup

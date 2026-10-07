@@ -2,7 +2,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { Gma3Bridge, BridgeError } from "./bridge.js";
+import { Gma3Bridge, BridgeError, BridgeUnreachableError } from "./bridge.js";
 import { OscSender } from "./osc.js";
 import { helpDir, helpVersion, listHelpPages, lookupHelp } from "./help.js";
 import { CHEATSHEET } from "./cheatsheet.js";
@@ -131,7 +131,13 @@ server.registerTool(
       'Via "osc" the command is sent fire-and-forget over OSC and no feedback is available.',
     inputSchema: {
       command: z.string().describe("The command, e.g. 'Go+ Sequence 1'"),
-      via: z.enum(["auto", "bridge", "osc"]).optional().describe("Transport. auto (default) uses the bridge and falls back to OSC if the bridge is unreachable."),
+      via: z
+        .enum(["auto", "bridge", "osc"])
+        .optional()
+        .describe(
+          "Transport. auto (default) uses the bridge and falls back to OSC only if the bridge cannot be reached before the command is sent. " +
+            "If the bridge accepted the command but no reply came back, the command is NOT resent (it may already have executed); the error says so.",
+        ),
     },
   },
   async ({ command, via }) =>
@@ -141,8 +147,19 @@ server.registerTool(
         try {
           return await bridge.request("cmd", { command });
         } catch (err) {
-          if (mode === "bridge" || bridge.connected) throw err;
-          // fall through to OSC
+          if (mode === "bridge") throw err;
+          if (err instanceof BridgeError && err.dispatched) {
+            // The command reached the bridge (or may have). Re-sending it over OSC could
+            // execute it twice (e.g. Go+ advancing two cues), so report instead of retrying.
+            throw new BridgeError(
+              `${err.message}. The command was sent to the bridge but its outcome is unknown; it was NOT resent over OSC to avoid executing it twice. ` +
+                `Check the console state (gma3_status, gma3_playback) before resending, or call again with via "osc" if you are sure it did not run.`,
+              err.op,
+              true,
+            );
+          }
+          if (!(err instanceof BridgeUnreachableError)) throw err;
+          // Nothing was sent to the bridge: safe to fall back to OSC.
           await osc.sendCommand(command);
           return { command, sentVia: `osc ${osc.description}`, feedback: null, note: "bridge unreachable, sent over OSC without feedback" };
         }

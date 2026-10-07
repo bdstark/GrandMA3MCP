@@ -12,15 +12,30 @@ export interface BridgeOptions {
 }
 
 interface Pending {
+  op: string;
   resolve: (v: unknown) => void;
   reject: (e: Error) => void;
   timer: NodeJS.Timeout;
 }
 
 export class BridgeError extends Error {
-  constructor(message: string, public readonly op?: string) {
+  /**
+   * True when the request was already written to the bridge before the failure
+   * (timeout, or the connection dropped while waiting for the reply). The
+   * command may or may not have executed inside onPC; callers must not retry
+   * non-idempotent commands on another transport.
+   */
+  constructor(message: string, public readonly op?: string, public readonly dispatched = false) {
     super(message);
     this.name = "BridgeError";
+  }
+}
+
+/** The bridge could not be reached at all; nothing was sent. Safe to fall back to another transport. */
+export class BridgeUnreachableError extends BridgeError {
+  constructor(message: string, op?: string) {
+    super(message, op, false);
+    this.name = "BridgeUnreachableError";
   }
 }
 
@@ -58,10 +73,10 @@ export class Gma3Bridge {
         settled = true;
         this.lastError = err.message;
         sock.destroy();
-        reject(err);
+        reject(err instanceof BridgeUnreachableError ? err : new BridgeUnreachableError(`cannot connect to bridge at ${this.description}: ${err.message}`));
       };
       sock.setNoDelay(true);
-      sock.setTimeout(timeout, () => fail(new BridgeError(`connect timeout to ${this.description}`)));
+      sock.setTimeout(timeout, () => fail(new BridgeUnreachableError(`connect timeout to ${this.description}`)));
       sock.once("error", (err) => {
         if (!settled) fail(err);
         else this.handleClose(err);
@@ -93,7 +108,8 @@ export class Gma3Bridge {
     this.lastError = reason;
     for (const [id, p] of this.pending) {
       clearTimeout(p.timer);
-      p.reject(new BridgeError(`bridge ${reason}`));
+      // The request was already on the wire: its outcome is unknown.
+      p.reject(new BridgeError(`bridge ${reason} while waiting for reply`, p.op, true));
       this.pending.delete(id);
     }
   }
@@ -125,21 +141,22 @@ export class Gma3Bridge {
   async request<T = unknown>(op: string, args: Record<string, unknown> = {}, timeoutMs?: number): Promise<T> {
     await this.connect();
     const sock = this.socket;
-    if (!sock) throw new BridgeError("not connected");
+    if (!sock) throw new BridgeUnreachableError("not connected", op);
     const id = String(this.nextId++);
     const payload = JSON.stringify({ id, op, args }) + "\n";
     const timeout = timeoutMs ?? this.opts.requestTimeoutMs ?? 15000;
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new BridgeError(`timeout after ${timeout}ms waiting for '${op}'`, op));
+        reject(new BridgeError(`timeout after ${timeout}ms waiting for '${op}'`, op, true));
       }, timeout);
-      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer });
+      this.pending.set(id, { op, resolve: resolve as (v: unknown) => void, reject, timer });
       sock.write(payload, (err) => {
         if (err) {
           clearTimeout(timer);
           this.pending.delete(id);
-          reject(err);
+          // A write error does not prove the bytes never left; treat the outcome as unknown.
+          reject(new BridgeError(`bridge write failed: ${err.message}`, op, true));
         }
       });
     });
