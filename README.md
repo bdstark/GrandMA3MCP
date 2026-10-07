@@ -76,9 +76,24 @@ Each `gma3_lua` request runs under an execution budget: by default 5 s of wall-c
 Lua VM instructions. `luatime=<ms>` and `luasteps=<n>` change the limits (`0` = unlimited). A request that
 exceeds its budget is aborted with an error and the bridge loop continues; the MCP server also passes the
 client's request timeout down as the time budget, so a script stops when nobody is waiting for it any
-more. The budget is enforced with a Lua debug hook, which only fires between VM instructions: it cannot
-interrupt a C function that blocks, such as `Cmd()` opening a confirmation dialog or a blocking socket
-call. The hook runs only for code submitted through `gma3_lua`; the structured ops are not budgeted.
+more. The instruction count is enforced with a Lua debug hook on the script's coroutine; the wall-clock
+deadline is checked by that hook, before and after every resume of a script that yields, and before a
+result is returned, so a script that mostly waits is bounded too.
+
+The script runs in an environment that closes the obvious ways around the budget: `debug.sethook` and
+`debug.gethook` are withheld, coroutines the script creates (`coroutine.create` / `coroutine.wrap`) get the
+budget hook as well, and `load`, `loadfile`, `dofile`, `require` and `package.loaded` resolve to that same
+environment. Everything else, including the whole grandMA3 API, `io` and `os`, is the real thing, and
+globals a script defines persist across requests as before.
+
+Treat the budget as a **best-effort limit for trusted scripts**, not a security boundary:
+
+* The hook only fires between Lua VM instructions. It cannot interrupt a C function that blocks, such as
+  `Cmd()` opening a confirmation dialog or a blocking socket call.
+* A script that sets out to escape still can, for example through `debug.getregistry` style introspection
+  of the real libraries. Enabling Lua already hands the client `os` and `io`, so the trust decision is made
+  when the operator turns the capability on; the budget protects against runaway scripts, not hostile ones.
+* The hook runs only for code submitted through `gma3_lua`; the structured ops are not budgeted.
 
 The plugin is stored in the show file, so after the first import you only need `Plugin "gma3_mcp_bridge"`
 (for example from a macro) each time the show is loaded. Remember to save the show if you want to keep it.
@@ -281,8 +296,9 @@ console's budget, never loosen it.
   host can run commands in the console. Remote use goes through [an SSH tunnel](#remote-access-over-ssh).
 * Arbitrary Lua is a separately enabled capability: `gma3_lua` is refused until the operator starts the
   bridge with the `lua` argument, and each request is aborted when it exceeds the configured time or
-  instruction budget (see [Enabling Lua execution](#enabling-lua-execution)). Once enabled, Lua has the same
-  reach as the console's own plugins, including `os` and `io`; enable it only for clients you trust.
+  instruction budget (see [Enabling Lua execution](#enabling-lua-execution)). The budget is a best-effort
+  guard against runaway scripts, not a sandbox. Once enabled, Lua has the same reach as the console's own
+  plugins, including `os` and `io`; enable it only for clients you trust.
 * `Cmd()` runs synchronously in the Lua task; a command that opens a blocking dialog can stall the plugin,
   and the Lua budget cannot interrupt it because the hook only fires between Lua VM instructions.
   Prefer `/NoConfirmation` options.

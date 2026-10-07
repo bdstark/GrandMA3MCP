@@ -21,8 +21,11 @@
 -- Arguments are whitespace separated tokens; "luatime" is milliseconds of wall-clock time and
 -- "luasteps" a count of Lua VM instructions (0 = unlimited). A request that exceeds its budget is
 -- aborted with an error so the bridge loop (and the console) regain control. The budget is
--- enforced with a debug hook, which cannot interrupt a C function such as Cmd() that blocks.
--- Only Lua submitted through the "lua" op is budgeted; the structured ops are not.
+-- enforced with a debug hook plus deadline checks around every resume; the script runs in an
+-- environment that withholds debug.sethook and hooks coroutines it creates. It is a best-effort
+-- guard against runaway scripts, not a sandbox: it cannot interrupt a C function such as Cmd()
+-- that blocks, and a script that sets out to escape still can (Lua on the console has os/io
+-- anyway). Only Lua submitted through the "lua" op is budgeted; the structured ops are not.
 --
 -- The bridge only ever listens on 127.0.0.1. It has no authentication, so it is never exposed
 -- to the network; a "<host>:<port>" argument is rejected. For remote access forward the port
@@ -375,50 +378,125 @@ local function describeLuaPolicy()
     hookSupported and "" or ", NOT enforced: debug.sethook unavailable")
 end
 
+-- Budget state of the request currently executing (requests are handled one at a time).
+-- The sandbox's coroutine.create/wrap use it to put the budget hook on threads the script creates.
+local activeBudget = nil
+
 -- Run fn() under the configured budget and return its results as a packed table.
 -- The function runs in its own coroutine so the instruction hook is confined to it and
 -- never affects the bridge loop. This matters beyond tidiness: onPC installs its own
 -- external (C) hook on the plugin thread, and setting or clearing a hook there with
 -- debug.sethook would replace or remove it. If the user code yields, the yield is passed
 -- up to the console (like the bridge loop's own per-frame yield) and the code is resumed
--- next frame.
+-- next frame. The wall-clock deadline is checked by the hook, before and after every
+-- resume, and before returning success, so a script that mostly yields (and therefore
+-- executes few VM instructions) is still bounded.
 local function runBounded(fn, maxMs, maxSteps)
   local co = coroutine.create(fn)
-  local exceeded = nil
+  local budget = { exceeded = nil }
+  local timeMsg = maxMs and maxMs > 0 and string.format("Lua execution budget exceeded: ran longer than %d ms", maxMs) or nil
+  local deadline = (maxMs and maxMs > 0) and (now() + maxMs / 1000) or nil
+  local function overdue() return deadline ~= nil and now() >= deadline end
+
   if hookSupported and ((maxMs and maxMs > 0) or (maxSteps and maxSteps > 0)) then
-    local start = now()
     local steps = 0
     local function hook()
-      if not exceeded then
+      if not budget.exceeded then
         steps = steps + LUA_HOOK_INTERVAL
         if maxSteps and maxSteps > 0 and steps >= maxSteps then
-          exceeded = string.format("Lua execution budget exceeded: more than %d VM instructions", maxSteps)
-        elseif maxMs and maxMs > 0 and (now() - start) * 1000 >= maxMs then
-          exceeded = string.format("Lua execution budget exceeded: ran longer than %d ms", maxMs)
-        end
-        if exceeded then
-          -- From now on fail on every instruction so that user code wrapped in pcall cannot keep going.
-          debug.sethook(hook, "", 1)
+          budget.exceeded = string.format("Lua execution budget exceeded: more than %d VM instructions", maxSteps)
+        elseif overdue() then
+          budget.exceeded = timeMsg
         end
       end
-      if exceeded then error(exceeded, 0) end
+      if budget.exceeded then
+        -- From now on fail on every instruction of this thread so that code wrapped in pcall
+        -- (or a parent thread resuming an exhausted child) cannot keep going.
+        debug.sethook(hook, "", 1)
+        error(budget.exceeded, 0)
+      end
     end
-    debug.sethook(co, hook, "", LUA_HOOK_INTERVAL)
+    budget.attach = function(thread) debug.sethook(thread, hook, "", LUA_HOOK_INTERVAL) end
+    budget.attach(co)
   end
+
+  local previous = activeBudget
+  activeBudget = budget
   local res = table.pack(coroutine.resume(co))
-  while res[1] and coroutine.status(co) == "suspended" do
+  while res[1] and coroutine.status(co) == "suspended" and not budget.exceeded do
+    if overdue() then budget.exceeded = timeMsg; break end
     coroutine.yield()
+    if overdue() then budget.exceeded = timeMsg; break end
     res = table.pack(coroutine.resume(co))
+  end
+  if res[1] and not budget.exceeded and overdue() then budget.exceeded = timeMsg end
+  activeBudget = previous
+
+  if budget.exceeded then
+    if coroutine.status(co) == "suspended" and type(coroutine.close) == "function" then pcall(coroutine.close, co) end
+    error(budget.exceeded .. '. Raise the budget when starting the bridge: Plugin "gma3_mcp_bridge" "lua luatime=<ms> luasteps=<n>" (0 = unlimited).', 0)
   end
   if not res[1] then
     local msg = tostring(res[2])
-    if exceeded then
-      error(exceeded .. '. Raise the budget when starting the bridge: Plugin "gma3_mcp_bridge" "lua luatime=<ms> luasteps=<n>" (0 = unlimited).', 0)
-    end
     local okT, tb = pcall(debug.traceback, co, msg)
     error(okT and tb or msg, 0)
   end
   return table.pack(table.unpack(res, 2, res.n))
+end
+
+-- Environment for submitted code. Reads and writes fall through to the real globals (so the
+-- whole grandMA3 API is available and globals a script defines persist as before), but the
+-- obvious ways around the budget are closed: debug.sethook/gethook are withheld, coroutines
+-- the script creates get the budget hook, and load/loadfile/dofile/require/package resolve
+-- to the same environment. This is best-effort hardening for trusted scripts, not a
+-- security boundary: Lua on the console already has io and os, and a script determined to
+-- escape (e.g. via debug.getregistry or upvalue access on wrapped functions) still can.
+local function sandboxEnv()
+  local env = {}
+
+  local dbg = {}
+  if type(debug) == "table" then for k, v in pairs(debug) do dbg[k] = v end end
+  dbg.sethook = function() error("debug.sethook is not available to bridge scripts (the execution budget is enforced with it)", 2) end
+  dbg.gethook = function() return nil end
+  dbg.getregistry = nil
+  dbg.getupvalue, dbg.setupvalue, dbg.upvaluejoin = nil, nil, nil
+
+  local co = {}
+  for k, v in pairs(coroutine) do co[k] = v end
+  co.create = function(f)
+    local t = coroutine.create(f)
+    if activeBudget and activeBudget.attach then activeBudget.attach(t) end
+    return t
+  end
+  co.wrap = function(f)
+    local t = co.create(f)
+    return function(...)
+      local r = table.pack(coroutine.resume(t, ...))
+      if not r[1] then error(r[2], 0) end
+      return table.unpack(r, 2, r.n)
+    end
+  end
+
+  env._G = env
+  env.debug = dbg
+  env.coroutine = co
+  env.load = function(chunk, name, mode, e) return load(chunk, name, mode, e == nil and env or e) end
+  if loadstring then env.loadstring = env.load end
+  env.loadfile = function(name, mode, e) return loadfile(name, mode, e == nil and env or e) end
+  env.dofile = function(name)
+    local f, err = loadfile(name, "bt", env)
+    if not f then error(err, 2) end
+    return f()
+  end
+  local shadowed = { debug = dbg, coroutine = co, _G = env }
+  env.require = function(name)
+    if shadowed[name] then return shadowed[name] end
+    return require(name)
+  end
+  if type(package) == "table" then
+    env.package = setmetatable({ loaded = setmetatable(shadowed, { __index = package.loaded }) }, { __index = package })
+  end
+  return setmetatable(env, { __index = _G, __newindex = _G })
 end
 
 -------------------------------------------------------------------------------
@@ -467,9 +545,10 @@ ops.lua = function(args)
   end
   local code = args.code
   if type(code) ~= "string" then error("args.code (string) is required") end
-  local fn, err = load("return " .. code, "=mcp", "t")
+  local env = sandboxEnv()
+  local fn, err = load("return " .. code, "=mcp", "t", env)
   if not fn then
-    fn, err = load(code, "=mcp", "t")
+    fn, err = load(code, "=mcp", "t", env)
   end
   if not fn then error("Lua compile error: " .. tostring(err)) end
   -- A request may tighten the console budget, never loosen it.
