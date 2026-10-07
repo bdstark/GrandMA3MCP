@@ -7,6 +7,7 @@
 -- Usage from the command line:
 --   Plugin "gma3_mcp_bridge"            start on the default port (9800)
 --   Plugin "gma3_mcp_bridge" "9801"     start on a custom port
+--   Plugin "gma3_mcp_bridge" "0.0.0.0:9800"  bind to all interfaces (e.g. for a Docker client on Linux)
 --   Plugin "gma3_mcp_bridge" "stop"     stop the bridge
 --   Plugin "gma3_mcp_bridge" "status"   print status
 --
@@ -29,7 +30,7 @@ local BIND_HOST    = "127.0.0.1"
 local MAX_DEPTH    = 6
 
 -- State survives repeated Plugin calls (file-level locals are re-created on ReloadAllPlugins only).
-_G.__gma3_mcp_bridge = _G.__gma3_mcp_bridge or { running = false, port = DEFAULT_PORT, server = nil, clients = {}, requests = 0 }
+_G.__gma3_mcp_bridge = _G.__gma3_mcp_bridge or { running = false, host = BIND_HOST, port = DEFAULT_PORT, server = nil, clients = {}, requests = 0 }
 local state = _G.__gma3_mcp_bridge
 
 -- Log to the System Monitor (Echo), the Command Line History (Printf) and a log file in the temp folder.
@@ -338,6 +339,7 @@ ops.ping = function(args)
   pcall(function() hostname = Root().maNetSocket.hostname end)
   return {
     bridgeVersion = VERSION,
+    host          = state.host,
     port          = state.port,
     luaVersion    = _VERSION,
     requests      = state.requests,
@@ -578,15 +580,15 @@ local function closeClient(i)
 end
 
 local function serverMain()
-  local server, err = socket.bind(BIND_HOST, state.port)
+  local server, err = socket.bind(state.host, state.port)
   if not server then
-    logerr("could not bind %s:%d (%s)", BIND_HOST, state.port, tostring(err))
+    logerr("could not bind %s:%d (%s)", state.host, state.port, tostring(err))
     state.running = false
     return
   end
   server:settimeout(0)
   state.server = server
-  log("listening on %s:%d (v%s)", BIND_HOST, state.port, VERSION)
+  log("listening on %s:%d (v%s)", state.host, state.port, VERSION)
 
   while state.running and not state.stopRequested do
     -- accept new clients
@@ -652,7 +654,7 @@ local function MainImpl(display_handle, argument)
   end
 
   if arg == "status" then
-    log("running=%s port=%d clients=%d requests=%d", tostring(state.running), state.port, #state.clients, state.requests)
+    log("running=%s bind=%s:%d clients=%d requests=%d", tostring(state.running), state.host, state.port, #state.clients, state.requests)
     return
   end
 
@@ -661,7 +663,20 @@ local function MainImpl(display_handle, argument)
     return
   end
 
-  local port = tonumber(argument) or DEFAULT_PORT
+  -- argument may be "<port>" or "<host>:<port>"
+  local host, port = BIND_HOST, DEFAULT_PORT
+  if argument and argument ~= "" then
+    local h, pt = tostring(argument):match("^([%d%.%a]+):(%d+)$")
+    if h then
+      host, port = h, tonumber(pt)
+    else
+      port = tonumber(argument) or DEFAULT_PORT
+    end
+  end
+  if host ~= "127.0.0.1" and host ~= "localhost" then
+    log("WARNING: binding to %s exposes unauthenticated console control to the network", host)
+  end
+  state.host = host
   state.port = port
   state.running = true
   state.stopRequested = false

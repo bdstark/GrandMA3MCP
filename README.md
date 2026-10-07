@@ -91,6 +91,36 @@ Claude Desktop (`claude_desktop_config.json`):
 }
 ```
 
+### Alternative: run the server in Docker
+
+If you would rather not install Node on the grandMA3 host, build the image and let the MCP client launch
+the container (the bridge plugin still has to be imported into onPC as described above; the files are in
+`plugin/`):
+
+```bash
+docker build -t gma3-mcp .
+```
+
+Claude Desktop / Claude Code configuration:
+
+```json
+{
+  "mcpServers": {
+    "gma3": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "--add-host=host.docker.internal:host-gateway",
+               "-v", "/Users/bstark/MALightingTechnology:/gma3:ro", "gma3-mcp"]
+    }
+  }
+}
+```
+
+The image defaults `GMA3_BRIDGE_HOST` and `GMA3_OSC_HOST` to `host.docker.internal`. On Docker Desktop
+(macOS/Windows) that reaches the plugin even though it binds to `127.0.0.1`. On Linux either run with
+`--network host`, or start the plugin on all interfaces with `Plugin "gma3_mcp_bridge" "0.0.0.0:9800"`
+(this exposes unauthenticated console control to the network, so only do it on a trusted network).
+The volume mount is optional; it only enables `gma3_help`.
+
 ### Environment variables
 
 | Variable | Default | Purpose |
