@@ -296,3 +296,7 @@ npm run build      # compile to dist/
 
 Help pages, OSC and Lua API details were taken from the manual bundled with onPC 2.5.1
 (`~/MALightingTechnology/gma3_2.5.1/shared/language/HTML`).
+
+## License
+
+[MIT](LICENSE)
