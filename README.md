@@ -54,6 +54,32 @@ every frame, like MA's own webserver example) until you run `Plugin "gma3_mcp_br
 argument: the bridge always binds to `127.0.0.1` and refuses a `<host>:<port>` argument, because it has no
 authentication. To use it from another machine, see [Remote access over SSH](#remote-access-over-ssh).
 
+#### Enabling Lua execution
+
+Arbitrary Lua (the `gma3_lua` tool) is **off by default**. Everything else keeps working without it. The
+console operator turns it on per start, or toggles it while the bridge is running:
+
+```
+Plugin "gma3_mcp_bridge" "lua"              start with Lua execution enabled
+Plugin "gma3_mcp_bridge" "9801 lua"         custom port and Lua execution enabled
+Plugin "gma3_mcp_bridge" "lua on"           enable while running
+Plugin "gma3_mcp_bridge" "lua off"          disable while running
+Plugin "gma3_mcp_bridge" "lua luatime=2000 luasteps=5000000"
+```
+
+`status`, `lua on|off` and the budget tokens are control calls: they talk to the running bridge and leave it
+running. Arguments are whitespace-separated tokens. Every start establishes the policy afresh, so enabling Lua is
+always a visible decision in the start command (or macro); it never carries over from a previous run.
+`status` and `gma3_status` show the current policy.
+
+Each `gma3_lua` request runs under an execution budget: by default 5 s of wall-clock time and 20 million
+Lua VM instructions. `luatime=<ms>` and `luasteps=<n>` change the limits (`0` = unlimited). A request that
+exceeds its budget is aborted with an error and the bridge loop continues; the MCP server also passes the
+client's request timeout down as the time budget, so a script stops when nobody is waiting for it any
+more. The budget is enforced with a Lua debug hook, which only fires between VM instructions: it cannot
+interrupt a C function that blocks, such as `Cmd()` opening a confirmation dialog or a blocking socket
+call. The hook runs only for code submitted through `gma3_lua`; the structured ops are not budgeted.
+
 The plugin is stored in the show file, so after the first import you only need `Plugin "gma3_mcp_bridge"`
 (for example from a macro) each time the show is loaded. Remember to save the show if you want to keep it.
 
@@ -63,8 +89,13 @@ To update the Lua code after editing it, run `npm run install-plugin` again and 
 Plugin "gma3_mcp_bridge" "stop"
 Delete Plugin 1 /NoConfirmation
 Import Plugin Library "gma3_mcp_bridge.xml" At Plugin 1
+ReloadAllPlugins
 Plugin "gma3_mcp_bridge"
 ```
+
+`ReloadAllPlugins` is required: onPC keeps the Lua chunk it already loaded for a plugin name, so a delete and
+re-import alone leaves the old code running (verified on 2.5.1). The start line in the command line history
+shows the plugin version, e.g. `listening on 127.0.0.1:9800 (v0.2.0)`.
 
 Quick check from a terminal without an MCP client:
 
@@ -190,7 +221,8 @@ Limits of the tunnel:
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `GMA3_BRIDGE_HOST` / `GMA3_BRIDGE_PORT` | `127.0.0.1` / `9800` | Where the Lua bridge listens |
-| `GMA3_BRIDGE_TIMEOUT_MS` | `15000` | Per-request timeout |
+| `GMA3_BRIDGE_TIMEOUT_MS` | `15000` | Per-request timeout; also the default wall-clock budget sent with `gma3_lua` requests |
+| `GMA3_ALLOW_LUA` | `1` | Set to `0` to not register the `gma3_lua` tool at all. The console-side switch (`Plugin "gma3_mcp_bridge" "lua"`, off by default) is the enforcement point; this one lets a deployment rule the tool out regardless of console state |
 | `GMA3_OSC_HOST` / `GMA3_OSC_PORT` | `127.0.0.1` / `8000` | OSC fallback target (onPC: Menu > In & Out > OSC) |
 | `GMA3_OSC_PREFIX` | *(none)* | OSC prefix configured in onPC, without slashes |
 | `GMA3_INSTALL_DIR` / `GMA3_HELP_DIR` | `~/MALightingTechnology` | Where the bundled manual HTML is found |
@@ -201,7 +233,7 @@ Limits of the tunnel:
 | --- | --- |
 | `gma3_status` | Bridge reachability, software version, show file, user |
 | `gma3_command` | Execute a command line command, returns OK / Syntax Error / Illegal Command |
-| `gma3_lua` | Evaluate Lua inside onPC and return the result as JSON |
+| `gma3_lua` | Evaluate Lua inside onPC and return the result as JSON. Off until the operator [enables it on the console](#enabling-lua-execution); runs under a time/instruction budget |
 | `gma3_lua_api` | Search the live Lua API descriptor (names, arguments, returns) |
 | `gma3_get_object` | Properties (and optionally children and schema) of any object |
 | `gma3_list_children` | Children of an object with selected property values, paginated |
@@ -236,6 +268,10 @@ One JSON document per line over TCP.
 Ops: `ping`, `cmd`, `lua`, `object`, `children`, `objects`, `dump`, `set`, `setfader`, `getfader`,
 `executor`, `executors`, `api`, `stop`. See `plugin/gma3_mcp_bridge.lua`.
 
+`ping` reports the Lua execution policy as `lua: {enabled, maxMs, maxSteps, bounded}`. The `lua` op is
+refused with an error while `enabled` is false; its optional `maxMs` / `maxSteps` args can only tighten the
+console's budget, never loosen it.
+
 ## Safety notes
 
 * Everything the server does happens in the live show. `gma3_set_property`, `Store`, `Delete` and similar
@@ -243,7 +279,12 @@ Ops: `ping`, `cmd`, `lua`, `object`, `children`, `objects`, `dump`, `set`, `setf
 * The bridge binds to `127.0.0.1` only and cannot be told to bind elsewhere; it also drops any accepted
   connection whose peer is not loopback. There is no authentication, so anything running on the console
   host can run commands in the console. Remote use goes through [an SSH tunnel](#remote-access-over-ssh).
-* `Cmd()` runs synchronously in the Lua task; a command that opens a blocking dialog can stall the plugin.
+* Arbitrary Lua is a separately enabled capability: `gma3_lua` is refused until the operator starts the
+  bridge with the `lua` argument, and each request is aborted when it exceeds the configured time or
+  instruction budget (see [Enabling Lua execution](#enabling-lua-execution)). Once enabled, Lua has the same
+  reach as the console's own plugins, including `os` and `io`; enable it only for clients you trust.
+* `Cmd()` runs synchronously in the Lua task; a command that opens a blocking dialog can stall the plugin,
+  and the Lua budget cannot interrupt it because the hook only fires between Lua VM instructions.
   Prefer `/NoConfirmation` options.
 
 ## Development

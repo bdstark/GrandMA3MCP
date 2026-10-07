@@ -10,6 +10,20 @@
 --   Plugin "gma3_mcp_bridge" "stop"     stop the bridge
 --   Plugin "gma3_mcp_bridge" "status"   print status
 --
+-- Arbitrary Lua execution (the "lua" op behind the gma3_lua tool) is OFF by default and is
+-- enabled per start, or toggled while running, by the console operator:
+--   Plugin "gma3_mcp_bridge" "lua"              start with Lua execution enabled
+--   Plugin "gma3_mcp_bridge" "9801 lua"         custom port and Lua execution enabled
+--   Plugin "gma3_mcp_bridge" "lua on"           enable while running
+--   Plugin "gma3_mcp_bridge" "lua off"          disable while running
+--   Plugin "gma3_mcp_bridge" "lua luatime=2000 luasteps=5000000"
+--                                               enable with a 2 s / 5 M VM-instruction budget per request
+-- Arguments are whitespace separated tokens; "luatime" is milliseconds of wall-clock time and
+-- "luasteps" a count of Lua VM instructions (0 = unlimited). A request that exceeds its budget is
+-- aborted with an error so the bridge loop (and the console) regain control. The budget is
+-- enforced with a debug hook, which cannot interrupt a C function such as Cmd() that blocks.
+-- Only Lua submitted through the "lua" op is budgeted; the structured ops are not.
+--
 -- The bridge only ever listens on 127.0.0.1. It has no authentication, so it is never exposed
 -- to the network; a "<host>:<port>" argument is rejected. For remote access forward the port
 -- over SSH (see README.md, "Remote access over SSH").
@@ -27,14 +41,22 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.1.0"
+local VERSION      = "0.2.0"
 local DEFAULT_PORT = 9800
+-- Execution policy defaults for the "lua" op (see header). Changed per start with the
+-- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
+local LUA_DEFAULT_ENABLED   = false
+local LUA_DEFAULT_MAX_MS    = 5000
+local LUA_DEFAULT_MAX_STEPS = 20000000
+local LUA_HOOK_INTERVAL     = 1000   -- VM instructions between budget checks
 local BIND_HOST    = "127.0.0.1"  -- fixed: the bridge is unauthenticated and must never leave loopback
 local MAX_DEPTH    = 6
 
 -- State survives repeated Plugin calls (file-level locals are re-created on ReloadAllPlugins only).
 _G.__gma3_mcp_bridge = _G.__gma3_mcp_bridge or { running = false, host = BIND_HOST, port = DEFAULT_PORT, server = nil, clients = {}, requests = 0 }
 local state = _G.__gma3_mcp_bridge
+-- Lua execution policy (older state tables from before 0.2.0 do not have it).
+state.lua = state.lua or { enabled = LUA_DEFAULT_ENABLED, maxMs = LUA_DEFAULT_MAX_MS, maxSteps = LUA_DEFAULT_MAX_STEPS }
 
 -- Log to the System Monitor (Echo), the Command Line History (Printf) and a log file in the temp folder.
 local function logFile()
@@ -323,6 +345,83 @@ local function listChildren(h, fields, limit, offset, asText, playback)
 end
 
 -------------------------------------------------------------------------------
+-- Lua execution policy
+-------------------------------------------------------------------------------
+
+local hookSupported = type(debug) == "table" and type(debug.sethook) == "function"
+
+local function now()
+  local ok, t = pcall(socket.gettime)
+  if ok and type(t) == "number" then return t end
+  return os.clock()
+end
+
+local function luaPolicyInfo()
+  return {
+    enabled  = state.lua.enabled and true or false,
+    maxMs    = state.lua.maxMs,
+    maxSteps = state.lua.maxSteps,
+    bounded  = hookSupported,
+    note     = hookSupported
+      and "budget is enforced by a VM instruction hook; a blocking C call (e.g. Cmd opening a dialog) cannot be interrupted"
+      or "debug.sethook is unavailable in this Lua engine: no execution bound can be enforced",
+  }
+end
+
+local function describeLuaPolicy()
+  if not state.lua.enabled then return "disabled" end
+  local function lim(v, unit) if v and v > 0 then return tostring(v) .. unit end return "unlimited" end
+  return string.format("enabled (budget %s / %s per request%s)", lim(state.lua.maxMs, " ms"), lim(state.lua.maxSteps, " VM instructions"),
+    hookSupported and "" or ", NOT enforced: debug.sethook unavailable")
+end
+
+-- Run fn() under the configured budget and return its results as a packed table.
+-- The function runs in its own coroutine so the instruction hook is confined to it and
+-- never affects the bridge loop. This matters beyond tidiness: onPC installs its own
+-- external (C) hook on the plugin thread, and setting or clearing a hook there with
+-- debug.sethook would replace or remove it. If the user code yields, the yield is passed
+-- up to the console (like the bridge loop's own per-frame yield) and the code is resumed
+-- next frame.
+local function runBounded(fn, maxMs, maxSteps)
+  local co = coroutine.create(fn)
+  local exceeded = nil
+  if hookSupported and ((maxMs and maxMs > 0) or (maxSteps and maxSteps > 0)) then
+    local start = now()
+    local steps = 0
+    local function hook()
+      if not exceeded then
+        steps = steps + LUA_HOOK_INTERVAL
+        if maxSteps and maxSteps > 0 and steps >= maxSteps then
+          exceeded = string.format("Lua execution budget exceeded: more than %d VM instructions", maxSteps)
+        elseif maxMs and maxMs > 0 and (now() - start) * 1000 >= maxMs then
+          exceeded = string.format("Lua execution budget exceeded: ran longer than %d ms", maxMs)
+        end
+        if exceeded then
+          -- From now on fail on every instruction so that user code wrapped in pcall cannot keep going.
+          debug.sethook(hook, "", 1)
+        end
+      end
+      if exceeded then error(exceeded, 0) end
+    end
+    debug.sethook(co, hook, "", LUA_HOOK_INTERVAL)
+  end
+  local res = table.pack(coroutine.resume(co))
+  while res[1] and coroutine.status(co) == "suspended" do
+    coroutine.yield()
+    res = table.pack(coroutine.resume(co))
+  end
+  if not res[1] then
+    local msg = tostring(res[2])
+    if exceeded then
+      error(exceeded .. '. Raise the budget when starting the bridge: Plugin "gma3_mcp_bridge" "lua luatime=<ms> luasteps=<n>" (0 = unlimited).', 0)
+    end
+    local okT, tb = pcall(debug.traceback, co, msg)
+    error(okT and tb or msg, 0)
+  end
+  return table.pack(table.unpack(res, 2, res.n))
+end
+
+-------------------------------------------------------------------------------
 -- Operations
 -------------------------------------------------------------------------------
 
@@ -346,6 +445,7 @@ ops.ping = function(args)
     port          = state.port,
     luaVersion    = _VERSION,
     requests      = state.requests,
+    lua           = luaPolicyInfo(),
     build         = build,
     hostname      = hostname,
     showfile      = showfile,
@@ -361,6 +461,10 @@ ops.cmd = function(args)
 end
 
 ops.lua = function(args)
+  if not state.lua.enabled then
+    error('Lua execution is disabled on the console. The console operator can enable it with:  Plugin "gma3_mcp_bridge" "lua on"  ' ..
+          '(or start the bridge with  Plugin "gma3_mcp_bridge" "lua"). The structured ops (cmd, object, children, set, ...) remain available.', 0)
+  end
   local code = args.code
   if type(code) ~= "string" then error("args.code (string) is required") end
   local fn, err = load("return " .. code, "=mcp", "t")
@@ -368,7 +472,13 @@ ops.lua = function(args)
     fn, err = load(code, "=mcp", "t")
   end
   if not fn then error("Lua compile error: " .. tostring(err)) end
-  local results = table.pack(fn())
+  -- A request may tighten the console budget, never loosen it.
+  local maxMs, maxSteps = state.lua.maxMs, state.lua.maxSteps
+  local reqMs = tonumber(args.maxMs)
+  if reqMs and reqMs > 0 and (not maxMs or maxMs <= 0 or reqMs < maxMs) then maxMs = reqMs end
+  local reqSteps = tonumber(args.maxSteps)
+  if reqSteps and reqSteps > 0 and (not maxSteps or maxSteps <= 0 or reqSteps < maxSteps) then maxSteps = reqSteps end
+  local results = runBounded(fn, maxMs, maxSteps)
   local out = {}
   for i = 1, results.n do
     local v = toJsonSafe(results[i])
@@ -591,7 +701,10 @@ local function serverMain()
   end
   server:settimeout(0)
   state.server = server
-  log("listening on %s:%d (v%s)", state.host, state.port, VERSION)
+  log("listening on %s:%d (v%s); Lua execution %s", state.host, state.port, VERSION, describeLuaPolicy())
+  if not state.lua.enabled then
+    log('Lua execution (gma3_lua) is off; enable it with  Plugin "gma3_mcp_bridge" "lua on"')
+  end
 
   while state.running and not state.stopRequested do
     -- accept new clients
@@ -652,10 +765,63 @@ end
 -- Entry point
 -------------------------------------------------------------------------------
 
-local function MainImpl(display_handle, argument)
-  local arg = argument and tostring(argument):lower() or ""
+-- Parse the plugin argument into tokens. Returns a table or nil, err.
+--   stop | status            commands
+--   <port>                   listen port (bind address is always 127.0.0.1)
+--   lua | lua=on|off | lua on | lua off | nolua
+--   luatime=<ms>  luasteps=<n>   Lua execution budget (0 = unlimited)
+local function parseArgument(argument)
+  local opts = {}
+  local text = argument and tostring(argument) or ""
+  local prev = nil
+  for tok in text:gmatch("[^%s,]+") do
+    local l = tok:lower()
+    local key, val = l:match("^(%a+)=(.*)$")
+    if l == "stop" or l == "status" then
+      opts.command = l
+    elseif l == "lua" then
+      opts.lua = true
+    elseif l == "nolua" then
+      opts.lua = false
+    elseif (l == "on" or l == "off") and prev == "lua" then
+      opts.lua = (l == "on")
+    elseif key == "lua" then
+      if val == "on" or val == "1" or val == "yes" or val == "true" then opts.lua = true
+      elseif val == "off" or val == "0" or val == "no" or val == "false" then opts.lua = false
+      else return nil, string.format("\"%s\": expected lua=on or lua=off", tok) end
+    elseif key == "luatime" or key == "luasteps" then
+      local n = tonumber(val)
+      if not n or n < 0 or n ~= math.floor(n) then return nil, string.format("\"%s\": expected a non-negative integer", tok) end
+      if key == "luatime" then opts.maxMs = n else opts.maxSteps = n end
+    elseif tok:find(":", 1, true) then
+      return nil, string.format("\"%s\" looks like a bind address, but the bridge only listens on 127.0.0.1. " ..
+        "Pass just a port number; for remote access use an SSH tunnel (ssh -L 9800:127.0.0.1:9800 ...).", tok)
+    elseif l:match("^%d+$") then
+      local port = tonumber(l)
+      if not port or port < 1 or port > 65535 then return nil, string.format("\"%s\" is not a valid port number (expected 1-65535)", tok) end
+      opts.port = port
+    else
+      return nil, string.format("\"%s\" is not a recognised argument (expected a port number, \"stop\", \"status\", \"lua\", \"lua on|off\", \"luatime=<ms>\" or \"luasteps=<n>\")", tok)
+    end
+    prev = l
+  end
+  return opts
+end
 
-  if arg == "stop" then
+local function applyLuaPolicy(opts)
+  if opts.lua ~= nil then state.lua.enabled = opts.lua end
+  if opts.maxMs ~= nil then state.lua.maxMs = opts.maxMs end
+  if opts.maxSteps ~= nil then state.lua.maxSteps = opts.maxSteps end
+end
+
+local function MainImpl(display_handle, argument)
+  local opts, perr = parseArgument(argument)
+  if not opts then
+    logerr("refusing argument: %s", perr)
+    return
+  end
+
+  if opts.command == "stop" then
     if state.running then
       state.stopRequested = true
       log("stop requested")
@@ -665,35 +831,34 @@ local function MainImpl(display_handle, argument)
     return
   end
 
-  if arg == "status" then
-    log("running=%s bind=%s:%d clients=%d requests=%d", tostring(state.running), state.host, state.port, #state.clients, state.requests)
+  if opts.command == "status" then
+    log("running=%s bind=%s:%d clients=%d requests=%d lua=%s", tostring(state.running), state.host, state.port, #state.clients, state.requests, describeLuaPolicy())
     return
   end
 
   if state.running then
-    log("already running on port %d (use argument \"stop\" to stop)", state.port)
+    if opts.port then
+      log("already running on port %d (use argument \"stop\" to stop)", state.port)
+      return
+    end
+    if opts.lua ~= nil or opts.maxMs ~= nil or opts.maxSteps ~= nil then
+      applyLuaPolicy(opts)
+      log("Lua execution now %s", describeLuaPolicy())
+    else
+      log("already running on port %d (use argument \"stop\" to stop)", state.port)
+    end
     return
   end
 
-  -- The only accepted argument is a port number. The bind address is always 127.0.0.1:
-  -- the bridge has no authentication, so it must never be reachable from the network.
-  -- Remote clients forward the port over SSH instead (README.md, "Remote access over SSH").
-  local port = DEFAULT_PORT
-  if argument and argument ~= "" then
-    local a = tostring(argument)
-    if a:find(":", 1, true) then
-      logerr("refusing to start: \"%s\" looks like a bind address, but the bridge only listens on 127.0.0.1. " ..
-             "Pass just a port number; for remote access use an SSH tunnel (ssh -L 9800:127.0.0.1:9800 ...).", a)
-      return
-    end
-    port = tonumber(a)
-    if not port or port < 1 or port > 65535 or port ~= math.floor(port) then
-      logerr("refusing to start: \"%s\" is not a valid port number (expected 1-65535, \"stop\" or \"status\")", a)
-      return
-    end
-  end
+  -- The bind address is always 127.0.0.1: the bridge has no authentication, so it must never be
+  -- reachable from the network. Remote clients forward the port over SSH instead (README.md,
+  -- "Remote access over SSH").
   state.host = BIND_HOST
-  state.port = port
+  state.port = opts.port or DEFAULT_PORT
+  -- Each start establishes the Lua execution policy explicitly; it never carries over from an
+  -- earlier run, so enabling Lua is always a visible decision in the start command.
+  state.lua = { enabled = LUA_DEFAULT_ENABLED, maxMs = LUA_DEFAULT_MAX_MS, maxSteps = LUA_DEFAULT_MAX_STEPS }
+  applyLuaPolicy(opts)
   state.running = true
   state.stopRequested = false
   state.clients = {}
@@ -706,9 +871,18 @@ end
 local function Main(display_handle, argument)
   local ok, err = xpcall(MainImpl, debug.traceback, display_handle, argument)
   if not ok then logerr("start failed: %s", tostring(err)) end
+  -- onPC calls Cleanup every time a plugin invocation returns. The invocation that owns the server
+  -- loop only returns once the loop has ended, so if the loop is still running here this was a
+  -- control call ("status", "lua on|off", a rejected argument) and its Cleanup must leave the
+  -- running bridge alone.
+  if state.running then state.ignoreNextCleanup = true end
 end
 
 local function Cleanup()
+  if state.ignoreNextCleanup then
+    state.ignoreNextCleanup = false
+    return
+  end
   state.stopRequested = true
   for i = #state.clients, 1, -1 do closeClient(i) end
   if state.server then pcall(function() state.server:close() end) end

@@ -21,6 +21,11 @@ const osc = new OscSender({
 
 const server = new McpServer({ name: "gma3-mcp", version: "0.1.0" });
 
+// Arbitrary Lua execution is a separately gated capability. The console-side switch (the plugin's
+// "lua" start argument, off by default) is the enforcement point; GMA3_ALLOW_LUA=0 additionally hides
+// the gma3_lua tool from this server so a deployment can rule it out regardless of console state.
+const allowLuaTool = !/^(0|false|no|off)$/i.test((env.GMA3_ALLOW_LUA ?? "1").trim());
+
 type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
 
 function text(value: unknown): ToolResult {
@@ -64,7 +69,8 @@ server.registerTool(
   {
     title: "grandMA3 connection status",
     description:
-      "Check whether the gma3_mcp_bridge plugin inside grandMA3 onPC is reachable and report software version, show file, user, and configured OSC fallback.",
+      "Check whether the gma3_mcp_bridge plugin inside grandMA3 onPC is reachable and report software version, show file, user, " +
+      "the Lua execution policy (whether gma3_lua is enabled on the console and its per-request time/instruction budget), and the configured OSC fallback.",
     inputSchema: {},
   },
   async () => {
@@ -169,23 +175,37 @@ server.registerTool(
     }),
 );
 
-server.registerTool(
-  "gma3_lua",
-  {
-    title: "Run Lua inside grandMA3",
-    description:
-      "Evaluate Lua 5.4 code inside the grandMA3 Lua engine and return the result(s) as JSON. The code is first compiled as an expression ('return <code>'), then as a statement block. " +
-      "All grandMA3 Lua API functions are available (Cmd, ObjectList, DataPool, Root, ShowData, Patch, Programmer, SelectedSequence, GetCurrentCue, GetExecutor, GetVar/SetVar, Printf, Echo, Enums, ...). " +
-      "Object handles are returned as {name, class, addr, addrNative, index, childCount}; use handle:Get('Prop') to read properties, :Children(), :Count(), :Ptr(i). " +
-      "Examples: 'SelectedSequence().name', 'GetCurrentCue():Get(\"No\")', 'DataPool().Sequences:Count()', " +
-      "'local t={} for i,c in ipairs(ObjectList(\"Fixture Thru\")) do t[#t+1]=c.name end return t'. Use gma3_lua_api to look up function signatures.",
-    inputSchema: {
-      code: z.string().describe("Lua code to evaluate"),
-      timeout_ms: z.number().int().positive().optional().describe("Request timeout (default 15000)"),
+if (allowLuaTool) {
+  server.registerTool(
+    "gma3_lua",
+    {
+      title: "Run Lua inside grandMA3",
+      description:
+        "Evaluate Lua 5.4 code inside the grandMA3 Lua engine and return the result(s) as JSON. The code is first compiled as an expression ('return <code>'), then as a statement block. " +
+        "All grandMA3 Lua API functions are available (Cmd, ObjectList, DataPool, Root, ShowData, Patch, Programmer, SelectedSequence, GetCurrentCue, GetExecutor, GetVar/SetVar, Printf, Echo, Enums, ...). " +
+        "Object handles are returned as {name, class, addr, addrNative, index, childCount}; use handle:Get('Prop') to read properties, :Children(), :Count(), :Ptr(i). " +
+        "Examples: 'SelectedSequence().name', 'GetCurrentCue():Get(\"No\")', 'DataPool().Sequences:Count()', " +
+        "'local t={} for i,c in ipairs(ObjectList(\"Fixture Thru\")) do t[#t+1]=c.name end return t'. Use gma3_lua_api to look up function signatures. " +
+        "This capability is OFF by default on the console: the operator enables it by starting the bridge with  Plugin \"gma3_mcp_bridge\" \"lua\"  or running  Plugin \"gma3_mcp_bridge\" \"lua on\"  (gma3_status shows the policy). " +
+        "Each request runs under the console's execution budget (default 5 s wall-clock / 20 M VM instructions, operator-configurable) and is aborted with an error when it exceeds it, so keep scripts short and prefer the structured tools (gma3_get_object, gma3_list_children, gma3_objects) for bulk reads.",
+      inputSchema: {
+        code: z.string().describe("Lua code to evaluate"),
+        timeout_ms: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("Request timeout (default 15000). Also passed to the console as the wall-clock execution budget, capped by the console's own limit, so the code stops when the client stops waiting."),
+      },
     },
-  },
-  async ({ code, timeout_ms }) => run(() => bridge.request("lua", { code }, timeout_ms)),
-);
+    async ({ code, timeout_ms }) => {
+      const timeout = timeout_ms ?? Number(env.GMA3_BRIDGE_TIMEOUT_MS ?? 15000);
+      // The console aborts the script at `timeout` and then has to encode and send the error; wait a
+      // little longer than that so the budget message reaches the client instead of a bare timeout.
+      return run(() => bridge.request("lua", { code, maxMs: timeout }, timeout + 1000));
+    },
+  );
+}
 
 server.registerTool(
   "gma3_lua_api",
@@ -534,7 +554,7 @@ server.registerResource(
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error(`gma3-mcp started (bridge ${bridge.description}, osc ${osc.description})`);
+  console.error(`gma3-mcp started (bridge ${bridge.description}, osc ${osc.description}, gma3_lua tool ${allowLuaTool ? "registered" : "disabled by GMA3_ALLOW_LUA"})`);
 }
 
 main().catch((err) => {
