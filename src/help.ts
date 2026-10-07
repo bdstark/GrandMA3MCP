@@ -99,17 +99,31 @@ function titleOf(file: string): string {
 }
 
 /**
+ * Resolve a page name inside the manual directory, or null if the result
+ * would escape it (defense in depth on top of the separator check above).
+ */
+function helpFile(dir: string, name: string): string | null {
+  const root = path.resolve(dir);
+  const file = path.resolve(root, name);
+  if (path.dirname(file) !== root || path.basename(file) !== name) return null;
+  return file;
+}
+
+/**
  * Look up a help topic. Tries the keyword page first (keyword_<name>.html),
  * then exact file names, then a substring search over file names and titles.
  */
 export function lookupHelp(topic: string, maxChars = 12000): { page?: string; text?: string; matches?: HelpPage[]; error?: string } {
   const dir = helpDir();
   if (!dir) return { error: "grandMA3 help files not found; set GMA3_HELP_DIR or GMA3_INSTALL_DIR" };
+  // Topics are bare page names, never paths: refuse separators and NUL so the
+  // lookup can only ever name a file directly inside the manual directory.
+  if (/[\/\\\0]/.test(topic)) return { error: "topic must be a page name or keyword, not a path" };
   const q = topic.trim().toLowerCase().replace(/\.html$/, "").replace(/\+/g, "plus").replace(/(\w)-(?=\s|$)/g, "$1minus");
   const candidates = [`keyword_${q}.html`, `${q}.html`, `keyword_${q.replace(/\s+/g, "")}.html`, `${q.replace(/\s+/g, "_")}.html`];
   for (const c of candidates) {
-    const file = path.join(dir, c);
-    if (fs.existsSync(file)) {
+    const file = helpFile(dir, c);
+    if (file && fs.existsSync(file)) {
       const text = htmlToText(fs.readFileSync(file, "utf8"));
       return { page: c, text: text.length > maxChars ? text.slice(0, maxChars) + "\n…(truncated)" : text };
     }
