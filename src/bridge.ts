@@ -86,7 +86,9 @@ export class Gma3Bridge {
         sock.setTimeout(0);
         this.socket = sock;
         this.lastError = null;
-        sock.on("data", (chunk) => this.onData(chunk));
+        // setEncoding uses a streaming decoder so multi-byte UTF-8 sequences split across TCP packets are reassembled.
+        sock.setEncoding("utf8");
+        sock.on("data", (chunk: string) => this.onData(chunk));
         sock.on("close", () => this.handleClose());
         resolve();
       });
@@ -114,8 +116,8 @@ export class Gma3Bridge {
     }
   }
 
-  private onData(chunk: Buffer): void {
-    this.buffer += chunk.toString("utf8");
+  private onData(chunk: string): void {
+    this.buffer += chunk;
     let idx: number;
     while ((idx = this.buffer.indexOf("\n")) >= 0) {
       const line = this.buffer.slice(0, idx).trim();

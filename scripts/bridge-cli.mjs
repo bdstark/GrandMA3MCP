@@ -11,6 +11,7 @@ const host = process.env.GMA3_BRIDGE_HOST ?? "127.0.0.1";
 const port = Number(process.env.GMA3_BRIDGE_PORT ?? 9800);
 const sock = net.connect(port, host, () => sock.write(JSON.stringify({ id: "cli", op, args }) + "\n"));
 let buf = "";
+sock.setEncoding("utf8");
 sock.on("data", (d) => { buf += d; const i = buf.indexOf("\n"); if (i >= 0) { const m = JSON.parse(buf.slice(0, i)); console.log(JSON.stringify(m.ok ? m.result : { error: m.error }, null, 2)); sock.end(); process.exit(0); } });
 sock.on("error", (e) => { console.error("bridge error:", e.message); process.exit(1); });
 setTimeout(() => { console.error("timeout"); process.exit(1); }, 20000);
