@@ -16,10 +16,10 @@ All five are **structured ops added to the bridge plugin in version 0.3.0**. The
 none changes the selection, the programmer or any playback. Because they do not take the lock, another operator
 or client can change the console between two reads; a result is a snapshot, not a transaction.
 
-Why structured ops: on onPC 2.5.1 the `gma3_lua` op runs submitted code in a child coroutine where every
-context-bound console function (`ObjectList`, `Patch`, `GetUIChannels`, `GetProgPhaser`, `GetDMXValue`, ...)
-returns nothing. The data these tools need is only reachable from the plugin thread (see the API probe summary at
-the end).
+Why structured ops: these views work without enabling arbitrary Lua execution. Early bridge versions
+ran submitted Lua in a child coroutine, which lost the onPC plugin context. Since v0.3.1, submitted Lua
+also runs on the plugin thread; the structured tools remain the supported read-only interface for these
+views. See [Lua execution](../lua.md) for current execution and budget behavior.
 
 Source of truth for the API shapes: the onPC 2.5.1 object tree (verified live through the structured tools) and the
 2.5.1 manual pages `lua_objectfree_getuichannels`, `getrtchannels`, `getchannelfunction`, `getattributebyuichannel`,
