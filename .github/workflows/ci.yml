@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - name: Install Lua 5.4 (runs the bridge plugin harness)
+        run: sudo apt-get update && sudo apt-get install -y lua5.4
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - name: Lua harness ran (not skipped)
+        run: lua5.4 test/lua/bridge_plugin_test.lua | tail -2

@@ -9,6 +9,11 @@ export interface BridgeOptions {
   port: number;
   requestTimeoutMs?: number;
   connectTimeoutMs?: number;
+  /**
+   * Do not let the open socket keep the Node event loop alive. Pending requests still hold the
+   * loop through their timers. Used by test runners so a process exits once its tests are done.
+   */
+  unref?: boolean;
 }
 
 interface Pending {
@@ -86,6 +91,7 @@ export class Gma3Bridge {
         sock.setTimeout(0);
         this.socket = sock;
         this.lastError = null;
+        if (this.opts.unref) sock.unref();
         // setEncoding uses a streaming decoder so multi-byte UTF-8 sequences split across TCP packets are reassembled.
         sock.setEncoding("utf8");
         sock.on("data", (chunk: string) => this.onData(chunk));

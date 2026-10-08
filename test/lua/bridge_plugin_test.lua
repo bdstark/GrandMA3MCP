@@ -261,6 +261,67 @@ Main(nil, "stop")
 check("stop when not running is reported", lastLog():find("not running"), lastLog())
 
 -------------------------------------------------------------------------------
+-- Loopback-only binding and peer rejection
+-------------------------------------------------------------------------------
+-- socket.bind is stubbed to hand back a fake listening socket that produces one non-loopback
+-- client and then asks the loop to stop, so serverMain runs a full accept/reject cycle.
+do
+  local bindCalls = {}
+  local fakeClientClosed = false
+  local fakeClient = {
+    settimeout = function() end,
+    setoption = function() end,
+    getpeername = function() return "10.1.2.3", 51000 end,
+    receive = function() return nil, "timeout", "" end,
+    send = function(_, data) return #data end,
+    close = function() fakeClientClosed = true end,
+  }
+  local accepts = 0
+  local fakeServer = {
+    settimeout = function() end,
+    accept = function()
+      accepts = accepts + 1
+      if accepts == 1 then return fakeClient end
+      state.stopRequested = true
+      return nil
+    end,
+    close = function() end,
+  }
+  local realBind = require("socket").bind
+  require("socket").bind = function(host, port)
+    bindCalls[#bindCalls + 1] = { host = host, port = port }
+    return fakeServer
+  end
+  state.running = false
+  local co = coroutine.create(function() Main(nil, "9803") end)
+  local ok, err = coroutine.resume(co)
+  local frames = 0
+  while ok and coroutine.status(co) == "suspended" and frames < 100 do
+    frames = frames + 1
+    ok, err = coroutine.resume(co)
+  end
+  assert(ok, err)
+  check("bridge binds to 127.0.0.1 only", #bindCalls == 1 and bindCalls[1].host == "127.0.0.1" and bindCalls[1].port == 9803, json.encode(bindCalls))
+  local rejected = false
+  for _, l in ipairs(logs) do if l:find("rejected connection from 10.1.2.3") then rejected = true end end
+  check("non-loopback peer is rejected and logged", rejected and fakeClientClosed, lastLog())
+  check("rejected peer is not kept as a client", #state.clients == 0, #state.clients)
+  check("server loop stopped cleanly", state.running == false and state.stopRequested == false)
+  require("socket").bind = realBind
+end
+
+do
+  -- A bind address argument is refused before any bind is attempted.
+  local bindCalls = 0
+  local realBind = require("socket").bind
+  require("socket").bind = function() bindCalls = bindCalls + 1; return nil, "stub" end
+  state.running = false
+  Main(nil, "192.168.1.10:9800")
+  check("host:port argument never reaches bind", bindCalls == 0 and lastLog():find("looks like a bind address"), lastLog())
+  require("socket").bind = realBind
+end
+
+-------------------------------------------------------------------------------
 -- Line handler robustness
 -------------------------------------------------------------------------------
 local raw = json.decode(state._handleLine(nil, "not json"))
