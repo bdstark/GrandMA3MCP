@@ -7,6 +7,9 @@ import {
   outcomeOf,
   compareFields,
   valuesEqual,
+  timeToSeconds,
+  parsePlainNumber,
+  parseConsoleBoolean,
   buildResult,
   toToolResult,
   validationFailure,
@@ -160,10 +163,52 @@ test("valuesEqual: zero is a value, missing is not", () => {
   assert.equal(valuesEqual(0, "0.00"), true);
   assert.equal(valuesEqual(0, null), false);
   assert.equal(valuesEqual(0, ""), false);
-  assert.equal(valuesEqual(3, "3s"), true);
+  assert.equal(valuesEqual(75, "75%"), true);
   assert.equal(valuesEqual("Follow", "follow"), true);
   assert.equal(valuesEqual("2.5", "2.50"), true);
   assert.equal(valuesEqual("abc", "abd"), false);
+});
+
+test("valuesEqual never prefix-matches a unit-bearing value and never reads unknown text as false", () => {
+  // Reproductions of the false matches the review found.
+  assert.equal(valuesEqual(false, "Unavailable"), false);
+  assert.equal(valuesEqual(false, "CueTiming"), false);
+  assert.equal(valuesEqual(false, ""), false);
+  assert.equal(valuesEqual(1, "1m00s"), false);
+  assert.equal(valuesEqual(3, "3s"), false, "a unit suffix needs a field normaliser");
+  assert.equal(valuesEqual(60, "1m00s"), false);
+  assert.equal(valuesEqual(false, "No"), true);
+  assert.equal(valuesEqual(true, "Yes"), true);
+  assert.equal(valuesEqual(true, "Unavailable"), false);
+  assert.equal(parseConsoleBoolean("maybe"), null);
+  assert.equal(parsePlainNumber("1m00s"), null);
+  assert.equal(parsePlainNumber("12abc"), null);
+});
+
+test("timeToSeconds interprets grandMA3 time displays and refuses markers and composites", () => {
+  assert.equal(timeToSeconds("2.50"), 2.5);
+  assert.equal(timeToSeconds("0"), 0);
+  assert.equal(timeToSeconds("3s"), 3);
+  assert.equal(timeToSeconds("1m00s"), 60);
+  assert.equal(timeToSeconds("1h22m56.3s"), 4976.3);
+  assert.equal(timeToSeconds("2m"), 120);
+  assert.equal(timeToSeconds(4), 4);
+  assert.equal(timeToSeconds("CueTiming"), null);
+  assert.equal(timeToSeconds("3.00 / 1.50"), null);
+  assert.equal(timeToSeconds("75%"), null);
+  assert.equal(timeToSeconds(null), null);
+});
+
+test("compareFields applies per-field normalisers and reports the interpreted value on mismatch", () => {
+  const norm = { CueInFade: timeToSeconds, TrigTime: timeToSeconds };
+  assert.equal(compareFields("t", { CueInFade: 60, TrigTime: 4 }, { CueInFade: "1m00s", TrigTime: "4.00" }, { normalize: norm }).status, "matched");
+  const m = compareFields("t", { CueInFade: 0 }, { CueInFade: "CueTiming" }, { normalize: norm });
+  assert.equal(m.status, "mismatched");
+  assert.match(m.detail ?? "", /CueInFade: expected 0, read "CueTiming" \(interpreted as null\)/);
+  const m2 = compareFields("t", { CueInFade: 1 }, { CueInFade: "1m00s" }, { normalize: norm });
+  assert.equal(m2.status, "mismatched");
+  assert.match(m2.detail ?? "", /interpreted as 60/);
+  assert.equal(compareFields("t", { Name: "x" }, { Name: "X" }, { normalize: norm }).status, "matched", "fields without a normaliser use valuesEqual");
 });
 
 test("buildResult / toToolResult: only a verified success is a non-error tool result", () => {

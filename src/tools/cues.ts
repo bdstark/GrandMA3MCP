@@ -44,6 +44,7 @@ import {
   type StepFn,
   type StepResult,
   type Verification,
+  timeToSeconds,
 } from "../results.js";
 import {
   Validator,
@@ -240,11 +241,18 @@ async function readBack(bridge: Gma3Bridge, reads: Array<{ ref: string; fields: 
   }
 }
 
+/**
+ * Time-valued properties whose display text carries a format ("2.50", "3s", "1m00s", "CueTiming"):
+ * compared through `timeToSeconds` so a unit-bearing value is interpreted, not prefix-matched.
+ */
+const TIME_FIELDS = [...Object.values(TIMING_PROPS), "TrigTime"] as string[];
+const TIME_NORMALIZERS: Record<string, (v: unknown) => unknown> = Object.fromEntries(TIME_FIELDS.map((f) => [f, timeToSeconds]));
+
 /** Turn a read-back into a Verification against `expected` (undefined values are existence-only). */
 function verifyAgainst(checked: string, expected: Record<string, unknown>, rb: ReadBack, missingMeans: string): Verification {
   if (rb.error) return unavailable(`read-back failed: ${rb.error}`, checked);
   if (rb.missing) return { status: "mismatched", checked, expected, actual: null, detail: `${rb.missing} ${missingMeans}` };
-  return compareFields(checked, expected, rb.actual);
+  return compareFields(checked, expected, rb.actual, { normalize: TIME_NORMALIZERS });
 }
 
 /** Should read-back run? Only after the primary mutation step was actually sent (succeeded or unknown). */

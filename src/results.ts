@@ -255,46 +255,108 @@ export function outcomeOf(steps: StepResult[]): ExecutionOutcome {
 export const notRequested = (): Verification => ({ status: "not_requested" });
 export const unavailable = (detail: string, checked?: string): Verification => ({ status: "unavailable", checked, detail });
 
-/** Compare read-back values field by field. `expected` values of undefined are not checked. */
-export function compareFields(checked: string, expected: Record<string, unknown>, actual: Record<string, unknown> | null | undefined): Verification {
+/** Turns a console display value into a comparable value, or null when it cannot be interpreted. */
+export type Normalizer = (actual: unknown) => unknown;
+
+export interface CompareOptions {
+  /**
+   * Per-field normalisers applied to the read-back value before comparison. Use these for display
+   * values that carry units or formats (cue timing "1m00s", "2.50", "CueTiming"); the default
+   * comparison deliberately refuses to guess what a unit-bearing string means.
+   */
+  normalize?: Record<string, Normalizer>;
+}
+
+/**
+ * Compare read-back values field by field. `expected` values of undefined are not checked.
+ * Without a normaliser for a field, `valuesEqual` applies: numbers match only a plain numeric
+ * display value (optionally with a trailing "%"), booleans match only the console's yes/no words,
+ * everything else is a trimmed case-insensitive string comparison.
+ */
+export function compareFields(
+  checked: string,
+  expected: Record<string, unknown>,
+  actual: Record<string, unknown> | null | undefined,
+  options: CompareOptions = {},
+): Verification {
   if (!actual) return unavailable("no values could be read back", checked);
   const mismatches: string[] = [];
   for (const [key, want] of Object.entries(expected)) {
     if (want === undefined) continue;
-    const got = actual[key];
-    if (!valuesEqual(want, got)) mismatches.push(`${key}: expected ${JSON.stringify(want)}, read ${JSON.stringify(got ?? null)}`);
+    const raw = actual[key];
+    const normalizer = options.normalize?.[key];
+    const got = normalizer ? normalizer(raw) : raw;
+    const equal = normalizer ? got !== null && got !== undefined && valuesEqual(want, got) : valuesEqual(want, raw);
+    if (!equal) {
+      mismatches.push(`${key}: expected ${JSON.stringify(want)}, read ${JSON.stringify(raw ?? null)}${normalizer && got !== raw ? ` (interpreted as ${JSON.stringify(got ?? null)})` : ""}`);
+    }
   }
   if (mismatches.length) return { status: "mismatched", checked, expected, actual, detail: mismatches.join("; ") };
   return { status: "matched", checked, expected, actual };
 }
 
 /**
- * Loose equality for console display text: numbers compare numerically ("2.50" == 2.5, "3s" == 3),
- * strings compare trimmed and case-insensitively.
+ * Strict equality for console display text.
+ *   - number expected: the actual value must be a number, or a string that is a plain number with
+ *     an optional trailing "%" ("2.50", "0", "75%", "-45.5"). "1m00s", "3s" or "Unavailable" never
+ *     match a number; use a normaliser (e.g. `timeToSeconds`) for unit-bearing fields.
+ *   - boolean expected: only the console's words count. yes/true/on -> true, no/false/off -> false;
+ *     any other text ("Unavailable", "CueTiming", "") matches neither.
+ *   - string expected: trimmed, case-insensitive comparison; two plain numeric strings compare
+ *     numerically ("2.5" == "2.50").
  */
 export function valuesEqual(expected: unknown, actual: unknown): boolean {
   if (expected === actual) return true;
   if (actual === null || actual === undefined) return false;
-  const a = String(actual).trim();
   if (typeof expected === "number") {
-    const n = parseLeadingNumber(a);
+    if (typeof actual === "number") return Math.abs(actual - expected) < 1e-6;
+    const n = parsePlainNumber(String(actual));
     return n !== null && Math.abs(n - expected) < 1e-6;
   }
   if (typeof expected === "boolean") {
-    return /^(yes|true|on|1)$/i.test(a) === expected;
+    const b = parseConsoleBoolean(actual);
+    return b !== null && b === expected;
   }
   const e = String(expected).trim();
+  const a = String(actual).trim();
   if (e.toLowerCase() === a.toLowerCase()) return true;
-  const en = parseLeadingNumber(e);
-  const an = parseLeadingNumber(a);
-  return en !== null && an !== null && /^[-+]?\d*\.?\d+\s*[a-z%]*$/i.test(e) && /^[-+]?\d*\.?\d+\s*[a-z%]*$/i.test(a) && Math.abs(en - an) < 1e-6;
+  const en = parsePlainNumber(e);
+  const an = parsePlainNumber(a);
+  return en !== null && an !== null && Math.abs(en - an) < 1e-6;
 }
 
-export function parseLeadingNumber(text: string): number | null {
-  const m = text.match(/^[-+]?\d*\.?\d+(?:e[-+]?\d+)?/i);
+/** A plain number, optionally followed by "%": "2.50" -> 2.5, "75 %" -> 75, "1m00s" -> null. */
+export function parsePlainNumber(text: string): number | null {
+  const m = text.trim().match(/^([-+]?\d*\.?\d+(?:e[-+]?\d+)?)\s*%?$/i);
   if (!m) return null;
-  const n = Number(m[0]);
+  const n = Number(m[1]);
   return Number.isFinite(n) ? n : null;
+}
+
+/** The console's boolean words; anything else is null (unknown), never false. */
+export function parseConsoleBoolean(value: unknown): boolean | null {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value === 1 ? true : value === 0 ? false : null;
+  const t = String(value).trim().toLowerCase();
+  if (t === "yes" || t === "true" || t === "on") return true;
+  if (t === "no" || t === "false" || t === "off") return false;
+  return null;
+}
+
+/**
+ * Normaliser for grandMA3 time display values, in seconds: "2.50" -> 2.5, "3s" -> 3, "1m00s" -> 60,
+ * "1h22m56.3s" -> 4976.3, "0.50" -> 0.5. Returns null for anything else, including inherit markers
+ * such as "CueTiming" and the composite "3.00 / 1.50" display of CueFade/CueDelay.
+ */
+export function timeToSeconds(value: unknown): number | null {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim();
+  const plain = parsePlainNumber(text);
+  if (plain !== null && !text.includes("%")) return plain;
+  const m = text.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d*\.?\d+)s)?$/i);
+  if (!m || (m[1] === undefined && m[2] === undefined && m[3] === undefined)) return null;
+  return Number(m[1] ?? 0) * 3600 + Number(m[2] ?? 0) * 60 + Number(m[3] ?? 0);
 }
 
 // ---------------------------------------------------------------------------

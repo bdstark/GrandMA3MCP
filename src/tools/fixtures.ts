@@ -33,7 +33,7 @@ import { operation, type RegisterTools, type ToolContext } from "./context.js";
 import {
   buildResult,
   commandStep,
-  parseLeadingNumber,
+  parsePlainNumber,
   readStep,
   runSteps,
   unavailable,
@@ -99,7 +99,7 @@ interface SelectionCount {
 async function readSelectionCount(bridge: Gma3Bridge): Promise<SelectionCount | null> {
   const fields = await readFields(bridge, "Selection", ["CountTotalSelected", "CountFullySelected"]);
   if (!fields) return null;
-  const num = (v: unknown): number | null => (v === undefined || v === null ? null : parseLeadingNumber(String(v)));
+  const num = (v: unknown): number | null => (v === undefined || v === null ? null : parsePlainNumber(String(v)));
   const total = num(fields.CountTotalSelected);
   const fully = num(fields.CountFullySelected);
   if (total === null && fully === null) return null;
