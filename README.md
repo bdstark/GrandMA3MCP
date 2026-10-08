@@ -110,7 +110,7 @@ Plugin "gma3_mcp_bridge"
 
 `ReloadAllPlugins` is required: onPC keeps the Lua chunk it already loaded for a plugin name, so a delete and
 re-import alone leaves the old code running (verified on 2.5.1). The start line in the command line history
-shows the plugin version, e.g. `listening on 127.0.0.1:9800 (v0.2.0)`.
+shows the plugin version, e.g. `listening on 127.0.0.1:9800 (v0.3.0)`.
 
 Quick check from a terminal without an MCP client:
 
@@ -261,6 +261,29 @@ Limits of the tunnel:
 | `gma3_help` | Read a page of the grandMA3 manual shipped with onPC |
 | `gma3_start_bridge` | Start the plugin over OSC when the bridge is down |
 
+Workflow tools (shared result model, see [below](#workflow-tools); details in [`docs/tools/`](docs/tools/)):
+
+| Tool | What it does |
+| --- | --- |
+| `gma3_select` | Select fixtures by range or group; optional `ClearSelection` first ([docs](docs/tools/fixtures.md)) |
+| `gma3_set_attribute`, `gma3_set_color`, `gma3_set_position` | `Attribute "<name>" At ...` on an explicit target or, on request, the current selection; RGB 0–100, pan/tilt with explicit units ([docs](docs/tools/fixtures.md)) |
+| `gma3_clear_programmer` | `ClearSelection`, `ClearActive` or `ClearAll`, chosen explicitly ([docs](docs/tools/fixtures.md)) |
+| `gma3_store_cue`, `gma3_store_cue_part` | `Store ... /NoConfirmation` with explicit create / merge / overwrite mode, name and timing set as separate verified steps ([docs](docs/tools/cues.md)) |
+| `gma3_set_cue_timing`, `gma3_set_cue_trigger` | Edit part timing (fade, delay, out fade, out delay, snap delay) and trigger (Go, Time, Follow, Sound, BPM) with read-back ([docs](docs/tools/cues.md)) |
+| `gma3_goto_cue`, `gma3_delete_cue` | `Goto` (a playback mutation) and single-cue `Delete ... /NoConfirmation` with existence checks ([docs](docs/tools/cues.md)) |
+| `gma3_assign_to_executor`, `gma3_label_executor` | Inspect, then `Assign Sequence n At Page p.e` (replacing only with `replace`), label, read back ([docs](docs/tools/executors.md)) |
+
+Structured inspection tools (read-only; work with Lua execution disabled; need plugin v0.3.0 or newer, see
+[Updating the plugin](docs/tools/inspection.md#updating-the-plugin-required-once-for-these-tools)):
+
+| Tool | What it does |
+| --- | --- |
+| `gma3_fixture_attributes` | Attributes of one fixture or subfixture with stable identifiers, units, ranges, defaults and DMX channel mapping; unknown metadata is `null`, never inferred ([docs](docs/tools/inspection.md)) |
+| `gma3_programmer` | Active programmer values (all fixtures, current selection, or given fixtures) with masks, timing and every phaser step; reports incomplete coverage instead of claiming an empty programmer ([docs](docs/tools/inspection.md)) |
+| `gma3_fixture_output` | DMX output per channel of a fixture: raw 8/16-bit values, percent, and a physical value where the channel function allows a conversion ([docs](docs/tools/inspection.md)) |
+| `gma3_dmx` | Raw or percent DMX values of a universe and channel range, with `granted` and optional patch lookup ([docs](docs/tools/inspection.md)) |
+| `gma3_cue_contents` | Stored cue and part data without Goto or Load: timing, command, recipes and preset references (optionally expanded); hard fixture values are reported as a documented limitation on 2.5.1 ([docs](docs/tools/inspection.md)) |
+
 Resource `gma3://cheatsheet` holds a command syntax and object model reference.
 
 Object references accept command syntax (`Sequence 1 Cue 3`, `Page 1.201`), dotted paths from a root
@@ -268,6 +291,58 @@ Object references accept command syntax (`Sequence 1 Cue 3`, `Page 1.201`), dott
 `ShowData`, `ShowSettings`, `DataPool`, `MasterPool`, `SelectedSequence`, `CurrentCue`, `Patch`, `Programmer`,
 `Selection`, `CurrentExecPage`. Property names are case-insensitive (`Name`, `TrigType`, `FID`); values come back
 as the display text the editor shows, and object references are resolved to the referenced object's name.
+
+## Workflow tools
+
+The tools above are thin wrappers over single bridge requests and keep their original responses. The
+workflow tools added for fixture programming, cue storage and editing, executor assignment and structured
+inspection are built on a shared result model (`src/results.ts`) so a client can tell, after every call,
+whether to continue, inspect console state, or stop:
+
+```json
+{
+  "operation": "store_cue",
+  "target": { "sequence": 1, "cue": "2.5" },
+  "outcome": "succeeded",              // succeeded | failed | partial | unknown
+  "verification": { "status": "matched" },  // matched | mismatched | unavailable | not_requested
+  "steps": [ { "name": "store", "status": "succeeded", "op": "cmd", "command": "Store Sequence 1 Cue 2.5 /NoConfirmation", "feedback": "OK" } ],
+  "summary": "store_cue succeeded. read-back matched."
+}
+```
+
+* Recognised negative command-line feedback (`Syntax Error`, `Illegal Command`, `... does not exist`, ...) is a
+  failure. Feedback the server does not recognise makes the step `unknown`; it is never assumed to be success.
+* A transport error after a request was dispatched (timeout, dropped connection) makes the step `unknown`. The
+  command may have executed, so nothing is retried and nothing falls back to OSC.
+* Multi-step operations stop at the first failed or unknown step; the remaining steps are reported as
+  `skipped`. An operation with some steps done and one not is `partial`.
+* Any outcome other than `succeeded`, and any `mismatched` read-back, is returned as an MCP tool error with the
+  full result in the error text.
+* Inputs are validated before anything is sent (finite numbers, zero accepted as a deliberate value, cue numbers
+  with up to three decimals, mutually exclusive options). Object names may not contain any of
+  `\ " $ & * ? , . ; ^ { } | ~`: onPC 2.5.1 silently removes those characters from a name whether it arrives
+  through `Label` or through the Lua `Set("Name")` API (verified live; "Look 2.5" becomes "Look 25"), so the tools
+  refuse such names rather than store something different from what was asked.
+* Mutations issued by this server, including the existing `gma3_command`, `gma3_set_property`, `gma3_playback`
+  and `gma3_set_fader`, are serialised by one lock so a multi-command workflow is not interleaved with another
+  tool call. This orders only this process's own requests: it does not isolate anything from another console
+  operator, another MCP server or client, or `gma3_lua` scripts.
+
+Per-tool documentation (commands sent, selection and programmer impact, what is and is not verified, live test
+procedure) is in [`docs/tools/`](docs/tools/).
+
+Console behaviour the tools were adjusted to after the live run on onPC 2.5.1.0 (plugin v0.3.0, Lua execution
+disabled, disposable show):
+
+* A cue's name is the name of its Part 0. `Set("Name")` on the cue object is ignored; the tools set it on the part.
+* `CueFade` and `CueDelay` are composite display properties ("3.00 / 1.50"). Writes go to `CueInFade`,
+  `CueOutFade`, `CueInDelay` and `CueOutDelay`, and read-back compares those.
+* An executor has no label of its own: `Label Page 90.201 "x"` renames the assigned sequence, and the executor
+  shows that name. `gma3_label_executor` is documented accordingly.
+* Entering `Fixture 1 Thru 5` adds to the selection while no values are active and replaces it once values are
+  active, as the manual says; `gma3_select` has `clear_first` for a deterministic result.
+* DMX output reads return `null` with a `granted: false` limitation while the universe is not granted to this
+  onPC (no output license), rather than zeros.
 
 Verified against grandMA3 onPC 2.5.1.0 on macOS (its Lua engine reports Lua 5.5).
 
@@ -281,7 +356,9 @@ One JSON document per line over TCP.
 ```
 
 Ops: `ping`, `cmd`, `lua`, `object`, `children`, `objects`, `dump`, `set`, `setfader`, `getfader`,
-`executor`, `executors`, `api`, `stop`. See `plugin/gma3_mcp_bridge.lua`.
+`executor`, `executors`, `api`, `stop`, and since plugin v0.3.0 the read-only inspection ops `fixtureAttributes`,
+`programmer`, `fixtureOutput`, `dmx`, `cueContents` (arguments and result shapes in
+[docs/tools/inspection.md](docs/tools/inspection.md#bridge-protocol-additions)). See `plugin/gma3_mcp_bridge.lua`.
 
 `ping` reports the Lua execution policy as `lua: {enabled, maxMs, maxSteps, bounded}`. The `lua` op is
 refused with an error while `enabled` is false; its optional `maxMs` / `maxSteps` args can only tighten the
@@ -308,17 +385,39 @@ console's budget, never loosen it.
 ```bash
 npm run dev        # run from source with tsx
 npm run build      # compile to dist/
-npm test           # run the test suite (node:test via tsx)
+npm test           # run the automated suite (no console needed)
 npm run coverage   # tests plus a line/branch/function coverage table for src/
+npm run test:live  # live console tests; see test/live/README.md (opt-in, modifies a disposable show)
 ```
 
-The suite in `test/` has no extra dependencies. It covers the bridge client (`bridge.ts`), manual lookup
-(`help.ts`, including the path and symlink checks), and an end-to-end run of the MCP server over stdio
-against a fake bridge and a UDP listener standing in for OSC input. `test/lua/bridge_plugin_test.lua`
-exercises the console plugin (Lua execution gate, budget, sandbox hardening, argument parsing) under a
-stock Lua 5.4+ interpreter with the grandMA3 API stubbed; `npm test` runs it when `lua` is on PATH and
-skips it otherwise (`brew install lua` on macOS). `npm run coverage:lcov` additionally writes
-`coverage/lcov.info` for editor and CI integrations. Lua coverage is not measured.
+`npm test` is the one command that runs every automated check without a live console; `.github/workflows/ci.yml`
+runs the build and the same suite on every push and pull request (Node 20 and 22, with Lua 5.4 installed so
+the plugin harness is not skipped).
+
+The suite in `test/` has no extra dependencies:
+
+* `bridge.test.ts`: the TCP client (`bridge.ts`), including UTF-8 sequences split across packets, replies
+  matched to concurrent requests by id, and the `dispatched` flag that stops a timed-out or disconnected
+  request from ever being resent.
+* `help*.test.ts`: manual lookup (`help.ts`), including path traversal and symlink rejection.
+* `results.test.ts`, `validate.test.ts`, `mutations.test.ts`: the shared workflow result model, input
+  validation and the mutation lock (see [Workflow tools](#workflow-tools)).
+* `server.test.ts`, `registration.test.ts`: the MCP server started over stdio against a fake bridge and a UDP
+  listener standing in for OSC input (transport decisions, tool registration, serialised mutations).
+* Per-area tool tests (`fixtures.test.ts`, `cues.test.ts`, ...) run the tool modules in-process against a
+  scripted fake bridge (`test/helpers/`).
+* `test/lua/bridge_plugin_test.lua` exercises the console plugin under a stock Lua 5.4+ interpreter with the
+  grandMA3 API and LuaSocket stubbed: Lua execution off by default, budget and sandbox hardening (hook removal,
+  child coroutines, deadlines across yields), argument parsing, loopback-only binding and rejection of a
+  non-loopback peer. `npm test` runs it when `lua` is on PATH and skips it otherwise (`brew install lua`).
+
+Live tests live in `test/live/*.live.ts`, are never picked up by `npm test`, and refuse to run unless
+`GMA3_LIVE=1` is set and the loaded show file name matches `GMA3_LIVE_SHOW` (default: a name containing
+"disposable", "mcp-test" or "scratch"). Each file documents the show objects it creates and deletes;
+`test/live/README.md` lists the reserved ranges. Nothing in the tests calls `SaveShow`.
+
+`npm run coverage:lcov` additionally writes `coverage/lcov.info` for editor and CI integrations. Lua coverage
+is not measured.
 
 Help pages, OSC and Lua API details were taken from the manual bundled with onPC 2.5.1
 (`~/MALightingTechnology/gma3_2.5.1/shared/language/HTML`).

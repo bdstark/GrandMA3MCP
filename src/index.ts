@@ -6,6 +6,12 @@ import { Gma3Bridge, BridgeError, BridgeUnreachableError } from "./bridge.js";
 import { OscSender } from "./osc.js";
 import { helpDir, helpVersion, listHelpPages, lookupHelp } from "./help.js";
 import { CHEATSHEET } from "./cheatsheet.js";
+import { MutationLock } from "./mutations.js";
+import type { ToolContext } from "./tools/context.js";
+import { registerFixtureTools } from "./tools/fixtures.js";
+import { registerCueTools } from "./tools/cues.js";
+import { registerExecutorTools } from "./tools/executors.js";
+import { registerInspectionTools } from "./tools/inspection.js";
 
 const env = process.env;
 const bridge = new Gma3Bridge({
@@ -25,6 +31,19 @@ const server = new McpServer({ name: "gma3-mcp", version: "0.1.0" });
 // "lua" start argument, off by default) is the enforcement point; GMA3_ALLOW_LUA=0 additionally hides
 // the gma3_lua tool from this server so a deployment can rule it out regardless of console state.
 const allowLuaTool = !/^(0|false|no|off)$/i.test((env.GMA3_ALLOW_LUA ?? "1").trim());
+
+// Mutations issued by this server are serialised (FR-03): a multi-command workflow such as
+// select -> set attribute -> store must not interleave with another tool call's command. The
+// existing single-command mutation tools take the same lock so a workflow is never split by them.
+// This orders only this process's own requests; it does not isolate anything from another
+// console operator or another client.
+const mutations = new MutationLock();
+const toolContext: ToolContext = {
+  bridge,
+  mutations,
+  requestTimeoutMs: Number(env.GMA3_BRIDGE_TIMEOUT_MS ?? 15000),
+  luaToolAllowed: allowLuaTool,
+};
 
 type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
 
@@ -147,7 +166,7 @@ server.registerTool(
     },
   },
   async ({ command, via }) =>
-    run(async () => {
+    run(() => mutations.run(async () => {
       const mode = via ?? "auto";
       if (mode !== "osc") {
         try {
@@ -172,7 +191,7 @@ server.registerTool(
       }
       await osc.sendCommand(command);
       return { command, sentVia: `osc ${osc.description}`, feedback: null };
-    }),
+    })),
 );
 
 if (allowLuaTool) {
@@ -338,7 +357,7 @@ server.registerTool(
       value: z.union([z.string(), z.number(), z.boolean()]),
     },
   },
-  async ({ ref, property, value }) => run(() => bridge.request("set", { ref, property, value })),
+  async ({ ref, property, value }) => run(() => mutations.run(() => bridge.request("set", { ref, property, value }))),
 );
 
 // ---------------------------------------------------------------------------
@@ -376,10 +395,12 @@ server.registerTool(
     },
   },
   async ({ action, target, fade }) =>
-    run(async () => {
-      const cmd = `${playbackActions[action]} ${target}${fade !== undefined ? ` Fade ${fade}` : ""}`;
-      return bridge.request("cmd", { command: cmd });
-    }),
+    run(() =>
+      mutations.run(() => {
+        const cmd = `${playbackActions[action]} ${target}${fade !== undefined ? ` Fade ${fade}` : ""}`;
+        return bridge.request("cmd", { command: cmd });
+      }),
+    ),
 );
 
 server.registerTool(
@@ -397,7 +418,7 @@ server.registerTool(
       enabled: z.boolean().optional().describe("Enable/disable a toggleable fader (e.g. FaderTime)"),
     },
   },
-  async ({ ref, value, token, enabled }) => run(() => bridge.request("setfader", { ref, value, token, enabled })),
+  async ({ ref, value, token, enabled }) => run(() => mutations.run(() => bridge.request("setfader", { ref, value, token, enabled }))),
 );
 
 server.registerTool(
@@ -537,6 +558,16 @@ server.registerTool(
       return { matches: [], hint: `No page found for '${topic}'. Try a keyword like 'Store' or a topic word; there are ${listHelpPages().length} pages.` };
     }),
 );
+
+// ---------------------------------------------------------------------------
+// Workflow and inspection tools (FR-03 .. FR-10). Each module lives in src/tools/ and reports
+// through the shared result model in results.ts.
+// ---------------------------------------------------------------------------
+
+registerFixtureTools(server, toolContext);
+registerCueTools(server, toolContext);
+registerExecutorTools(server, toolContext);
+registerInspectionTools(server, toolContext);
 
 server.registerResource(
   "cheatsheet",
