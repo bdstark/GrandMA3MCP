@@ -29,7 +29,46 @@ interface ConsoleState {
   rangeTotal: number;
   /** Attribute names the show knows. */
   attributes: string[];
+  /** Programmer rows returned for scope "selection" (undefined = the plugin has no programmer op). */
+  programmer?: FakeProgrammer;
+  /** Attributes per fixture id for the fixtureAttributes op (undefined = op unknown). */
+  fixtureAttributes?: Record<string, string[]>;
 }
+
+interface FakeRow {
+  fixture: string;
+  fid: string | null;
+  subfixtureIndex: number;
+  attribute: string;
+  value?: number;
+  stepCount?: number;
+  physicalFrom?: number | null;
+  physicalTo?: number | null;
+  readout?: string | null;
+  physicalUnit?: string | null;
+}
+interface FakeProgrammer {
+  scanned: Array<{ subfixtureIndex: number; fid: string | null; name: string; rootFid?: string | null }>;
+  rows: FakeRow[];
+  complete?: boolean;
+  /** Rows returned for a follow-up scope "fixtures" scan, keyed by "Fixture <fid>". */
+  byFixture?: Record<string, { scanned: FakeProgrammer["scanned"]; rows: FakeRow[]; complete?: boolean }>;
+}
+
+/** A single-step static row with the metadata the real op emits. */
+const row = (fid: string, sf: number, attribute: string, value: number, meta: Partial<FakeRow> = {}): FakeRow => ({
+  fixture: `Fx ${fid}`,
+  fid,
+  subfixtureIndex: sf,
+  attribute,
+  value,
+  stepCount: 1,
+  physicalFrom: attribute === "Pan" ? -225 : attribute === "Tilt" ? -135 : 0,
+  physicalTo: attribute === "Pan" ? 225 : attribute === "Tilt" ? 135 : 1,
+  readout: attribute === "Pan" || attribute === "Tilt" ? "Physical" : "Percent",
+  physicalUnit: attribute === "Pan" || attribute === "Tilt" ? "Angle" : "LuminousIntensity",
+  ...meta,
+});
 
 function script(state: Partial<ConsoleState> = {}, feedback: (command: string) => string | typeof SILENT = () => "OK") {
   const st: ConsoleState = { selectionCount: 0, selected: [], rangeTotal: 5, attributes: ["Dimmer", "Pan", "Tilt", "ColorRGB_R", "ColorRGB_G", "ColorRGB_B"], ...state };
@@ -52,7 +91,58 @@ function script(state: Partial<ConsoleState> = {}, feedback: (command: string) =
     assert.equal(args.ref, "Selection");
     return { total: st.selected.length, offset: 0, count: st.selected.length, items: st.selected.map((n) => ({ name: n, class: "Fixture" })) };
   });
+  if (st.programmer) {
+    const prog = st.programmer;
+    const page = (p: { scanned: FakeProgrammer["scanned"]; rows: FakeRow[]; complete?: boolean }) => ({
+      scope: "selection",
+      source: "programmer",
+      coverage: { complete: p.complete !== false, scannedFixtures: p.scanned.length, totalFixtures: p.scanned.length, scannedChannels: p.rows.length },
+      scannedFixtures: p.scanned,
+      fixturesTruncated: false,
+      total: p.rows.length,
+      count: p.rows.length,
+      offset: 0,
+      rows: p.rows,
+      limitations: p.complete === false ? ["channel budget (5000) reached"] : [],
+    });
+    h.fake.on("programmer", (args) => {
+      if (args.scope === "fixtures") {
+        const sub = prog.byFixture?.[String(args.fixtures)];
+        if (!sub) return page({ scanned: [], rows: [] });
+        return { ...page(sub), scope: "fixtures" };
+      }
+      assert.equal(args.scope, "selection");
+      return page(prog);
+    });
+  }
+  if (st.fixtureAttributes) {
+    const fa = st.fixtureAttributes;
+    h.fake.on("fixtureAttributes", (args) => {
+      const m = String(args.ref).match(/^Fixture (\S+)$/);
+      const names = m ? fa[m[1]] : undefined;
+      if (!names) throw new Error(`no object found for '${args.ref}'`);
+      // "<fid>.<n>" keys describe cells; the parent reports how many cells it has.
+      const cells = Object.keys(fa).filter((k) => k.startsWith(`${m![1]}.`)).length;
+      return { name: `Fx ${m![1]}`, fid: m![1], fixtureType: `Type of ${m![1]}`, total: names.length, count: names.length, offset: 0, subfixtureCount: cells, attributes: names.map((a) => ({ attribute: a })), limitations: [] };
+    });
+  }
   return st;
+}
+
+/** objects handler variant that resolves a range to real fixture items with FIDs. */
+function resolveTo(st: ConsoleState, fixtures: Array<{ fid: string; name?: string; fixtureType?: string }>) {
+  const prev = h.fake.handlerFor("objects")!;
+  st.rangeTotal = fixtures.length;
+  h.fake.on("objects", (args, req) => {
+    const ref = String(args.ref);
+    if (ref === "Selection" || /^Attribute "/.test(ref)) return prev(args, req);
+    return {
+      total: fixtures.length,
+      offset: 0,
+      count: Math.min(fixtures.length, Number(args.limit ?? 50)),
+      items: fixtures.slice(0, Number(args.limit ?? 50)).map((f) => ({ name: f.name ?? `Fx ${f.fid}`, class: "Fixture", fields: { FID: f.fid, Name: f.name ?? `Fx ${f.fid}`, FixtureType: f.fixtureType ?? `Type of ${f.fid}` } })),
+    };
+  });
 }
 
 beforeEach(() => script());
@@ -157,7 +247,7 @@ test("set_attribute: explicit fixtures are selected first, then the documented A
   assert.equal(result.outcome, "succeeded");
   assert.deepEqual(h.fake.commands, ["ClearSelection", "Fixture 1 Thru 5", 'Attribute "Dimmer" At Absolute Percent 75']);
   assert.equal(result.verification.status, "unavailable");
-  assert.match(result.verification.detail, /gma3_programmer \(FR-08\)/);
+  assert.match(result.verification.detail, /predates the programmer op/, "without the programmer op on the plugin, values cannot be verified");
   assert.equal(result.selectionChanged, true);
   assert.equal(result.programmerValuesChanged, true);
   assert.deepEqual(result.target, { fixtures: "Fixture 1 Thru 5", attribute: "Dimmer", value: 75, unit: "percent" });
@@ -330,13 +420,13 @@ test("set_color: a failure between steps stops the sequence and reports the rest
   assert.equal(result.programmerValuesChanged, true);
 });
 
-test("set_color: an unsupported fixture that silently accepts the command is not claimed as verified", async () => {
+test("set_color: on a plugin without the programmer op, an accepted command is not claimed as verified", async () => {
   script({ selectionCount: 1 });
   const { result } = await h.callJson("gma3_set_color", { use_selection: true, red: 10, green: 20, blue: 30 });
   assert.equal(result.outcome, "succeeded");
   assert.equal(result.verification.status, "unavailable");
   assert.match(result.summary, /read-back unavailable/);
-  assert.match(result.verification.detail, /not readable/);
+  assert.match(result.verification.detail, /predates the programmer op/);
 });
 
 // ---------------------------------------------------------------------------
@@ -432,6 +522,216 @@ test("clear_programmer: a rejected clear reports failure and does not verify", a
   assert.equal(result.outcome, "failed");
   assert.equal(result.verification.status, "not_requested");
   assert.equal(result.selectionChanged, false);
+});
+
+// ---------------------------------------------------------------------------
+// Programmer read-back (FR-08 feeding FR-03) and fixture-type pre-check (FR-07)
+// ---------------------------------------------------------------------------
+
+const twoFixtures = { scanned: [{ subfixtureIndex: 11, fid: "1", name: "Fx 1" }, { subfixtureIndex: 12, fid: "2", name: "Fx 2" }] };
+
+test("read-back: percent values on every selected fixture match within tolerance", async () => {
+  script({ selectionCount: 2, programmer: { ...twoFixtures, rows: [row("1", 11, "Dimmer", 50), row("2", 12, "Dimmer", 50.39)] } });
+  const { result, isError } = await h.callJson("gma3_set_attribute", { use_selection: true, attribute: "Dimmer", value: 50, unit: "percent" });
+  assert.equal(isError, false, result.summary);
+  assert.equal(result.verification.status, "matched");
+  assert.match(result.verification.checked, /Dimmer = 50 percent/);
+  assert.deepEqual(result.programmerReadBack, { performed: true, fixturesChecked: 2, rowsChecked: 2, followUpScans: 0, tolerancePercentOfRange: 0.5 });
+  const readBack = result.steps.find((s: any) => s.name === "read_programmer");
+  assert.equal(readBack.kind, "read");
+  assert.equal(h.fake.requests.filter((r) => r.op === "programmer").length, 1);
+  // The read-back runs inside the same lock span as the command.
+  assert.ok(h.fake.requests.findIndex((r) => r.op === "programmer") > h.fake.requests.findIndex((r) => r.op === "cmd"));
+});
+
+test("read-back: a wrong value is a mismatch that names the fixture, the reading and the expectation", async () => {
+  script({ selectionCount: 2, programmer: { ...twoFixtures, rows: [row("1", 11, "Dimmer", 50), row("2", 12, "Dimmer", 80)] } });
+  const { result, isError } = await h.callJson("gma3_set_attribute", { use_selection: true, attribute: "Dimmer", value: 50, unit: "percent" });
+  assert.equal(isError, true);
+  assert.equal(result.outcome, "succeeded", "the command itself was accepted");
+  assert.equal(result.verification.status, "mismatched");
+  assert.match(result.verification.detail, /Fx 2 \(Fixture 2\): Dimmer reads 80 % of range = 0.8 LuminousIntensity, expected 50 % \(50 percent\)/);
+  assert.doesNotMatch(result.verification.detail, /Fx 1/);
+});
+
+test("read-back: a fixture without the attribute has no row and is reported, not claimed", async () => {
+  script({ selectionCount: 2, programmer: { ...twoFixtures, rows: [row("2", 12, "ColorRGB_R", 30), row("2", 12, "ColorRGB_G", 0), row("2", 12, "ColorRGB_B", 0)] } });
+  const { result, isError } = await h.callJson("gma3_set_color", { use_selection: true, red: 30, green: 0, blue: 0 });
+  assert.equal(isError, true);
+  assert.equal(result.verification.status, "mismatched");
+  assert.match(result.verification.detail, /Fx 1 \(Fixture 1\): no programmer value for ColorRGB_R \(the fixture may lack the attribute/);
+  // The follow-up scan of Fixture 1 was attempted (it could be compound) and found nothing either.
+  assert.equal(result.programmerReadBack.followUpScans, 1);
+});
+
+test("read-back: degrees are converted through each fixture's physical range", async () => {
+  // Pan -225..225: 10 deg = 52.22 %. Tilt -135..135: 20 deg = 57.41 %.
+  script({ selectionCount: 1, programmer: { scanned: [twoFixtures.scanned[0]], rows: [row("1", 11, "Pan", 52.2222), row("1", 11, "Tilt", 57.4074)] } });
+  let r = await h.callJson("gma3_set_position", { use_selection: true, pan: 10, tilt: 20, unit: "degrees" });
+  assert.equal(r.result.verification.status, "matched", r.result.verification.detail);
+  // A fixture with a different pan range reads a different percentage for the same angle: mismatch is explained in degrees.
+  script({ selectionCount: 1, programmer: { scanned: [twoFixtures.scanned[0]], rows: [row("1", 11, "Pan", 52.2222, { physicalFrom: -540, physicalTo: 540 })] } });
+  r = await h.callJson("gma3_set_position", { use_selection: true, pan: 10, unit: "degrees" });
+  assert.equal(r.result.verification.status, "mismatched");
+  assert.match(r.result.verification.detail, /Pan reads 52.2222 % of range = 23.9998 Angle, expected 50.9259 % \(10 physical\)/);
+  // Without a range the comparison is unavailable, never a false match.
+  script({ selectionCount: 1, programmer: { scanned: [twoFixtures.scanned[0]], rows: [row("1", 11, "Pan", 52.2222, { physicalFrom: null, physicalTo: null })] } });
+  r = await h.callJson("gma3_set_position", { use_selection: true, pan: 10, unit: "degrees" });
+  assert.equal(r.result.verification.status, "unavailable");
+  assert.match(r.result.verification.detail, /physical range of Pan is not available/);
+});
+
+test("read-back: decimal and readout units are interpreted; an unknown readout is unavailable", async () => {
+  script({ selectionCount: 1, programmer: { scanned: [twoFixtures.scanned[0]], rows: [row("1", 11, "Dimmer", 50.196)] } });
+  let r = await h.callJson("gma3_set_attribute", { use_selection: true, attribute: "Dimmer", value: 128, unit: "decimal8" });
+  assert.equal(r.result.verification.status, "matched", r.result.verification.detail);
+  r = await h.callJson("gma3_set_attribute", { use_selection: true, attribute: "Dimmer", value: 50.2 });
+  assert.equal(r.result.verification.status, "matched", "no unit: the attribute's Percent readout applies");
+  assert.ok(r.result.warnings.some((w: string) => /assumed the user profile's readout is Natural/.test(w)));
+  script({ selectionCount: 1, attributes: ["Gobo1"], programmer: { scanned: [twoFixtures.scanned[0]], rows: [row("1", 11, "Gobo1", 20, { readout: null })] } });
+  r = await h.callJson("gma3_set_attribute", { use_selection: true, attribute: "Gobo1", value: 20 });
+  assert.equal(r.result.verification.status, "unavailable");
+  assert.match(r.result.verification.detail, /readout null of Gobo1 cannot be interpreted/);
+});
+
+test("read-back: a multi-step phaser is never reduced to a matching static value", async () => {
+  script({ selectionCount: 1, programmer: { scanned: [twoFixtures.scanned[0]], rows: [row("1", 11, "Dimmer", 50, { value: undefined, stepCount: 2 })] } });
+  const { result } = await h.callJson("gma3_set_attribute", { use_selection: true, attribute: "Dimmer", value: 50, unit: "percent" });
+  assert.equal(result.verification.status, "mismatched");
+  assert.match(result.verification.detail, /holds a 2-step phaser, not the static value 50/);
+});
+
+test("read-back: a compound fixture is verified through its cells with one follow-up scan", async () => {
+  const cells = [row("None", 21, "Dimmer", 40, { fixture: "[Instance1]" }), row("None", 22, "Dimmer", 40, { fixture: "[Instance2]" })];
+  script({
+    selectionCount: 1,
+    programmer: {
+      scanned: [{ subfixtureIndex: 20, fid: "501", name: "Wash 1" }],
+      rows: [],
+      byFixture: { "Fixture 501": { scanned: [{ subfixtureIndex: 20, fid: "501", name: "Wash 1", rootFid: "501" }, { subfixtureIndex: 21, fid: "None", name: "[Instance1]", rootFid: "501" }, { subfixtureIndex: 22, fid: "None", name: "[Instance2]", rootFid: "501" }], rows: cells } },
+    },
+  });
+  const { result, isError } = await h.callJson("gma3_set_attribute", { use_selection: true, attribute: "Dimmer", value: 40, unit: "percent" });
+  assert.equal(isError, false, result.verification.detail);
+  assert.equal(result.verification.status, "matched");
+  assert.equal(result.programmerReadBack.followUpScans, 1);
+  assert.equal(result.programmerReadBack.rowsChecked, 2);
+  const followUp = h.fake.requests.find((r) => r.op === "programmer" && r.args.scope === "fixtures");
+  assert.equal(followUp?.args.fixtures, "Fixture 501");
+  // One wrong cell is a mismatch naming the cell.
+  cells[1].value = 10;
+  const r2 = await h.callJson("gma3_set_attribute", { use_selection: true, attribute: "Dimmer", value: 40, unit: "percent" });
+  assert.equal(r2.result.verification.status, "mismatched");
+  assert.match(r2.result.verification.detail, /Wash 1 \(Fixture 501\) cell \[Instance2\]: Dimmer reads 10 %/);
+});
+
+test("read-back: incomplete coverage or a failed read is unavailable, and verify:false skips it", async () => {
+  script({ selectionCount: 2, programmer: { ...twoFixtures, rows: [row("1", 11, "Dimmer", 50), row("2", 12, "Dimmer", 50)], complete: false } });
+  let r = await h.callJson("gma3_set_attribute", { use_selection: true, attribute: "Dimmer", value: 50, unit: "percent" });
+  assert.equal(r.result.verification.status, "unavailable");
+  assert.match(r.result.verification.detail, /scan of the selection was incomplete/);
+  script({ selectionCount: 1 });
+  h.fake.on("programmer", () => {
+    throw new Error("Lua error: GetProgPhaser failed");
+  });
+  r = await h.callJson("gma3_set_attribute", { use_selection: true, attribute: "Dimmer", value: 50, unit: "percent" });
+  assert.equal(r.result.outcome, "succeeded");
+  assert.equal(r.result.verification.status, "unavailable");
+  assert.match(r.result.verification.detail, /programmer read-back failed: Lua error/);
+  script({ selectionCount: 1, programmer: { scanned: [twoFixtures.scanned[0]], rows: [row("1", 11, "Dimmer", 99)] } });
+  r = await h.callJson("gma3_set_attribute", { use_selection: true, attribute: "Dimmer", value: 50, unit: "percent", verify: false });
+  assert.equal(r.result.verification.status, "not_requested");
+  assert.equal(h.fake.requests.filter((q) => q.op === "programmer").length, 0);
+});
+
+test("read-back: nothing is read when no set command was sent, and an unknown command still gets a read-back", async () => {
+  script({ selectionCount: 0, programmer: { scanned: [], rows: [] } });
+  let r = await h.callJson("gma3_set_attribute", { use_selection: true, attribute: "Dimmer", value: 50, unit: "percent" });
+  assert.equal(r.result.outcome, "failed");
+  assert.equal(h.fake.requests.filter((q) => q.op === "programmer").length, 0);
+  const st = script({ selectionCount: 1, programmer: { scanned: [twoFixtures.scanned[0]], rows: [row("1", 11, "Dimmer", 50)] } }, () => SILENT);
+  void st;
+  r = await h.callJson("gma3_set_attribute", { use_selection: true, attribute: "Dimmer", value: 50, unit: "percent" });
+  assert.equal(r.result.outcome, "unknown", "a lost reply keeps the outcome unknown even when the read-back matches");
+  assert.equal(r.result.verification.status, "matched");
+  assert.equal(r.isError, true);
+});
+
+test("pre-check: a small explicit target whose fixture lacks the attribute fails before anything is sent", async () => {
+  const st = script({ fixtureAttributes: { "1": ["Dimmer", "Pan", "Tilt"], "2": ["Dimmer"] } });
+  resolveTo(st, [{ fid: "1" }, { fid: "2" }]);
+  const { result, isError } = await h.callJson("gma3_set_position", { fixtures: "1 Thru 2", pan: 10, unit: "degrees" });
+  assert.equal(isError, true);
+  assert.equal(result.outcome, "failed");
+  assert.deepEqual(h.fake.commands, [], "nothing was sent");
+  const step = result.steps.find((s: any) => s.name === "check_fixture_attributes");
+  assert.equal(step.status, "failed");
+  assert.equal(step.kind, "read");
+  assert.match(step.error, /Fixture 2 \(Type of 2\) has no attribute Pan; nothing was sent/);
+  assert.equal(h.fake.requests.filter((q) => q.op === "fixtureAttributes").length, 2);
+});
+
+test("pre-check: a compound fixture passes when its cells carry the attribute, and fails when neither does", async () => {
+  const st = script({
+    fixtureAttributes: { "501": ["Dimmer", "Shutter1"], "501.1": ["Dimmer", "ColorRGB_R", "ColorRGB_G", "ColorRGB_B"], "501.2": ["Dimmer", "ColorRGB_R", "ColorRGB_G", "ColorRGB_B"] },
+    programmer: { scanned: [{ subfixtureIndex: 20, fid: "501", name: "Wash" }], rows: [], byFixture: { "Fixture 501": { scanned: [], rows: [row("None", 21, "ColorRGB_R", 1), row("None", 21, "ColorRGB_G", 2), row("None", 21, "ColorRGB_B", 3)] } } },
+  });
+  resolveTo(st, [{ fid: "501" }]);
+  let r = await h.callJson("gma3_set_color", { fixtures: "501", red: 1, green: 2, blue: 3 });
+  assert.equal(r.result.outcome, "succeeded", r.result.summary);
+  const step = r.result.steps.find((s: any) => s.name === "check_fixture_attributes");
+  assert.deepEqual(step.detail.checked, [{ fixture: "Fixture 501", attributes: 5, cellsChecked: 2 }]);
+  assert.equal(h.fake.requests.filter((q) => q.op === "fixtureAttributes").length, 3, "parent plus two cells");
+  r = await h.callJson("gma3_set_attribute", { fixtures: "501", attribute: "Pan", value: 0, unit: "percent" });
+  assert.equal(r.result.outcome, "failed");
+  assert.match(r.result.steps.find((s: any) => s.name === "check_fixture_attributes").error, /Fixture 501 \(Type of 501\) has no attribute Pan \(nor do its cells\); nothing was sent/);
+});
+
+test("pre-check: passes when every fixture has the attributes, then the commands and read-back run", async () => {
+  const st = script({
+    fixtureAttributes: { "1": ["Dimmer", "ColorRGB_R", "ColorRGB_G", "ColorRGB_B"], "2": ["Dimmer", "ColorRGB_R", "ColorRGB_G", "ColorRGB_B"] },
+    programmer: { ...twoFixtures, rows: ["1", "2"].flatMap((f, i) => [row(f, 11 + i, "ColorRGB_R", 100), row(f, 11 + i, "ColorRGB_G", 0), row(f, 11 + i, "ColorRGB_B", 12.5)]) },
+  });
+  resolveTo(st, [{ fid: "1" }, { fid: "2" }]);
+  const { result, isError } = await h.callJson("gma3_set_color", { fixtures: "1 Thru 2", red: 100, green: 0, blue: 12.5 });
+  assert.equal(isError, false, result.verification.detail);
+  assert.equal(result.verification.status, "matched");
+  assert.deepEqual(
+    result.steps.map((s: any) => s.name),
+    ["resolve_target", "check_fixture_attributes", "clear_selection", "select", "set_red", "set_green", "set_blue", "read_programmer"],
+  );
+});
+
+test("pre-check: skipped with a warning for groups, large targets, old plugins and check_attributes:false", async () => {
+  let st = script({ fixtureAttributes: { "1": ["Dimmer"] } });
+  h.fake.on("objects", (args) => {
+    const ref = String(args.ref);
+    if (/^Attribute "/.test(ref)) return { total: 1, offset: 0, count: 1, items: [{ name: "Dimmer", class: "Attribute" }] };
+    if (ref === "Selection") return { total: 1, offset: 0, count: 1, items: [{ name: "Selection", class: "Selection", fields: { CountTotalSelected: "3" } }] };
+    return { total: 1, offset: 0, count: 1, items: [{ name: "Front", class: "Group" }] };
+  });
+  let r = await h.callJson("gma3_set_attribute", { fixtures: "Group 5", attribute: "Dimmer", value: 50, unit: "percent" });
+  assert.ok(r.result.warnings.some((w: string) => /pre-check skipped: the target did not resolve to fixtures/.test(w)));
+  assert.equal(h.fake.requests.filter((q) => q.op === "fixtureAttributes").length, 0);
+  assert.ok(h.fake.commands.includes('Attribute "Dimmer" At Absolute Percent 50'));
+
+  st = script({ fixtureAttributes: { "1": ["Dimmer"] } });
+  resolveTo(st, Array.from({ length: 12 }, (_, i) => ({ fid: String(i + 1) })));
+  r = await h.callJson("gma3_set_attribute", { fixtures: "1 Thru 12", attribute: "Dimmer", value: 50, unit: "percent" });
+  assert.ok(r.result.warnings.some((w: string) => /resolves to 12 objects \(more than 8\)/.test(w)));
+  assert.equal(h.fake.requests.filter((q) => q.op === "fixtureAttributes").length, 0);
+
+  st = script();
+  resolveTo(st, [{ fid: "1" }]);
+  r = await h.callJson("gma3_set_attribute", { fixtures: "1", attribute: "Dimmer", value: 50, unit: "percent" });
+  assert.ok(r.result.warnings.some((w: string) => /predates the fixtureAttributes op/.test(w)));
+  assert.ok(h.fake.commands.includes('Attribute "Dimmer" At Absolute Percent 50'), "the command is still sent");
+
+  st = script({ fixtureAttributes: { "1": [] } });
+  resolveTo(st, [{ fid: "1" }]);
+  r = await h.callJson("gma3_set_attribute", { fixtures: "1", attribute: "Dimmer", value: 50, unit: "percent", check_attributes: false });
+  assert.equal(h.fake.requests.filter((q) => q.op === "fixtureAttributes").length, 0);
+  assert.equal(r.result.steps.some((s: any) => s.name === "check_fixture_attributes"), false);
 });
 
 // ---------------------------------------------------------------------------

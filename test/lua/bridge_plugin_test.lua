@@ -736,11 +736,16 @@ do
   check("programmer: phaser-level timing and integrated preset", row3 and row3.phaser.supported == true and row3.phaser.multiStep == true and row3.phaser.speed == 60 and row3.phaser.fade == 1.5 and row3.phaser.delay == 0.25 and row3.steps[2].integratedPreset.name == "Red", json.encode(row3))
   check("programmer: inactive masks with step data are not reported as values", r.ok and r.result.stats.channelsWithStepsButInactiveMask == 1 and has(r.result.limitations, "activity masks zero"), json.encode(r))
   check("programmer: source and note distinguish programmer from output", r.ok and r.result.source == "programmer" and r.result.note:find("not output"), json.encode(r))
+  check("programmer: rows carry the channel function range and readout for unit-aware comparison",
+    row1 and row1.physicalFrom == 0 and row1.physicalTo == 1 and row1.readout == "Percent" and row1.physicalUnit == "LuminousIntensity" and row1.channelFunction == "Dimmer 1", json.encode(row1))
+  check("programmer: the scanned (sub)fixtures are listed with fid and name",
+    r.ok and #r.result.scannedFixtures == 7 and r.result.scannedFixtures[1].fid == "1" and r.result.scannedFixtures[1].subfixtureIndex == 1 and r.result.scannedFixtures[1].name ~= nil and r.result.fixturesTruncated == false, json.encode(r.result and r.result.scannedFixtures))
 
   r = request("programmer", { scope = "selection" })
   check("programmer: selection scope only covers selected fixtures", r.ok and r.result.total == 1 and r.result.rows[1].fid == "1" and r.result.selectionCount == 1 and r.result.coverage.complete == true, json.encode(r))
   r = request("programmer", { scope = "fixtures", fixtures = "Fixture 2 + 4" })
   check("programmer: fixtures scope expands compound fixtures into subfixture indices", r.ok and r.result.coverage.totalFixtures == 4 and r.result.total == 1 and r.result.rows[1].fid == "2", json.encode(r))
+  check("programmer: expanded cells carry the root fixture's FID", r.ok and #r.result.scannedFixtures == 4 and r.result.scannedFixtures[2].rootFid == "4" and r.result.scannedFixtures[3].rootFid == "4" and r.result.scannedFixtures[1].rootFid == "2", json.encode(r.result and r.result.scannedFixtures))
   r = request("programmer", { scope = "fixtures" })
   check("programmer: fixtures scope requires fixtures", r.ok == false and r.error:find("args.fixtures"), json.encode(r))
   r = request("programmer", { scope = "bogus" })
@@ -749,6 +754,7 @@ do
   check("programmer: pagination", r.ok and r.result.total == 3 and r.result.count == 1 and r.result.rows[1].fid == "2", json.encode(r))
   r = request("programmer", { scope = "all", maxChannels = 2 })
   check("programmer: channel budget cuts the scan and reports incomplete coverage", r.ok and r.result.coverage.complete == false and r.result.coverage.scannedFixtures == 2 and r.result.coverage.scannedChannels == 4 and has(r.result.limitations, "channel budget"), json.encode(r))
+  check("programmer: the fixture list only covers what was scanned", r.ok and #r.result.scannedFixtures == 2, json.encode(r.result and r.result.scannedFixtures))
 
   local savedProg = GetProgPhaser
   GetProgPhaser = function() return emptyPhaser end

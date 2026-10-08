@@ -100,6 +100,8 @@ Set one attribute to an absolute value.
 | --- | --- | --- |
 | `fixtures` / `use_selection` | exactly one | Target. |
 | `add_to_selection` | boolean, default false | With `fixtures`: skip the `ClearSelection` that otherwise precedes the select, so the target is added to the current selection and previously selected fixtures also receive the values. Invalid with `use_selection`. |
+| `verify` | boolean, default true | Read the programmer back and compare per fixture in the unit sent (see Verification). |
+| `check_attributes` | boolean, default true | Pre-check small explicit targets against the fixture type's attributes; fail before sending when one lacks the attribute. |
 | `attribute` | string, required | `Dimmer`, `Pan`, `Tilt`, `Zoom`, `ColorRGB_R`, `Gobo1`, ... |
 | `value` | number, required | Absolute value in `unit`. |
 | `unit` | optional enum | `percent` (0..100), `percent_fine` (0..100), `physical` (degrees/Hz/rpm, signed), `natural` (the attribute's natural readout, signed), `decimal8` (0..255 int), `decimal16` (0..65535 int), `decimal24` (0..16777215 int). Omitted: no value-type keyword; the console's current readout applies (a warning says so). |
@@ -113,19 +115,41 @@ Commands, in order:
    definitions, otherwise `failed` and nothing is sent. This does **not** prove the target fixtures have it.
 2. With `use_selection`: `objects` ref `Selection` (read-only): `CountTotalSelected` must be >= 1,
    otherwise `failed` ("nothing is selected"). With `fixtures`: `objects` ref `<fixtures>` must resolve.
+2b. With `fixtures` resolving to at most 8 fixtures (`check_attributes`): `fixtureAttributes` per fixture
+   (read-only); a fixture without the attribute fails the call before anything is sent.
 3. With `fixtures` (unless `add_to_selection`): `ClearSelection`.
 4. With `fixtures`: `<fixtures>` (selects them; with `add_to_selection` see add-vs-replace above and a
    warning is added).
 5. `Attribute "<attribute>" At Absolute [<Unit keyword>] <value>` — e.g.
    `Attribute "Dimmer" At Absolute Percent 75`, `Attribute "Pan" At Absolute Physical -45.5`,
    `Attribute "Zoom" At Absolute 50` (no unit).
+6. `programmer` op, scope `selection` (read-only), plus up to 8 follow-up `programmer` calls with scope
+   `fixtures` for compound fixtures: the read-back described below.
 
 Changes the selection: **yes when `fixtures` is given** (the fixtures are selected and remain selected);
-no with `use_selection`. Clears programmer values: never. Verification: `unavailable` (programmer values
-are not readable). The console's feedback is the only check of the set command, and a fixture that
-lacks the attribute is **not** detected: the console may answer `OK` and do nothing. Treat
-`outcome: succeeded` + `verification: unavailable` as "the console accepted the command", not as "the
-fixture now has that value".
+no with `use_selection`. Clears programmer values: never.
+
+Verification (`verify`, default true): after the set command, still inside the lock span, the tool reads the
+programmer for the current selection through the `programmer` bridge op and compares every selected fixture:
+
+* Each fixture must have a row for the attribute. No row means the fixture lacks the attribute or the command
+  did not apply (the console answers `OK` either way), and that is a **mismatch**, never a success.
+* Values are compared in the unit that was sent, as percent of the attribute range with a tolerance of
+  0.5 % (8-bit DMX quantisation is 0.39 %): `percent`/`percent_fine` directly; `decimal8/16/24` scaled by
+  their range; `physical` (and `degrees` in `gma3_set_position`) converted through the fixture's own channel
+  function range (`physicalFrom`..`physicalTo` from the same row); `natural` and no unit through the
+  attribute's natural readout (`Percent` or `Physical`). When a range or readout is unknown the result is
+  `unavailable`, not a guess. A multi-step phaser on the attribute is a mismatch (it is not the static value).
+* A compound fixture appears in the selection only as its parent while the values live on its cells, so a
+  fixture without rows gets one follow-up scan of itself and its cells (at most 8 per call).
+* `matched` requires every selected fixture to pass and the scan to be complete; incomplete coverage, an old
+  plugin (before 0.3.2, no `programmer` op), or an unreadable range make it `unavailable`. The result's
+  `programmerReadBack` summarises fixtures and rows checked and follow-up scans.
+
+Pre-check (`check_attributes`, default true): an explicit `fixtures` target that resolves to at most 8
+fixtures is checked against each fixture type's attribute list (`fixtureAttributes` op) before anything is
+sent; a fixture without the attribute fails the call with nothing sent. Groups, larger targets and old plugins
+skip the pre-check with a warning and rely on the read-back.
 
 ## gma3_set_color
 
@@ -133,7 +157,7 @@ Set RGB colour, 0..100 % per component.
 
 | Parameter | Type | Meaning |
 | --- | --- | --- |
-| `fixtures` / `use_selection` / `add_to_selection` | as above | Target. |
+| `fixtures` / `use_selection` / `add_to_selection` / `verify` / `check_attributes` | as above | Target and verification. |
 | `red`, `green`, `blue` | number 0..100, all required | Percent of `ColorRGB_R`, `ColorRGB_G`, `ColorRGB_B`. |
 
 Commands: target steps as in `gma3_set_attribute` (2–4), then
@@ -155,7 +179,7 @@ Set Pan and/or Tilt with explicit units.
 
 | Parameter | Type | Meaning |
 | --- | --- | --- |
-| `fixtures` / `use_selection` / `add_to_selection` | as above | Target. |
+| `fixtures` / `use_selection` / `add_to_selection` / `verify` / `check_attributes` | as above | Target and verification. Degrees are verified through each fixture's own Pan/Tilt range. |
 | `pan`, `tilt` | number, at least one | Values in `unit`. Degrees are limited to -720..720, percent to 0..100. |
 | `unit` | `"degrees"` or `"percent"`, required | `degrees` → `Physical` keyword; `percent` → `Percent` keyword. |
 

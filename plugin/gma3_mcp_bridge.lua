@@ -49,7 +49,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.3.1"
+local VERSION      = "0.3.2"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -891,7 +891,26 @@ local function programmerRow(p, ui, sfIdx, sf, attrCache, stats)
     fixture = sf and safeProp(sf, "name") or nil, fid = sf and textProp(sf, "FID") or nil, subfixtureIndex = sfIdx, uiChannel = ui,
     present = true, masks = { activeValue = mv, activePhaser = mp, individual = mi }, stepCount = stepCount, steps = {},
   }
-  if attr then row.attribute = safeProp(attr, "name"); row.attributeIndex = numProp(attr, "AttributeIndex") end
+  if attr then
+    row.attribute = safeProp(attr, "name"); row.attributeIndex = numProp(attr, "AttributeIndex")
+    -- Range and readout of the channel function behind this UI channel, so a client can interpret
+    -- `absolute` (percent of the range) in physical units. Absent when the API does not supply them.
+    local meta = attrCache.meta and attrCache.meta[ui]
+    if meta == nil then
+      meta = { physicalUnit = textProp(attr, "PhysicalUnit"), readout = textProp(attr, "NaturalReadout") }
+      if row.attributeIndex ~= nil then
+        local okC, cf = callApi("GetChannelFunction", ui, row.attributeIndex)
+        if okC and isHandle(cf) then
+          meta.channelFunction = safeProp(cf, "name")
+          meta.physicalFrom = numProp(cf, "PhysicalFrom")
+          meta.physicalTo = numProp(cf, "PhysicalTo")
+        end
+      end
+      attrCache.meta = attrCache.meta or {}
+      attrCache.meta[ui] = meta
+    end
+    for k, v in pairs(meta) do row[k] = v end
+  end
   for s = 1, stepCount do
     local st = p[s]
     if type(st) == "table" then
@@ -1493,6 +1512,7 @@ ops.programmer = function(args)
   local maxChannels = math.floor(tonumber(args.maxChannels) or 5000)
   if maxChannels < 1 then maxChannels = 1 elseif maxChannels > 50000 then maxChannels = 50000 end
   local limitations, indices = {}, {}
+  local rootFidOf = {}
   local enumerated = true
   if scope == "selection" then
     local ok, t = callApi("SelectionTable")
@@ -1506,7 +1526,14 @@ ops.programmer = function(args)
     if type(args.fixtures) ~= "string" or args.fixtures == "" then error("args.fixtures (string) is required for scope 'fixtures'") end
     local list = resolveMany(args.fixtures)
     local seen = {}
-    for _, h in ipairs(list) do collectSubfixtureIndices(h, indices, seen, 0, limitations) end
+    for _, h in ipairs(list) do
+      -- Remember which top-level fixture each expanded index belongs to (compound fixtures put
+      -- their values on the cells, whose own FID is "None").
+      local before = #indices
+      collectSubfixtureIndices(h, indices, seen, 0, limitations)
+      local rootFid = textProp(h, "FID")
+      for i = before + 1, #indices do rootFidOf[indices[i]] = rootFid end
+    end
     if #indices == 0 then
       enumerated = false
       table.insert(limitations, string.format("no (sub)fixture patch indices could be read for '%s'", args.fixtures))
@@ -1527,6 +1554,10 @@ ops.programmer = function(args)
   local stats = { channelsWithData = 0, channelsWithStepsButInactiveMask = 0, channelErrors = 0 }
   local rows, attrCache = {}, {}
   local stopped, firstError = nil, nil
+  -- The scanned (sub)fixtures themselves, so a client can tell "no programmer value" from
+  -- "not scanned" per fixture. Bounded; `fixturesTruncated` says when the list was cut.
+  local FIXTURE_LIST_MAX = 1000
+  local fixtureList, fixturesTruncated = {}, false
   for i, idx in ipairs(indices) do
     if coverage.scannedChannels >= maxChannels then
       stopped = string.format("channel budget (%d) reached before (sub)fixture index %d", maxChannels, idx)
@@ -1534,6 +1565,12 @@ ops.programmer = function(args)
     end
     local okS, sf = callApi("GetSubfixture", idx)
     if not (okS and isHandle(sf)) then sf = nil end
+    if #fixtureList < FIXTURE_LIST_MAX then
+      local fid = sf and textProp(sf, "FID") or nil
+      fixtureList[#fixtureList + 1] = { subfixtureIndex = idx, fid = fid, name = sf and safeProp(sf, "name") or nil, rootFid = rootFidOf[idx] or fid }
+    else
+      fixturesTruncated = true
+    end
     local okU, uis = callApi("GetUIChannels", idx, false)
     if okU and type(uis) == "table" then
       for _, u in ipairs(uis) do
@@ -1568,6 +1605,7 @@ ops.programmer = function(args)
     note = "rows are programmer content read with GetProgPhaser; they are not output values (use fixtureOutput or dmx for output)",
     coverage = coverage, stats = stats, maxChannels = maxChannels,
     selectionCount = scope == "selection" and #indices or nil,
+    scannedFixtures = emptyArray(fixtureList), fixturesTruncated = fixturesTruncated,
     total = page.total, offset = page.offset, count = page.count, rows = page.items,
     limitations = emptyArray(limitations),
   }

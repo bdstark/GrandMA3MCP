@@ -252,12 +252,26 @@ Request `args`: `{ scope: "all" | "selection" | "fixtures", fixtures?: string, l
 
 Result: `{ scope, fixtures?, source: "programmer", note, coverage: {complete, scannedFixtures, totalFixtures,
 scannedChannels}, stats: {channelsWithData, channelsWithStepsButInactiveMask, channelErrors}, maxChannels,
-selectionCount?, total, offset, count, rows: [row], limitations: [string] }`
+selectionCount?, scannedFixtures: [{subfixtureIndex, fid?, name?, rootFid?}], fixturesTruncated: boolean,
+total, offset, count, rows: [row], limitations: [string] }`
+
+`scannedFixtures` (since plugin 0.3.2) lists every (sub)fixture index the scan covered, so a client can tell
+"no programmer value" from "not scanned" per fixture; it is cut at 1000 entries (`fixturesTruncated`). For
+scope `fixtures`, `rootFid` is the FID of the top-level fixture an expanded cell belongs to (cells have FID
+"None" themselves). For scope `selection`, a compound fixture appears only as its parent (SelectionTable lists
+the parent) while its values live on the cells: re-scan it with scope `fixtures` to see them.
 
 Row: `{ fixture, fid, subfixtureIndex, uiChannel, attribute, attributeIndex, present: true, masks: {activeValue,
 activePhaser, individual}, stepCount, steps: [{step, channelFunction, absolute, absoluteValue, relative, accel,
 accelType, decel, decelType, trans, width, integratedPreset?: {name, addrNative}}], value?, valueRaw?, relative?,
-phaser: {supported: boolean, multiStep?, reason?, fade, delay, speed, phase, measure, gridPos}, absPreset?, relPreset? }`
+phaser: {supported: boolean, multiStep?, reason?, fade, delay, speed, phase, measure, gridPos}, absPreset?, relPreset?,
+channelFunction?, physicalFrom?, physicalTo?, physicalUnit?, readout? }`
+
+`absolute` / `value` are percent of the attribute range; `absoluteValue` / `valueRaw` are the 24-bit raw value.
+Since plugin 0.3.2 a row also carries the channel function behind the UI channel with its `physicalFrom` /
+`physicalTo` range, the attribute's `physicalUnit` and natural `readout`, so a client can convert `value` to
+physical units (`physicalFrom + value / 100 * (physicalTo - physicalFrom)`); the fixture setters use this for
+unit-aware read-back. Keys the API did not supply are absent (null in the tool).
 
 Errors: `args.fixtures (string) is required for scope 'fixtures'`; `args.scope must be one of all, selection,
 fixtures`; `no objects found for '<fixtures>'`. An unenumerable scope is not an error: `coverage.complete = false`.

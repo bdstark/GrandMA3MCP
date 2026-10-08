@@ -123,7 +123,7 @@ Plugin "gma3_mcp_bridge"
 
 `ReloadAllPlugins` is required: onPC keeps the Lua chunk it already loaded for a plugin name, so a delete and
 re-import alone leaves the old code running (verified on 2.5.1). The start line in the command line history
-shows the plugin version, e.g. `listening on 127.0.0.1:9800 (v0.3.1)`.
+shows the plugin version, e.g. `listening on 127.0.0.1:9800 (v0.3.2)`.
 
 Quick check from a terminal without an MCP client:
 
@@ -279,7 +279,7 @@ Workflow tools (shared result model, see [below](#workflow-tools); details in [`
 | Tool | What it does |
 | --- | --- |
 | `gma3_select` | Select fixtures by range or group; optional `ClearSelection` first ([docs](docs/tools/fixtures.md)) |
-| `gma3_set_attribute`, `gma3_set_color`, `gma3_set_position` | `Attribute "<name>" At ...` on an explicit target or, on request, the current selection; RGB 0–100, pan/tilt with explicit units ([docs](docs/tools/fixtures.md)) |
+| `gma3_set_attribute`, `gma3_set_color`, `gma3_set_position` | `Attribute "<name>" At ...` on an explicit target or, on request, the current selection; RGB 0–100, pan/tilt with explicit units. Small explicit targets are pre-checked against the fixture type's attributes, and the programmer is read back and compared per fixture in the unit sent ([docs](docs/tools/fixtures.md)) |
 | `gma3_clear_programmer` | `ClearSelection`, `ClearActive` or `ClearAll`, chosen explicitly ([docs](docs/tools/fixtures.md)) |
 | `gma3_store_cue`, `gma3_store_cue_part` | `Store ... /NoConfirmation` with explicit create / merge / overwrite mode, name and timing set as separate verified steps ([docs](docs/tools/cues.md)) |
 | `gma3_set_cue_timing`, `gma3_set_cue_trigger` | Edit part timing (fade, delay, out fade, out delay, snap delay) and trigger (Go, Time, Follow, Sound, BPM) with read-back ([docs](docs/tools/cues.md)) |
@@ -357,6 +357,10 @@ disabled, disposable show):
   active, as the manual says; `gma3_select` has `clear_first` for a deterministic result.
 * DMX output reads return `null` with a `granted: false` limitation while the universe is not granted to this
   onPC (no output license), rather than zeros.
+* Programmer values read through the `programmer` op are percent of the attribute range (Pan 10° on a
+  −225..225° fixture reads 52.22 %); the fixture setters convert the value they sent through each fixture's
+  own range before comparing. A fixture without the attribute simply has no row, which the setters report as
+  a mismatch. A selected compound fixture is listed only as its parent while its values sit on the cells.
 
 Verified against grandMA3 onPC 2.5.1.0 on macOS (its Lua engine reports Lua 5.5).
 
