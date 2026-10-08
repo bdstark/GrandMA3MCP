@@ -47,12 +47,22 @@ interface FakeRow {
   readout?: string | null;
   physicalUnit?: string | null;
 }
+interface FakeScanned {
+  subfixtureIndex: number;
+  fid: string | null;
+  name: string;
+  rootFid?: string | null;
+  /** Attributes the (sub)fixture has; defaults to the attributes of its rows. `null` = omit (old plugin). */
+  attributes?: string[] | null;
+}
 interface FakeProgrammer {
-  scanned: Array<{ subfixtureIndex: number; fid: string | null; name: string; rootFid?: string | null }>;
+  scanned: FakeScanned[];
   rows: FakeRow[];
   complete?: boolean;
+  /** Pretend the op reports more rows than it returns (pagination). */
+  pageSize?: number;
   /** Rows returned for a follow-up scope "fixtures" scan, keyed by "Fixture <fid>". */
-  byFixture?: Record<string, { scanned: FakeProgrammer["scanned"]; rows: FakeRow[]; complete?: boolean }>;
+  byFixture?: Record<string, { scanned: FakeScanned[]; rows: FakeRow[]; complete?: boolean; pageSize?: number }>;
 }
 
 /** A single-step static row with the metadata the real op emits. */
@@ -93,26 +103,38 @@ function script(state: Partial<ConsoleState> = {}, feedback: (command: string) =
   });
   if (st.programmer) {
     const prog = st.programmer;
-    const page = (p: { scanned: FakeProgrammer["scanned"]; rows: FakeRow[]; complete?: boolean }) => ({
-      scope: "selection",
-      source: "programmer",
-      coverage: { complete: p.complete !== false, scannedFixtures: p.scanned.length, totalFixtures: p.scanned.length, scannedChannels: p.rows.length },
-      scannedFixtures: p.scanned,
-      fixturesTruncated: false,
-      total: p.rows.length,
-      count: p.rows.length,
-      offset: 0,
-      rows: p.rows,
-      limitations: p.complete === false ? ["channel budget (5000) reached"] : [],
-    });
+    const withAttributes = (e: FakeScanned, rows: FakeRow[]) => {
+      if (e.attributes === null) {
+        const { attributes: _omit, ...rest } = e;
+        return rest;
+      }
+      return { ...e, attributes: e.attributes ?? [...new Set(rows.filter((r) => r.subfixtureIndex === e.subfixtureIndex).map((r) => r.attribute))] };
+    };
+    const page = (p: { scanned: FakeScanned[]; rows: FakeRow[]; complete?: boolean; pageSize?: number }, args: Record<string, unknown>) => {
+      const offset = Number(args.offset ?? 0);
+      const limit = Math.min(Number(args.limit ?? 5000), p.pageSize ?? 5000);
+      const slice = p.rows.slice(offset, offset + limit);
+      return {
+        scope: "selection",
+        source: "programmer",
+        coverage: { complete: p.complete !== false, scannedFixtures: p.scanned.length, totalFixtures: p.scanned.length, scannedChannels: p.rows.length },
+        scannedFixtures: p.scanned.map((e) => withAttributes(e, p.rows)),
+        fixturesTruncated: false,
+        total: p.rows.length,
+        count: slice.length,
+        offset,
+        rows: slice,
+        limitations: p.complete === false ? ["channel budget (5000) reached"] : [],
+      };
+    };
     h.fake.on("programmer", (args) => {
       if (args.scope === "fixtures") {
         const sub = prog.byFixture?.[String(args.fixtures)];
-        if (!sub) return page({ scanned: [], rows: [] });
-        return { ...page(sub), scope: "fixtures" };
+        if (!sub) return page({ scanned: [], rows: [] }, args);
+        return { ...page(sub, args), scope: "fixtures" };
       }
       assert.equal(args.scope, "selection");
-      return page(prog);
+      return page(prog, args);
     });
   }
   if (st.fixtureAttributes) {
@@ -122,8 +144,9 @@ function script(state: Partial<ConsoleState> = {}, feedback: (command: string) =
       const names = m ? fa[m[1]] : undefined;
       if (!names) throw new Error(`no object found for '${args.ref}'`);
       // "<fid>.<n>" keys describe cells; the parent reports how many cells it has.
-      const cells = Object.keys(fa).filter((k) => k.startsWith(`${m![1]}.`)).length;
-      return { name: `Fx ${m![1]}`, fid: m![1], fixtureType: `Type of ${m![1]}`, total: names.length, count: names.length, offset: 0, subfixtureCount: cells, attributes: names.map((a) => ({ attribute: a })), limitations: [] };
+      const cells = (st as ConsoleState & { cellCounts?: Record<string, number> }).cellCounts?.[m![1]] ?? Object.keys(fa).filter((k) => k.startsWith(`${m![1]}.`)).length;
+      const total = (st as ConsoleState & { attributeTotals?: Record<string, number> }).attributeTotals?.[m![1]] ?? names.length;
+      return { name: `Fx ${m![1]}`, fid: m![1], fixtureType: `Type of ${m![1]}`, total, count: names.length, offset: 0, subfixtureCount: cells, attributes: names.map((a) => ({ attribute: a })), limitations: [] };
     });
   }
   return st;
@@ -536,7 +559,7 @@ test("read-back: percent values on every selected fixture match within tolerance
   assert.equal(isError, false, result.summary);
   assert.equal(result.verification.status, "matched");
   assert.match(result.verification.checked, /Dimmer = 50 percent/);
-  assert.deepEqual(result.programmerReadBack, { performed: true, fixturesChecked: 2, rowsChecked: 2, followUpScans: 0, tolerancePercentOfRange: 0.5 });
+  assert.deepEqual(result.programmerReadBack, { performed: true, fixturesChecked: 2, cellsJudged: 2, rowsChecked: 2, followUpScans: 0, tolerancePercentOfRange: 0.5 });
   const readBack = result.steps.find((s: any) => s.name === "read_programmer");
   assert.equal(readBack.kind, "read");
   assert.equal(h.fake.requests.filter((r) => r.op === "programmer").length, 1);
@@ -559,8 +582,8 @@ test("read-back: a fixture without the attribute has no row and is reported, not
   const { result, isError } = await h.callJson("gma3_set_color", { use_selection: true, red: 30, green: 0, blue: 0 });
   assert.equal(isError, true);
   assert.equal(result.verification.status, "mismatched");
-  assert.match(result.verification.detail, /Fx 1 \(Fixture 1\): no programmer value for ColorRGB_R \(the fixture may lack the attribute/);
-  // The follow-up scan of Fixture 1 was attempted (it could be compound) and found nothing either.
+  assert.match(result.verification.detail, /Fx 1 \(Fixture 1\): no \(sub\)fixture of it has attribute ColorRGB_R/);
+  // The follow-up scan of Fixture 1 was attempted (it could be compound) and found no cell with RGB either.
   assert.equal(result.programmerReadBack.followUpScans, 1);
 });
 
@@ -625,6 +648,61 @@ test("read-back: a compound fixture is verified through its cells with one follo
   assert.match(r2.result.verification.detail, /Wash 1 \(Fixture 501\) cell \[Instance2\]: Dimmer reads 10 %/);
 });
 
+test("read-back: a cell that has the attribute but no value is a mismatch; a matching sibling never covers it", async () => {
+  script({
+    selectionCount: 1,
+    programmer: {
+      scanned: [{ subfixtureIndex: 20, fid: "501", name: "Wash 1", attributes: ["Shutter1"] }],
+      rows: [],
+      byFixture: {
+        "Fixture 501": {
+          scanned: [
+            { subfixtureIndex: 20, fid: "501", name: "Wash 1", rootFid: "501", attributes: ["Shutter1"] },
+            { subfixtureIndex: 21, fid: "None", name: "[Instance1]", rootFid: "501", attributes: ["Dimmer", "ColorRGB_R"] },
+            { subfixtureIndex: 22, fid: "None", name: "[Instance2]", rootFid: "501", attributes: ["Dimmer", "ColorRGB_R"] },
+            { subfixtureIndex: 23, fid: "None", name: "[Strobe]", rootFid: "501", attributes: ["Shutter1"] },
+          ],
+          rows: [row("None", 21, "Dimmer", 40, { fixture: "[Instance1]" })],
+        },
+      },
+    },
+  });
+  const { result, isError } = await h.callJson("gma3_set_attribute", { use_selection: true, attribute: "Dimmer", value: 40, unit: "percent" });
+  assert.equal(isError, true);
+  assert.equal(result.verification.status, "mismatched");
+  assert.match(result.verification.detail, /Wash 1 \(Fixture 501\) cell \[Instance2\]: no programmer value for Dimmer/);
+  assert.doesNotMatch(result.verification.detail, /Instance1|Strobe|cell Wash/, "cells with the value, and cells without the attribute, are not reported");
+  assert.equal(result.programmerReadBack.cellsJudged, 2, "only the two cells that have Dimmer were judged");
+});
+
+test("read-back: every page of a paginated scan is fetched before judging; an unfinished scan is unavailable", async () => {
+  const rows = ["1", "2", "3", "4", "5"].map((f, i) => row(f, 10 + i, "Dimmer", f === "5" ? 10 : 50));
+  const scanned = ["1", "2", "3", "4", "5"].map((f, i) => ({ subfixtureIndex: 10 + i, fid: f, name: `Fx ${f}` }));
+  script({ selectionCount: 5, programmer: { scanned, rows, pageSize: 2 } });
+  let r = await h.callJson("gma3_set_attribute", { use_selection: true, attribute: "Dimmer", value: 50, unit: "percent" });
+  assert.equal(r.result.verification.status, "mismatched", "the wrong value on the last page is seen");
+  assert.match(r.result.verification.detail, /Fx 5 \(Fixture 5\): Dimmer reads 10 %/);
+  const pages = h.fake.requests.filter((q) => q.op === "programmer").map((q) => q.args.offset);
+  assert.deepEqual(pages, [0, 2, 4], "pages are fetched until total is reached");
+  // A scan that reports more rows than it ever returns cannot be verified.
+  script({ selectionCount: 5, programmer: { scanned, rows, pageSize: 2 } });
+  const real = h.fake.handlerFor("programmer")!;
+  h.fake.on("programmer", (args, req) => {
+    const res = real(args, req) as { rows: unknown[]; total: number };
+    return Number(args.offset ?? 0) > 0 ? { ...res, rows: [] } : res;
+  });
+  r = await h.callJson("gma3_set_attribute", { use_selection: true, attribute: "Dimmer", value: 50, unit: "percent" });
+  assert.equal(r.result.verification.status, "unavailable");
+  assert.match(r.result.verification.detail, /reported 5 rows but page 2 was empty/);
+});
+
+test("read-back: a plugin that does not list per-subfixture attributes yields unavailable, not a pooled match", async () => {
+  script({ selectionCount: 1, programmer: { scanned: [{ subfixtureIndex: 11, fid: "1", name: "Fx 1", attributes: null }], rows: [row("1", 11, "Dimmer", 50)] } });
+  const { result } = await h.callJson("gma3_set_attribute", { use_selection: true, attribute: "Dimmer", value: 50, unit: "percent" });
+  assert.equal(result.verification.status, "unavailable");
+  assert.match(result.verification.detail, /did not report which \(sub\)fixtures have the attribute \(needs plugin 0.3.4/);
+});
+
 test("read-back: incomplete coverage or a failed read is unavailable, and verify:false skips it", async () => {
   script({ selectionCount: 2, programmer: { ...twoFixtures, rows: [row("1", 11, "Dimmer", 50), row("2", 12, "Dimmer", 50)], complete: false } });
   let r = await h.callJson("gma3_set_attribute", { use_selection: true, attribute: "Dimmer", value: 50, unit: "percent" });
@@ -680,11 +758,32 @@ test("pre-check: a compound fixture passes when its cells carry the attribute, a
   let r = await h.callJson("gma3_set_color", { fixtures: "501", red: 1, green: 2, blue: 3 });
   assert.equal(r.result.outcome, "succeeded", r.result.summary);
   const step = r.result.steps.find((s: any) => s.name === "check_fixture_attributes");
-  assert.deepEqual(step.detail.checked, [{ fixture: "Fixture 501", attributes: 5, cellsChecked: 2 }]);
+  assert.deepEqual(step.detail.checked, [{ fixture: "Fixture 501", attributes: 5, cellsChecked: 2, complete: true }]);
   assert.equal(h.fake.requests.filter((q) => q.op === "fixtureAttributes").length, 3, "parent plus two cells");
   r = await h.callJson("gma3_set_attribute", { fixtures: "501", attribute: "Pan", value: 0, unit: "percent" });
   assert.equal(r.result.outcome, "failed");
   assert.match(r.result.steps.find((s: any) => s.name === "check_fixture_attributes").error, /Fixture 501 \(Type of 501\) has no attribute Pan \(nor do its cells\); nothing was sent/);
+});
+
+test("pre-check: partial discovery does not establish absence; the call proceeds with a warning", async () => {
+  // A 12-cell fixture: only 4 cells are sampled, none of them has Pan.
+  const st = script({ fixtureAttributes: { "501": ["Dimmer"], "501.1": ["Dimmer"], "501.2": ["Dimmer"], "501.3": ["Dimmer"], "501.4": ["Dimmer"] }, programmer: { scanned: [{ subfixtureIndex: 20, fid: "501", name: "Wash", attributes: ["Dimmer", "Pan"] }], rows: [row("501", 20, "Pan", 50)] } }) as ConsoleState & { cellCounts?: Record<string, number> };
+  st.cellCounts = { "501": 12 };
+  resolveTo(st, [{ fid: "501" }]);
+  let r = await h.callJson("gma3_set_attribute", { fixtures: "501", attribute: "Pan", value: 0, unit: "physical" });
+  assert.equal(r.result.outcome, "succeeded", r.result.summary);
+  assert.ok(h.fake.commands.includes('Attribute "Pan" At Absolute Physical 0'), "the command was sent");
+  assert.ok(r.result.warnings.some((w: string) => /not established: Fixture 501 \(Type of 501\): attribute Pan was not found but discovery was partial \(only 4 of 12 cells were read\)/.test(w)), JSON.stringify(r.result.warnings));
+  const step = r.result.steps.find((s: any) => s.name === "check_fixture_attributes");
+  assert.equal(step.status, "succeeded");
+  assert.equal(step.detail.checked[0].complete, false);
+  // More than 500 attributes reported: absence is not established either.
+  const st2 = script({ attributes: ["Dimmer", "Zoom"], fixtureAttributes: { "7": ["Dimmer"] }, programmer: { scanned: [{ subfixtureIndex: 7, fid: "7", name: "Big", attributes: ["Dimmer", "Zoom"] }], rows: [row("7", 7, "Zoom", 50)] } }) as ConsoleState & { attributeTotals?: Record<string, number> };
+  st2.attributeTotals = { "7": 600 };
+  resolveTo(st2, [{ fid: "7" }]);
+  r = await h.callJson("gma3_set_attribute", { fixtures: "7", attribute: "Zoom", value: 50, unit: "percent" });
+  assert.equal(r.result.outcome, "succeeded", r.result.summary);
+  assert.ok(r.result.warnings.some((w: string) => /only the first 500 of 600 attributes were read/.test(w)));
 });
 
 test("pre-check: passes when every fixture has the attributes, then the commands and read-back run", async () => {

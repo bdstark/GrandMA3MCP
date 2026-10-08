@@ -144,7 +144,7 @@ liveTest("fixture tools: select, dimmer, colour, position, ClearAll on fixtures 
       // With the pre-check off, the read-back reports the missing value as a mismatch instead.
       const unchecked = await call("gma3_set_color", { fixtures: lacking, red: 1, green: 2, blue: 3, check_attributes: false });
       assert.equal(unchecked.verification.status, "mismatched", unchecked.verification.detail ?? unchecked.summary);
-      assert.match(unchecked.verification.detail ?? "", /no programmer value for ColorRGB_/);
+      assert.match(unchecked.verification.detail ?? "", /no \(sub\)fixture of it has attribute ColorRGB_/);
     }
 
     // 6. Re-select 1..5 with values active and confirm the set tools left a selection in place.

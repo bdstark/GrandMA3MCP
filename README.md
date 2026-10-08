@@ -136,7 +136,7 @@ Plugin "gma3_mcp_bridge"
 
 `ReloadAllPlugins` is required: onPC keeps the Lua chunk it already loaded for a plugin name, so a delete and
 re-import alone leaves the old code running (verified on 2.5.1). The start line in the command line history
-shows the plugin version, e.g. `listening on 127.0.0.1:9800 (v0.3.3)`.
+shows the plugin version, e.g. `listening on 127.0.0.1:9800 (v0.3.4)`.
 
 Quick check from a terminal without an MCP client:
 

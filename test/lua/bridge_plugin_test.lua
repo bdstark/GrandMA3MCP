@@ -809,6 +809,8 @@ do
   check("programmer: source and note distinguish programmer from output", r.ok and r.result.source == "programmer" and r.result.note:find("not output"), json.encode(r))
   check("programmer: rows carry the channel function range and readout for unit-aware comparison",
     row1 and row1.physicalFrom == 0 and row1.physicalTo == 1 and row1.readout == "Percent" and row1.physicalUnit == "LuminousIntensity" and row1.channelFunction == "Dimmer 1", json.encode(row1))
+  check("programmer: each scanned (sub)fixture lists the attributes it has",
+    r.ok and r.result.scannedFixtures[1].attributes[1] == "Dimmer" and #r.result.scannedFixtures[1].attributes == 1 and #r.result.scannedFixtures[2].attributes >= 3, json.encode(r.result and r.result.scannedFixtures))
   check("programmer: the scanned (sub)fixtures are listed with fid and name",
     r.ok and #r.result.scannedFixtures == 7 and r.result.scannedFixtures[1].fid == "1" and r.result.scannedFixtures[1].subfixtureIndex == 1 and r.result.scannedFixtures[1].name ~= nil and r.result.fixturesTruncated == false, json.encode(r.result and r.result.scannedFixtures))
 

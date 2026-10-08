@@ -252,11 +252,14 @@ Request `args`: `{ scope: "all" | "selection" | "fixtures", fixtures?: string, l
 
 Result: `{ scope, fixtures?, source: "programmer", note, coverage: {complete, scannedFixtures, totalFixtures,
 scannedChannels}, stats: {channelsWithData, channelsWithStepsButInactiveMask, channelErrors}, maxChannels,
-selectionCount?, scannedFixtures: [{subfixtureIndex, fid?, name?, rootFid?}], fixturesTruncated: boolean,
+selectionCount?, scannedFixtures: [{subfixtureIndex, fid?, name?, rootFid?, attributes: [string]}], fixturesTruncated: boolean,
 total, offset, count, rows: [row], limitations: [string] }`
 
 `scannedFixtures` (since plugin 0.3.2) lists every (sub)fixture index the scan covered, so a client can tell
-"no programmer value" from "not scanned" per fixture; it is cut at 1000 entries (`fixturesTruncated`). For
+"no programmer value" from "not scanned" per fixture; it is cut at 1000 entries (`fixturesTruncated`). Since
+0.3.4 each entry also lists the `attributes` that (sub)fixture has (from its UI channels), so "no row" can be
+told apart from "no such attribute here" per cell. `rows` are paginated by `limit`/`offset` independently of
+`coverage`: `coverage.complete` describes the scan, `total` versus `count` whether every row was returned. For
 scope `fixtures`, `rootFid` is the FID of the top-level fixture an expanded cell belongs to (cells have FID
 "None" themselves). For scope `selection`, a compound fixture appears only as its parent (SelectionTable lists
 the parent) while its values live on the cells: re-scan it with scope `fixtures` to see them.

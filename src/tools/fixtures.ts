@@ -336,9 +336,45 @@ interface ProgrammerResult {
   total?: number;
   count?: number;
   coverage?: { complete?: boolean; scannedFixtures?: number; totalFixtures?: number; scannedChannels?: number };
-  scannedFixtures?: Array<{ subfixtureIndex?: number; fid?: string | null; name?: string | null; rootFid?: string | null }>;
+  scannedFixtures?: ScannedFixture[];
   fixturesTruncated?: boolean;
   limitations?: string[];
+}
+
+interface ScannedFixture {
+  subfixtureIndex?: number;
+  fid?: string | null;
+  name?: string | null;
+  rootFid?: string | null;
+  /** Attribute names this (sub)fixture has (plugin 0.3.4+). Absent on older plugins. */
+  attributes?: string[];
+}
+
+/** Rows per request page and the hard cap on pages fetched before giving up on completeness. */
+const PROGRAMMER_PAGE = 5000;
+const PROGRAMMER_MAX_PAGES = 10;
+
+/**
+ * Read a programmer scan completely: the op paginates `rows`, so every page is fetched until the
+ * returned rows reach `total`. Returns the merged result, or a reason when it could not be completed.
+ */
+async function readProgrammerPages(bridge: Gma3Bridge, args: Record<string, unknown>): Promise<{ result: ProgrammerResult } | { reason: string; partial?: ProgrammerResult }> {
+  const first = (await bridge.request("programmer", { ...args, limit: PROGRAMMER_PAGE, offset: 0 })) as ProgrammerResult;
+  const rows = [...(first.rows ?? [])];
+  const total = typeof first.total === "number" ? first.total : rows.length;
+  let pages = 1;
+  while (rows.length < total) {
+    if (pages >= PROGRAMMER_MAX_PAGES) {
+      return { reason: `the programmer scan returned ${total} rows but only ${rows.length} were fetched within ${PROGRAMMER_MAX_PAGES} pages`, partial: { ...first, rows } };
+    }
+    const page = (await bridge.request("programmer", { ...args, limit: PROGRAMMER_PAGE, offset: rows.length })) as ProgrammerResult;
+    pages++;
+    const got = page.rows ?? [];
+    if (got.length === 0) return { reason: `the programmer scan reported ${total} rows but page ${pages} was empty after ${rows.length}`, partial: { ...first, rows } };
+    rows.push(...got);
+    if (typeof page.total === "number" && page.total !== total) return { reason: `the programmer changed while it was being read (${total} rows, then ${page.total})`, partial: { ...first, rows } };
+  }
+  return { result: { ...first, rows, count: rows.length } };
 }
 
 /** Is this the bridge's "unknown op" error, i.e. the plugin predates the inspection ops? */
@@ -384,119 +420,160 @@ interface FixtureVerdict {
   problems: string[];
   unavailable: string[];
   rowsChecked: number;
+  /** Subfixtures that have the attribute(s) and were therefore judged. */
+  cellsJudged: number;
 }
 
-/** Judge one fixture's rows against the expectations. `rows` are every row of that fixture (and its cells). */
-function judgeFixture(label: string, key: string, rows: ProgrammerRow[], expectations: Expectation[]): FixtureVerdict {
-  const verdict: FixtureVerdict = { key, label, problems: [], unavailable: [], rowsChecked: 0 };
+const hasAttribute = (entry: ScannedFixture, attribute: string): boolean => (entry.attributes ?? []).some((a) => a.toLowerCase() === attribute.toLowerCase());
+
+/**
+ * Judge one top-level fixture: every scanned (sub)fixture that HAS an expected attribute must hold a
+ * matching row for it. A sibling cell's value never satisfies another cell, cells that do not have
+ * the attribute are not judged, and a fixture none of whose (sub)fixtures has the attribute is a
+ * mismatch. `entries` are the scanned (sub)fixtures of this fixture; `rowsByIndex` their rows.
+ */
+function judgeFixture(label: string, key: string, entries: ScannedFixture[], rowsByIndex: Map<number, ProgrammerRow[]>, expectations: Expectation[]): FixtureVerdict {
+  const verdict: FixtureVerdict = { key, label, problems: [], unavailable: [], rowsChecked: 0, cellsJudged: 0 };
+  if (entries.some((e) => e.attributes === undefined)) {
+    verdict.unavailable.push(`${label}: the plugin did not report which (sub)fixtures have the attribute (needs plugin 0.3.4 or newer)`);
+    return verdict;
+  }
+  const judged = new Set<number>();
   for (const exp of expectations) {
-    const matching = rows.filter((r) => (r.attribute ?? "").toLowerCase() === exp.attribute.toLowerCase());
-    if (matching.length === 0) {
-      verdict.problems.push(`${label}: no programmer value for ${exp.attribute} (the fixture may lack the attribute, or the command did not apply)`);
+    const applicable = entries.filter((e) => typeof e.subfixtureIndex === "number" && hasAttribute(e, exp.attribute));
+    if (applicable.length === 0) {
+      verdict.problems.push(`${label}: no (sub)fixture of it has attribute ${exp.attribute}`);
       continue;
     }
-    for (const row of matching) {
-      verdict.rowsChecked++;
-      const cell = row.subfixtureIndex !== undefined && rows.length > 1 && (row.fid === null || row.fid === "None") ? ` cell ${row.fixture ?? row.subfixtureIndex}` : "";
-      if (typeof row.value !== "number") {
-        verdict.problems.push(`${label}${cell}: ${exp.attribute} holds a ${row.stepCount ?? "multi"}-step phaser, not the static value ${exp.value}`);
+    for (const e of applicable) {
+      judged.add(e.subfixtureIndex as number);
+      const cell = entries.length > 1 ? ` cell ${e.name ?? e.subfixtureIndex}` : "";
+      const matching = (rowsByIndex.get(e.subfixtureIndex as number) ?? []).filter((r) => (r.attribute ?? "").toLowerCase() === exp.attribute.toLowerCase());
+      if (matching.length === 0) {
+        verdict.problems.push(`${label}${cell}: no programmer value for ${exp.attribute} (the command did not apply to it)`);
         continue;
       }
-      const want = expectedPercent(exp, row);
-      if ("reason" in want) {
-        verdict.unavailable.push(`${label}${cell}: ${want.reason}`);
-        continue;
-      }
-      if (Math.abs(row.value - want.percent) > VERIFY_TOLERANCE_PERCENT) {
-        const physical = typeof row.physicalFrom === "number" && typeof row.physicalTo === "number" ? ` = ${formatValue(row.physicalFrom + (row.value / 100) * (row.physicalTo - row.physicalFrom))} ${row.physicalUnit ?? ""}`.trimEnd() : "";
-        verdict.problems.push(`${label}${cell}: ${exp.attribute} reads ${formatValue(row.value)} % of range${physical}, expected ${formatValue(want.percent)} % (${formatValue(exp.value)} ${exp.unit})`);
+      for (const row of matching) {
+        verdict.rowsChecked++;
+        if (typeof row.value !== "number") {
+          verdict.problems.push(`${label}${cell}: ${exp.attribute} holds a ${row.stepCount ?? "multi"}-step phaser, not the static value ${exp.value}`);
+          continue;
+        }
+        const want = expectedPercent(exp, row);
+        if ("reason" in want) {
+          verdict.unavailable.push(`${label}${cell}: ${want.reason}`);
+          continue;
+        }
+        if (Math.abs(row.value - want.percent) > VERIFY_TOLERANCE_PERCENT) {
+          const physical = typeof row.physicalFrom === "number" && typeof row.physicalTo === "number" ? ` = ${formatValue(row.physicalFrom + (row.value / 100) * (row.physicalTo - row.physicalFrom))} ${row.physicalUnit ?? ""}`.trimEnd() : "";
+          verdict.problems.push(`${label}${cell}: ${exp.attribute} reads ${formatValue(row.value)} % of range${physical}, expected ${formatValue(want.percent)} % (${formatValue(exp.value)} ${exp.unit})`);
+        }
       }
     }
   }
+  verdict.cellsJudged = judged.size;
   return verdict;
 }
 
 /**
  * Read the programmer for the current selection (which, after the target steps, is exactly the
  * target) and compare every selected fixture's values with what was sent, in the unit it was sent
- * in. A compound fixture appears in the selection only as its parent while the values live on its
- * cells, so a fixture without rows gets one follow-up scan of itself and its cells.
+ * in. Every (sub)fixture that has an expected attribute is judged on its own rows. A compound
+ * fixture appears in the selection only as its parent while the values live on its cells, so a
+ * fixture whose scanned entry lacks the attribute gets one follow-up scan of itself and its cells.
  *
- * Verification is `matched` only when every selected fixture has a matching row for every
- * expected attribute, `mismatched` on any wrong or missing value, and `unavailable` when the read
- * could not be completed or interpreted (old plugin, incomplete coverage, unknown range).
+ * Verification is `matched` only when every applicable (sub)fixture holds a matching row and every
+ * scan was complete and fully paginated; `mismatched` on any wrong or missing value or a fixture
+ * without the attribute; `unavailable` when a read could not be completed or interpreted.
  */
 async function verifyProgrammer(bridge: Gma3Bridge, expectations: Expectation[], steps: StepResult[], warnings: string[]): Promise<{ verification: Verification; summary: Record<string, unknown> }> {
   const checked = `programmer values of the selected fixtures (${expectations.map((e) => `${e.attribute} = ${formatValue(e.value)} ${e.unit}`).join(", ")}), tolerance ${VERIFY_TOLERANCE_PERCENT} % of range`;
+  const unavailableReasons: string[] = [];
   let primary: ProgrammerResult;
   try {
-    primary = (await bridge.request("programmer", { scope: "selection", limit: 5000 })) as ProgrammerResult;
+    const read = await readProgrammerPages(bridge, { scope: "selection" });
+    if ("reason" in read) {
+      steps.push({ name: "read_programmer", kind: "read", status: "failed", op: "programmer", error: read.reason });
+      return { verification: unavailable(read.reason, checked), summary: { performed: true, complete: false } };
+    }
+    primary = read.result;
     steps.push({ name: "read_programmer", kind: "read", status: "succeeded", op: "programmer", detail: { rows: primary.total, coverage: primary.coverage } });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     steps.push({ name: "read_programmer", kind: "read", status: "failed", op: "programmer", error: message });
     if (isUnknownOp(err)) {
-      return { verification: unavailable("the bridge plugin predates the programmer op (needs plugin 0.3.2 or newer); re-import it to enable value read-back", checked), summary: { performed: false } };
+      return { verification: unavailable("the bridge plugin predates the programmer op (needs plugin 0.3.4 or newer); re-import it to enable value read-back", checked), summary: { performed: false } };
     }
     return { verification: unavailable(`programmer read-back failed: ${message}`, checked), summary: { performed: false } };
   }
   const limitations = [...(primary.limitations ?? [])];
+  const indexRows = (rows: ProgrammerRow[]): Map<number, ProgrammerRow[]> => {
+    const m = new Map<number, ProgrammerRow[]>();
+    for (const r of rows) {
+      if (typeof r.subfixtureIndex !== "number") continue;
+      const list = m.get(r.subfixtureIndex) ?? [];
+      list.push(r);
+      m.set(r.subfixtureIndex, list);
+    }
+    return m;
+  };
+  const primaryRows = indexRows(primary.rows ?? []);
   const scanned = primary.scannedFixtures ?? [];
-  const rows = primary.rows ?? [];
-  const byIndex = new Map<number, ProgrammerRow[]>();
-  for (const r of rows) {
-    if (typeof r.subfixtureIndex !== "number") continue;
-    const list = byIndex.get(r.subfixtureIndex) ?? [];
-    list.push(r);
-    byIndex.set(r.subfixtureIndex, list);
-  }
+  if (primary.coverage && primary.coverage.complete === false) unavailableReasons.push(`the programmer scan of the selection was incomplete: ${(primary.limitations ?? []).join("; ") || "coverage not complete"}`);
+  if (primary.fixturesTruncated) unavailableReasons.push("more selected fixtures than the programmer op lists per request; the values of the unlisted fixtures were not checked");
+  if (scanned.length === 0 && unavailableReasons.length === 0) unavailableReasons.push("the selection was empty when the programmer was read");
 
   const verdicts: FixtureVerdict[] = [];
-  const needFollowUp: Array<{ subfixtureIndex: number; fid: string | null; name: string | null }> = [];
+  const needFollowUp: ScannedFixture[] = [];
   for (const f of scanned) {
     if (typeof f.subfixtureIndex !== "number") continue;
     const label = `${f.name ?? "fixture"}${f.fid && f.fid !== "None" ? ` (Fixture ${f.fid})` : ""}`;
-    const own = byIndex.get(f.subfixtureIndex) ?? [];
-    const hasAll = expectations.every((e) => own.some((r) => (r.attribute ?? "").toLowerCase() === e.attribute.toLowerCase()));
-    if (!hasAll && f.fid && f.fid !== "None") {
-      needFollowUp.push({ subfixtureIndex: f.subfixtureIndex, fid: f.fid, name: f.name ?? null });
+    // A parent that lacks an attribute may carry it on its cells: scan the fixture tree.
+    if (f.attributes !== undefined && f.fid && f.fid !== "None" && !expectations.every((e) => hasAttribute(f, e.attribute))) {
+      needFollowUp.push(f);
       continue;
     }
-    verdicts.push(judgeFixture(label, String(f.subfixtureIndex), own, expectations));
+    verdicts.push(judgeFixture(label, String(f.subfixtureIndex), [f], primaryRows, expectations));
   }
 
-  // Follow-up scans: the fixture and its cells.
   let followUps = 0;
   for (const f of needFollowUp) {
     const label = `${f.name ?? "fixture"} (Fixture ${f.fid})`;
+    const key = String(f.subfixtureIndex);
     if (followUps >= MAX_FOLLOWUP_SCANS) {
-      verdicts.push({ key: String(f.subfixtureIndex), label, problems: [], unavailable: [`${label}: not re-scanned (more than ${MAX_FOLLOWUP_SCANS} fixtures needed a follow-up scan)`], rowsChecked: 0 });
+      verdicts.push({ key, label, problems: [], unavailable: [`${label}: not re-scanned (more than ${MAX_FOLLOWUP_SCANS} fixtures needed a follow-up scan)`], rowsChecked: 0, cellsJudged: 0 });
       continue;
     }
     followUps++;
     try {
-      const sub = (await bridge.request("programmer", { scope: "fixtures", fixtures: `Fixture ${f.fid}`, limit: 5000 })) as ProgrammerResult;
-      steps.push({ name: "read_programmer_fixture", kind: "read", status: "succeeded", op: "programmer", detail: { fixture: f.fid, rows: sub.total, coverage: sub.coverage } });
-      limitations.push(...(sub.limitations ?? []));
-      if (sub.coverage && sub.coverage.complete === false) {
-        verdicts.push({ key: String(f.subfixtureIndex), label, problems: [], unavailable: [`${label}: the programmer scan of the fixture and its cells was incomplete`], rowsChecked: 0 });
+      const read = await readProgrammerPages(bridge, { scope: "fixtures", fixtures: `Fixture ${f.fid}` });
+      if ("reason" in read) {
+        steps.push({ name: "read_programmer_fixture", kind: "read", status: "failed", op: "programmer", error: read.reason });
+        verdicts.push({ key, label, problems: [], unavailable: [`${label}: ${read.reason}`], rowsChecked: 0, cellsJudged: 0 });
         continue;
       }
-      verdicts.push(judgeFixture(label, String(f.subfixtureIndex), sub.rows ?? [], expectations));
+      const sub = read.result;
+      steps.push({ name: "read_programmer_fixture", kind: "read", status: "succeeded", op: "programmer", detail: { fixture: f.fid, rows: sub.total, coverage: sub.coverage } });
+      limitations.push(...(sub.limitations ?? []));
+      if ((sub.coverage && sub.coverage.complete === false) || sub.fixturesTruncated) {
+        verdicts.push({ key, label, problems: [], unavailable: [`${label}: the programmer scan of the fixture and its cells was incomplete`], rowsChecked: 0, cellsJudged: 0 });
+        continue;
+      }
+      verdicts.push(judgeFixture(label, key, sub.scannedFixtures ?? [], indexRows(sub.rows ?? []), expectations));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       steps.push({ name: "read_programmer_fixture", kind: "read", status: "failed", op: "programmer", error: message });
-      verdicts.push({ key: String(f.subfixtureIndex), label, problems: [], unavailable: [`${label}: follow-up programmer scan failed: ${message}`], rowsChecked: 0 });
+      verdicts.push({ key, label, problems: [], unavailable: [`${label}: follow-up programmer scan failed: ${message}`], rowsChecked: 0, cellsJudged: 0 });
     }
   }
 
   const problems = verdicts.flatMap((v) => v.problems);
-  const unavailableReasons = verdicts.flatMap((v) => v.unavailable);
-  const rowsChecked = verdicts.reduce((n, v) => n + v.rowsChecked, 0);
+  unavailableReasons.push(...verdicts.flatMap((v) => v.unavailable));
   const summary: Record<string, unknown> = {
     performed: true,
     fixturesChecked: verdicts.length,
-    rowsChecked,
+    cellsJudged: verdicts.reduce((n, v) => n + v.cellsJudged, 0),
+    rowsChecked: verdicts.reduce((n, v) => n + v.rowsChecked, 0),
     followUpScans: followUps,
     tolerancePercentOfRange: VERIFY_TOLERANCE_PERCENT,
     ...(limitations.length ? { limitations } : {}),
@@ -504,18 +581,9 @@ async function verifyProgrammer(bridge: Gma3Bridge, expectations: Expectation[],
   if (expectations.some((e) => e.unit === "readout")) {
     warnings.push("no unit was given, so the read-back assumed the user profile's readout is Natural (percent for Dimmer and colour, physical units for Pan/Tilt); if the profile uses another readout the comparison may mismatch");
   }
-  const actual = { rows: rows.map((r) => ({ fixture: r.fixture, fid: r.fid, attribute: r.attribute, value: r.value, physicalFrom: r.physicalFrom, physicalTo: r.physicalTo, readout: r.readout })) };
+  const actual = { rows: (primary.rows ?? []).map((r) => ({ fixture: r.fixture, fid: r.fid, attribute: r.attribute, value: r.value, physicalFrom: r.physicalFrom, physicalTo: r.physicalTo, readout: r.readout })) };
   if (problems.length) {
     return { verification: { status: "mismatched", checked, expected: expectations, actual, detail: problems.join("; ") }, summary };
-  }
-  if (primary.coverage && primary.coverage.complete === false) {
-    return { verification: unavailable(`the programmer scan of the selection was incomplete: ${(primary.limitations ?? []).join("; ") || "coverage not complete"}`, checked), summary };
-  }
-  if (primary.fixturesTruncated) {
-    return { verification: unavailable("more selected fixtures than the programmer op lists per request; the values of the unlisted fixtures were not checked", checked), summary };
-  }
-  if (scanned.length === 0) {
-    return { verification: unavailable("the selection was empty when the programmer was read", checked), summary };
   }
   if (unavailableReasons.length) {
     return { verification: unavailable(unavailableReasons.join("; "), checked), summary };
@@ -541,7 +609,7 @@ const MAX_PRECHECK_CELLS = 4;
  * fixture, those of its first cells (a 12-cell washer carries ColorRGB_* on the cells, not the parent).
  * Returns null when the plugin has no fixtureAttributes op.
  */
-async function fixtureAttributeNames(bridge: Gma3Bridge, fid: string, warnings: string[]): Promise<{ names: Set<string>; fixtureType: string | null; cellsChecked: number } | null> {
+async function fixtureAttributeNames(bridge: Gma3Bridge, fid: string): Promise<{ names: Set<string>; fixtureType: string | null; cellsChecked: number; complete: boolean; gaps: string[] } | null> {
   const read = async (ref: string): Promise<FixtureAttributesResult> => (await bridge.request("fixtureAttributes", { ref, limit: 500 })) as FixtureAttributesResult;
   let parent: FixtureAttributesResult;
   try {
@@ -550,21 +618,23 @@ async function fixtureAttributeNames(bridge: Gma3Bridge, fid: string, warnings: 
     if (isUnknownOp(err)) return null;
     throw err;
   }
+  const gaps: string[] = [];
   const names = new Set((parent.attributes ?? []).map((a) => (a.attribute ?? "").toLowerCase()));
-  if ((parent.total ?? 0) > 500) warnings.push(`Fixture ${fid} lists more than 500 attributes; only the first 500 were pre-checked`);
+  if ((parent.total ?? 0) > 500) gaps.push(`only the first 500 of ${parent.total} attributes were read`);
   const cells = parent.subfixtureCount ?? 0;
   let cellsChecked = 0;
   for (let i = 1; i <= Math.min(cells, MAX_PRECHECK_CELLS); i++) {
     try {
       const cell = await read(`Fixture ${fid}.${i}`);
       cellsChecked++;
+      if ((cell.total ?? 0) > 500) gaps.push(`cell ${i}: only the first 500 of ${cell.total} attributes were read`);
       for (const a of cell.attributes ?? []) names.add((a.attribute ?? "").toLowerCase());
-    } catch {
-      // a cell that cannot be resolved is simply not counted
+    } catch (err) {
+      gaps.push(`cell ${i} could not be read (${err instanceof Error ? err.message : String(err)})`);
     }
   }
-  if (cells > MAX_PRECHECK_CELLS) warnings.push(`Fixture ${fid} has ${cells} cells; only the first ${MAX_PRECHECK_CELLS} were pre-checked for attributes`);
-  return { names, fixtureType: parent.fixtureType ?? null, cellsChecked };
+  if (cells > MAX_PRECHECK_CELLS) gaps.push(`only ${MAX_PRECHECK_CELLS} of ${cells} cells were read`);
+  return { names, fixtureType: parent.fixtureType ?? null, cellsChecked, complete: gaps.length === 0, gaps };
 }
 
 /**
@@ -585,13 +655,14 @@ function checkFixtureAttributesStep(bridge: Gma3Bridge, resolved: { fixtures: Re
       return { name, kind: "read", status: "succeeded", op: "fixtureAttributes", detail: { skipped: "not fixtures" } };
     }
     const missing: string[] = [];
-    const checked: Array<{ fixture: string; attributes: number; cellsChecked: number }> = [];
+    const notEstablished: string[] = [];
+    const checked: Array<{ fixture: string; attributes: number; cellsChecked: number; complete: boolean }> = [];
     for (const f of fixtures) {
       const ref = f.fid && f.fid !== "None" ? `Fixture ${f.fid}` : null;
       if (!ref) continue;
       let info: Awaited<ReturnType<typeof fixtureAttributeNames>>;
       try {
-        info = await fixtureAttributeNames(bridge, f.fid as string, warnings);
+        info = await fixtureAttributeNames(bridge, f.fid as string);
       } catch (err) {
         return { name, kind: "read", status: "failed", op: "fixtureAttributes", error: `could not read the attributes of ${ref}: ${err instanceof Error ? err.message : String(err)}; nothing was sent` };
       }
@@ -599,15 +670,22 @@ function checkFixtureAttributesStep(bridge: Gma3Bridge, resolved: { fixtures: Re
         warnings.push("attribute pre-check skipped: the bridge plugin predates the fixtureAttributes op (needs plugin 0.3.0 or newer)");
         return { name, kind: "read", status: "succeeded", op: "fixtureAttributes", detail: { skipped: "old plugin" } };
       }
-      checked.push({ fixture: ref, attributes: info.names.size, cellsChecked: info.cellsChecked });
+      checked.push({ fixture: ref, attributes: info.names.size, cellsChecked: info.cellsChecked, complete: info.complete });
       for (const a of attributes) {
-        if (!info.names.has(a.toLowerCase())) missing.push(`${ref}${info.fixtureType ? ` (${info.fixtureType})` : ""} has no attribute ${a}${info.cellsChecked ? " (nor do its cells)" : ""}`);
+        if (info.names.has(a.toLowerCase())) continue;
+        const where = `${ref}${info.fixtureType ? ` (${info.fixtureType})` : ""}`;
+        // Only a complete discovery can establish absence; a sampled one leaves it to the read-back.
+        if (info.complete) missing.push(`${where} has no attribute ${a}${info.cellsChecked ? " (nor do its cells)" : ""}`);
+        else notEstablished.push(`${where}: attribute ${a} was not found but discovery was partial (${info.gaps.join(", ")})`);
       }
     }
     if (missing.length) {
       return { name, kind: "read", status: "failed", op: "fixtureAttributes", error: `${missing.join("; ")}; nothing was sent`, detail: { checked, missing } };
     }
-    return { name, kind: "read", status: "succeeded", op: "fixtureAttributes", detail: { checked } };
+    if (notEstablished.length) {
+      warnings.push(`attribute pre-check not established: ${notEstablished.join("; ")}; the command was sent and the read-back decides`);
+    }
+    return { name, kind: "read", status: "succeeded", op: "fixtureAttributes", detail: { checked, ...(notEstablished.length ? { notEstablished } : {}) } };
   };
 }
 

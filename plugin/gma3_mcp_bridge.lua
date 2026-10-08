@@ -55,7 +55,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.3.3"
+local VERSION      = "0.3.4"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -1606,18 +1606,33 @@ ops.programmer = function(args)
     end
     local okS, sf = callApi("GetSubfixture", idx)
     if not (okS and isHandle(sf)) then sf = nil end
+    local entry = nil
     if #fixtureList < FIXTURE_LIST_MAX then
       local fid = sf and textProp(sf, "FID") or nil
-      fixtureList[#fixtureList + 1] = { subfixtureIndex = idx, fid = fid, name = sf and safeProp(sf, "name") or nil, rootFid = rootFidOf[idx] or fid }
+      entry = { subfixtureIndex = idx, fid = fid, name = sf and safeProp(sf, "name") or nil, rootFid = rootFidOf[idx] or fid, attributes = {} }
+      fixtureList[#fixtureList + 1] = entry
     else
       fixturesTruncated = true
     end
     local okU, uis = callApi("GetUIChannels", idx, false)
     if okU and type(uis) == "table" then
+      local seenAttr = {}
       for _, u in ipairs(uis) do
         local ui = uiIndexOf(u)
         if ui ~= nil then
           coverage.scannedChannels = coverage.scannedChannels + 1
+          -- The attributes this (sub)fixture has, so a client can tell "no value" from "no such
+          -- attribute here" per cell. Same cache as programmerRow.
+          if entry then
+            local attr = attrCache[ui]
+            if attr == nil then
+              local okA, a = callApi("GetAttributeByUIChannel", ui)
+              attr = (okA and isHandle(a)) and a or false
+              attrCache[ui] = attr
+            end
+            local an = attr and safeProp(attr, "name") or nil
+            if an and not seenAttr[an] then seenAttr[an] = true; entry.attributes[#entry.attributes + 1] = an end
+          end
           local okP, p = callApi("GetProgPhaser", ui, false)
           if not okP then
             stats.channelErrors = stats.channelErrors + 1
@@ -1646,7 +1661,8 @@ ops.programmer = function(args)
     note = "rows are programmer content read with GetProgPhaser; they are not output values (use fixtureOutput or dmx for output)",
     coverage = coverage, stats = stats, maxChannels = maxChannels,
     selectionCount = scope == "selection" and #indices or nil,
-    scannedFixtures = emptyArray(fixtureList), fixturesTruncated = fixturesTruncated,
+    scannedFixtures = (function() for _, e in ipairs(fixtureList) do emptyArray(e.attributes) end return emptyArray(fixtureList) end)(),
+    fixturesTruncated = fixturesTruncated,
     total = page.total, offset = page.offset, count = page.count, rows = page.items,
     limitations = emptyArray(limitations),
   }

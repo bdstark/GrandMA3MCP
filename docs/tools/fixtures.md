@@ -132,8 +132,11 @@ no with `use_selection`. Clears programmer values: never.
 Verification (`verify`, default true): after the set command, still inside the lock span, the tool reads the
 programmer for the current selection through the `programmer` bridge op and compares every selected fixture:
 
-* Each fixture must have a row for the attribute. No row means the fixture lacks the attribute or the command
-  did not apply (the console answers `OK` either way), and that is a **mismatch**, never a success.
+* The `programmer` op lists, for every scanned (sub)fixture, the attributes it has. Every (sub)fixture that
+  **has** an expected attribute must hold a matching row for it; cells that do not have the attribute are not
+  judged, a sibling cell's value never satisfies another cell, and a fixture none of whose (sub)fixtures has the
+  attribute is a **mismatch** (the console answers `OK` even then). The scan is read page by page until every
+  reported row has been fetched; if it cannot be completed, verification is `unavailable`, not a partial match.
 * Values are compared in the unit that was sent, as percent of the attribute range with a tolerance of
   0.5 % (8-bit DMX quantisation is 0.39 %): `percent`/`percent_fine` directly; `decimal8/16/24` scaled by
   their range; `physical` (and `degrees` in `gma3_set_position`) converted through the fixture's own channel
@@ -141,15 +144,19 @@ programmer for the current selection through the `programmer` bridge op and comp
   attribute's natural readout (`Percent` or `Physical`). When a range or readout is unknown the result is
   `unavailable`, not a guess. A multi-step phaser on the attribute is a mismatch (it is not the static value).
 * A compound fixture appears in the selection only as its parent while the values live on its cells, so a
-  fixture without rows gets one follow-up scan of itself and its cells (at most 8 per call).
-* `matched` requires every selected fixture to pass and the scan to be complete; incomplete coverage, an old
-  plugin (before 0.3.2, no `programmer` op), or an unreadable range make it `unavailable`. The result's
-  `programmerReadBack` summarises fixtures and rows checked and follow-up scans.
+  parent that lacks the attribute itself gets one follow-up scan of itself and its cells (at most 8 per call),
+  and each cell that has the attribute is then judged on its own rows.
+* `matched` requires every applicable (sub)fixture to pass, every scan to be complete and fully paginated, and
+  the fixture list not to be truncated; otherwise `unavailable` (also on a plugin older than 0.3.4, which does
+  not report per-subfixture attributes). The result's `programmerReadBack` summarises fixtures, cells and rows
+  checked and follow-up scans.
 
 Pre-check (`check_attributes`, default true): an explicit `fixtures` target that resolves to at most 8
-fixtures is checked against each fixture type's attribute list (`fixtureAttributes` op) before anything is
-sent; a fixture without the attribute fails the call with nothing sent. Groups, larger targets and old plugins
-skip the pre-check with a warning and rely on the read-back.
+fixtures is checked against each fixture type's attribute list (`fixtureAttributes` op, parent plus the first
+4 cells of a compound fixture) before anything is sent. A fixture that demonstrably lacks the attribute fails
+the call with nothing sent. When discovery was only partial (more than 4 cells, more than 500 attributes, a
+cell that could not be read) absence is **not established**: the call proceeds with a warning and the read-back
+decides. Groups, larger targets and old plugins skip the pre-check with a warning.
 
 ## gma3_set_color
 
