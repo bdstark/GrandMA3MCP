@@ -44,7 +44,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.2.0"
+local VERSION      = "0.3.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -269,6 +269,9 @@ local function getProp(h, name, asText)
     ok, v = pcall(h.Get, h, name)
   end
   if not ok then return nil, tostring(v) end
+  -- A name that is a method rather than a property ("Count", "Delete") comes back as the method
+  -- itself. It is never called: a read-only op must not be able to invoke arbitrary methods.
+  if type(v) == "function" then return nil, "'" .. tostring(name) .. "' is a method, not a property" end
   if isHandle(v) then return handleSummary(v) end
   if type(v) == "string" then
     -- "#00000B9A" style values are object references: resolve them to a name when possible
@@ -345,6 +348,683 @@ local function listChildren(h, fields, limit, offset, asText, playback)
   end
   if #out == 0 then setmetatable(out, { __jsontype = "array" }) end
   return { total = total, offset = offset, count = #out, items = out }
+end
+
+-------------------------------------------------------------------------------
+-- Fixture, channel and cue inspection helpers (FR-07 .. FR-10)
+-------------------------------------------------------------------------------
+-- Everything here runs on the plugin thread like the other structured ops (the console's
+-- context-bound functions return nothing from a child coroutine) and only ever reads. Nothing
+-- below changes the selection, the programmer or any playback. The console's JSON library
+-- cannot carry nil inside a table, so a metadata item the API did not supply is simply absent
+-- from the emitted object; the TypeScript tools turn absent keys into explicit nulls.
+
+-- Call a console function by name if this console version provides it.
+-- Returns ok (boolean) and the result or an error text.
+local function callApi(name, ...)
+  local okG, f = pcall(function() return _G[name] end)
+  if not okG or type(f) ~= "function" then return false, "function " .. name .. " is not available in this console version" end
+  local ok, res = pcall(f, ...)
+  if not ok then return false, tostring(res) end
+  return true, res
+end
+
+-- Property as display text (nil when unreadable or empty); handle-valued properties give their name.
+local function textProp(h, name)
+  if not h then return nil end
+  local v = getProp(h, name, true)
+  if type(v) == "table" then return v.name end
+  if v == "" then return nil end
+  return v
+end
+
+-- Leading number of a numeric property ("-225.0000000000" -> -225), nil when not numeric.
+local function numProp(h, name)
+  local v = textProp(h, name)
+  if v == nil then return nil end
+  if type(v) == "number" then return v end
+  return tonumber((tostring(v):match("^%s*([-+]?%d*%.?%d+)")))
+end
+
+-- Handle-valued property as a handle (nil when the property is not a handle).
+local function handleProp(h, name)
+  if not h then return nil end
+  local ok, v = pcall(h.Get, h, name)
+  if ok and isHandle(v) then return v end
+  return nil
+end
+
+local function yesNo(text)
+  if text == nil then return nil end
+  local l = tostring(text):lower()
+  if l == "yes" or l == "1" or l == "true" or l == "on" then return true end
+  if l == "no" or l == "0" or l == "false" or l == "off" then return false end
+  return nil
+end
+
+local function round4(x) return math.floor(x * 10000 + 0.5) / 10000 end
+
+local function emptyArray(t)
+  if #t == 0 then setmetatable(t, { __jsontype = "array" }) end
+  return t
+end
+
+-- Bounded pagination: limit/offset from args with defaults and a hard ceiling.
+local function pageArgs(args, defaultLimit, maxLimit)
+  local limit = tonumber(args.limit) or defaultLimit
+  if limit < 1 then limit = 1 end
+  if maxLimit and limit > maxLimit then limit = maxLimit end
+  local offset = tonumber(args.offset) or 0
+  if offset < 0 then offset = 0 end
+  return math.floor(limit), math.floor(offset)
+end
+
+local function paginate(rows, limit, offset)
+  local out = {}
+  for i = offset + 1, math.min(#rows, offset + limit) do out[#out + 1] = rows[i] end
+  return { total = #rows, offset = offset, count = #out, items = emptyArray(out) }
+end
+
+-- Compact reference to a preset (or any) handle; nil for an invalid or missing handle.
+local function presetRef(h)
+  if not isHandle(h) then return nil end
+  local ok, valid = pcall(IsObjectValid, h)
+  if ok and valid == false then return nil end
+  local ref = { name = safeProp(h, "name"), addrNative = safeCall(h, "AddrNative") }
+  if ref.name == nil and ref.addrNative == nil then return nil end
+  return ref
+end
+
+-- Resolve a fixture reference ("Fixture 601", "Fixture 501.3") through ObjectList, i.e. by
+-- fixture ID, never by patch index. Returns the handle and the owning Fixture (the handle
+-- itself unless it is a SubFixture).
+local function resolveFixture(ref)
+  local h = resolve(ref)
+  local cls = safeCall(h, "GetClass")
+  if cls ~= "Fixture" and cls ~= "SubFixture" then
+    error(string.format("'%s' resolved to a %s, not a Fixture or SubFixture", tostring(ref), tostring(cls)))
+  end
+  local main, guard = h, 0
+  while safeCall(main, "GetClass") == "SubFixture" and guard < 8 do
+    local p = safeCall(main, "Parent")
+    if not p then break end
+    main, guard = p, guard + 1
+  end
+  return h, main
+end
+
+local function fixtureIdentity(fx, main)
+  local id = {
+    name = safeProp(fx, "name"), class = safeCall(fx, "GetClass"), addr = safeCall(fx, "Addr"),
+    fid = textProp(main, "FID"), cid = textProp(main, "CID"),
+    subfixtureIndex = numProp(fx, "SubfixtureIndex"),
+    isSubfixture = fx ~= main,
+    patch = textProp(main, "Patch"), rtChannelCount = numProp(main, "ChannelRTCount"),
+  }
+  if fx ~= main then id.fixture = safeProp(main, "name") end
+  local ft = handleProp(main, "FixtureType")
+  if ft then id.fixtureType = safeProp(ft, "name") else id.fixtureType = textProp(main, "FixtureType") end
+  local mode = handleProp(main, "Mode")
+  if mode then id.mode = safeProp(mode, "name") else id.mode = textProp(main, "Mode") end
+  return id
+end
+
+-- Direct SubFixture children of a (sub)fixture, with their patch indices.
+local function listSubfixtures(fx)
+  local out = {}
+  for _, c in ipairs(safeCall(fx, "Children") or {}) do
+    if safeCall(c, "GetClass") == "SubFixture" then
+      out[#out + 1] = { name = safeProp(c, "name"), index = safeCall(c, "Index"), subfixtureIndex = numProp(c, "SubfixtureIndex"), addr = safeCall(c, "Addr"), childCount = safeCall(c, "Count") }
+    end
+  end
+  return emptyArray(out)
+end
+
+-- Patch indices (SubfixtureIndex) of a fixture and everything nested in it (SubFixtures and
+-- fixtures inside a grouping fixture), depth-bounded.
+local function collectSubfixtureIndices(h, out, seen, depth, limitations)
+  if depth > 6 then return end
+  local cls = safeCall(h, "GetClass")
+  if cls ~= "Fixture" and cls ~= "SubFixture" then
+    table.insert(limitations, string.format("'%s' (%s) is not a fixture and was not expanded", tostring(safeProp(h, "name")), tostring(cls)))
+    return
+  end
+  local idx = numProp(h, "SubfixtureIndex")
+  if idx and not seen[idx] then seen[idx] = true; out[#out + 1] = idx end
+  for _, c in ipairs(safeCall(h, "Children") or {}) do collectSubfixtureIndices(c, out, seen, depth + 1, limitations) end
+end
+
+-- UI channel index from a GetUIChannels element (integer, or a UIChannel handle whose INDEX is 1-based).
+local function uiIndexOf(v)
+  if type(v) == "number" then return math.floor(v) end
+  if isHandle(v) then
+    local i = tonumber(safeProp(v, "INDEX")) or tonumber(safeProp(v, "Index")) or safeCall(v, "Index")
+    if type(i) == "number" then return math.floor(i) - 1 end
+  end
+  return nil
+end
+
+local function attributeMeta(attr)
+  if not attr then return {} end
+  local m = {
+    attribute = safeProp(attr, "name"), attributeIndex = numProp(attr, "AttributeIndex"), pretty = textProp(attr, "Pretty"),
+    activationGroup = textProp(attr, "ActivationGroup"), physicalUnit = textProp(attr, "PhysicalUnit"),
+    readout = textProp(attr, "NaturalReadout"), color = textProp(attr, "Color"), mainAttribute = textProp(attr, "MainAttribute"),
+  }
+  local feature = handleProp(attr, "Feature")
+  if feature then
+    m.feature = safeProp(feature, "name")
+    local fg = safeCall(feature, "Parent")
+    if fg then m.featureGroup = safeProp(fg, "name") end
+  else
+    m.feature = textProp(attr, "Feature")
+  end
+  return m
+end
+
+local function channelSetRows(cf)
+  local out = {}
+  for _, cs in ipairs(safeCall(cf, "Children") or {}) do
+    out[#out + 1] = {
+      name = safeProp(cs, "name"), dmxFrom = textProp(cs, "DmxFrom"), dmxTo = textProp(cs, "DmxTo"),
+      physicalFrom = numProp(cs, "PhysicalFrom"), physicalTo = numProp(cs, "PhysicalTo"), wheelSlotIndex = numProp(cs, "WheelSlotIndex"),
+    }
+  end
+  return emptyArray(out)
+end
+
+local function channelFunctionMeta(cf, includeSets)
+  if not cf then return {} end
+  local m = {
+    channelFunction = safeProp(cf, "name"), dmxFrom = textProp(cf, "DmxFrom"), dmxTo = textProp(cf, "DmxTo"), default = textProp(cf, "Default"),
+    physicalFrom = numProp(cf, "PhysicalFrom"), physicalTo = numProp(cf, "PhysicalTo"), realFade = numProp(cf, "RealFade"),
+    realAcceleration = numProp(cf, "RealAcceleration"), wheel = textProp(cf, "Wheel"), emitter = textProp(cf, "Emitter"), customName = textProp(cf, "CustomName"),
+  }
+  if includeSets then m.channelSets = channelSetRows(cf) end
+  return m
+end
+
+local function merge(dst, src)
+  for k, v in pairs(src) do dst[k] = v end
+  return dst
+end
+
+-- "1.007" -> 1, 7
+local function parseDmxAddr(text)
+  if type(text) ~= "string" then return nil end
+  local u, a = text:match("^%s*(%d+)%.(%d+)%s*$")
+  if not u then return nil end
+  return tonumber(u), tonumber(a)
+end
+
+-- 24-bit hex text ("FFFFFF") -> integer
+local function hex24(text)
+  if type(text) ~= "string" then return nil end
+  local h = text:match("^%s*(%x+)%s*$")
+  return h and tonumber(h, 16) or nil
+end
+
+local function to24bit(raw, bits) return raw * 16777215 / (2 ^ bits - 1) end
+
+-- Linear DMX -> physical conversion over a channel function's DMXFROM..DMXTO / PHYSICALFROM..PHYSICALTO.
+local function toPhysical(raw, bits, cf)
+  local from24, to24 = hex24(cf.dmxFrom), hex24(cf.dmxTo)
+  if not (from24 and to24 and cf.physicalFrom and cf.physicalTo) or to24 == from24 then return nil end
+  local t = (to24bit(raw, bits) - from24) / (to24 - from24)
+  return round4(cf.physicalFrom + t * (cf.physicalTo - cf.physicalFrom))
+end
+
+local function rangeContains(entry, raw24)
+  local from24, to24 = hex24(entry.dmxFrom), hex24(entry.dmxTo)
+  return from24 ~= nil and to24 ~= nil and raw24 >= from24 and raw24 <= to24
+end
+
+-- RT channels of a (sub)fixture as rows with their absolute DMX addresses. nil when the API is unavailable.
+local function rtChannelRows(fx, limitations)
+  local ok, rts = callApi("GetRTChannels", fx, true)
+  if not ok then table.insert(limitations, "DMX channel map unavailable: " .. tostring(rts)); return nil end
+  if type(rts) ~= "table" then table.insert(limitations, "GetRTChannels returned no channel list"); return {} end
+  local rows = {}
+  for _, rt in ipairs(rts) do
+    if isHandle(rt) then
+      local row = {
+        rtIndex = tonumber(safeProp(rt, "INDEX")) or safeCall(rt, "Index"), channel = textProp(rt, "ChannelName"), fid = textProp(rt, "FID"),
+        coarse = textProp(rt, "Coarse"), fine = textProp(rt, "Fine"), ultra = textProp(rt, "Ultra"), default = textProp(rt, "Default"),
+      }
+      row.bits = row.ultra and 24 or (row.fine and 16 or 8)
+      rows[#rows + 1] = row
+    elseif type(rt) == "number" then
+      rows[#rows + 1] = { rtIndex = rt }
+    end
+  end
+  return rows
+end
+
+-- Match an attribute to RT channels by channel name ("<Geometry>_<Attribute>" or an exact DMX channel name).
+-- Returns the single matching row, or nil and the number of candidates.
+local function matchRtChannel(rows, attrName, dmxChannelName)
+  local found, count = nil, 0
+  for _, r in ipairs(rows or {}) do
+    local ch = r.channel
+    local hit = false
+    if type(ch) == "string" then
+      if dmxChannelName then hit = ch == dmxChannelName
+      elseif attrName then hit = ch == attrName or ch:sub(-(#attrName + 1)) == "_" .. attrName end
+    end
+    if hit then count = count + 1; found = found or r end
+  end
+  if count == 1 then return found, 1 end
+  return nil, count
+end
+
+local function dmxFromRt(rt)
+  if not rt then return nil end
+  return { channel = rt.channel, rtIndex = rt.rtIndex, coarse = rt.coarse, fine = rt.fine, ultra = rt.ultra, bits = rt.bits, default = rt.default }
+end
+
+-- Static walk of the fixture type: Mode -> DMXChannels -> DMXChannel -> LogicalChannel -> ChannelFunction (-> ChannelSet).
+-- Returns a list of DMX channel entries or nil (with a limitation) when the tree is not reachable.
+-- The fixture's DMXMode handle. Get("Mode") does not always hand back a handle (live 2.5.1 returned the
+-- display text "1 Mode 0" for one fixture), so fall back to the property field and to the FixtureType's
+-- DMXModes collection matched by the mode text.
+local function resolveMode(main)
+  local mode = handleProp(main, "Mode")
+  if mode then return mode end
+  local direct = safeProp(main, "Mode")
+  if isHandle(direct) then return direct end
+  local modeText = textProp(main, "Mode")
+  local ft = handleProp(main, "FixtureType")
+  if not ft then
+    local d = safeProp(main, "FixtureType")
+    if isHandle(d) then ft = d end
+  end
+  if not ft then return nil end
+  local modesNode
+  for _, c in ipairs(safeCall(ft, "Children") or {}) do
+    local nm = safeProp(c, "name")
+    if type(nm) == "string" and nm:lower() == "dmxmodes" then modesNode = c; break end
+  end
+  if not modesNode then return nil end
+  local modes = safeCall(modesNode, "Children") or {}
+  if modeText then
+    local lowered = tostring(modeText):lower()
+    for _, m in ipairs(modes) do
+      local nm = safeProp(m, "name")
+      if type(nm) == "string" and nm ~= "" then
+        local l = nm:lower()
+        if l == lowered or lowered:sub(-#l) == l or lowered:match("^%d+%s+" .. l:gsub("%p", "%%%0") .. "$") then return m end
+      end
+    end
+  end
+  if #modes == 1 then return modes[1] end
+  return nil
+end
+
+local function walkMode(main, includeSets, limitations)
+  local mode = resolveMode(main)
+  if not mode then table.insert(limitations, "no DMX mode handle could be resolved for the fixture type (Get(\"Mode\"), FixtureType.DMXModes); the fixture type could not be walked"); return nil end
+  local channelsNode
+  for _, c in ipairs(safeCall(mode, "Children") or {}) do
+    local nm, cls = safeProp(c, "name"), safeCall(c, "GetClass")
+    if (type(nm) == "string" and nm:lower() == "dmxchannels") or (type(cls) == "string" and cls:lower():find("dmxchannel", 1, true)) then channelsNode = c; break end
+  end
+  if not channelsNode then table.insert(limitations, "DMX mode has no DMXChannels collection; the fixture type could not be walked"); return nil end
+  local out = {}
+  for _, dc in ipairs(safeCall(channelsNode, "Children") or {}) do
+    local entry = {
+      name = safeProp(dc, "name"), dmxBreak = numProp(dc, "DmxBreak"), coarse = textProp(dc, "Coarse"), fine = textProp(dc, "Fine"),
+      ultra = textProp(dc, "Ultra"), default = textProp(dc, "Default"), geometry = textProp(dc, "Geometry"), logicalChannels = {},
+    }
+    local defCf = handleProp(dc, "DefaultChannelFunction")
+    if defCf then entry.defaultChannelFunction = safeProp(defCf, "name") end
+    for _, lc in ipairs(safeCall(dc, "Children") or {}) do
+      local lce = { name = safeProp(lc, "name"), attribute = attributeMeta(handleProp(lc, "Attribute")), functions = {} }
+      for _, cf in ipairs(safeCall(lc, "Children") or {}) do lce.functions[#lce.functions + 1] = channelFunctionMeta(cf, includeSets) end
+      entry.logicalChannels[#entry.logicalChannels + 1] = lce
+    end
+    out[#out + 1] = entry
+  end
+  return out
+end
+
+-- The channel function that covers a raw value (else the default, else the first).
+local function pickFunction(functions, defaultName, raw, bits)
+  if not functions or #functions == 0 then return nil end
+  if raw ~= nil then
+    local raw24 = to24bit(raw, bits)
+    for _, f in ipairs(functions) do if rangeContains(f, raw24) then return f end end
+  end
+  if defaultName then for _, f in ipairs(functions) do if f.channelFunction == defaultName then return f end end end
+  return functions[1]
+end
+
+local function pickChannelSet(sets, raw, bits)
+  if not sets or raw == nil then return nil end
+  local raw24 = to24bit(raw, bits)
+  for _, s in ipairs(sets) do if s.name ~= nil and rangeContains(s, raw24) then return s end end
+  return nil
+end
+
+-- Attribute rows through the UI channel API. nil when the API is unavailable (caller falls back to the type walk).
+local function uiChannelAttributes(fx, includeSets, rtRows, limitations)
+  local okU, uis = callApi("GetUIChannels", fx, false)
+  if not okU then table.insert(limitations, "GetUIChannels unavailable: " .. tostring(uis)); return nil end
+  if type(uis) ~= "table" or #uis == 0 then table.insert(limitations, "GetUIChannels returned no UI channels for this fixture"); return nil end
+  local attrCache, rows, ambiguous = {}, {}, 0
+  for _, u in ipairs(uis) do
+    local ui = uiIndexOf(u)
+    if ui ~= nil then
+      local row = { uiChannel = ui }
+      local okA, attr = callApi("GetAttributeByUIChannel", ui)
+      if not (okA and isHandle(attr)) then
+        attr = nil
+        -- Fall back to the UIChannel object's SubAttribute name and the attribute definition of that name.
+        local attrName = isHandle(u) and (safeProp(u, "SUBATTRIBUTE") or textProp(u, "SubAttribute")) or nil
+        if type(attrName) == "string" and attrName ~= "" and not attrName:find('"', 1, true) then
+          if attrCache[attrName] == nil then
+            local okL, list = pcall(ObjectList, 'Attribute "' .. attrName .. '"')
+            attrCache[attrName] = (okL and type(list) == "table" and isHandle(list[1])) and list[1] or false
+          end
+          attr = attrCache[attrName] or nil
+          if not attr then row.attribute = attrName end
+        end
+      end
+      merge(row, attributeMeta(attr))
+      local attrIdx = row.attributeIndex
+      if attrIdx == nil and row.attribute then
+        local okI, i = callApi("GetAttributeIndex", row.attribute)
+        if okI and type(i) == "number" then attrIdx = i; row.attributeIndex = i end
+      end
+      if attrIdx ~= nil then
+        local okC, cf = callApi("GetChannelFunction", ui, attrIdx)
+        if okC and isHandle(cf) then
+          merge(row, channelFunctionMeta(cf, includeSets))
+          local lc = safeCall(cf, "Parent")
+          if lc then
+            local names = {}
+            for _, f in ipairs(safeCall(lc, "Children") or {}) do names[#names + 1] = safeProp(f, "name") end
+            if #names > 0 then row.channelFunctions = names end
+          end
+        end
+      end
+      if rtRows then
+        local rt, count = matchRtChannel(rtRows, row.attribute, nil)
+        if rt then row.dmx = dmxFromRt(rt) elseif count > 1 then ambiguous = ambiguous + 1 end
+      end
+      rows[#rows + 1] = row
+    end
+  end
+  if ambiguous > 0 then
+    table.insert(limitations, string.format("%d attribute(s) map to more than one RT channel by name (compound fixture); their dmx field is omitted, see channels[] for the full map", ambiguous))
+  end
+  return rows
+end
+
+-- Attribute rows from the static fixture-type walk (one row per logical channel of the DMX mode).
+local function fixtureTypeAttributes(main, includeSets, rtRows, limitations)
+  local walk = walkMode(main, includeSets, limitations)
+  if not walk then return {} end
+  local rows = {}
+  for _, entry in ipairs(walk) do
+    for _, lc in ipairs(entry.logicalChannels) do
+      local row = merge({}, lc.attribute)
+      local cf = pickFunction(lc.functions, entry.defaultChannelFunction, nil, 8)
+      if cf then merge(row, cf) end
+      local names = {}
+      for _, f in ipairs(lc.functions) do names[#names + 1] = f.channelFunction end
+      if #names > 0 then row.channelFunctions = names end
+      row.dmxChannel = { name = entry.name, dmxBreak = entry.dmxBreak, coarseOffset = entry.coarse, fineOffset = entry.fine, ultraOffset = entry.ultra, geometry = entry.geometry, default = entry.default }
+      if rtRows then
+        local rt = matchRtChannel(rtRows, nil, entry.name)
+        if rt then row.dmx = dmxFromRt(rt) end
+      end
+      rows[#rows + 1] = row
+    end
+  end
+  table.insert(limitations, "attributes come from the fixture type's DMX mode (no UI channel indices); a compound fixture's shared geometry channels are listed once, not per subfixture instance")
+  return rows
+end
+
+-- Per RT channel name, the attribute and channel function metadata to interpret output values.
+-- Tries the UI channel API first (rows matched to RT channels by channel name) and the fixture-type
+-- walk second. Returns map, source ("uiChannels" | "fixtureTypeWalk" | nil).
+local function channelMetaMap(fx, main, rtRows, limitations)
+  local map, scratch, sources = {}, {}, {}
+  -- The walk knows every channel function of a logical channel (needed to pick the one covering a value).
+  local walkMap = {}
+  local walk = walkMode(main, true, scratch)
+  if walk then
+    for _, e in ipairs(walk) do
+      local lc = e.logicalChannels[1]
+      if e.name and lc and not walkMap[e.name] then
+        walkMap[e.name] = { attribute = lc.attribute.attribute, attributeIndex = lc.attribute.attributeIndex, physicalUnit = lc.attribute.physicalUnit, functions = lc.functions, defaultFunction = e.defaultChannelFunction, logicalCount = #e.logicalChannels }
+      end
+    end
+  end
+  -- The UI channel API ties RT channels to the attributes this (sub)fixture actually exposes.
+  local rows = uiChannelAttributes(fx, true, rtRows, scratch)
+  if rows then
+    for _, row in ipairs(rows) do
+      if row.dmx and row.dmx.channel and row.channelFunction and not map[row.dmx.channel] then
+        local w = walkMap[row.dmx.channel]
+        map[row.dmx.channel] = {
+          attribute = row.attribute, attributeIndex = row.attributeIndex, physicalUnit = row.physicalUnit,
+          functions = (w and #w.functions > 1) and w.functions or { row }, defaultFunction = row.channelFunction, logicalCount = w and w.logicalCount or 1,
+        }
+      end
+    end
+    if next(map) ~= nil then sources[#sources + 1] = "uiChannels" end
+  end
+  local walkUsed = false
+  for name, w in pairs(walkMap) do
+    if not map[name] then map[name] = w; walkUsed = true end
+  end
+  if walkUsed or (next(map) ~= nil and next(walkMap) ~= nil) then sources[#sources + 1] = "fixtureTypeWalk" end
+  if next(map) == nil then
+    table.insert(limitations, "attribute and channel function metadata unavailable for the RT channels (neither the UI channel API nor the fixture type walk produced a mapping): " .. table.concat(scratch, "; "))
+    return map, nil
+  end
+  return map, table.concat(sources, "+")
+end
+
+-- RT channels for a (sub)fixture. A SubFixture usually has none of its own: its addresses belong to the
+-- parent fixture, so the parent's channels that match exactly one of the subfixture's attributes are used.
+-- Returns rows, source ("own" | "parent" | nil).
+local function fixtureRtChannels(fx, main, limitations)
+  local rows = rtChannelRows(fx, limitations)
+  if rows == nil then return nil, nil end
+  if #rows > 0 or fx == main then return rows, "own" end
+  local parentRows = rtChannelRows(main, limitations) or {}
+  local parentName = string.format("'%s' (Fixture %s)", tostring(safeProp(main, "name")), tostring(textProp(main, "FID")))
+  if #parentRows == 0 then
+    table.insert(limitations, "the subfixture has no RT channels of its own and its parent fixture " .. parentName .. " has none either (unpatched)")
+    return {}, nil
+  end
+  local attrNames, seen = {}, {}
+  local okU, uis = callApi("GetUIChannels", fx, false)
+  if okU and type(uis) == "table" then
+    for _, u in ipairs(uis) do
+      local ui = uiIndexOf(u)
+      if ui ~= nil then
+        local okA, attr = callApi("GetAttributeByUIChannel", ui)
+        local nm = (okA and isHandle(attr)) and safeProp(attr, "name") or nil
+        if type(nm) == "string" and not seen[nm] then seen[nm] = true; attrNames[#attrNames + 1] = nm end
+      end
+    end
+  end
+  local out, ambiguous = {}, 0
+  for _, nm in ipairs(attrNames) do
+    local rt, count = matchRtChannel(parentRows, nm, nil)
+    if rt then out[#out + 1] = rt elseif count > 1 then ambiguous = ambiguous + 1 end
+  end
+  if #out > 0 then
+    table.insert(limitations, string.format("the subfixture has no RT channels of its own; %d channel(s) were taken from its parent fixture %s by unique attribute name%s",
+      #out, parentName, ambiguous > 0 and string.format(", %d attribute(s) are shared by several instances and could not be attributed", ambiguous) or ""))
+    return out, "parent"
+  end
+  table.insert(limitations, "the subfixture has no RT channels of its own; its DMX mappings (addresses) are available on the parent fixture " .. parentName ..
+    (ambiguous > 0 and " (the instance's channels share their names with other instances and cannot be attributed to this subfixture)" or ""))
+  return {}, nil
+end
+
+-- One programmer row from a GetProgPhaser table; nil when the masks show no programmer data.
+local function programmerRow(p, ui, sfIdx, sf, attrCache, stats)
+  local mv, mp, mi = tonumber(p.mask_active_value) or 0, tonumber(p.mask_active_phaser) or 0, tonumber(p.mask_individual) or 0
+  local stepCount = #p
+  if mv == 0 and mp == 0 and mi == 0 then
+    if stepCount > 0 then stats.channelsWithStepsButInactiveMask = stats.channelsWithStepsButInactiveMask + 1 end
+    return nil
+  end
+  stats.channelsWithData = stats.channelsWithData + 1
+  local attr = attrCache[ui]
+  if attr == nil then
+    local ok, a = callApi("GetAttributeByUIChannel", ui)
+    attr = (ok and isHandle(a)) and a or false
+    attrCache[ui] = attr
+  end
+  local row = {
+    fixture = sf and safeProp(sf, "name") or nil, fid = sf and textProp(sf, "FID") or nil, subfixtureIndex = sfIdx, uiChannel = ui,
+    present = true, masks = { activeValue = mv, activePhaser = mp, individual = mi }, stepCount = stepCount, steps = {},
+  }
+  if attr then row.attribute = safeProp(attr, "name"); row.attributeIndex = numProp(attr, "AttributeIndex") end
+  for s = 1, stepCount do
+    local st = p[s]
+    if type(st) == "table" then
+      row.steps[#row.steps + 1] = {
+        step = s, channelFunction = st.channel_function, absolute = st.absolute, absoluteValue = st.absolute_value, relative = st.relative,
+        accel = st.accel, accelType = st.accel_type, decel = st.decel, decelType = st.decel_type, trans = st.trans, width = st.width,
+        integratedPreset = presetRef(st.integrated),
+      }
+    end
+  end
+  if stepCount == 1 and type(p[1]) == "table" then
+    row.value = p[1].absolute
+    row.valueRaw = p[1].absolute_value
+    row.relative = p[1].relative
+  end
+  local timing = { fade = p.fade, delay = p.delay, speed = p.speed, phase = p.phase, measure = p.measure, gridPos = p.gridpos }
+  if stepCount >= 1 and #row.steps == stepCount then
+    row.phaser = merge({ supported = true, multiStep = stepCount > 1 }, timing)
+  else
+    row.phaser = merge({ supported = false, reason = stepCount == 0 and "GetProgPhaser reported active masks but returned no step table" or "GetProgPhaser step entries were not tables" }, timing)
+  end
+  row.absPreset = presetRef(p.abs_preset)
+  row.relPreset = presetRef(p.rel_preset)
+  emptyArray(row.steps)
+  return row
+end
+
+-- Per-universe metadata from the patch (nil when unreadable).
+local function universeInfo(n)
+  local info
+  pcall(function()
+    local pool = Patch().DmxUniverses
+    local u = pool:Ptr(n)
+    if not u then return end
+    info = { name = safeProp(u, "name"), granted = yesNo(textProp(u, "Granted")), request = textProp(u, "Request"), portOut = yesNo(textProp(u, "PortOut")), used = numProp(u, "Used"), coarseParams = numProp(u, "CoarseParams"), mergeMode = textProp(u, "MergeMode") }
+  end)
+  return info
+end
+
+-- "universe.address" -> { fid, channel, part } for every patched RT channel address, built from the fixture list.
+local function patchMap(limitations)
+  local okN, n = callApi("GetRTChannelCount")
+  if okN and type(n) == "number" and n > 6000 then
+    table.insert(limitations, string.format("patch lookup skipped: %d RT channels exceed the per-request bound (6000)", n))
+    return nil
+  end
+  local okL, list = pcall(ObjectList, "Fixture Thru")
+  if not okL or type(list) ~= "table" then table.insert(limitations, "patch lookup unavailable: ObjectList('Fixture Thru') failed"); return nil end
+  local map, any = {}, false
+  for _, fx in ipairs(list) do
+    local okR, rts = callApi("GetRTChannels", fx, true)
+    if okR and type(rts) == "table" then
+      for _, rt in ipairs(rts) do
+        if isHandle(rt) then
+          any = true
+          local fid, ch = textProp(rt, "FID"), textProp(rt, "ChannelName")
+          for _, part in ipairs({ "Coarse", "Fine", "Ultra" }) do
+            local u, a = parseDmxAddr(textProp(rt, part))
+            if u then
+              local key = string.format("%d.%d", u, a)
+              if not map[key] then map[key] = { fid = fid, channel = ch, part = part:lower() } end
+            end
+          end
+        end
+      end
+    end
+  end
+  if not any then table.insert(limitations, "patch lookup found no RT channels (GetRTChannels unavailable or nothing patched)") end
+  return map
+end
+
+local MAX_PRESET_ROWS = 2000
+
+local function presetScalar(v)
+  if isHandle(v) then return presetRef(v) or safeCall(v, "AddrNative") end
+  if type(v) == "table" then return nil end
+  return v
+end
+
+-- Best-effort flattening of a GetPresetData entry into rows (one per phaser step); the table's
+-- exact shape is undocumented, so nested tables are followed with a dotted `path`.
+local function flattenPresetRows(entry, base, out, depth)
+  if depth > 4 or #out.rows >= MAX_PRESET_ROWS then out.truncated = true; return end
+  local row = merge({}, base)
+  local hasSteps, nested = false, {}
+  for k, v in pairs(entry) do
+    if type(k) == "number" then hasSteps = true
+    elseif type(v) == "table" and not isHandle(v) then nested[k] = v
+    else row[k] = presetScalar(v) end
+  end
+  if hasSteps then
+    for i, st in ipairs(entry) do
+      if #out.rows >= MAX_PRESET_ROWS then out.truncated = true; break end
+      local r = merge({}, row)
+      r.step = i
+      if type(st) == "table" then
+        for k, v in pairs(st) do if type(k) == "string" and (type(v) ~= "table" or isHandle(v)) then r[k] = presetScalar(v) end end
+      else
+        r.value = st
+      end
+      out.rows[#out.rows + 1] = r
+    end
+  elseif next(nested) == nil then
+    out.rows[#out.rows + 1] = row
+  end
+  for k, v in pairs(nested) do
+    local b = merge({}, row)
+    b.path = (base.path and (base.path .. ".") or "") .. tostring(k)
+    flattenPresetRows(v, b, out, depth + 1)
+  end
+end
+
+local function expandPreset(presetH, fidFilter, limitations)
+  local ok, data = callApi("GetPresetData", presetH, false, true)
+  if not ok then return { available = false, error = tostring(data) } end
+  if type(data) ~= "table" then return { available = false, error = "GetPresetData returned " .. type(data) } end
+  local out = { available = true, source = "GetPresetData", rows = {}, truncated = false, topLevelKeys = {}, meta = {} }
+  out.byFixturesPresent = type(data.by_fixtures) == "table"
+  for k, v in pairs(data) do
+    if #out.topLevelKeys < 50 then out.topLevelKeys[#out.topLevelKeys + 1] = tostring(k) end
+    if k == "by_fixtures" and type(v) == "table" then
+      for fid, entry in pairs(v) do
+        if type(entry) == "table" and (not fidFilter or fidFilter[tostring(fid)]) then flattenPresetRows(entry, { fid = tostring(fid) }, out, 0) end
+      end
+    elseif type(k) == "number" and type(v) == "table" then
+      if not fidFilter then flattenPresetRows(v, { uiChannel = k }, out, 0) end
+    elseif type(v) ~= "table" or isHandle(v) then
+      out.meta[tostring(k)] = presetScalar(v)
+    end
+  end
+  if fidFilter then
+    out.filterApplied = out.byFixturesPresent and "by_fixtures" or "none"
+    if not out.byFixturesPresent then table.insert(limitations, "fixtures filter could not be applied to preset data: GetPresetData returned no by_fixtures table") end
+  end
+  out.count = #out.rows
+  emptyArray(out.rows)
+  emptyArray(out.topLevelKeys)
+  return out
 end
 
 -------------------------------------------------------------------------------
@@ -711,6 +1391,385 @@ ops.api = function(args)
   local ok2, t2 = pcall(GetObjApiDescriptor)
   if ok2 and type(t2) == "table" then out.object = toJsonSafe(t2) end
   return out
+end
+
+-------------------------------------------------------------------------------
+-- Structured inspection ops (FR-07 .. FR-10). Read-only; not gated by state.lua.enabled.
+-------------------------------------------------------------------------------
+
+-- FR-07: attribute discovery for one (sub)fixture.
+--   args: { ref = "Fixture 601" | "Fixture 501.3", limit, offset, includeChannelSets }
+ops.fixtureAttributes = function(args)
+  local fx, main = resolveFixture(args.ref)
+  local limit, offset = pageArgs(args, 100, 500)
+  local includeSets = args.includeChannelSets == true
+  local limitations = {}
+  local res = fixtureIdentity(fx, main)
+  res.subfixtures = listSubfixtures(fx)
+  res.subfixtureCount = #res.subfixtures
+  local rtRows, rtSource = fixtureRtChannels(fx, main, limitations)
+  local rows = uiChannelAttributes(fx, includeSets, rtRows, limitations)
+  if rows then
+    res.source = "uiChannels"
+  else
+    rows = fixtureTypeAttributes(main, includeSets, rtRows, limitations)
+    res.source = "fixtureTypeWalk"
+  end
+  res.channels = emptyArray(rtRows or {})
+  res.channelsSource = rtSource
+  if rtRows and #rtRows == 0 and fx == main then table.insert(limitations, "no RT channels: the fixture has no DMX addresses (unpatched) so dmx mappings are omitted") end
+  local page = paginate(rows, limit, offset)
+  res.total, res.offset, res.count, res.attributes = page.total, page.offset, page.count, page.items
+  res.includeChannelSets = includeSets
+  res.limitations = emptyArray(limitations)
+  return res
+end
+
+-- FR-08: programmer content per UI channel.
+--   args: { scope = "all" | "selection" | "fixtures", fixtures = "Fixture 1 Thru 5", limit, offset, maxChannels }
+ops.programmer = function(args)
+  local scope = args.scope or "all"
+  local limit, offset = pageArgs(args, 200, 5000)
+  local maxChannels = math.floor(tonumber(args.maxChannels) or 5000)
+  if maxChannels < 1 then maxChannels = 1 elseif maxChannels > 50000 then maxChannels = 50000 end
+  local limitations, indices = {}, {}
+  local enumerated = true
+  if scope == "selection" then
+    local ok, t = callApi("SelectionTable")
+    if ok and type(t) == "table" then
+      for _, v in ipairs(t) do if type(v) == "number" then indices[#indices + 1] = math.floor(v) end end
+    else
+      enumerated = false
+      table.insert(limitations, "the current selection could not be enumerated: " .. (ok and ("SelectionTable returned " .. type(t)) or tostring(t)))
+    end
+  elseif scope == "fixtures" then
+    if type(args.fixtures) ~= "string" or args.fixtures == "" then error("args.fixtures (string) is required for scope 'fixtures'") end
+    local list = resolveMany(args.fixtures)
+    local seen = {}
+    for _, h in ipairs(list) do collectSubfixtureIndices(h, indices, seen, 0, limitations) end
+    if #indices == 0 then
+      enumerated = false
+      table.insert(limitations, string.format("no (sub)fixture patch indices could be read for '%s'", args.fixtures))
+    end
+  elseif scope == "all" then
+    local ok, n = callApi("GetSubfixtureCount")
+    if ok and type(n) == "number" then
+      for i = 1, math.floor(n) - 1 do indices[#indices + 1] = i end
+    else
+      enumerated = false
+      table.insert(limitations, "the patch could not be enumerated: " .. (ok and ("GetSubfixtureCount returned " .. type(n)) or tostring(n)))
+    end
+  else
+    error("args.scope must be one of all, selection, fixtures")
+  end
+
+  local coverage = { complete = false, scannedFixtures = 0, totalFixtures = #indices, scannedChannels = 0 }
+  local stats = { channelsWithData = 0, channelsWithStepsButInactiveMask = 0, channelErrors = 0 }
+  local rows, attrCache = {}, {}
+  local stopped, firstError = nil, nil
+  for i, idx in ipairs(indices) do
+    if coverage.scannedChannels >= maxChannels then
+      stopped = string.format("channel budget (%d) reached before (sub)fixture index %d", maxChannels, idx)
+      break
+    end
+    local okS, sf = callApi("GetSubfixture", idx)
+    if not (okS and isHandle(sf)) then sf = nil end
+    local okU, uis = callApi("GetUIChannels", idx, false)
+    if okU and type(uis) == "table" then
+      for _, u in ipairs(uis) do
+        local ui = uiIndexOf(u)
+        if ui ~= nil then
+          coverage.scannedChannels = coverage.scannedChannels + 1
+          local okP, p = callApi("GetProgPhaser", ui, false)
+          if not okP then
+            stats.channelErrors = stats.channelErrors + 1
+            firstError = firstError or tostring(p)
+          elseif type(p) == "table" then
+            local row = programmerRow(p, ui, idx, sf, attrCache, stats)
+            if row then rows[#rows + 1] = row end
+          end
+        end
+      end
+    else
+      stats.channelErrors = stats.channelErrors + 1
+      firstError = firstError or (okU and ("GetUIChannels returned " .. type(uis)) or tostring(uis))
+    end
+    coverage.scannedFixtures = i
+  end
+  coverage.complete = enumerated and stopped == nil and coverage.scannedFixtures == #indices and stats.channelErrors == 0
+  if stopped then table.insert(limitations, stopped .. "; raise maxChannels or narrow the scope") end
+  if firstError then table.insert(limitations, string.format("%d channel/fixture read(s) failed, first error: %s", stats.channelErrors, firstError)) end
+  if stats.channelsWithStepsButInactiveMask > 0 then
+    table.insert(limitations, string.format("%d channel(s) returned step data with all activity masks zero and were treated as empty", stats.channelsWithStepsButInactiveMask))
+  end
+  local page = paginate(rows, limit, offset)
+  return {
+    scope = scope, fixtures = args.fixtures, source = "programmer",
+    note = "rows are programmer content read with GetProgPhaser; they are not output values (use fixtureOutput or dmx for output)",
+    coverage = coverage, stats = stats, maxChannels = maxChannels,
+    selectionCount = scope == "selection" and #indices or nil,
+    total = page.total, offset = page.offset, count = page.count, rows = page.items,
+    limitations = emptyArray(limitations),
+  }
+end
+
+-- FR-09: DMX output per RT channel of one (sub)fixture.
+--   args: { ref, nonzeroOnly, limit, offset }
+ops.fixtureOutput = function(args)
+  local fx, main = resolveFixture(args.ref)
+  local limit, offset = pageArgs(args, 200, 2000)
+  local nonzeroOnly = args.nonzeroOnly == true
+  local limitations = {}
+  local res = fixtureIdentity(fx, main)
+  local rts, rtSource = fixtureRtChannels(fx, main, limitations)
+  rts = rts or {}
+  local metaMap, metaSource = {}, nil
+  if #rts > 0 then metaMap, metaSource = channelMetaMap(fx, main, rts, limitations) end
+  local notGranted, rows = {}, {}
+  for _, rt in ipairs(rts) do
+    local row = { rtIndex = rt.rtIndex, channel = rt.channel, coarse = rt.coarse, fine = rt.fine, ultra = rt.ultra, bits = rt.bits, default = rt.default }
+    local raw, complete, anyAddr = 0, true, false
+    for _, part in ipairs({ "coarse", "fine", "ultra" }) do
+      local u, a = parseDmxAddr(rt[part])
+      if u then
+        anyAddr = true
+        if part == "coarse" then row.universe, row.address = u, a end
+        local ok, v = callApi("GetDMXValue", a, u, false)
+        if ok and type(v) == "number" then
+          v = math.floor(v)
+          raw = raw * 256 + v
+          row[part .. "Value"] = v
+        else
+          complete = false
+          if not notGranted[u] then
+            notGranted[u] = true
+            table.insert(limitations, string.format("universe %d not granted: GetDMXValue returned %s", u, ok and "nil" or ("an error (" .. tostring(v) .. ")")))
+          end
+        end
+      end
+    end
+    if not anyAddr then
+      row.patched = false
+    else
+      row.patched = true
+      if complete then
+        row.value = raw
+        row.unit = "raw" .. tostring(rt.bits)
+        row.percent = round4(raw / (2 ^ rt.bits - 1) * 100)
+      end
+    end
+    local e = rt.channel and metaMap[rt.channel] or nil
+    if e then
+      row.attribute = e.attribute
+      row.attributeIndex = e.attributeIndex
+      row.physicalUnit = e.physicalUnit
+      local cf = pickFunction(e.functions, e.defaultFunction, row.value, rt.bits)
+      if cf then
+        row.channelFunction = cf.channelFunction
+        if row.value ~= nil then
+          local ph = toPhysical(row.value, rt.bits, cf)
+          if ph ~= nil then
+            row.physical, row.physicalFrom, row.physicalTo = ph, cf.physicalFrom, cf.physicalTo
+            row.conversion = "linear from channel function"
+          end
+          local cs = pickChannelSet(cf.channelSets, row.value, rt.bits)
+          if cs then row.channelSet = cs.name end
+        end
+      end
+      if (e.logicalCount or 1) > 1 then row.note = "DMX channel has several logical channels; the first is shown" end
+    end
+    if not (nonzeroOnly and row.value == 0) then rows[#rows + 1] = row end
+  end
+  if #rts == 0 and fx == main then table.insert(limitations, "the fixture has no RT channels (unpatched or no DMX mode); there is no output to read") end
+  res.channelsSource = rtSource
+  res.metaSource = metaSource
+  table.insert(limitations, "per-attribute cooked output is not exposed by the 2.5.1 Lua API; values are raw DMX output per RT channel, physical is derived linearly from the channel function range")
+  local page = paginate(rows, limit, offset)
+  res.source = "dmx output"
+  res.note = "DMX output as the console sends it (8-bit per address, combined to 16/24-bit per RT channel); programmer values are not included"
+  res.unit = "raw per row (see bits: raw8, raw16 or raw24) plus derived percent"
+  res.nonzeroOnly = nonzeroOnly
+  res.total, res.offset, res.count, res.channels = page.total, page.offset, page.count, page.items
+  res.limitations = emptyArray(limitations)
+  return res
+end
+
+-- FR-09: raw universe read.
+--   args: { universe, from, to, nonzeroOnly, percent, patched }
+ops.dmx = function(args)
+  local universe = tonumber(args.universe)
+  if not universe or universe ~= math.floor(universe) then error("args.universe must be an integer") end
+  local maxU = 1024
+  pcall(function()
+    local c = Patch().DmxUniverses:Count()
+    if type(c) == "number" and c > 0 then maxU = c end
+  end)
+  if universe < 1 or universe > maxU then error(string.format("args.universe must be between 1 and %d", maxU)) end
+  local from = tonumber(args.from) or 1
+  local to = tonumber(args.to) or from
+  if from ~= math.floor(from) or to ~= math.floor(to) then error("args.from and args.to must be integers") end
+  if from < 1 or from > 512 or to < 1 or to > 512 then error("args.from and args.to must be between 1 and 512") end
+  if from > to then error("args.from must be <= args.to") end
+  local percent = args.percent == true
+  local nonzeroOnly = args.nonzeroOnly == true
+  local limitations, values = {}, {}
+  local info = universeInfo(universe)
+  local granted, readVia
+  local okU, tbl = callApi("GetDMXUniverse", universe, percent)
+  if okU and type(tbl) == "table" then
+    granted, readVia = true, "GetDMXUniverse"
+    for ch = from, to do
+      local v = tbl[ch]
+      if type(v) == "number" and (not nonzeroOnly or v ~= 0) then values[#values + 1] = { channel = ch, value = v } end
+    end
+  else
+    readVia = "GetDMXValue"
+    local anyValue, okAny = false, false
+    for ch = from, to do
+      local ok, v = callApi("GetDMXValue", ch, universe, percent)
+      if ok then okAny = true end
+      if ok and type(v) == "number" then
+        anyValue = true
+        if not nonzeroOnly or v ~= 0 then values[#values + 1] = { channel = ch, value = v } end
+      end
+    end
+    if anyValue then
+      granted = true
+    elseif okAny then
+      granted = false
+      table.insert(limitations, string.format("universe %d not granted: the console returned nil for every address (DmxUniverse Granted = %s)", universe, tostring(info and info.granted)))
+    else
+      table.insert(limitations, "GetDMXUniverse and GetDMXValue are unavailable: " .. tostring(tbl))
+    end
+  end
+  if info and info.granted ~= nil and granted ~= nil and info.granted ~= granted then
+    table.insert(limitations, "the DmxUniverse Granted property disagrees with the read result; the read result is reported")
+  end
+  local patched
+  if args.patched == true then
+    local map = patchMap(limitations)
+    if map then
+      patched = "rtChannels"
+      for _, v in ipairs(values) do
+        local hit = map[string.format("%d.%d", universe, v.channel)]
+        if hit then v.patched = hit else v.patched = false end
+      end
+    end
+  else
+    table.insert(limitations, "patch lookup not performed (set patched: true to map addresses to fixtures through the RT channels)")
+  end
+  return {
+    universe = universe, granted = granted, universeInfo = info, from = from, to = to,
+    unit = percent and "percent" or "raw8", nonzeroOnly = nonzeroOnly, readVia = readVia, patched = patched,
+    count = #values, values = emptyArray(values), source = "dmx output",
+    note = "DMX output per address as the console sends it; programmer values are not included",
+    limitations = emptyArray(limitations),
+  }
+end
+
+-- FR-10: stored cue content that the 2.5.1 API exposes (cue/part properties, recipes, preset references).
+--   args: { ref = "Sequence 1 Cue 2" } or { sequence, cue }, plus part, fixtures, expandPresets
+ops.cueContents = function(args)
+  local ref = args.ref
+  if ref == nil then
+    if args.sequence == nil or args.cue == nil then error("args.ref, or args.sequence and args.cue, are required") end
+    local seq = tostring(args.sequence)
+    local seqRef = seq:match("^%d+$") and ("Sequence " .. seq) or ('Sequence "' .. seq .. '"')
+    ref = seqRef .. " Cue " .. tostring(args.cue)
+  end
+  local cue = resolve(ref)
+  local cls = safeCall(cue, "GetClass")
+  if cls ~= "Cue" then error(string.format("'%s' resolved to a %s, not a Cue", ref, tostring(cls))) end
+  local limitations = {}
+  local seq = safeCall(cue, "Parent")
+  local children = safeCall(cue, "Children") or {}
+  local res = {
+    ref = ref, source = "cue object tree (recipes and preset references only)", trackedValues = "not_reconstructed",
+    sequence = seq and { name = safeProp(seq, "name"), tracking = textProp(seq, "Tracking"), priority = textProp(seq, "Priority") } or nil,
+    cue = {
+      no = textProp(cue, "No"), name = safeProp(cue, "name"), trigType = textProp(cue, "TrigType"), trigTime = textProp(cue, "TrigTime"),
+      trigSound = textProp(cue, "TrigSound"), release = textProp(cue, "Release"), assert = textProp(cue, "Assert"),
+      allowDuplicates = textProp(cue, "AllowDuplicates"), mibPreference = textProp(cue, "MibPreference"), ["break"] = textProp(cue, "Break"),
+      note = textProp(cue, "Note"), partCount = #children,
+    },
+    parts = {}, presets = {},
+  }
+  local wantPart = tonumber(args.part)
+  local fidFilter
+  if args.fixtures ~= nil and args.fixtures ~= "" then
+    fidFilter = {}
+    for _, h in ipairs(resolveMany(args.fixtures)) do
+      local f = textProp(h, "FID")
+      if f then fidFilter[tostring(f)] = true end
+    end
+  end
+  local expand = args.expandPresets == true
+  local anyOwnData = false
+  for _, part in ipairs(children) do
+    local pno = numProp(part, "Part")
+    if wantPart == nil or pno == wantPart then
+      local p = {
+        part = pno, name = safeProp(part, "name"), cuePart = textProp(part, "CuePart"),
+        timing = {
+          cueFade = textProp(part, "CueFade"), cueDelay = textProp(part, "CueDelay"), cueInFade = textProp(part, "CueInFade"), cueInDelay = textProp(part, "CueInDelay"),
+          cueOutFade = textProp(part, "CueOutFade"), cueOutDelay = textProp(part, "CueOutDelay"), snapDelay = textProp(part, "SnapDelay"),
+          duration = textProp(part, "Duration"), indivFade = textProp(part, "IndivFade"), indivDelay = textProp(part, "IndivDelay"),
+          transition = textProp(part, "Transition"), trackingDistance = textProp(part, "TrackingDistance"),
+        },
+        command = { text = textProp(part, "Command"), delay = textProp(part, "CommandDelay"), enabled = yesNo(textProp(part, "CommandEnabled")) },
+        mib = { mode = textProp(part, "MibMode"), target = textProp(part, "MibTarget"), fade = textProp(part, "MibFade"), delay = textProp(part, "MibDelay") },
+        ownDataPresent = yesNo(textProp(part, "OwnDataPresent")), ownNonCookedDataPresent = yesNo(textProp(part, "OwnNonCookedDataPresent")),
+        memoryType = textProp(part, "MemoryType"), recipes = {}, otherChildren = {},
+      }
+      for _, r in ipairs(safeCall(part, "Children") or {}) do
+        if safeCall(r, "GetClass") == "StandardRecipe" then
+          local presetH = handleProp(r, "Preset")
+          local rec = {
+            index = safeCall(r, "Index"), name = safeProp(r, "name"), enabled = yesNo(textProp(r, "Enabled")),
+            selection = textProp(r, "Selection"), selectionMode = textProp(r, "SelectionMode"), preset = textProp(r, "Preset"), values = textProp(r, "Values"),
+            fadeX = textProp(r, "FadeX"), delayX = textProp(r, "DelayX"), speedX = textProp(r, "SpeedX"), phaseX = textProp(r, "PhaseX"),
+            matricks = textProp(r, "MAtricks"), filter = textProp(r, "Filter"), generator = textProp(r, "Generator"),
+          }
+          if presetH then
+            rec.presetRef = { name = safeProp(presetH, "name"), addrNative = safeCall(presetH, "AddrNative"), addr = safeCall(presetH, "Addr"), class = safeCall(presetH, "GetClass") }
+            rec.presetResolved = true
+            if expand then
+              local key = rec.presetRef.addrNative or rec.presetRef.addr or rec.presetRef.name or tostring(rec.preset)
+              rec.presetDataKey = key
+              if res.presets[key] == nil then res.presets[key] = merge({ preset = rec.presetRef }, expandPreset(presetH, fidFilter, limitations)) end
+            end
+          elseif rec.preset ~= nil then
+            rec.presetResolved = false
+            table.insert(limitations, string.format("part %s recipe %s references preset %s which did not resolve to an object", tostring(pno), tostring(rec.index), tostring(rec.preset)))
+          end
+          p.recipes[#p.recipes + 1] = rec
+        else
+          p.otherChildren[#p.otherChildren + 1] = { name = safeProp(r, "name"), class = safeCall(r, "GetClass") }
+        end
+      end
+      emptyArray(p.recipes)
+      emptyArray(p.otherChildren)
+      if p.ownDataPresent == true then anyOwnData = true end
+      res.parts[#res.parts + 1] = p
+    end
+  end
+  if wantPart ~= nil and #res.parts == 0 then error(string.format("'%s' has no Part %s", ref, tostring(wantPart))) end
+  emptyArray(res.parts)
+  if anyOwnData then
+    table.insert(limitations, "hard (non-recipe) fixture values stored in a cue part are not exposed by the 2.5.1 Lua API (no GetCueData); only recipe and preset references are readable")
+  end
+  table.insert(limitations, "tracked values are not reconstructed: a part lists only what is stored in it; attributes tracked from earlier cues are absent")
+  if fidFilter then
+    if expand then
+      table.insert(limitations, "fixtures filter applied to expanded preset data (by_fixtures) only; recipe selections (groups/ranges) were not expanded")
+    else
+      table.insert(limitations, "fixtures filter not applied: recipe selections are not expanded and presets were not expanded (set expandPresets)")
+    end
+  end
+  if not expand then res.presets = nil end
+  res.expandPresets = expand
+  res.limitations = emptyArray(limitations)
+  return res
 end
 
 ops.stop = function(args)
