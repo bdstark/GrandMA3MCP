@@ -17,7 +17,8 @@
  *   - `Fixture 1 Thru 5` / `Group 3` use the SelectFixtures default function. When the current
  *     selection has no active programmer values the new fixtures are ADDED to it; when the selected
  *     fixtures have active values the selection is REPLACED. Only `ClearSelection` first makes the
- *     result independent of prior state.
+ *     result independent of prior state, which is why the set_* tools send it by default for an
+ *     explicit `fixtures` target (add_to_selection: true keeps the existing selection).
  *   - `Attribute "<name>" At Absolute <ValueType> <value>` applies a value to the current selection
  *     in the programmer. Without a value type the user profile's readout decides what the number
  *     means, so the tools always send an explicit value-type keyword when the caller names a unit.
@@ -210,13 +211,14 @@ async function verifySelection(bridge: Gma3Bridge, expectEmpty: boolean, steps: 
 interface TargetArgs {
   fixtures?: string;
   use_selection?: boolean;
-  replace_selection?: boolean;
+  add_to_selection?: boolean;
 }
 
 interface ResolvedTarget {
   /** Normalised selection expression, or null when the current selection is used. */
   selection: string | null;
-  replace: boolean;
+  /** Keep the existing selection and add `selection` to it (explicit opt-in). Default: replace it. */
+  additive: boolean;
   target: Record<string, unknown>;
 }
 
@@ -224,27 +226,32 @@ function validateTarget(v: Validator, args: TargetArgs): ResolvedTarget | undefi
   const which = v.check(() => exactlyOne({ fixtures: args.fixtures, use_selection: args.use_selection }, "target options"));
   let selection: string | null = null;
   if (args.fixtures !== undefined) selection = v.check(() => fixtureSelection("fixtures", args.fixtures)) ?? null;
-  if (args.replace_selection && which === "use_selection") v.fail("replace_selection only applies with `fixtures`; it cannot be combined with use_selection");
+  if (args.add_to_selection && which === "use_selection") v.fail("add_to_selection only applies with `fixtures`; it cannot be combined with use_selection");
   if (!v.ok) return undefined;
   return {
     selection,
-    replace: Boolean(args.replace_selection),
-    target: selection ? { fixtures: selection } : { selection: "current" },
+    additive: Boolean(args.add_to_selection),
+    target: selection ? { fixtures: selection, ...(args.add_to_selection ? { addToSelection: true } : {}) } : { selection: "current" },
   };
 }
 
-/** Steps that establish the target selection: read-only check, optional ClearSelection, select. */
+/**
+ * Steps that establish the target selection: read-only check, ClearSelection (unless additive),
+ * select. An explicit `fixtures` target means exactly those fixtures: without ClearSelection the
+ * console would ADD them to a selection that has no active values, and the values would also land
+ * on fixtures the caller never named. ClearSelection only deselects; programmer values are kept.
+ */
 function targetSteps(bridge: Gma3Bridge, t: ResolvedTarget, warnings: string[]): Array<{ name: string; run: StepFn }> {
   if (t.selection === null) {
     return [{ name: "check_selection", run: checkSelectionStep(bridge, warnings) }];
   }
   const plan: Array<{ name: string; run: StepFn }> = [{ name: "resolve_target", run: resolveTargetStep(bridge, t.selection) }];
-  if (t.replace) {
-    plan.push({ name: "clear_selection", run: () => commandStep(bridge, "clear_selection", "ClearSelection") });
-  } else {
+  if (t.additive) {
     warnings.push(
-      `${t.selection} was added to the current selection (grandMA3 adds when the selection has no active values and replaces when it does); fixtures that were already selected also received the values. Pass replace_selection: true for exact targeting.`,
+      `add_to_selection: ${t.selection} was added to the current selection (grandMA3 adds when the selection has no active values and replaces when it does); fixtures that were already selected also received the values.`,
     );
+  } else {
+    plan.push({ name: "clear_selection", run: () => commandStep(bridge, "clear_selection", "ClearSelection") });
   }
   plan.push({ name: "select", run: () => commandStep(bridge, "select", t.selection as string) });
   return plan;
@@ -276,11 +283,12 @@ const targetShape = {
     .optional()
     .describe('Explicit target: fixture IDs/ranges ("1 Thru 5", "1 + 3 + 5 Thru 8", "Fixture 101.1") or a group ("Group 5"). Exactly one of fixtures / use_selection is required.'),
   use_selection: z.boolean().optional().describe("Apply to the fixtures currently selected on the console (explicit opt-in). Fails before sending when nothing is selected."),
-  replace_selection: z
+  add_to_selection: z
     .boolean()
     .optional()
     .describe(
-      "With `fixtures`: send ClearSelection before selecting so exactly those fixtures receive the values (default false: grandMA3 adds to a selection that has no active values). Never clears programmer values.",
+      "With `fixtures`: keep the fixtures already selected and add the target to them, so previously selected fixtures ALSO receive the values (explicit opt-in). " +
+        "Default false: ClearSelection is sent first so exactly the named fixtures are targeted. ClearSelection only deselects; programmer values are never cleared.",
     ),
 };
 
@@ -354,7 +362,7 @@ export const registerFixtureTools: RegisterTools = (server, ctx: ToolContext) =>
       title: "Set a fixture attribute",
       description:
         'Set one attribute (Dimmer, Pan, Zoom, ColorRGB_R, ...) to an absolute value in the programmer. Sends `Attribute "<name>" At Absolute [<unit keyword>] <value>` after establishing the target. ' +
-        "Target is explicit: `fixtures` (range/group) OR `use_selection: true`. With `fixtures` the tool SELECTS them first (changes the selection; adds to a selection without active values unless replace_selection is true). " +
+        "Target is explicit: `fixtures` (range/group) OR `use_selection: true`. With `fixtures` the tool sends ClearSelection and then SELECTS exactly those fixtures (the selection changes; previously selected fixtures are not affected unless add_to_selection is true). " +
         "Never clears programmer values. Without `unit` the number is interpreted by the user profile's readout. " +
         "Programmer values cannot be read back (verification unavailable); the console's command feedback is the only check, and a fixture without the attribute is not detected. " +
         "Serialised against this server's other mutations only.",
@@ -412,7 +420,7 @@ export const registerFixtureTools: RegisterTools = (server, ctx: ToolContext) =>
       title: "Set RGB colour",
       description:
         'Set ColorRGB_R, ColorRGB_G and ColorRGB_B (each 0..100 %) in the programmer: three commands `Attribute "ColorRGB_R" At Absolute Percent <r>` etc., stopping at the first the console rejects (partial result). ' +
-        "Target is explicit: `fixtures` OR `use_selection: true`. With `fixtures` the tool SELECTS them first (changes the selection; adds unless replace_selection is true). Never clears programmer values. " +
+        "Target is explicit: `fixtures` OR `use_selection: true`. With `fixtures` the tool sends ClearSelection and then SELECTS exactly those fixtures (the selection changes; previously selected fixtures are not affected unless add_to_selection is true). Never clears programmer values. " +
         "Only the documented ColorRGB_* attributes are supported; fixtures without them are NOT detected before sending, the console's feedback is the only check and values cannot be read back (verification unavailable). " +
         "Serialised against this server's other mutations only.",
       inputSchema: {
@@ -463,7 +471,7 @@ export const registerFixtureTools: RegisterTools = (server, ctx: ToolContext) =>
       title: "Set Pan/Tilt",
       description:
         'Set Pan and/or Tilt in the programmer with explicit units: unit "degrees" sends `Attribute "Pan" At Absolute Physical <v>`, unit "percent" sends `... At Absolute Percent <v>` (0..100). Pan first, then Tilt; stops at the first rejected command. ' +
-        "Target is explicit: `fixtures` OR `use_selection: true`. With `fixtures` the tool SELECTS them first (changes the selection; adds unless replace_selection is true). Never clears programmer values. " +
+        "Target is explicit: `fixtures` OR `use_selection: true`. With `fixtures` the tool sends ClearSelection and then SELECTS exactly those fixtures (the selection changes; previously selected fixtures are not affected unless add_to_selection is true). Never clears programmer values. " +
         "Values cannot be read back (verification unavailable); fixtures without Pan/Tilt are only detected if the console rejects the command. Serialised against this server's other mutations only.",
       inputSchema: {
         ...targetShape,

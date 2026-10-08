@@ -17,8 +17,9 @@ Absolute, Percent, PercentFine, Physical, Natural, Decimal8/16/24, ClearSelectio
 * `Fixture 1 Thru 5` and `Group 3` run the default function **SelectFixtures**. The manual: *if only
   fixtures are selected, SelectFixtures adds fixtures to the selection; if fixtures are selected and
   activated in the programmer, it replaces the selection.* The result of a plain select therefore
-  depends on programmer state. Only `ClearSelection` first (`clear_first` / `replace_selection`) makes it
-  deterministic. The live test records which behaviour the console shows.
+  depends on programmer state (the live run confirmed both: added while nothing was active, replaced once
+  values were active). Only `ClearSelection` first makes it deterministic, which is why the set tools send
+  it by default for an explicit `fixtures` target and `gma3_select` offers `clear_first`.
 * `Attribute "<name>" At Absolute <ValueType> <value>` applies an absolute value to the **current
   selection** in the programmer. Without a value-type keyword the user profile's readout decides what the
   number means; the tools therefore always send the `Absolute` layer and, when a unit is given, an explicit
@@ -41,10 +42,15 @@ Absolute, Percent, PercentFine, Physical, Natural, Decimal8/16/24, ClearSelectio
 ## Rules common to all five tools
 
 * **Explicit targets.** The set tools require exactly one of `fixtures` (range or group) or
-  `use_selection: true`. Nothing defaults to the current selection.
+  `use_selection: true`. Nothing defaults to the current selection. An explicit `fixtures` target means
+  exactly those fixtures: the tool sends `ClearSelection` before selecting them, so fixtures that happened
+  to be selected before the call do not receive the values. `add_to_selection: true` is the explicit
+  opt-in to keep the existing selection and add to it (then previously selected fixtures also receive the
+  values, and the result says so in a warning).
 * **Nothing clears the programmer implicitly.** The only `Clear*` commands ever sent are
-  `ClearSelection` when the caller passes `clear_first` / `replace_selection: true`, and the command
-  chosen by `gma3_clear_programmer`'s mandatory `mode`. `ClearSelection` does not touch programmer values.
+  `ClearSelection` (by the set tools for an explicit `fixtures` target unless `add_to_selection` is set, and
+  by `gma3_select` with `clear_first`) and the command chosen by `gma3_clear_programmer`'s mandatory
+  `mode`. `ClearSelection` only deselects; it does not touch programmer values.
 * **Serialisation.** Each call runs its whole sequence (pre-checks, commands, read-back) inside the
   server's mutation lock, so two tool calls from this server never interleave their commands. The lock
   orders only this server's own requests: **it does not isolate the sequence from another console
@@ -93,7 +99,7 @@ Set one attribute to an absolute value.
 | Parameter | Type | Meaning |
 | --- | --- | --- |
 | `fixtures` / `use_selection` | exactly one | Target. |
-| `replace_selection` | boolean, default false | With `fixtures`: send `ClearSelection` first so exactly those fixtures are targeted. Invalid with `use_selection`. |
+| `add_to_selection` | boolean, default false | With `fixtures`: skip the `ClearSelection` that otherwise precedes the select, so the target is added to the current selection and previously selected fixtures also receive the values. Invalid with `use_selection`. |
 | `attribute` | string, required | `Dimmer`, `Pan`, `Tilt`, `Zoom`, `ColorRGB_R`, `Gobo1`, ... |
 | `value` | number, required | Absolute value in `unit`. |
 | `unit` | optional enum | `percent` (0..100), `percent_fine` (0..100), `physical` (degrees/Hz/rpm, signed), `natural` (the attribute's natural readout, signed), `decimal8` (0..255 int), `decimal16` (0..65535 int), `decimal24` (0..16777215 int). Omitted: no value-type keyword; the console's current readout applies (a warning says so). |
@@ -107,9 +113,9 @@ Commands, in order:
    definitions, otherwise `failed` and nothing is sent. This does **not** prove the target fixtures have it.
 2. With `use_selection`: `objects` ref `Selection` (read-only): `CountTotalSelected` must be >= 1,
    otherwise `failed` ("nothing is selected"). With `fixtures`: `objects` ref `<fixtures>` must resolve.
-3. With `fixtures` and `replace_selection`: `ClearSelection`.
-4. With `fixtures`: `<fixtures>` (selects them; see add-vs-replace above; a warning is added when
-   `replace_selection` is false).
+3. With `fixtures` (unless `add_to_selection`): `ClearSelection`.
+4. With `fixtures`: `<fixtures>` (selects them; with `add_to_selection` see add-vs-replace above and a
+   warning is added).
 5. `Attribute "<attribute>" At Absolute [<Unit keyword>] <value>` — e.g.
    `Attribute "Dimmer" At Absolute Percent 75`, `Attribute "Pan" At Absolute Physical -45.5`,
    `Attribute "Zoom" At Absolute 50` (no unit).
@@ -127,7 +133,7 @@ Set RGB colour, 0..100 % per component.
 
 | Parameter | Type | Meaning |
 | --- | --- | --- |
-| `fixtures` / `use_selection` / `replace_selection` | as above | Target. |
+| `fixtures` / `use_selection` / `add_to_selection` | as above | Target. |
 | `red`, `green`, `blue` | number 0..100, all required | Percent of `ColorRGB_R`, `ColorRGB_G`, `ColorRGB_B`. |
 
 Commands: target steps as in `gma3_set_attribute` (2–4), then
@@ -149,7 +155,7 @@ Set Pan and/or Tilt with explicit units.
 
 | Parameter | Type | Meaning |
 | --- | --- | --- |
-| `fixtures` / `use_selection` / `replace_selection` | as above | Target. |
+| `fixtures` / `use_selection` / `add_to_selection` | as above | Target. |
 | `pan`, `tilt` | number, at least one | Values in `unit`. Degrees are limited to -720..720, percent to 0..100. |
 | `unit` | `"degrees"` or `"percent"`, required | `degrees` → `Physical` keyword; `percent` → `Percent` keyword. |
 
@@ -176,8 +182,8 @@ fixtures 1 Thru 5 patched, see `test/live/README.md`). It:
 1. `ClearAll`, asserts `CountTotalSelected == 0`.
 2. `gma3_select "1 Thru 5"` → asserts `succeeded`, `matched`, count 5.
 3. `gma3_select "Fixture 1"` without `clear_first` → prints whether the console added (5) or replaced (1).
-4. `gma3_set_attribute` Dimmer 50 % with `replace_selection: true` → `succeeded`, every `cmd` feedback `OK`,
-   count still 5.
+4. `gma3_set_attribute` Dimmer 50 % on `fixtures: "1 Thru 5"` → `ClearSelection` then select, `succeeded`,
+   every `cmd` feedback `OK`, count exactly 5.
 5. `gma3_set_color` 100/0/0 and `gma3_set_position` pan 10°, tilt 20° on `use_selection` → never
    `unknown`; prints the summary when the fixtures lack those attributes.
 6. Asserts the selection is still 5 (no set tool clears it); repeats step 3 with active values present.

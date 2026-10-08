@@ -155,7 +155,7 @@ test("set_attribute: explicit fixtures are selected first, then the documented A
   const { result, isError } = await h.callJson("gma3_set_attribute", { fixtures: "1 Thru 5", attribute: "Dimmer", value: 75, unit: "percent" });
   assert.equal(isError, false, "a succeeded outcome with unavailable verification is not an MCP error");
   assert.equal(result.outcome, "succeeded");
-  assert.deepEqual(h.fake.commands, ["Fixture 1 Thru 5", 'Attribute "Dimmer" At Absolute Percent 75']);
+  assert.deepEqual(h.fake.commands, ["ClearSelection", "Fixture 1 Thru 5", 'Attribute "Dimmer" At Absolute Percent 75']);
   assert.equal(result.verification.status, "unavailable");
   assert.match(result.verification.detail, /gma3_programmer \(FR-08\)/);
   assert.equal(result.selectionChanged, true);
@@ -189,21 +189,31 @@ test("set_attribute: fixtures and use_selection are mutually exclusive and one i
   assert.match(r.result.validationErrors.join(), /mutually exclusive/);
   r = await h.callJson("gma3_set_attribute", { attribute: "Dimmer", value: 50 });
   assert.match(r.result.validationErrors.join(), /one of fixtures, use_selection is required/);
-  r = await h.callJson("gma3_set_attribute", { use_selection: true, replace_selection: true, attribute: "Dimmer", value: 50 });
-  assert.match(r.result.validationErrors.join(), /replace_selection only applies/);
+  r = await h.callJson("gma3_set_attribute", { use_selection: true, add_to_selection: true, attribute: "Dimmer", value: 50 });
+  assert.match(r.result.validationErrors.join(), /add_to_selection only applies/);
   assert.deepEqual(h.fake.commands, []);
 });
 
-test("set_attribute: replace_selection is the only way a set tool sends ClearSelection", async () => {
-  await h.callJson("gma3_set_attribute", { fixtures: "Group 2", attribute: "Dimmer", value: 100, unit: "percent", replace_selection: true });
+test("set_attribute: an explicit fixtures target replaces the selection (ClearSelection first) by default", async () => {
+  const { result } = await h.callJson("gma3_set_attribute", { fixtures: "Group 2", attribute: "Dimmer", value: 100, unit: "percent" });
   assert.deepEqual(h.fake.commands, ["ClearSelection", "Group 2", 'Attribute "Dimmer" At Absolute Percent 100']);
+  assert.equal(result.outcome, "succeeded");
+  assert.equal(result.selectionChanged, true);
+  assert.ok(!result.warnings.some((w: string) => /added to the current selection/.test(w)));
+});
+
+test("set_attribute: add_to_selection keeps the existing selection, skips ClearSelection and warns", async () => {
+  const { result } = await h.callJson("gma3_set_attribute", { fixtures: "2", attribute: "Dimmer", value: 100, unit: "percent", add_to_selection: true });
+  assert.deepEqual(h.fake.commands, ["Fixture 2", 'Attribute "Dimmer" At Absolute Percent 100']);
+  assert.equal(result.target.addToSelection, true);
+  assert.ok(result.warnings.some((w: string) => /add_to_selection: Fixture 2 was added to the current selection/.test(w)));
 });
 
 test("set_attribute: without a unit the console readout applies and a warning says so", async () => {
   const { result } = await h.callJson("gma3_set_attribute", { fixtures: "1", attribute: "Zoom", value: 0, unit: undefined });
   script({ attributes: ["Zoom"] });
   const r2 = await h.callJson("gma3_set_attribute", { fixtures: "1", attribute: "Zoom", value: 0 });
-  assert.deepEqual(h.fake.commands, ["Fixture 1", 'Attribute "Zoom" At Absolute 0']);
+  assert.deepEqual(h.fake.commands, ["ClearSelection", "Fixture 1", 'Attribute "Zoom" At Absolute 0']);
   assert.equal(r2.result.target.unit, "readout");
   assert.ok(r2.result.warnings.some((w: string) => /readout/.test(w)));
   assert.equal(result.outcome, "failed", "Zoom was not a known attribute in the first script");
@@ -278,6 +288,7 @@ test("set_color: three ColorRGB commands in R, G, B order with explicit Percent"
   const { result } = await h.callJson("gma3_set_color", { fixtures: "1 Thru 5", red: 100, green: 0, blue: 12.5 });
   assert.equal(result.outcome, "succeeded");
   assert.deepEqual(h.fake.commands, [
+    "ClearSelection",
     "Fixture 1 Thru 5",
     'Attribute "ColorRGB_R" At Absolute Percent 100',
     'Attribute "ColorRGB_G" At Absolute Percent 0',
@@ -285,7 +296,7 @@ test("set_color: three ColorRGB commands in R, G, B order with explicit Percent"
   ]);
   assert.equal(result.verification.status, "unavailable");
   assert.deepEqual(result.attributes, ["ColorRGB_R", "ColorRGB_G", "ColorRGB_B"]);
-  assert.deepEqual(clearCommands(h.fake.commands), []);
+  assert.deepEqual(clearCommands(h.fake.commands), ["ClearSelection"], "only the selection is cleared, never the programmer");
 });
 
 test("set_color: zero is a value and out-of-range or non-finite components are refused", async () => {
@@ -335,7 +346,7 @@ test("set_color: an unsupported fixture that silently accepts the command is not
 test("set_position: degrees use Physical, percent uses Percent, pan before tilt", async () => {
   let r = await h.callJson("gma3_set_position", { fixtures: "Group 1", pan: -90, tilt: 45.25, unit: "degrees" });
   assert.equal(r.result.outcome, "succeeded");
-  assert.deepEqual(h.fake.commands, ["Group 1", 'Attribute "Pan" At Absolute Physical -90', 'Attribute "Tilt" At Absolute Physical 45.25']);
+  assert.deepEqual(h.fake.commands, ["ClearSelection", "Group 1", 'Attribute "Pan" At Absolute Physical -90', 'Attribute "Tilt" At Absolute Physical 45.25']);
   assert.equal(r.result.valueType, "Physical");
   script({ selectionCount: 2 });
   r = await h.callJson("gma3_set_position", { use_selection: true, tilt: 0, unit: "percent" });
@@ -427,16 +438,21 @@ test("clear_programmer: a rejected clear reports failure and does not verify", a
 // Cross-cutting
 // ---------------------------------------------------------------------------
 
-test("no set tool sends a Clear* command unless replace_selection is requested", async () => {
+test("set tools send only ClearSelection, only for an explicit fixtures target, and never ClearActive/ClearAll", async () => {
   script({ selectionCount: 3 });
   await h.callJson("gma3_set_attribute", { fixtures: "1 Thru 3", attribute: "Dimmer", value: 50, unit: "percent" });
   await h.callJson("gma3_set_color", { fixtures: "1 Thru 3", red: 1, green: 2, blue: 3 });
   await h.callJson("gma3_set_position", { fixtures: "1 Thru 3", pan: 1, tilt: 2, unit: "degrees" });
+  assert.deepEqual(clearCommands(h.fake.commands), ["ClearSelection", "ClearSelection", "ClearSelection"], "one ClearSelection per explicit target, nothing else");
+  h.fake.requests.length = 0;
+  await h.callJson("gma3_set_attribute", { fixtures: "1 Thru 3", attribute: "Dimmer", value: 50, unit: "percent", add_to_selection: true });
+  await h.callJson("gma3_set_color", { fixtures: "1 Thru 3", red: 1, green: 2, blue: 3, add_to_selection: true });
+  await h.callJson("gma3_set_position", { fixtures: "1 Thru 3", pan: 1, tilt: 2, unit: "degrees", add_to_selection: true });
   await h.callJson("gma3_set_attribute", { use_selection: true, attribute: "Dimmer", value: 50, unit: "percent" });
   await h.callJson("gma3_set_color", { use_selection: true, red: 1, green: 2, blue: 3 });
   await h.callJson("gma3_set_position", { use_selection: true, pan: 1, unit: "percent" });
   await h.callJson("gma3_select", { fixtures: "4 Thru 6" });
-  assert.deepEqual(clearCommands(h.fake.commands), []);
+  assert.deepEqual(clearCommands(h.fake.commands), [], "additive targets, use_selection and gma3_select never clear anything");
   assert.ok(h.fake.commands.length >= 12);
 });
 
@@ -453,10 +469,12 @@ test("concurrent tool calls are serialised: their command sequences do not inter
   ]);
   for (const r of [a, b, c]) assert.equal(r.result.outcome, "succeeded", r.text);
   assert.deepEqual(h.fake.commands, [
+    "ClearSelection",
     "Fixture 1 Thru 2",
     'Attribute "ColorRGB_R" At Absolute Percent 1',
     'Attribute "ColorRGB_G" At Absolute Percent 1',
     'Attribute "ColorRGB_B" At Absolute Percent 1',
+    "ClearSelection",
     "Fixture 3 Thru 4",
     'Attribute "Pan" At Absolute Physical 10',
     'Attribute "Tilt" At Absolute Physical 20',

@@ -66,8 +66,8 @@ liveTest("fixture tools: select, dimmer, colour, position, ClearAll on fixtures 
     const afterAgain = await selectionCount(bridge);
     t.diagnostic(`after a second plain 'Fixture 1' the selection count is ${afterAgain} (5 = added, 1 = replaced)`);
 
-    // 3. Dimmer on an explicit target with replace_selection: the selection must be exactly 1..5 again.
-    const dim = await call("gma3_set_attribute", { fixtures: "1 Thru 5", attribute: "Dimmer", value: 50, unit: "percent", replace_selection: true });
+    // 3. Dimmer on an explicit target: ClearSelection is sent by default, so the selection must be exactly 1..5 again.
+    const dim = await call("gma3_set_attribute", { fixtures: "1 Thru 5", attribute: "Dimmer", value: 50, unit: "percent" });
     assert.notEqual(dim.outcome, "unknown", dim.summary);
     assert.equal(dim.outcome, "succeeded", dim.summary);
     assert.equal(dim.verification.status, "unavailable");
