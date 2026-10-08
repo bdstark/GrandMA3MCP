@@ -147,20 +147,37 @@ node scripts/bridge-cli.mjs children '{"ref":"DataPool.Sequences","fields":["Nam
 
 ### 3. Register the server with your MCP client
 
-Claude Code (project scope, already provided in `.mcp.json`):
+Claude Code reads a project-scope `.mcp.json` from the repository root. That file has to hold the absolute
+path of `dist/index.js`, so it is git-ignored rather than committed; generate it once per clone (and again
+if you move the directory):
 
 ```bash
-claude mcp add gma3 -- node /Users/bstark/Development/GrandMA3/dist/index.js
+sh scripts/mcp-config.sh
 ```
 
-Claude Desktop (`claude_desktop_config.json`):
+```powershell
+.\scripts\mcp-config.ps1
+```
+
+Both scripts take `--bridge-port <n>` / `-BridgePort <n>` to add `GMA3_BRIDGE_PORT` to the config (used
+with [an SSH tunnel on another local port](#remote-access-over-ssh)) and `--print` / `-Print` to print the
+JSON instead of writing it. If you prefer the `claude` CLI's own user-scope config, run this from the
+repository root instead; it needs no `.mcp.json`:
+
+```bash
+claude mcp add gma3 -- node "$PWD/dist/index.js"
+```
+
+Claude Desktop has no project config. Paste the output of `sh scripts/mcp-config.sh --print` (or
+`.\scripts\mcp-config.ps1 -Print`) into its `claude_desktop_config.json`, merging the `gma3` entry into an
+existing `mcpServers` object if there is one. The result looks like this, with the path of your checkout:
 
 ```json
 {
   "mcpServers": {
     "gma3": {
       "command": "node",
-      "args": ["/Users/bstark/Development/GrandMA3/dist/index.js"]
+      "args": ["/path/to/gma3-mcp/dist/index.js"]
     }
   }
 }
@@ -184,7 +201,7 @@ Claude Desktop / Claude Code configuration:
     "gma3": {
       "command": "docker",
       "args": ["run", "-i", "--rm", "--add-host=host.docker.internal:host-gateway",
-               "-v", "/Users/bstark/MALightingTechnology:/gma3:ro", "gma3-mcp"]
+               "-v", "/path/to/MALightingTechnology:/gma3:ro", "gma3-mcp"]
     }
   }
 }
@@ -200,52 +217,142 @@ both variables at `127.0.0.1`:
          "-e", "GMA3_BRIDGE_HOST=127.0.0.1", "-e", "GMA3_OSC_HOST=127.0.0.1", "gma3-mcp"]
 ```
 
-The volume mount is optional; it only enables `gma3_help`.
+The volume mount is optional; it only enables `gma3_help`. Point it at the grandMA3 user folder
+(`~/MALightingTechnology` on macOS), the one that contains `gma3_<version>/shared/language/HTML`.
 
 ### Remote access over SSH
 
 The bridge never listens on anything but `127.0.0.1`, so the only way to reach it from another machine
 is a tunnel that terminates on the console host and authenticates the client. SSH does exactly that and
-is already available on every platform onPC runs on.
+is already available on every platform onPC runs on: the `ssh` and `ssh-keygen` clients ship with macOS,
+Linux and Windows 10/11, and each has a built-in SSH server.
 
-**On the grandMA3 host**, enable an SSH server:
+The steps are: make a key pair on the machine that runs the MCP client, install its public key on the
+console host, turn password login off, and open the tunnel. Below, `user@console-host` is the account and
+address of the grandMA3 host.
 
-* macOS: System Settings > General > Sharing > Remote Login.
-* Windows: Settings > System > Optional features > add *OpenSSH Server*, then start the `sshd` service.
-* Linux: install and enable `openssh-server`.
-
-Use key-based authentication (`ssh-copy-id user@console-host`) and keep password login off if the host is
-on a shared network.
-
-**On the machine running the MCP client**, open a tunnel that forwards a local port to the bridge on the
-console host's loopback interface:
+#### 1. Make a key pair on the machine running the MCP client
 
 ```bash
-ssh -N -L 9800:127.0.0.1:9800 user@console-host
+ssh-keygen -t ed25519 -f ~/.ssh/gma3_console -C "gma3-mcp"
+```
+
+```powershell
+ssh-keygen -t ed25519 -f $env:USERPROFILE\.ssh\gma3_console -C "gma3-mcp"
+```
+
+This writes the private key `gma3_console`, which never leaves the client, and the one-line public key
+`gma3_console.pub`, which is safe to copy anywhere. A passphrase is optional; without one a script can
+open the tunnel unattended.
+
+#### 2. Enable the SSH server on the grandMA3 host and install the public key
+
+**macOS host:** System Settings > General > Sharing > Remote Login, and limit access to your user (the
+command-line equivalent is `sudo systemsetup -setremotelogin on`). Then, from the client:
+
+```bash
+ssh-copy-id -i ~/.ssh/gma3_console.pub user@console-host
+```
+
+From a Windows client, which has no `ssh-copy-id`:
+
+```powershell
+type $env:USERPROFILE\.ssh\gma3_console.pub | ssh user@console-host "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"
+```
+
+**Windows 10/11 host:** in an *administrator* PowerShell on the console host:
+
+```powershell
+Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
+Set-Service -Name sshd -StartupType Automatic
+Start-Service sshd
+Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP'   # added by the install; should show Enabled : True
+```
+
+Windows keeps the keys of administrator accounts in one shared, permission-restricted file instead of
+`~/.ssh/authorized_keys` (the default `sshd_config` has a `Match Group administrators` block for this).
+If the account you log in with is an administrator, which is the usual case on a show computer, paste the
+single line from `gma3_console.pub` into that file and fix its permissions:
+
+```powershell
+Add-Content -Force -Path "$env:ProgramData\ssh\administrators_authorized_keys" -Value 'ssh-ed25519 AAAA...your key... gma3-mcp'
+icacls.exe "$env:ProgramData\ssh\administrators_authorized_keys" /inheritance:r /grant "Administrators:F" /grant "SYSTEM:F"
+```
+
+For a non-administrator account, append the line to `$env:USERPROFILE\.ssh\authorized_keys` instead
+(create the `.ssh` folder if needed); no `icacls` step is required there.
+
+**Linux host:** `sudo apt install openssh-server && sudo systemctl enable --now ssh` (Debian/Ubuntu),
+then `ssh-copy-id -i ~/.ssh/gma3_console.pub user@console-host` from the client as for macOS.
+
+Check the key before going on. This must log in and exit without asking for a password:
+
+```bash
+ssh -i ~/.ssh/gma3_console user@console-host exit
+```
+
+#### 3. Turn password login off
+
+Once key login works, stop sshd from accepting passwords, so a guessed account password on a venue network
+is not enough to reach the bridge.
+
+* macOS (Ventura or newer, whose `sshd_config` includes `sshd_config.d/*`):
+
+  ```bash
+  sudo sh -c 'printf "PasswordAuthentication no\nKbdInteractiveAuthentication no\n" > /etc/ssh/sshd_config.d/100-keys-only.conf'
+  sudo sshd -T | grep -i -e passwordauthentication -e kbdinteractiveauthentication   # both print "no"
+  ```
+
+  launchd starts sshd per connection, so the next connection already uses the new setting.
+* Windows: in `C:\ProgramData\ssh\sshd_config` change `#PasswordAuthentication yes` to
+  `PasswordAuthentication no`, then `Restart-Service sshd`.
+* Linux: the same drop-in file as macOS, then `sudo systemctl restart ssh`.
+
+#### 4. Open the tunnel from the client
+
+Forward a local port to the bridge on the console host's loopback interface:
+
+```bash
+ssh -i ~/.ssh/gma3_console -N -L 9800:127.0.0.1:9800 user@console-host
 ```
 
 Leave it running (or use `-f` to background it, and `autossh` if you want it to reconnect). The MCP server
 runs on the client machine as usual and connects to `127.0.0.1:9800`, which is the near end of the tunnel,
-so no configuration change is needed. If port 9800 is taken locally, forward a different local port and
-set `GMA3_BRIDGE_PORT` to match:
+so no configuration change is needed.
 
-```bash
-ssh -N -L 19800:127.0.0.1:9800 user@console-host
+A host entry in `~/.ssh/config` (`%USERPROFILE%\.ssh\config` on Windows) keeps the command short, fails
+fast if the port cannot be forwarded, and notices a dropped link:
+
+```
+Host gma3-console
+    HostName console-host
+    User user
+    IdentityFile ~/.ssh/gma3_console
+    LocalForward 9800 127.0.0.1:9800
+    ExitOnForwardFailure yes
+    ServerAliveInterval 30
 ```
 
-```json
-{
-  "mcpServers": {
-    "gma3": {
-      "command": "node",
-      "args": ["/path/to/gma3-mcp/dist/index.js"],
-      "env": { "GMA3_BRIDGE_PORT": "19800" }
-    }
-  }
-}
+With that in place, `ssh -N gma3-console` opens the tunnel. If port 9800 is taken locally, forward a
+different local port and generate the MCP config with the matching `GMA3_BRIDGE_PORT`:
+
+```bash
+ssh -N -L 19800:127.0.0.1:9800 gma3-console
+sh scripts/mcp-config.sh --bridge-port 19800
 ```
 
 Check the tunnel with `node scripts/bridge-cli.mjs ping` (with `GMA3_BRIDGE_PORT` set if you changed it).
+
+Background reading, none of it required:
+
+* [SSH tunneling: client command and server configuration](https://www.ssh.com/academy/ssh/tunneling-example)
+  (ssh.com academy) explains local, remote and dynamic forwarding.
+* [SSH Tunneling - Local & Remote Port Forwarding (by Example)](https://www.youtube.com/watch?v=N8f5zv9UUMI)
+  is a short video walkthrough of the same.
+* Microsoft: [Get started with OpenSSH for Windows](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_install_firstuse)
+  and [OpenSSH key management](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_keymanagement),
+  which covers the `administrators_authorized_keys` rule above.
+* Apple: [Allow a remote computer to access your Mac](https://support.apple.com/guide/mac-help/allow-a-remote-computer-to-access-your-mac-mchlp1066/mac).
 
 Limits of the tunnel:
 

@@ -19,3 +19,6 @@ tmp/
 
 # Test coverage output
 coverage/
+
+# Generated per clone by scripts/mcp-config.sh / .ps1 (contains an absolute local path)
+.mcp.json
