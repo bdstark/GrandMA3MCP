@@ -18,6 +18,8 @@
 --   Plugin "gma3_mcp_bridge" "lua off"          disable while running
 --   Plugin "gma3_mcp_bridge" "lua luatime=2000 luasteps=5000000"
 --                                               enable with a 2 s / 5 M VM-instruction budget per request
+--   Plugin "gma3_mcp_bridge" "lua luahook=replace"
+--                                               enforce the budget even over the console's own hook
 -- Arguments are whitespace separated tokens; "luatime" is milliseconds of wall-clock time and
 -- "luasteps" a count of Lua VM instructions (0 = unlimited). A request that exceeds its budget is
 -- aborted with an error so the bridge loop (and the console) regain control. The budget is
@@ -28,9 +30,13 @@
 -- creates. It is a best-effort guard against runaway scripts, not a sandbox: it cannot interrupt
 -- a C function such as Cmd() that blocks, and a script that sets out to escape still can (Lua on
 -- the console has os/io anyway). Only Lua submitted through the "lua" op is budgeted; the
--- structured ops are not. The console's own hook on the plugin thread (an external C hook) is
--- replaced while a chunk runs and cannot be restored from Lua; it comes back when the plugin
--- is restarted. ping reports it under lua.consoleHook.
+-- structured ops are not. The console keeps its own hook on the plugin thread (an external C
+-- hook on 2.5.1) whose purpose MA does not document. By default (luahook=preserve) it is left
+-- alone and the instruction budget is then NOT enforced: only the deadline is checked when the
+-- chunk yields or returns, so a busy loop cannot be stopped. "luahook=replace" installs the
+-- budget hook over it for the duration of the chunk; the console's hook cannot be re-created
+-- from Lua and is gone until the plugin restarts. ping reports both under lua.consoleHook /
+-- lua.hookMode / lua.bounded, and every lua result carries a budget.instructionHookEnforced flag.
 --
 -- The bridge only ever listens on 127.0.0.1. It has no authentication, so it is never exposed
 -- to the network; a "<host>:<port>" argument is rejected. For remote access forward the port
@@ -49,13 +55,19 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.3.2"
+local VERSION      = "0.3.3"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
 local LUA_DEFAULT_ENABLED   = false
 local LUA_DEFAULT_MAX_MS    = 5000
 local LUA_DEFAULT_MAX_STEPS = 20000000
+-- What to do with a hook the console itself keeps on the plugin thread (an external C hook on
+-- onPC 2.5.1). "preserve" (default) leaves it alone: a chunk then runs without the instruction
+-- hook and only the wall-clock deadline is checked, at yields and at return, so a busy loop cannot
+-- be stopped. "replace" installs the budget hook over it for the duration of the chunk; the
+-- console's hook cannot be re-created from Lua and is gone until the plugin restarts.
+local LUA_DEFAULT_HOOK_MODE = "preserve"
 local LUA_HOOK_INTERVAL     = 1000   -- VM instructions between budget checks
 local BIND_HOST    = "127.0.0.1"  -- fixed: the bridge is unauthenticated and must never leave loopback
 local MAX_DEPTH    = 6
@@ -64,7 +76,8 @@ local MAX_DEPTH    = 6
 _G.__gma3_mcp_bridge = _G.__gma3_mcp_bridge or { running = false, host = BIND_HOST, port = DEFAULT_PORT, server = nil, clients = {}, requests = 0 }
 local state = _G.__gma3_mcp_bridge
 -- Lua execution policy (older state tables from before 0.2.0 do not have it).
-state.lua = state.lua or { enabled = LUA_DEFAULT_ENABLED, maxMs = LUA_DEFAULT_MAX_MS, maxSteps = LUA_DEFAULT_MAX_STEPS }
+state.lua = state.lua or { enabled = LUA_DEFAULT_ENABLED, maxMs = LUA_DEFAULT_MAX_MS, maxSteps = LUA_DEFAULT_MAX_STEPS, hookMode = LUA_DEFAULT_HOOK_MODE }
+state.lua.hookMode = state.lua.hookMode or LUA_DEFAULT_HOOK_MODE
 
 -- Log to the System Monitor (Echo), the Command Line History (Printf) and a log file in the temp folder.
 local function logFile()
@@ -1056,8 +1069,20 @@ end
 -------------------------------------------------------------------------------
 
 local hookSupported = type(debug) == "table" and type(debug.sethook) == "function"
--- What debug.gethook() found on the plugin thread before the first chunk ran, for ping/status.
-local consoleHookSeen = nil
+local function describeHook(h, mask, count)
+  if h == nil then return "none" end
+  local kind = type(h) == "string" and h or "Lua function"   -- "external hook" = set from C by the console
+  return string.format("%s (mask %q, count %s)", kind, tostring(mask or ""), tostring(count or 0))
+end
+
+-- The hook currently on the plugin thread (ping runs on that thread, like every structured op).
+-- An external (C) hook is the console's own; Lua can neither call nor re-create it.
+local function currentThreadHook()
+  if not hookSupported then return nil, false end
+  local okH, h, m, c = pcall(debug.gethook)
+  if not okH then return nil, false end
+  return { hook = h, mask = m, count = c }, (h ~= nil and type(h) ~= "function")
+end
 
 local function now()
   local ok, t = pcall(socket.gettime)
@@ -1066,26 +1091,32 @@ local function now()
 end
 
 local function luaPolicyInfo()
+  local found, consoleHookExternal = currentThreadHook()
   return {
     enabled  = state.lua.enabled and true or false,
     maxMs    = state.lua.maxMs,
     maxSteps = state.lua.maxSteps,
-    bounded  = hookSupported,
-    note     = hookSupported
-      and "budget is enforced by a VM instruction hook on the plugin thread while a chunk runs; a blocking C call (e.g. Cmd opening a dialog) cannot be interrupted"
-      or "debug.sethook is unavailable in this Lua engine: no execution bound can be enforced",
-    -- Hook found on the plugin thread before the first chunk ran (the console's own, if any). An
-    -- "external hook" is set from C by onPC and cannot be re-created from Lua once replaced; the
-    -- thread stays without it until the plugin is restarted.
-    consoleHook = consoleHookSeen or "not yet inspected (no gma3_lua request has run)",
+    hookMode = state.lua.hookMode or LUA_DEFAULT_HOOK_MODE,
+    -- True when the instruction hook is actually installed for chunks: debug.sethook exists and
+    -- either no external console hook is on the plugin thread or hookMode is "replace".
+    bounded  = hookSupported and (consoleHookExternal ~= true or state.lua.hookMode == "replace"),
+    note     = not hookSupported
+      and "debug.sethook is unavailable in this Lua engine: no execution bound can be enforced"
+      or (consoleHookExternal == true and state.lua.hookMode ~= "replace")
+      and "the console keeps its own hook on the plugin thread and it is preserved (luahook=preserve): the instruction budget is NOT enforced, only the wall-clock deadline is checked when a chunk yields or returns, so a busy loop cannot be stopped; start with luahook=replace to enforce hard quotas at the cost of that console hook"
+      or "budget is enforced by a VM instruction hook on the plugin thread while a chunk runs; a blocking C call (e.g. Cmd opening a dialog) cannot be interrupted",
+    -- The hook on the plugin thread right now (the console's own, if any; "none" after a replace run
+    -- until the plugin restarts). An "external hook" is set from C by onPC.
+    consoleHook = found and describeHook(found.hook, found.mask, found.count) or "none",
   }
 end
 
 local function describeLuaPolicy()
   if not state.lua.enabled then return "disabled" end
   local function lim(v, unit) if v and v > 0 then return tostring(v) .. unit end return "unlimited" end
-  return string.format("enabled (budget %s / %s per request%s)", lim(state.lua.maxMs, " ms"), lim(state.lua.maxSteps, " VM instructions"),
-    hookSupported and "" or ", NOT enforced: debug.sethook unavailable")
+  return string.format("enabled (budget %s / %s per request, console hook: %s%s)", lim(state.lua.maxMs, " ms"), lim(state.lua.maxSteps, " VM instructions"),
+    state.lua.hookMode or LUA_DEFAULT_HOOK_MODE,
+    hookSupported and "" or "; NOT enforced: debug.sethook unavailable")
 end
 
 -- Budget state of the request currently executing (requests are handled one at a time).
@@ -1097,12 +1128,6 @@ local activeBudget = nil
 -- own code from submitted code: once the budget is exceeded it raises the error only while
 -- submitted code (or a library it called) is executing, never inside the bridge itself.
 local PLUGIN_SOURCE = debug.getinfo(1, "S").source
-
-local function describeHook(h, mask, count)
-  if h == nil then return "none" end
-  local kind = type(h) == "string" and h or "Lua function"   -- "external hook" = set from C by the console
-  return string.format("%s (mask %q, count %s)", kind, tostring(mask or ""), tostring(count or 0))
-end
 
 -- Run fn() under the configured budget and return its results as a packed table.
 --
@@ -1129,6 +1154,7 @@ local function runBounded(fn, maxMs, maxSteps)
   local prevHook, prevMask, prevCount = nil, nil, nil
   local installed = false
 
+  local preserved = false   -- true when an external console hook was found and left in place
   if hookSupported and ((maxMs and maxMs > 0) or (maxSteps and maxSteps > 0)) then
     local steps = 0
     hook = function()
@@ -1153,10 +1179,17 @@ local function runBounded(fn, maxMs, maxSteps)
     end
     budget.attach = function(thread) debug.sethook(thread, hook, "", LUA_HOOK_INTERVAL) end
     prevHook, prevMask, prevCount = debug.gethook()
-    if consoleHookSeen == nil then consoleHookSeen = describeHook(prevHook, prevMask, prevCount) end
-    debug.sethook(hook, "", LUA_HOOK_INTERVAL)
-    installed = true
+    local external = prevHook ~= nil and type(prevHook) ~= "function"
+    if external and state.lua.hookMode ~= "replace" then
+      -- The console's own hook stays. Threads the chunk creates are still budgeted (they have no
+      -- console hook), but on the plugin thread only the deadline is checked, at yields and return.
+      preserved = true
+    else
+      debug.sethook(hook, "", LUA_HOOK_INTERVAL)
+      installed = true
+    end
   end
+  budget.enforced = installed
 
   -- Called by the sandbox's coroutine.yield after the chunk is resumed by the console.
   budget.afterResume = function()
@@ -1192,7 +1225,15 @@ local function runBounded(fn, maxMs, maxSteps)
   if not res[1] then
     error(tostring(res[2]), 0)
   end
-  return table.pack(table.unpack(res, 2, res.n))
+  local results = table.pack(table.unpack(res, 2, res.n))
+  results.budget = {
+    instructionHookEnforced = installed,
+    consoleHookPreserved = preserved,
+    note = preserved
+      and "the console's own hook on the plugin thread was preserved: the instruction budget was not enforced and the wall-clock deadline was only checked at yields and at return (luahook=preserve)"
+      or nil,
+  }
+  return results
 end
 
 -- Environment for submitted code. Reads and writes fall through to the real globals (so the
@@ -1324,7 +1365,7 @@ ops.lua = function(args)
     out[i] = v
   end
   if #out == 0 then setmetatable(out, { __jsontype = "array" }) end
-  return { values = out }
+  return { values = out, budget = results.budget }
 end
 
 ops.object = function(args)
@@ -2006,6 +2047,8 @@ end
 --   <port>                   listen port (bind address is always 127.0.0.1)
 --   lua | lua=on|off | lua on | lua off | nolua
 --   luatime=<ms>  luasteps=<n>   Lua execution budget (0 = unlimited)
+--   luahook=preserve|replace  keep the console's own hook on the plugin thread (default; no hard
+--                             quota while it is present) or replace it with the budget hook
 local function parseArgument(argument)
   local opts = {}
   local text = argument and tostring(argument) or ""
@@ -2025,6 +2068,9 @@ local function parseArgument(argument)
       if val == "on" or val == "1" or val == "yes" or val == "true" then opts.lua = true
       elseif val == "off" or val == "0" or val == "no" or val == "false" then opts.lua = false
       else return nil, string.format("\"%s\": expected lua=on or lua=off", tok) end
+    elseif key == "luahook" then
+      if val == "preserve" or val == "replace" then opts.hookMode = val
+      else return nil, string.format("\"%s\": expected luahook=preserve or luahook=replace", tok) end
     elseif key == "luatime" or key == "luasteps" then
       local n = tonumber(val)
       if not n or n < 0 or n ~= math.floor(n) then return nil, string.format("\"%s\": expected a non-negative integer", tok) end
@@ -2037,7 +2083,7 @@ local function parseArgument(argument)
       if not port or port < 1 or port > 65535 then return nil, string.format("\"%s\" is not a valid port number (expected 1-65535)", tok) end
       opts.port = port
     else
-      return nil, string.format("\"%s\" is not a recognised argument (expected a port number, \"stop\", \"status\", \"lua\", \"lua on|off\", \"luatime=<ms>\" or \"luasteps=<n>\")", tok)
+      return nil, string.format("\"%s\" is not a recognised argument (expected a port number, \"stop\", \"status\", \"lua\", \"lua on|off\", \"luatime=<ms>\", \"luasteps=<n>\" or \"luahook=preserve|replace\")", tok)
     end
     prev = l
   end
@@ -2048,6 +2094,7 @@ local function applyLuaPolicy(opts)
   if opts.lua ~= nil then state.lua.enabled = opts.lua end
   if opts.maxMs ~= nil then state.lua.maxMs = opts.maxMs end
   if opts.maxSteps ~= nil then state.lua.maxSteps = opts.maxSteps end
+  if opts.hookMode ~= nil then state.lua.hookMode = opts.hookMode end
 end
 
 local function MainImpl(display_handle, argument)
@@ -2077,7 +2124,7 @@ local function MainImpl(display_handle, argument)
       log("already running on port %d (use argument \"stop\" to stop)", state.port)
       return
     end
-    if opts.lua ~= nil or opts.maxMs ~= nil or opts.maxSteps ~= nil then
+    if opts.lua ~= nil or opts.maxMs ~= nil or opts.maxSteps ~= nil or opts.hookMode ~= nil then
       applyLuaPolicy(opts)
       log("Lua execution now %s", describeLuaPolicy())
     else
@@ -2093,7 +2140,7 @@ local function MainImpl(display_handle, argument)
   state.port = opts.port or DEFAULT_PORT
   -- Each start establishes the Lua execution policy explicitly; it never carries over from an
   -- earlier run, so enabling Lua is always a visible decision in the start command.
-  state.lua = { enabled = LUA_DEFAULT_ENABLED, maxMs = LUA_DEFAULT_MAX_MS, maxSteps = LUA_DEFAULT_MAX_STEPS }
+  state.lua = { enabled = LUA_DEFAULT_ENABLED, maxMs = LUA_DEFAULT_MAX_MS, maxSteps = LUA_DEFAULT_MAX_STEPS, hookMode = LUA_DEFAULT_HOOK_MODE }
   applyLuaPolicy(opts)
   state.running = true
   state.stopRequested = false

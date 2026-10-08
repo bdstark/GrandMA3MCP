@@ -253,6 +253,77 @@ do
 
   r = requestOn("ping", {})
   check("ping reports the hook found on the plugin thread", r.ok and type(r.result.lua.consoleHook) == "string" and r.result.lua.consoleHook:find("none"), json.encode(r.result.lua))
+  check("ping: hookMode defaults to preserve and the budget counts as bounded without a console hook", r.ok and r.result.lua.hookMode == "preserve" and r.result.lua.bounded == true, json.encode(r.result.lua))
+  r = requestOn("lua", { code = "return 1" })
+  check("lua result reports that the instruction hook was enforced", r.ok and r.result.budget.instructionHookEnforced == true and r.result.budget.consoleHookPreserved == false, json.encode(r.result))
+
+  -- A console that keeps an external (C) hook on the plugin thread. Stock Lua cannot create one, so
+  -- debug.gethook is stubbed to report it and debug.sethook records what the plugin does.
+  local realGethook, realSethook = debug.gethook, debug.sethook
+  local setCalls = {}
+  debug.gethook = function(thread) if thread == nil then return "external hook", "", 50000 end return realGethook(thread) end
+  debug.sethook = function(a, b, c, d)
+    if type(a) == "thread" then setCalls[#setCalls + 1] = { thread = true } return realSethook(a, b, c, d) end
+    setCalls[#setCalls + 1] = { hook = a, mask = b, count = c }
+    return realSethook(a, b, c, d)
+  end
+  -- Pretend no chunk has inspected the thread yet (the plugin remembers the first observation).
+  -- There is no setter for that, so re-load the policy section's view through a fresh start.
+  state.running = false
+  Main(nil, "lua on")
+  state.running = true
+  setCalls = {}
+  r = requestOn("lua", { code = "return 2" })
+  check("preserve (default): a chunk runs without installing the budget hook over the console's hook",
+    r.ok and r.result.values[1] == 2 and #setCalls == 0 and r.result.budget.instructionHookEnforced == false and r.result.budget.consoleHookPreserved == true
+      and tostring(r.result.budget.note):find("preserved"), json.encode(r.result) .. " setCalls=" .. json.encode(setCalls))
+  r = requestOn("ping", {})
+  check("ping: with a preserved console hook the policy is reported as not bounded",
+    r.ok and r.result.lua.bounded == false and r.result.lua.hookMode == "preserve" and r.result.lua.note:find("NOT enforced") and r.result.lua.consoleHook:find("external hook"), json.encode(r.result.lua))
+  _G.FAKE_CLOCK_OFFSET = 0
+  r = requestOn("lua", { code = "for i = 1, 4 do coroutine.yield() end return 'done'", maxMs = 1200 }, nil)
+  check("preserve: deadline is still checked after each yield", r.ok and r.result.values[1] == "done", json.encode(r))
+  do
+    -- Advance the fake clock on every resume so the yield-heavy chunk overruns its deadline.
+    local line = json.encode({ id = "t", op = "lua", args = { code = "for i = 1, 4 do coroutine.yield() end return 'late'", maxMs = 1200 } })
+    local co = coroutine.create(function() return state._handleLine(nil, line) end)
+    local ok, res = coroutine.resume(co)
+    while ok and coroutine.status(co) == "suspended" do
+      _G.FAKE_CLOCK_OFFSET = (_G.FAKE_CLOCK_OFFSET or 0) + 0.5
+      ok, res = coroutine.resume(co)
+    end
+    assert(ok, res)
+    local rr = json.decode(res)
+    check("preserve: a yield-heavy chunk still hits the wall-clock budget", rr.ok == false and rr.error:find("ran longer than 1200 ms"), json.encode(rr))
+    _G.FAKE_CLOCK_OFFSET = 0
+  end
+  r = requestOn("lua", { code = "local co = coroutine.create(function() while true do end end) local ok, e = coroutine.resume(co) return ok, e", maxSteps = 50000 })
+  check("preserve: coroutines the chunk creates are still budgeted", r.ok == false and r.error:find("budget exceeded"), json.encode(r))
+  resetBudget()
+
+  Main(nil, "luahook=replace")
+  check("'luahook=replace' accepted while running", state.lua.hookMode == "replace" and lastLog():find("Lua execution now"), lastLog())
+  setCalls = {}
+  r = requestOn("lua", { code = "return 3" })
+  local calls = {}
+  for _, c in ipairs(setCalls) do calls[#calls + 1] = c.thread and "thread" or (type(c.hook) .. "/" .. tostring(c.count)) end
+  check("replace: the budget hook is installed over the console's hook and cleared afterwards",
+    r.ok and r.result.values[1] == 3 and #setCalls == 2 and type(setCalls[1].hook) == "function" and setCalls[1].count == 1000 and setCalls[2].hook == nil
+      and r.result.budget.instructionHookEnforced == true, table.concat(calls, ",") .. " " .. json.encode(r.result))
+  r = requestOn("ping", {})
+  check("ping: replace mode reports bounded", r.ok and r.result.lua.bounded == true and r.result.lua.hookMode == "replace", json.encode(r.result.lua))
+  Main(nil, "luahook=preserve")
+  check("'luahook=preserve' accepted while running", state.lua.hookMode == "preserve")
+  debug.gethook, debug.sethook = realGethook, realSethook
+  state.running = false
+  Main(nil, "luahook=bogus")
+  check("luahook=bogus refused", lastLog():find("expected luahook=preserve or luahook=replace") and state.running == false, lastLog())
+  Main(nil, "lua luahook=replace")
+  check("luahook parsed at start", state.lua.hookMode == "replace" and state.lua.enabled == true)
+  Main(nil, "")
+  check("plain start resets the hook mode to preserve", state.lua.hookMode == "preserve")
+  state.running = true
+  Main(nil, "lua on")
   _G.ContextBoundStub = nil
 end
 

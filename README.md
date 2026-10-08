@@ -65,9 +65,10 @@ Plugin "gma3_mcp_bridge" "9801 lua"         custom port and Lua execution enable
 Plugin "gma3_mcp_bridge" "lua on"           enable while running
 Plugin "gma3_mcp_bridge" "lua off"          disable while running
 Plugin "gma3_mcp_bridge" "lua luatime=2000 luasteps=5000000"
+Plugin "gma3_mcp_bridge" "lua luahook=replace"    enforce the budget over the console's own hook (see below)
 ```
 
-`status`, `lua on|off` and the budget tokens are control calls: they talk to the running bridge and leave it
+`status`, `lua on|off`, `luahook=...` and the budget tokens are control calls: they talk to the running bridge and leave it
 running. Arguments are whitespace-separated tokens. Every start establishes the policy afresh, so enabling Lua is
 always a visible decision in the start command (or macro); it never carries over from a previous run.
 `status` and `gma3_status` show the current policy.
@@ -87,11 +88,23 @@ hook, after every yield, and before a result is returned, so a script that mostl
 Once the budget is exceeded the hook raises on every instruction of submitted code (so `pcall` cannot
 swallow it) but never inside the bridge's own code.
 
-onPC keeps a hook of its own on the plugin thread (an external C hook with count 50000 on 2.5.1). A C hook
-cannot be called from or re-created in Lua, so it is replaced while a script runs and the thread is left
-without it afterwards until the plugin is restarted. `gma3_status` reports what was found under
-`lua.consoleHook`. What that hook does is not documented by MA; the bridge's own loop yields every frame and
-bounds submitted scripts itself, so no behaviour change was observed with it gone.
+onPC keeps a hook of its own on the plugin thread (an external C hook with count 50000 on 2.5.1) whose purpose
+MA does not document. A C hook cannot be called from or re-created in Lua, so the bridge has to choose:
+
+* `luahook=preserve` (default): the console's hook is left alone. A script then runs **without the instruction
+  hook**; the wall-clock deadline is still checked whenever the script yields and when it returns, but a script
+  that neither yields nor returns cannot be stopped by the bridge. `gma3_status` reports `lua.bounded: false`
+  with the reason, and every `gma3_lua` result carries `budget.instructionHookEnforced: false` and
+  `budget.consoleHookPreserved: true`. Coroutines the script creates are still budgeted (they carry no console
+  hook).
+* `luahook=replace`: the budget hook is installed over the console's hook for the duration of the script, so
+  the instruction and time budgets are enforced as described above. Afterwards the thread is left without the
+  console's hook until the plugin is restarted. No behaviour change was observed with it gone on 2.5.1, but
+  that observation is not a guarantee: enable this only when you need hard quotas and accept the unknown.
+
+`gma3_status` shows what was found under `lua.consoleHook` and the mode under `lua.hookMode`. The automated
+harness can only simulate a Lua hook, not the console's C hook; the preserve/replace decision itself is covered
+by stubbing `debug.gethook`.
 
 The script runs in an environment that closes the obvious ways around the budget: `debug.sethook` and
 `debug.gethook` are withheld, coroutines the script creates (`coroutine.create` / `coroutine.wrap`) get the
@@ -123,7 +136,7 @@ Plugin "gma3_mcp_bridge"
 
 `ReloadAllPlugins` is required: onPC keeps the Lua chunk it already loaded for a plugin name, so a delete and
 re-import alone leaves the old code running (verified on 2.5.1). The start line in the command line history
-shows the plugin version, e.g. `listening on 127.0.0.1:9800 (v0.3.2)`.
+shows the plugin version, e.g. `listening on 127.0.0.1:9800 (v0.3.3)`.
 
 Quick check from a terminal without an MCP client:
 

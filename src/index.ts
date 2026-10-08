@@ -207,6 +207,7 @@ if (allowLuaTool) {
         "'local t={} for i,c in ipairs(ObjectList(\"Fixture Thru\")) do t[#t+1]=c.name end return t'. Use gma3_lua_api to look up function signatures. " +
         "This capability is OFF by default on the console: the operator enables it by starting the bridge with  Plugin \"gma3_mcp_bridge\" \"lua\"  or running  Plugin \"gma3_mcp_bridge\" \"lua on\"  (gma3_status shows the policy). " +
         "Each request runs under the console's execution budget (default 5 s wall-clock / 20 M VM instructions, operator-configurable) and is aborted with an error when it exceeds it, so keep scripts short and prefer the structured tools (gma3_get_object, gma3_list_children, gma3_objects) for bulk reads. " +
+        "By default the console's own hook on the plugin thread is preserved, which means the instruction budget is NOT enforced and the deadline is only checked when the script yields or returns: a script that loops without yielding cannot be stopped (gma3_status shows lua.bounded; the result's budget.instructionHookEnforced says what applied). The operator can start the bridge with luahook=replace to enforce hard quotas. " +
         "Because a script may call Cmd() or Set(), every gma3_lua request is serialised with this server's other mutations (it waits for a running workflow and blocks later ones while it runs).",
       inputSchema: {
         code: z.string().describe("Lua code to evaluate"),
