@@ -82,6 +82,32 @@ test("every workflow and inspection tool is registered, also with gma3_lua hidde
   }
 });
 
+test("gma3_lua is serialised with the other mutations", async () => {
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const slow = async (result: unknown) => {
+    inFlight++;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    await new Promise((r) => setTimeout(r, 40));
+    inFlight--;
+    return result;
+  };
+  fake.on("lua", (args) => slow({ values: [String(args.code).length] }));
+  fake.on("cmd", (args) => slow({ command: args.command, feedback: "OK" }));
+  const results = await Promise.all([
+    client.callTool({ name: "gma3_lua", arguments: { code: "Cmd('Store Cue 1')" } }),
+    client.callTool({ name: "gma3_command", arguments: { command: "Go+ Sequence 9", via: "bridge" } }),
+    client.callTool({ name: "gma3_lua", arguments: { code: "return 1" } }),
+  ]);
+  for (const r of results) assert.equal(Boolean((r as { isError?: boolean }).isError), false);
+  assert.equal(maxInFlight, 1, "a Lua request must not overlap another mutation");
+  assert.deepEqual(
+    fake.requests.filter((r) => r.op === "lua" || r.op === "cmd").map((r) => r.op),
+    ["lua", "cmd", "lua"],
+    "requests are handled in call order",
+  );
+});
+
 test("existing mutation tools do not interleave: concurrent commands reach the bridge one after another", async () => {
   let inFlight = 0;
   let maxInFlight = 0;

@@ -336,10 +336,11 @@ whether to continue, inspect console state, or stop:
   `\ " $ & * ? , . ; ^ { } | ~`: onPC 2.5.1 silently removes those characters from a name whether it arrives
   through `Label` or through the Lua `Set("Name")` API (verified live; "Look 2.5" becomes "Look 25"), so the tools
   refuse such names rather than store something different from what was asked.
-* Mutations issued by this server, including the existing `gma3_command`, `gma3_set_property`, `gma3_playback`
-  and `gma3_set_fader`, are serialised by one lock so a multi-command workflow is not interleaved with another
-  tool call. This orders only this process's own requests: it does not isolate anything from another console
-  operator, another MCP server or client, or `gma3_lua` scripts.
+* Mutations issued by this server, including the existing `gma3_command`, `gma3_set_property`, `gma3_playback`,
+  `gma3_set_fader` and `gma3_lua` (a script may call `Cmd()` or `Set()`, so it is never treated as read-only),
+  are serialised by one lock so a multi-command workflow is not interleaved with another tool call. Each
+  workflow holds the lock from its first command through its read-back. This orders only this process's own
+  requests: it does not isolate anything from another console operator or another MCP server or client.
 
 Per-tool documentation (commands sent, selection and programmer impact, what is and is not verified, live test
 procedure) is in [`docs/tools/`](docs/tools/).

@@ -54,6 +54,11 @@ export class FakeBridge {
     if (!sock.destroyed) sock.write(JSON.stringify(msg) + "\n");
   }
 
+  /** The handler currently registered for an op, so a test can wrap it. */
+  handlerFor(op: string): OpHandler | undefined {
+    return this.handlers.get(op);
+  }
+
   /** Register a handler for an op ("*" catches everything else). Returns this for chaining. */
   on(op: string, handler: OpHandler): this {
     this.handlers.set(op, handler);

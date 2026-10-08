@@ -18,7 +18,8 @@ validation and result helpers, serialised mutations, documentation and test requ
 ## Serialisation caveat (applies to every mutating tool)
 
 Mutations issued by this MCP server run one at a time through a single lock, so a multi-command workflow is
-not interleaved with another tool call from the same server. The lock orders only this process's requests.
-It does not stop another console operator, another MCP server or client, a macro, or a `gma3_lua` script from
-changing the selection or programmer between two commands. Treat every result's `verification` field as the
-source of truth, not the lock.
+not interleaved with another tool call from the same server. A workflow holds the lock from its first command
+through its read-back, and `gma3_lua` requests take the same lock because a script may call `Cmd()` or
+`Set()`. The lock orders only this process's requests. It does not stop another console operator, another MCP
+server or client, or a macro from changing the selection or programmer between two commands. Treat every
+result's `verification` field as the source of truth, not the lock.

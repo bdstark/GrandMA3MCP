@@ -33,9 +33,10 @@ read failed, or the mutation was never sent), `not_requested`.
 **Units.** All times are seconds (`fade`, `delay`, `out_fade`, `out_delay`, `snap_delay`, `time`), 0..3600, finite;
 **0 is a value** and is sent as `0`. Negative or non-finite values are rejected.
 
-**Serialisation caveat.** The mutation lock orders only this MCP server's own mutations (so two tool calls never
-interleave their steps). It does **not** isolate an operation from another console operator, another MCP server
-or anything else talking to the console. Treat `matched` as "the console showed this right after the operation".
+**Serialisation caveat.** Each tool holds the mutation lock for its whole sequence, from the first check through
+the commands to the read-back, so another tool call from this server (including `gma3_lua`) cannot change the
+cue between a store and its verification. The lock orders only this MCP server's own mutations. It does **not**
+isolate an operation from another console operator, another MCP server or anything else talking to the console. Treat `matched` as "the console showed this right after the operation".
 
 **Selection and programmer.** None of these tools changes the fixture selection and none clears the programmer
 (no `Clear*` command is sent). `Store` stores whatever is active in the programmer into the cue; with an empty

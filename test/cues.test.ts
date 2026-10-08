@@ -358,21 +358,39 @@ test("store_cue: verify=false reports not_requested and performs no read-back", 
 });
 
 test("store tools hold the mutation lock for the whole operation including read-back", async () => {
-  let busyDuringCmd = false;
-  let busyDuringRead = 0;
-  const orig = h.fake;
-  orig.onCommand((c) => {
-    busyDuringCmd = h.ctx.mutations.busy;
-    return show.exec(c);
+  // A concurrent mutation must not run between the store command and its read-back: if the lock were
+  // released in between, the read-back would verify the other call's work. The Store command is slowed
+  // down so the second call is queued while the first is mid-way.
+  const order: string[] = [];
+  const origCmd = (c: string) => show.exec(c);
+  h.fake.on("cmd", async (args) => {
+    const c = String(args.command);
+    order.push(`cmd:${c}`);
+    if (c.startsWith("Store")) await new Promise((r) => setTimeout(r, 40));
+    const fb = origCmd(c);
+    return fb === SILENT ? SILENT : { command: c, feedback: fb };
   });
-  const objectsHandler = (args: Record<string, unknown>) => {
-    if (h.ctx.mutations.busy) busyDuringRead++;
-    return { total: 0, offset: 0, count: 0, items: [] };
-  };
-  orig.on("objects", objectsHandler);
-  await h.call("gma3_store_cue", { sequence: 900, cue: 1, mode: "create" });
-  assert.equal(busyDuringCmd, true);
-  assert.equal(busyDuringRead, 2, "existence check and read-back both run under the lock");
+  const objectsHandler = h.fake.handlerFor("objects")!;
+  const setHandler = h.fake.handlerFor("set")!;
+  h.fake.on("objects", (args, req) => {
+    order.push(`objects:${args.ref}`);
+    return objectsHandler(args, req);
+  });
+  h.fake.on("set", (args, req) => {
+    order.push(`set:${args.ref}:${args.property}`);
+    return setHandler(args, req);
+  });
+  show.addCue(900, "7");
+  const [stored, timed] = await Promise.all([
+    h.callJson("gma3_store_cue", { sequence: 900, cue: 1, mode: "create", name: "First" }),
+    h.callJson("gma3_set_cue_timing", { sequence: 900, cue: 7, fade: 2 }),
+  ]);
+  assert.equal(stored.result.outcome, "succeeded", stored.text);
+  assert.equal(timed.result.outcome, "succeeded", timed.text);
+  const firstOfSecond = order.findIndex((o) => o.includes("Cue 7"));
+  const lastOfFirst = order.map((o, idx) => (o.includes("Cue 1") ? idx : -1)).filter((idx) => idx >= 0).at(-1)!;
+  assert.ok(firstOfSecond > lastOfFirst, `the second call ran before the first call's read-back finished:\n${order.join("\n")}`);
+  assert.ok(order.slice(0, firstOfSecond).some((o) => o.startsWith("objects:Sequence 900 Cue 1")), "the store's read-back is part of the first call");
 });
 
 // ---------------------------------------------------------------------------

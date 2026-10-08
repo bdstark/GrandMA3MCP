@@ -312,36 +312,41 @@ async function storeCue(ctx: ToolContext, args: StoreArgs, kind: "cue" | "part")
   if (outFade !== undefined) plan.push(setStep(ctx, "set_out_fade", partRef, TIMING_PROPS.out_fade, outFade));
   if (outDelay !== undefined) plan.push(setStep(ctx, "set_out_delay", partRef, TIMING_PROPS.out_delay, outDelay));
 
-  const { steps } = await ctx.mutations.run(() => runSteps(plan));
+  // One lock span covers the commands AND the read-back: if the lock were released in between,
+  // another queued mutation could change the cue first and the read-back would verify its work.
+  const { steps, verification } = await ctx.mutations.run(async () => {
+    const { steps } = await runSteps(plan);
 
-  // Read-back: existence, Name, and the timing fields that were requested. Fixture values are not read.
-  let verification: Verification;
-  const expected: Record<string, unknown> = {
-    Name: name,
-    [TIMING_PROPS.fade]: fade,
-    [TIMING_PROPS.delay]: delay,
-    [TIMING_PROPS.out_fade]: outFade,
-    [TIMING_PROPS.out_delay]: outDelay,
-  };
-  if (args.verify === false) verification = notRequested();
-  else if (!primaryWasSent(steps, "store")) verification = skippedVerification("the store command was not sent");
-  else {
-    const timingFields = (Object.values(TIMING_PROPS) as string[]).filter((f) => expected[f] !== undefined);
-    const reads: Array<{ ref: string; fields: string[] }> = [];
-    if (kind === "cue") {
-      reads.push({ ref: refOf(target), fields: ["No", "Name"] });
-      if (timingFields.length) reads.push({ ref: partRef(), fields: timingFields });
-    } else {
-      reads.push({ ref: partRef(), fields: ["Part", "Name", ...timingFields] });
+    // Read-back: existence, Name, and the timing fields that were requested. Fixture values are not read.
+    let verification: Verification;
+    const expected: Record<string, unknown> = {
+      Name: name,
+      [TIMING_PROPS.fade]: fade,
+      [TIMING_PROPS.delay]: delay,
+      [TIMING_PROPS.out_fade]: outFade,
+      [TIMING_PROPS.out_delay]: outDelay,
+    };
+    if (args.verify === false) verification = notRequested();
+    else if (!primaryWasSent(steps, "store")) verification = skippedVerification("the store command was not sent");
+    else {
+      const timingFields = (Object.values(TIMING_PROPS) as string[]).filter((f) => expected[f] !== undefined);
+      const reads: Array<{ ref: string; fields: string[] }> = [];
+      if (kind === "cue") {
+        reads.push({ ref: refOf(target), fields: ["No", "Name"] });
+        if (timingFields.length) reads.push({ ref: partRef(), fields: timingFields });
+      } else {
+        reads.push({ ref: partRef(), fields: ["Part", "Name", ...timingFields] });
+      }
+      const rb = await readBack(ctx.bridge, reads);
+      verification = verifyAgainst(
+        kind === "cue" ? "cue exists; Name and part-0 timing fields that were given" : "part exists; Name and timing fields that were given",
+        expected,
+        rb,
+        "does not exist after the store",
+      );
     }
-    const rb = await ctx.mutations.run(() => readBack(ctx.bridge, reads));
-    verification = verifyAgainst(
-      kind === "cue" ? "cue exists; Name and part-0 timing fields that were given" : "part exists; Name and timing fields that were given",
-      expected,
-      rb,
-      "does not exist after the store",
-    );
-  }
+    return { steps, verification };
+  });
 
   const outcome = outcomeOf(steps);
   const summary =

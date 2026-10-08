@@ -34,9 +34,9 @@ const allowLuaTool = !/^(0|false|no|off)$/i.test((env.GMA3_ALLOW_LUA ?? "1").tri
 
 // Mutations issued by this server are serialised (FR-03): a multi-command workflow such as
 // select -> set attribute -> store must not interleave with another tool call's command. The
-// existing single-command mutation tools take the same lock so a workflow is never split by them.
-// This orders only this process's own requests; it does not isolate anything from another
-// console operator or another client.
+// existing single-command mutation tools and gma3_lua (arbitrary code cannot be classified as
+// read-only) take the same lock so a workflow is never split by them. This orders only this
+// process's own requests; it does not isolate anything from another console operator or client.
 const mutations = new MutationLock();
 const toolContext: ToolContext = {
   bridge,
@@ -206,7 +206,8 @@ if (allowLuaTool) {
         "Examples: 'SelectedSequence().name', 'GetCurrentCue():Get(\"No\")', 'DataPool().Sequences:Count()', " +
         "'local t={} for i,c in ipairs(ObjectList(\"Fixture Thru\")) do t[#t+1]=c.name end return t'. Use gma3_lua_api to look up function signatures. " +
         "This capability is OFF by default on the console: the operator enables it by starting the bridge with  Plugin \"gma3_mcp_bridge\" \"lua\"  or running  Plugin \"gma3_mcp_bridge\" \"lua on\"  (gma3_status shows the policy). " +
-        "Each request runs under the console's execution budget (default 5 s wall-clock / 20 M VM instructions, operator-configurable) and is aborted with an error when it exceeds it, so keep scripts short and prefer the structured tools (gma3_get_object, gma3_list_children, gma3_objects) for bulk reads.",
+        "Each request runs under the console's execution budget (default 5 s wall-clock / 20 M VM instructions, operator-configurable) and is aborted with an error when it exceeds it, so keep scripts short and prefer the structured tools (gma3_get_object, gma3_list_children, gma3_objects) for bulk reads. " +
+        "Because a script may call Cmd() or Set(), every gma3_lua request is serialised with this server's other mutations (it waits for a running workflow and blocks later ones while it runs).",
       inputSchema: {
         code: z.string().describe("Lua code to evaluate"),
         timeout_ms: z
@@ -221,7 +222,9 @@ if (allowLuaTool) {
       const timeout = timeout_ms ?? Number(env.GMA3_BRIDGE_TIMEOUT_MS ?? 15000);
       // The console aborts the script at `timeout` and then has to encode and send the error; wait a
       // little longer than that so the budget message reaches the client instead of a bare timeout.
-      return run(() => bridge.request("lua", { code, maxMs: timeout }, timeout + 1000));
+      // Arbitrary Lua may call Cmd() or Set(); it cannot be classified as read-only, so the whole
+      // request is serialised with this server's other mutations.
+      return run(() => mutations.run(() => bridge.request("lua", { code, maxMs: timeout }, timeout + 1000)));
     },
   );
 }
