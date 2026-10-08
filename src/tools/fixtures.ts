@@ -359,22 +359,45 @@ const PROGRAMMER_MAX_PAGES = 10;
  * returned rows reach `total`. Returns the merged result, or a reason when it could not be completed.
  */
 async function readProgrammerPages(bridge: Gma3Bridge, args: Record<string, unknown>): Promise<{ result: ProgrammerResult } | { reason: string; partial?: ProgrammerResult }> {
+  // Every page is a fresh scan on the console, so each one reports its own coverage and fixture
+  // list. A page that is incomplete or truncated makes the whole read unavailable, whatever the
+  // first page said; the merged result carries the strictest flags and every limitation seen.
   const first = (await bridge.request("programmer", { ...args, limit: PROGRAMMER_PAGE, offset: 0 })) as ProgrammerResult;
   const rows = [...(first.rows ?? [])];
   const total = typeof first.total === "number" ? first.total : rows.length;
+  const limitations = [...(first.limitations ?? [])];
+  let complete = first.coverage?.complete !== false;
+  let truncated = first.fixturesTruncated === true;
+  const merged = (): ProgrammerResult => ({
+    ...first,
+    rows,
+    count: rows.length,
+    coverage: { ...(first.coverage ?? {}), complete },
+    fixturesTruncated: truncated,
+    limitations: [...new Set(limitations)],
+  });
   let pages = 1;
   while (rows.length < total) {
     if (pages >= PROGRAMMER_MAX_PAGES) {
-      return { reason: `the programmer scan returned ${total} rows but only ${rows.length} were fetched within ${PROGRAMMER_MAX_PAGES} pages`, partial: { ...first, rows } };
+      return { reason: `the programmer scan returned ${total} rows but only ${rows.length} were fetched within ${PROGRAMMER_MAX_PAGES} pages`, partial: merged() };
     }
     const page = (await bridge.request("programmer", { ...args, limit: PROGRAMMER_PAGE, offset: rows.length })) as ProgrammerResult;
     pages++;
+    limitations.push(...(page.limitations ?? []));
+    if (page.coverage?.complete === false) {
+      complete = false;
+      return { reason: `page ${pages} of the programmer scan reported incomplete coverage: ${(page.limitations ?? []).join("; ") || "coverage not complete"}`, partial: merged() };
+    }
+    if (page.fixturesTruncated === true) {
+      truncated = true;
+      return { reason: `page ${pages} of the programmer scan reported a truncated fixture list`, partial: merged() };
+    }
     const got = page.rows ?? [];
-    if (got.length === 0) return { reason: `the programmer scan reported ${total} rows but page ${pages} was empty after ${rows.length}`, partial: { ...first, rows } };
+    if (got.length === 0) return { reason: `the programmer scan reported ${total} rows but page ${pages} was empty after ${rows.length}`, partial: merged() };
     rows.push(...got);
-    if (typeof page.total === "number" && page.total !== total) return { reason: `the programmer changed while it was being read (${total} rows, then ${page.total})`, partial: { ...first, rows } };
+    if (typeof page.total === "number" && page.total !== total) return { reason: `the programmer changed while it was being read (${total} rows, then ${page.total})`, partial: merged() };
   }
-  return { result: { ...first, rows, count: rows.length } };
+  return { result: merged() };
 }
 
 /** Is this the bridge's "unknown op" error, i.e. the plugin predates the inspection ops? */

@@ -696,6 +696,25 @@ test("read-back: every page of a paginated scan is fetched before judging; an un
   assert.match(r.result.verification.detail, /reported 5 rows but page 2 was empty/);
 });
 
+test("read-back: coverage and truncation flags are checked on every page, not just the first", async () => {
+  const rows = ["1", "2", "3", "4"].map((f, i) => row(f, 10 + i, "Dimmer", 50));
+  const scanned = ["1", "2", "3", "4"].map((f, i) => ({ subfixtureIndex: 10 + i, fid: f, name: `Fx ${f}` }));
+  for (const flaw of ["coverage", "truncated"] as const) {
+    script({ selectionCount: 4, programmer: { scanned, rows, pageSize: 2 } });
+    const real = h.fake.handlerFor("programmer")!;
+    h.fake.on("programmer", (args, req) => {
+      const res = real(args, req) as { coverage: { complete: boolean }; fixturesTruncated: boolean; limitations: string[] };
+      if (Number(args.offset ?? 0) === 0) return res;
+      return flaw === "coverage"
+        ? { ...res, coverage: { ...res.coverage, complete: false }, limitations: ["channel budget (5000) reached"] }
+        : { ...res, fixturesTruncated: true };
+    });
+    const { result } = await h.callJson("gma3_set_attribute", { use_selection: true, attribute: "Dimmer", value: 50, unit: "percent" });
+    assert.equal(result.verification.status, "unavailable", `${flaw}: ${result.verification.detail}`);
+    assert.match(result.verification.detail, flaw === "coverage" ? /page 2 of the programmer scan reported incomplete coverage: channel budget/ : /page 2 of the programmer scan reported a truncated fixture list/);
+  }
+});
+
 test("read-back: a plugin that does not list per-subfixture attributes yields unavailable, not a pooled match", async () => {
   script({ selectionCount: 1, programmer: { scanned: [{ subfixtureIndex: 11, fid: "1", name: "Fx 1", attributes: null }], rows: [row("1", 11, "Dimmer", 50)] } });
   const { result } = await h.callJson("gma3_set_attribute", { use_selection: true, attribute: "Dimmer", value: 50, unit: "percent" });
