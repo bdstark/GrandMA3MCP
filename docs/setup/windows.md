@@ -53,6 +53,55 @@ each time you load the show. Arbitrary Lua stays disabled; normal tools work wit
 
 ## 4. Configure your MCP client
 
+Choose [ChatGPT desktop](#chatgpt-desktop), [ChatGPT web](chatgpt-web.md), or
+[Claude Code / Claude Desktop](#claude-code-and-claude-desktop).
+
+### ChatGPT desktop
+
+Use the local desktop app on this Windows computer. From the repository directory, get the
+executable and server paths in PowerShell:
+
+```powershell
+(Get-Command node.exe).Source
+(Resolve-Path .\dist\index.js).Path
+```
+
+In ChatGPT, open **Settings → MCP servers → Add server** and select **STDIO**. Enter:
+
+| Field | Value |
+| --- | --- |
+| Name | `gma3` |
+| Command | The absolute `node.exe` path printed above |
+| Arguments | The absolute `dist\index.js` path printed above, as one argument |
+| Environment | `GMA3_INSTALL_DIR=C:\ProgramData\MALightingTechnology` (use your actual resource folder) |
+| Environment (optional) | `GMA3_BRIDGE_PORT=9801` if you started the bridge on port 9801 |
+
+Save, select **Restart**, and use `/mcp` in the composer to check the connection.
+See [OpenAI's desktop MCP instructions](https://learn.chatgpt.com/docs/extend/mcp).
+
+For file-based configuration, merge this entry into `%USERPROFILE%\.codex\config.toml`, replacing
+the example paths. If a `gma3` entry already exists, edit it rather than adding a duplicate:
+
+```toml
+[mcp_servers.gma3]
+command = 'C:\Program Files\nodejs\node.exe'
+args = ['C:\Users\yourname\GrandMA3MCP\dist\index.js']
+
+[mcp_servers.gma3.env]
+GMA3_INSTALL_DIR = 'C:\ProgramData\MALightingTechnology'
+```
+
+Single-quoted TOML strings preserve Windows backslashes. In the desktop form, enter paths without
+surrounding quotes; keep the complete server path in one argument, including any spaces.
+Run this setup natively on Windows so the default loopback address reaches onPC.
+
+The desktop app shares this configuration with Codex clients on the same host. The repository's
+`.mcp.json` generator is for Claude; skip it for this setup. Update the absolute paths if you move
+the checkout or Node.js installation. Continue to [check the connection](#5-check-the-connection).
+For a browser-based ChatGPT session, follow the separate [ChatGPT web guide](chatgpt-web.md).
+
+### Claude Code and Claude Desktop
+
 For **Claude Code**, generate the repository's `.mcp.json`:
 
 ```powershell
