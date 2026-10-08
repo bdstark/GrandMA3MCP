@@ -193,6 +193,70 @@ check("normal libraries and console API remain available", r.ok and r.result.val
 check("no hook on the bridge thread after hardening tests", debug.gethook() == nil)
 
 -------------------------------------------------------------------------------
+-- Plugin-thread execution: console context, hook swap and restore
+-------------------------------------------------------------------------------
+-- grandMA3 binds the plugin context to the plugin's own thread; a chunk run in a child coroutine
+-- cannot see it. This stub returns a value only when called on the thread that handles the request.
+do
+  local requestThread = nil
+  _G.ContextBoundStub = function()
+    if coroutine.running() == requestThread then return 42 end
+    return nil
+  end
+  local function requestOn(op, args, beforeResume)
+    local line = json.encode({ id = "t", op = op, args = args })
+    local co = coroutine.create(function()
+      requestThread = coroutine.running()
+      return state._handleLine(nil, line)
+    end)
+    if beforeResume then beforeResume(co) end
+    local ok, res = coroutine.resume(co)
+    local frames = 0
+    while ok and coroutine.status(co) == "suspended" do
+      frames = frames + 1
+      ok, res = coroutine.resume(co)
+    end
+    assert(ok, res)
+    return json.decode(res), co, frames
+  end
+
+  local r = requestOn("lua", { code = "return ContextBoundStub()" })
+  check("chunk runs on the request thread (context-bound API reachable)", r.ok and r.result.values[1] == 42, json.encode(r))
+  r = requestOn("lua", { code = "coroutine.yield() return ContextBoundStub()" })
+  check("still on the request thread after a yield", r.ok and r.result.values[1] == 42, json.encode(r))
+  r = requestOn("lua", { code = "local co = coroutine.wrap(function() return ContextBoundStub() end) return co()" })
+  check("a child coroutine the chunk creates has no context (documented limitation)", r.ok and r.result.values[1] == "<nil>", json.encode(r))
+
+  -- A hook already present on the thread (the console's, on onPC) is replaced while the chunk runs
+  -- and put back afterwards when it is a Lua hook. The budget is still enforced meanwhile.
+  local fires = 0
+  local function consoleHook() fires = fires + 1 end
+  state.lua.maxSteps = 0
+  local co
+  r, co = requestOn("lua", { code = "while true do end", maxMs = 200 }, function(thread) debug.sethook(thread, consoleHook, "", 50000) end)
+  check("budget enforced with a pre-existing hook on the thread", r.ok == false and r.error:find("ran longer than 200 ms"), r.error)
+  local h, mask, count = debug.gethook(co)
+  check("pre-existing Lua hook restored after the chunk", h == consoleHook and count == 50000, tostring(h) .. "/" .. tostring(count))
+  resetBudget()
+  r, co = requestOn("lua", { code = "local n = 0 for i = 1, 10 do n = n + i end return n" }, function(thread) debug.sethook(thread, consoleHook, "", 50000) end)
+  h = debug.gethook(co)
+  check("pre-existing hook restored after a successful chunk", r.ok and r.result.values[1] == 55 and h == consoleHook, json.encode(r))
+  r, co = requestOn("lua", { code = "return 1" })
+  check("no hook left on a thread that had none", r.ok and debug.gethook(co) == nil)
+
+  -- Once exceeded, the hook raises only in submitted code: the bridge's own handling after the
+  -- error completes normally and the thread is clean.
+  state.lua.maxSteps = 0
+  r, co = requestOn("lua", { code = "while true do pcall(function() while true do end end) end", maxMs = 200 })
+  check("exceeded budget never raises inside the bridge", r.ok == false and r.error:find("budget exceeded") and debug.gethook(co) == nil, r.error)
+  resetBudget()
+
+  r = requestOn("ping", {})
+  check("ping reports the hook found on the plugin thread", r.ok and type(r.result.lua.consoleHook) == "string" and r.result.lua.consoleHook:find("none"), json.encode(r.result.lua))
+  _G.ContextBoundStub = nil
+end
+
+-------------------------------------------------------------------------------
 -- Runtime toggles and Cleanup semantics
 -------------------------------------------------------------------------------
 Main(nil, "lua off")

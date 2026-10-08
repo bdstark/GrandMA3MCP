@@ -21,11 +21,16 @@
 -- Arguments are whitespace separated tokens; "luatime" is milliseconds of wall-clock time and
 -- "luasteps" a count of Lua VM instructions (0 = unlimited). A request that exceeds its budget is
 -- aborted with an error so the bridge loop (and the console) regain control. The budget is
--- enforced with a debug hook plus deadline checks around every resume; the script runs in an
--- environment that withholds debug.sethook and hooks coroutines it creates. It is a best-effort
--- guard against runaway scripts, not a sandbox: it cannot interrupt a C function such as Cmd()
--- that blocks, and a script that sets out to escape still can (Lua on the console has os/io
--- anyway). Only Lua submitted through the "lua" op is budgeted; the structured ops are not.
+-- enforced with a debug hook installed on the plugin thread while the chunk runs (the chunk
+-- must run on that thread: grandMA3 binds the plugin context to it and context-bound functions
+-- such as ObjectList return nothing from a child coroutine), plus deadline checks after every
+-- yield; the script runs in an environment that withholds debug.sethook and hooks coroutines it
+-- creates. It is a best-effort guard against runaway scripts, not a sandbox: it cannot interrupt
+-- a C function such as Cmd() that blocks, and a script that sets out to escape still can (Lua on
+-- the console has os/io anyway). Only Lua submitted through the "lua" op is budgeted; the
+-- structured ops are not. The console's own hook on the plugin thread (an external C hook) is
+-- replaced while a chunk runs and cannot be restored from Lua; it comes back when the plugin
+-- is restarted. ping reports it under lua.consoleHook.
 --
 -- The bridge only ever listens on 127.0.0.1. It has no authentication, so it is never exposed
 -- to the network; a "<host>:<port>" argument is rejected. For remote access forward the port
@@ -44,7 +49,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.3.0"
+local VERSION      = "0.3.1"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -1032,6 +1037,8 @@ end
 -------------------------------------------------------------------------------
 
 local hookSupported = type(debug) == "table" and type(debug.sethook) == "function"
+-- What debug.gethook() found on the plugin thread before the first chunk ran, for ping/status.
+local consoleHookSeen = nil
 
 local function now()
   local ok, t = pcall(socket.gettime)
@@ -1046,8 +1053,12 @@ local function luaPolicyInfo()
     maxSteps = state.lua.maxSteps,
     bounded  = hookSupported,
     note     = hookSupported
-      and "budget is enforced by a VM instruction hook; a blocking C call (e.g. Cmd opening a dialog) cannot be interrupted"
+      and "budget is enforced by a VM instruction hook on the plugin thread while a chunk runs; a blocking C call (e.g. Cmd opening a dialog) cannot be interrupted"
       or "debug.sethook is unavailable in this Lua engine: no execution bound can be enforced",
+    -- Hook found on the plugin thread before the first chunk ran (the console's own, if any). An
+    -- "external hook" is set from C by onPC and cannot be re-created from Lua once replaced; the
+    -- thread stays without it until the plugin is restarted.
+    consoleHook = consoleHookSeen or "not yet inspected (no gma3_lua request has run)",
   }
 end
 
@@ -1059,28 +1070,49 @@ local function describeLuaPolicy()
 end
 
 -- Budget state of the request currently executing (requests are handled one at a time).
--- The sandbox's coroutine.create/wrap use it to put the budget hook on threads the script creates.
+-- The sandbox's coroutine.create/wrap use it to put the budget hook on threads the script creates,
+-- and its coroutine.yield wrapper uses it to re-check the deadline after every resume.
 local activeBudget = nil
 
+-- Source of this chunk, as debug.getinfo reports it. The budget hook uses it to tell the plugin's
+-- own code from submitted code: once the budget is exceeded it raises the error only while
+-- submitted code (or a library it called) is executing, never inside the bridge itself.
+local PLUGIN_SOURCE = debug.getinfo(1, "S").source
+
+local function describeHook(h, mask, count)
+  if h == nil then return "none" end
+  local kind = type(h) == "string" and h or "Lua function"   -- "external hook" = set from C by the console
+  return string.format("%s (mask %q, count %s)", kind, tostring(mask or ""), tostring(count or 0))
+end
+
 -- Run fn() under the configured budget and return its results as a packed table.
--- The function runs in its own coroutine so the instruction hook is confined to it and
--- never affects the bridge loop. This matters beyond tidiness: onPC installs its own
--- external (C) hook on the plugin thread, and setting or clearing a hook there with
--- debug.sethook would replace or remove it. If the user code yields, the yield is passed
--- up to the console (like the bridge loop's own per-frame yield) and the code is resumed
--- next frame. The wall-clock deadline is checked by the hook, before and after every
--- resume, and before returning success, so a script that mostly yields (and therefore
+--
+-- The chunk runs on the plugin thread itself. It cannot run in a child coroutine: grandMA3
+-- binds the plugin context to the thread it created for the plugin, and a coroutine created
+-- from Lua gets the main thread's (empty) context, so ObjectList(), DataPool(), Programmer()
+-- and every other context-bound function return nothing there (verified on onPC 2.5.1).
+--
+-- The budget is enforced with a VM instruction hook installed on the plugin thread for the
+-- duration of the chunk. onPC keeps its own hook on that thread (an external C hook, count
+-- 50000 on 2.5.1). A C hook cannot be called from or re-created in Lua, so while a chunk runs
+-- the console's hook is replaced, and afterwards the thread is left without a hook until the
+-- plugin is restarted; ping reports what was found. A Lua hook (none, on the console) is
+-- restored exactly. If the chunk yields, the yield passes up to the console like the bridge
+-- loop's own per-frame yield; the sandbox's coroutine.yield wrapper re-installs the hook and
+-- re-checks the deadline when the chunk is resumed, so a script that mostly yields (and so
 -- executes few VM instructions) is still bounded.
 local function runBounded(fn, maxMs, maxSteps)
-  local co = coroutine.create(fn)
   local budget = { exceeded = nil }
   local timeMsg = maxMs and maxMs > 0 and string.format("Lua execution budget exceeded: ran longer than %d ms", maxMs) or nil
   local deadline = (maxMs and maxMs > 0) and (now() + maxMs / 1000) or nil
   local function overdue() return deadline ~= nil and now() >= deadline end
+  local hook = nil
+  local prevHook, prevMask, prevCount = nil, nil, nil
+  local installed = false
 
   if hookSupported and ((maxMs and maxMs > 0) or (maxSteps and maxSteps > 0)) then
     local steps = 0
-    local function hook()
+    hook = function()
       if not budget.exceeded then
         steps = steps + LUA_HOOK_INTERVAL
         if maxSteps and maxSteps > 0 and steps >= maxSteps then
@@ -1090,36 +1122,56 @@ local function runBounded(fn, maxMs, maxSteps)
         end
       end
       if budget.exceeded then
-        -- From now on fail on every instruction of this thread so that code wrapped in pcall
-        -- (or a parent thread resuming an exhausted child) cannot keep going.
-        debug.sethook(hook, "", 1)
-        error(budget.exceeded, 0)
+        -- Fail on every instruction from now on so that code wrapped in pcall (or a parent
+        -- resuming an exhausted child) cannot keep going; but never raise inside the plugin's
+        -- own code, which is what runs once the error has unwound out of the chunk.
+        local info = debug.getinfo(2, "S")
+        if info == nil or info.source ~= PLUGIN_SOURCE then
+          debug.sethook(hook, "", 1)
+          error(budget.exceeded, 0)
+        end
       end
     end
     budget.attach = function(thread) debug.sethook(thread, hook, "", LUA_HOOK_INTERVAL) end
-    budget.attach(co)
+    prevHook, prevMask, prevCount = debug.gethook()
+    if consoleHookSeen == nil then consoleHookSeen = describeHook(prevHook, prevMask, prevCount) end
+    debug.sethook(hook, "", LUA_HOOK_INTERVAL)
+    installed = true
+  end
+
+  -- Called by the sandbox's coroutine.yield after the chunk is resumed by the console.
+  budget.afterResume = function()
+    if installed and debug.gethook() ~= hook then debug.sethook(hook, "", LUA_HOOK_INTERVAL) end
+    if not budget.exceeded and overdue() then budget.exceeded = timeMsg end
+    if budget.exceeded then error(budget.exceeded, 0) end
   end
 
   local previous = activeBudget
   activeBudget = budget
-  local res = table.pack(coroutine.resume(co))
-  while res[1] and coroutine.status(co) == "suspended" and not budget.exceeded do
-    if overdue() then budget.exceeded = timeMsg; break end
-    coroutine.yield()
-    if overdue() then budget.exceeded = timeMsg; break end
-    res = table.pack(coroutine.resume(co))
-  end
-  if res[1] and not budget.exceeded and overdue() then budget.exceeded = timeMsg end
+  local res = table.pack(xpcall(fn, function(msg)
+    local okT, tb = pcall(debug.traceback, tostring(msg), 2)
+    return okT and tb or tostring(msg)
+  end))
   activeBudget = previous
 
+  if installed then
+    if prevHook == nil then
+      debug.sethook()
+    elseif type(prevHook) == "function" then
+      debug.sethook(prevHook, prevMask or "", prevCount or 0)
+    else
+      -- The console's external hook cannot be re-created from Lua. Leave the thread without a hook
+      -- rather than with ours (see the comment above).
+      debug.sethook()
+    end
+  end
+
+  if res[1] and not budget.exceeded and overdue() then budget.exceeded = timeMsg end
   if budget.exceeded then
-    if coroutine.status(co) == "suspended" and type(coroutine.close) == "function" then pcall(coroutine.close, co) end
     error(budget.exceeded .. '. Raise the budget when starting the bridge: Plugin "gma3_mcp_bridge" "lua luatime=<ms> luasteps=<n>" (0 = unlimited).', 0)
   end
   if not res[1] then
-    local msg = tostring(res[2])
-    local okT, tb = pcall(debug.traceback, co, msg)
-    error(okT and tb or msg, 0)
+    error(tostring(res[2]), 0)
   end
   return table.pack(table.unpack(res, 2, res.n))
 end
@@ -1155,6 +1207,14 @@ local function sandboxEnv()
       if not r[1] then error(r[2], 0) end
       return table.unpack(r, 2, r.n)
     end
+  end
+  -- A yield from the chunk suspends the plugin thread until the console's next frame. Once
+  -- resumed, re-install the budget hook (the console may have touched the thread) and re-check
+  -- the wall-clock deadline, so a script that mostly waits is still bounded.
+  co.yield = function(...)
+    local r = table.pack(coroutine.yield(...))
+    if activeBudget and activeBudget.afterResume then activeBudget.afterResume() end
+    return table.unpack(r, 1, r.n)
   end
 
   env._G = env

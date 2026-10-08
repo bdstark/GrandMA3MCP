@@ -76,9 +76,22 @@ Each `gma3_lua` request runs under an execution budget: by default 5 s of wall-c
 Lua VM instructions. `luatime=<ms>` and `luasteps=<n>` change the limits (`0` = unlimited). A request that
 exceeds its budget is aborted with an error and the bridge loop continues; the MCP server also passes the
 client's request timeout down as the time budget, so a script stops when nobody is waiting for it any
-more. The instruction count is enforced with a Lua debug hook on the script's coroutine; the wall-clock
-deadline is checked by that hook, before and after every resume of a script that yields, and before a
-result is returned, so a script that mostly waits is bounded too.
+more.
+
+The script runs on the plugin's own thread. It has to: grandMA3 binds the plugin context to the thread it
+created for the plugin, and a coroutine created from Lua gets no context, so `ObjectList()`, `DataPool()`,
+`Programmer()` and every other context-bound function return nothing there (plugin 0.2.0 ran scripts in a
+coroutine and had exactly that problem; fixed in 0.3.1). The instruction count is enforced with a Lua debug
+hook installed on that thread for the duration of the script; the wall-clock deadline is checked by the
+hook, after every yield, and before a result is returned, so a script that mostly waits is bounded too.
+Once the budget is exceeded the hook raises on every instruction of submitted code (so `pcall` cannot
+swallow it) but never inside the bridge's own code.
+
+onPC keeps a hook of its own on the plugin thread (an external C hook with count 50000 on 2.5.1). A C hook
+cannot be called from or re-created in Lua, so it is replaced while a script runs and the thread is left
+without it afterwards until the plugin is restarted. `gma3_status` reports what was found under
+`lua.consoleHook`. What that hook does is not documented by MA; the bridge's own loop yields every frame and
+bounds submitted scripts itself, so no behaviour change was observed with it gone.
 
 The script runs in an environment that closes the obvious ways around the budget: `debug.sethook` and
 `debug.gethook` are withheld, coroutines the script creates (`coroutine.create` / `coroutine.wrap`) get the
@@ -110,7 +123,7 @@ Plugin "gma3_mcp_bridge"
 
 `ReloadAllPlugins` is required: onPC keeps the Lua chunk it already loaded for a plugin name, so a delete and
 re-import alone leaves the old code running (verified on 2.5.1). The start line in the command line history
-shows the plugin version, e.g. `listening on 127.0.0.1:9800 (v0.3.0)`.
+shows the plugin version, e.g. `listening on 127.0.0.1:9800 (v0.3.1)`.
 
 Quick check from a terminal without an MCP client:
 
