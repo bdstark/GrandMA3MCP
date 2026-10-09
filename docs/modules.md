@@ -44,16 +44,47 @@ component looks it up when it starts. The registration is a plain Lua table writ
 show object, socket or timer and sends no input.
 
 ```lua
--- in the entry component's Main, after the console has run every component chunk
-local pluginName, componentName, signalTable, my_handle = ...
-local reg = rawget(signalTable, "__gma3_mcp_modules") or {}
-local HK, FB = reg.gma3_mcp_hardkeys, reg.gma3_mcp_feedback
-if not (HK and HK.API_VERSION == 1) then error("gma3_mcp_hardkeys is not registered; import the plugin with all components") end
-local hardkeys = HK.new({ owner = pluginName, deps = HK.consoleDeps(_G) }):init()
-local feedback = FB.new({ owner = pluginName, deps = FB.consoleDeps(_G) }):init()
--- every loop iteration:    hardkeys:service(now); feedback:service(now)
--- on stop/Cleanup:          hardkeys:dispose();    feedback:dispose()
+-- Helpers in the entry component. Call startModules() from Main, after all chunks ran.
+-- The consumer owns `retained`: keep it across stop/start and persist it across reloads
+-- if those can replace the entry component's Lua state. Never recreate it on each start.
+local function startModules(pluginName, signalTable, retained, now)
+  assert(type(now) == "number", "supply the consumer clock in seconds")
+  local reg = rawget(signalTable, "__gma3_mcp_modules") or {}
+  local HK, FB = reg.gma3_mcp_hardkeys, reg.gma3_mcp_feedback
+  assert(HK and HK.API_VERSION == 1 and HK.VERSION == "0.4.0", "wrong hardkeys module")
+  assert(FB and FB.API_VERSION == 1 and FB.VERSION == "0.2.0", "wrong feedback module")
+  local hardkeys = HK.new({ owner = pluginName, deps = HK.consoleDeps(_G) }):init()
+  local feedback = FB.new({ owner = pluginName, deps = FB.consoleDeps(_G) }):init()
+  local adopted = hardkeys:adopt(retained, now) -- reserves old tuples; dispatches nothing
+  local rejected = {}
+  for _, item in ipairs(adopted.rejected) do rejected[#rejected + 1] = item.record end
+  -- Input is still disabled. Do not enable it if any record could not be adopted.
+  return hardkeys, feedback, rejected
+end
+
+local function stopModules(hardkeys, feedback, retained, now)
+  assert(type(now) == "number", "cleanup needs the consumer clock in seconds")
+  local result = hardkeys:dispose(now) -- attempts releases using the stored tuples
+  for _, record in ipairs(result.records) do retained[#retained + 1] = record end
+  feedback:dispose()
+  return result -- report unresolved releases; retain their records for the next start
+end
+
+-- Main assigns all three results:
+-- hardkeys, feedback, retained = startModules(pluginName, signalTable, retained, now)
+-- Each loop: hardkeys:service(now); feedback:service(now), using a fresh clock value.
+-- Stop/Cleanup: stopModules(hardkeys, feedback, retained, now), then persist retained.
 ```
+
+Calling `hardkeys:dispose()` without a numeric clock does **not** dispatch releases. Do not discard its
+returned records. If cleanup raises, preserve the instance and report the failure instead of dropping
+ownership state. Adopt retained records before admitting input; retain and report any rejected records.
+Release recovery is an explicit action through the originating backend (`attachBackend()` then `recover()`);
+it does not replay presses and does not require enabling new input. The consumer must choose storage that
+survives its own restart/reload lifecycle; a local table alone does not survive replacement of that Lua state.
+
+The version checks above match the [vendoring pin](#vendoring-into-another-plugin-mtpnxk). Check file hashes
+when packaging: version strings and `API_VERSION` alone do not identify a particular revision.
 
 The bridge's own loader is `loadModule` in [plugin/gma3_mcp_bridge.lua](../plugin/gma3_mcp_bridge.lua);
 it validates `API_VERSION`, reports a missing or broken component through the `modules` op and
@@ -94,8 +125,13 @@ or plain `Enter` collides with the fixed/native routes) and never substitutes an
 ## Owned input sessions (`gma3_mcp_hardkeys` 0.2.0, KB-03)
 
 Every call that can change state takes `now` (seconds, number) from the consumer; the module never
-reads a clock and never sleeps. Calls that fail return `nil, { code, message, ... }`; nothing is
-dispatched when an error is returned. Programming errors (wrong state, missing clock) raise.
+reads a clock and never sleeps. Calls that fail return `nil, { code, message, ... }`, but an error does
+**not** prove that nothing was dispatched. Pre-dispatch validation/admission refusals send no input;
+a backend exception may occur after delivery, and a combo may fail after earlier keys were pressed.
+Inspect `hold`, `unresolved`, `pressed` and `rollback` where supplied, and reconcile ownership/status.
+A successful rollback releases keys; it does not undo their earlier effects. Never automatically replay
+an uncertain press, tap, text chunk or sequence. Programming errors (wrong state, missing clock) raise;
+an unexpected exception is not proof of non-delivery either.
 
 | Method | Effect |
 | --- | --- |
@@ -304,13 +340,33 @@ atomic snapshot against other console activity.
 
 ## Vendoring into another plugin (mtpnxk)
 
-1. Copy `plugin/gma3_mcp_hardkeys.lua` and `plugin/gma3_mcp_feedback.lua` unchanged, with
-   [LICENSE](../LICENSE) (MIT). Record the module version and the commit you copied from.
-2. Add both as `ComponentLua` entries after your entry component in your plugin XML, and copy the
-   `.lua` files next to the XML for import. After import the show carries them.
-3. Look them up as shown above. Do not fork console semantics: changes to key resolution or readers go
-   into this repository and are re-vendored.
-4. Check `API_VERSION`; a bridge or consumer refuses a module with another API version.
+Use the immutable upstream revision **`9da14544155f921c5dd4fd1cbb9a1ea4bd6f6e78`** for this
+reviewed module pair. The machine-readable [modules.lock.json](../plugin/modules.lock.json) records the
+repository, full revision, module versions, API versions and SHA-256 of each file. This is a vendoring
+manifest, not an automatic updater or a runtime dependency on GitHub.
+
+| File | Module version | API version |
+| --- | --- | --- |
+| `plugin/gma3_mcp_hardkeys.lua` | 0.4.0 | 1 |
+| `plugin/gma3_mcp_feedback.lua` | 0.2.0 | 1 |
+
+1. Obtain both Lua files from that exact revision of `bdstark/GrandMA3MCP`, rather than a moving branch.
+   Copy them unchanged with [LICENSE](../LICENSE) and the manifest into the surface package. The manifest
+   is introduced by this documentation change; its `revision` identifies the existing upstream Lua bytes.
+2. Verify each file against its manifest SHA-256 before packaging (for example, `shasum -a 256` on macOS,
+   `sha256sum` on Linux, or `Get-FileHash -Algorithm SHA256` in PowerShell). Relative paths in the manifest
+   are upstream paths; record the destination paths if your consumer uses a different layout.
+3. Add both as `ComponentLua` entries after your entry component in the plugin XML, and copy the
+   `.lua` files next to the XML for import. After import the show carries them. Include the manifest with
+   the distributed source/package; it does not need to be a console component.
+4. Validate both modules' `API_VERSION` and expected `VERSION` at startup, as in the example above.
+   Pinning the bytes matters because fixes have shipped without changing those version strings.
+5. Upgrade deliberately: review the upstream changes, replace both files from one selected revision,
+   update the manifest and startup checks, then run lifecycle/recovery tests and the relevant live probes
+   in the consumer. Submit shared console-semantic fixes upstream and re-vendor them rather than keeping
+   a surface-only fork. The pin is reproducible; it does not imply every platform is qualified.
+
+See the [tested platform/version matrix](compatibility.md) for the evidence and remaining gaps.
 
 ## Verification
 

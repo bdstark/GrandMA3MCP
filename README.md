@@ -22,6 +22,8 @@ For container deployment, see [Docker](docs/docker.md).
 
 The documented live verification baseline is **grandMA3 onPC 2.5.1.0 on macOS**. Windows instructions
 are provided, but this does not establish equivalent live validation on Windows or other onPC versions.
+See the [tested platform/version matrix](docs/compatibility.md) for the distinction between live probes,
+automated checks and deployments still awaiting qualification.
 
 ## What you can do
 
@@ -86,6 +88,7 @@ OSC is optional for the normal bridge setup and is not forwarded by an SSH tunne
 - [Hardkey, keyboard and feedback feature requests and evidence](KEYBOARD.md), [console interaction modules](docs/modules.md)
 - [Optional Lua execution](docs/lua.md)
 - [Remote access over SSH](docs/remote-access.md) and [Docker](docs/docker.md)
+- [Tested platform/version matrix](docs/compatibility.md) and [pinned modules for independent consumers](docs/modules.md#vendoring-into-another-plugin-mtpnxk)
 - [Development and automated tests](docs/development.md), [live test procedure](test/live/README.md)
 
 ## License
