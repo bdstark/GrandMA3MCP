@@ -202,7 +202,7 @@ the instance.
 | `beginInteraction(session, now, { leaseMs, label })` | A leased ownership token of the session (`i1`, `i2`, ...). Refused `busy` while another interaction is open, a sequence runs or any key is held (of any session), and while input is disabled. The session lease is extended to cover it. |
 | `renewInteraction(session, id, now, leaseMs)` | Moves the deadline; an interaction whose lease lapsed is ended first and reported `no-interaction` (never resumed). |
 | `endInteraction(session, id, now, reason)` | Aborts its sequence, releases its holds newest first, reports `released`/`unresolved`; harmless twice (`alreadyEnded`). Another session's id is `not-owner`. |
-| `admission(now)` | Read-only busy descriptor or nil: `{ reason = "interaction" \| "sequence" \| "hold", owner, interaction, sequence, hold, remainingMs, description }`. The consumer refuses conflicting mutations with it. Unresolved records are not busy. |
+| `admission(now)` | Read-only busy descriptor or nil: `{ reason = "interaction" \| "sequence" \| "hold" \| "unresolved", owner, interaction, sequence, hold, remainingMs, count, description }`. The consumer refuses conflicting mutations with it; an unresolved record counts (the key may still be down) until `recover()` resolves it. |
 | `startSequence(session, now, steps, { interaction \| leaseMs, label })` | Validates every step (`tap`, `press`, `release`, `combo`, `text`, `wait`; limits `maxSequenceSteps`, `maxSequenceMs`, `maxWaitMs`, `maxTextChars`) before the first event, begins an interaction for the sequence unless one is given (whose remaining lease must cover the estimate), starts the first step and returns the report. One sequence per instance. |
 | `sequenceStatus(id, now)` | Read-only report of the running sequence or one of the last `sequenceHistory` finished ones: `state`, `index`, `counts`, `events` (flat, one per step), `cleanup`. |
 | `abortSequence(session, id, now, reason)` | Owner abort: the in-flight step is `aborted`, the rest `unattempted`, the sequence's holds are released, an interaction begun for it is ended. |
@@ -212,7 +212,7 @@ the instance.
 without `holdMs`) needs `spec.interaction` / `opts.interaction` naming an open interaction of its session
 (`interaction-required`); while an interaction is open, every call of its session must carry its id (`busy`,
 "pass its id") and every other session is `busy`; a running sequence refuses every other input; a key held by
-another session is `busy` for everyone else. Exclusive-hold and route-changed refusals come first. With
+another session, or an unresolved record of another session, is `busy` for everyone else. Exclusive-hold and route-changed refusals come first. With
 `requireInteraction = false` (a single-caller consumer such as a surface plugin) the KB-03 per-session rules apply
 unchanged; interactions and sequences still work and still lock the instance. Holds record their `interaction` and
 `sequence`. `closeSession`, `_expireSession` and `disableInput` end the session's interactions and abort its
@@ -230,10 +230,13 @@ them whole.
 
 **Text** (`validateText(text, maxChars)`, exported): UTF-8 by code point; empty text, invalid UTF-8 (byte position),
 more than `maxTextChars`, and newline, carriage return, tab, other C0/C1 controls, DEL and U+2028/U+2029 are refused
-(character index); nothing is normalised. Context `command-line` needs `deps.shortcutsActive()` to read `false`
-(positively) at validation and before every chunk, and reads `deps.commandText()` (`CmdObj().cmdtext`) before
-typing and back afterwards within `readbackMs` (`observed`/`inconclusive`/`unavailable`); `text-field` needs
-`acknowledgeFocus = true` (focus is not observable; readback `unavailable`) and still stops on an enablement change.
+(character index); nothing is normalised. Every text step needs `acknowledgeFocus = true` (the receiving element is
+not observable) and is refused while an exclusive hold or a route mismatch exists; both are rechecked before every
+chunk. Context `command-line` needs `deps.shortcutsActive()` to read `false` (positively) at validation and before
+every chunk, and reads `deps.commandText()` (`CmdObj().cmdtext`) before typing and back afterwards within
+`readbackMs`: `observed` completes the step, `inconclusive` leaves it `uncertain` and stops the sequence (no later
+commit of unverified text); `text-field` has readback `unavailable` and may not be followed by a PLEASE/Enter step
+in the same sequence. A text step stopped after characters went out is `uncertain`, not `failed`.
 A character whose `char()` call refuses is `failed`, one that raises is `uncertain` at that character. The adapter
 contract gains `char(codepoint, display) -> ok, confirmed, err` (same outcome rules as `press`): the fake backend
 appends to `typed` (`typedText()`, `setTypedText()`, `failNext("char", { codepoint })`, `raiseNext("char")`), the

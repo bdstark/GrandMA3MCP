@@ -409,7 +409,7 @@ export const registerInputTools: RegisterTools = (server, ctx) => {
         "tap presses and releases with hold_ms (default 50, max 5000) and returns once the release was attempted; exclusive: true is the intended long-press (every other input is refused meanwhile). " +
         "keys (2-4 logical keys) presses a combination in order and releases newest first (chord tap with action tap; a hold with action press). " +
         "press holds the key until release or the interaction/lease ends and REQUIRES an interaction id (gma3_input_interaction acquire). " +
-        "While any key is held or an interaction is open, the bridge refuses commands/property/playback/fader/Lua from every client with [busy]. " +
+        "While any key is held, an interaction is open or a release stayed unresolved, the bridge refuses commands/property/playback/fader/Lua from every client with [busy]. " +
         'Input is OFF until the operator runs  Plugin "gma3_mcp_bridge" "input=keyboard"  (release works while off). Input is not display-scoped. ' +
         "The result never claims a UI effect: verification is unavailable unless an observable (aggregate MASTATE for MA) showed the expected value; a release on this backend is 'dispatched', never 'confirmed'. Nothing is retried or replayed; an uncertain dispatch is reported as unknown.",
       inputSchema: {
@@ -479,15 +479,16 @@ export const registerInputTools: RegisterTools = (server, ctx) => {
     {
       title: "Type text into the console",
       description:
-        "Type Unicode text as one character event per code point into an EXPLICIT context: 'command-line' is admitted only while the operator has disabled keyboard shortcuts (F10; with shortcuts enabled, characters never reach the command line and nothing is substituted) " +
-        "and is read back from the command line (matched when it shows the text, otherwise unavailable); 'text-field' means a text field is focused, which cannot be observed from Lua, so acknowledge_focus: true is required and verification is unavailable. " +
-        "Text is typed in chunks by the bridge loop with the context rechecked between chunks; it stops with its progress when shortcuts are toggled meanwhile. " +
+        "Type Unicode text as one character event per code point into an EXPLICIT context. Which element receives characters cannot be observed from Lua, so acknowledge_focus: true is always required: you state that the command line (context 'command-line') or a text field (context 'text-field') is focused. " +
+        "'command-line' is admitted only while the operator has disabled keyboard shortcuts (F10; with shortcuts enabled, characters never reach the command line and nothing is substituted) and is read back from the command line: matched when it shows the text; when it does not within the readback window the step is UNKNOWN and nothing after it runs. " +
+        "'text-field' cannot be read back (verification unavailable) and must not be followed by PLEASE/Enter in the same sequence. Text is refused while an exclusive long-press is held or a held key's route changed. " +
+        "Text is typed in chunks by the bridge loop with the context rechecked between chunks; it stops with its progress (unknown) when shortcuts are toggled, a route changes or a long-press starts meanwhile. " +
         "Newlines, tabs and other control characters are refused (up to 256 characters); text NEVER presses Enter, changes focus, opens an editor or toggles shortcuts: commit it with a separate gma3_hardkey PLEASE tap. " +
         "Same gate and busy rules as gma3_hardkey (input OFF until the operator runs  Plugin \"gma3_mcp_bridge\" \"input=keyboard\"; commands from every client are [busy] while it types). Nothing is retried or replayed; a character whose dispatch raised is reported as unknown at that position.",
       inputSchema: {
         text: z.string().min(1).max(MAX_TEXT_CHARS * 4).describe("The text (UTF-8, no control characters, at most 256 characters)."),
         context: z.enum(TEXT_CONTEXTS).describe("Where the characters are meant to go; validated and read back where possible."),
-        acknowledge_focus: z.boolean().optional().describe("Required true for context text-field: you state that a text field is focused (unverifiable)."),
+        acknowledge_focus: z.boolean().optional().describe("Must be true: you state that the named context (command line or a text field) is what currently receives characters; this cannot be observed from Lua."),
         display: keyFields.display,
         interaction: z.string().optional().describe(interactionDoc),
       },
@@ -498,8 +499,8 @@ export const registerInputTools: RegisterTools = (server, ctx) => {
           const target = { context, chars: Array.from(text).length };
           const policy = textPolicyError(text);
           if (policy) return validationFailure("type", target, [policy]);
-          if (context === "text-field" && acknowledge_focus !== true) {
-            return validationFailure("type", target, ["context text-field needs acknowledge_focus: true (focus on a text field cannot be observed; you state it is focused and UI verification is reported unavailable)"]);
+          if (acknowledge_focus !== true) {
+            return validationFailure("type", target, ["acknowledge_focus: true is required: which element receives characters (the command line or a text field) cannot be observed from Lua, so you state that the named context is focused; only the command line is read back afterwards"]);
           }
           const step: Record<string, unknown> = { kind: "text", text, context };
           if (acknowledge_focus !== undefined) step.acknowledgeFocus = acknowledge_focus;
@@ -525,7 +526,7 @@ export const registerInputTools: RegisterTools = (server, ctx) => {
     z.object({ kind: z.literal("press"), ...stepKey, exclusive: z.boolean().optional() }).describe("Held until a later release step or the end of the sequence (then released newest first)."),
     z.object({ kind: z.literal("release"), ...stepKey }).describe("Releases a key an earlier step pressed (stored tuple)."),
     z.object({ kind: z.literal("combo"), keys: z.array(z.object(stepKey)).min(2).max(4), hold_ms: z.number().int().positive().max(5000).optional() }).describe("Keys pressed in order, released newest first; a chord tap with hold_ms, otherwise a hold."),
-    z.object({ kind: z.literal("text"), text: z.string().min(1), context: z.enum(TEXT_CONTEXTS), acknowledge_focus: z.boolean().optional(), display: keyFields.display }).describe("Same rules as gma3_type; never presses Enter."),
+    z.object({ kind: z.literal("text"), text: z.string().min(1), context: z.enum(TEXT_CONTEXTS), acknowledge_focus: z.boolean().optional(), display: keyFields.display }).describe("Same rules as gma3_type (acknowledge_focus: true required); never presses Enter; a text-field text may not be followed by PLEASE/Enter in the same sequence; unverified command-line text stops the sequence."),
     z.object({ kind: z.literal("wait"), ms: z.number().int().positive().max(2000) }),
   ]);
 
@@ -663,7 +664,7 @@ function toBridgeStep(s: Record<string, unknown>, index: number): Record<string,
     case "text": {
       const policy = textPolicyError(String(s.text));
       if (policy) throw new InputValidationError([`${what}: ${policy}`]);
-      if (s.context === "text-field" && s.acknowledge_focus !== true) throw new InputValidationError([`${what}: context text-field needs acknowledge_focus: true`]);
+      if (s.acknowledge_focus !== true) throw new InputValidationError([`${what}: text needs acknowledge_focus: true (the receiving element cannot be observed; you state the named context is focused)`]);
       const step: Record<string, unknown> = { kind: "text", text: s.text, context: s.context };
       if (s.acknowledge_focus !== undefined) step.acknowledgeFocus = s.acknowledge_focus;
       if (s.display !== undefined) step.display = s.display;

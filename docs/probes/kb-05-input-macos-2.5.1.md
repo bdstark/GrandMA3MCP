@@ -1,7 +1,8 @@
 # KB-05 structured input — macOS, onPC 2.5.1.0
 
 Date: 2026-10-09. Evidence for [KEYBOARD.md](../../KEYBOARD.md) "KB-05 results". Script report:
-[kb-05-input-macos-2.5.1.json](kb-05-input-macos-2.5.1.json) (`run`, 42/42). **Console keys were really pressed
+[kb-05-input-macos-2.5.1.json](kb-05-input-macos-2.5.1.json) (`run`, 44/44; rerun after the review fixes, which
+added the focus-acknowledgment and preflight checks below). **Console keys were really pressed
 and text was really typed** on the command line.
 
 | Item | Value |
@@ -18,7 +19,7 @@ through `lua` while A's interaction was open and got `[busy]`, as designed). A's
 probe's socket closed (disconnect cleanup), the bridge reported nothing busy, `Store ` was cleared with Escape, and
 the corrected script ran clean.
 
-## `run` (42/42)
+## `run` (44/44)
 
 | # | Step | Dispatched | Observed |
 | --- | --- | --- | --- |
@@ -27,7 +28,7 @@ the corrected script ran clean.
 | 3 | A `input.end i2` | `S` release (`dispatched`) | `cmdtext = "Store "` read after the end (the hold's effect persists until Escape); commands admitted again; `input.press` with `i2` `[no-interaction]` (ended, never resumed); a press without an interaction `[interaction-required]`; Escape cleared the line |
 | 4 | A `input.sequence [tap NUM5 60 ms, tap NUM1 60 ms]` | `5` and `1` press/release, serviced by the loop | state `running` with step 1 waiting, then `completed` (2 of 2, both releases `dispatched`); `cmdtext = "51"` after 17 ms |
 | 5 | A `input.sequence [combo MA+STORE 150 ms]` | `LeftShift`, `S`; released `S` then `LeftShift` | `cmdtext = "Record "` after 14 ms (read after completion); the event carries the MASTATE release readback separately from the dispatch (still `pending` at the moment the sequence completed; see note); console MASTATE false afterwards |
-| 6 | A `input.sequence [text "Fixture 5" command-line]` with shortcuts enabled | nothing | `[unsupported]` "needs keyboard shortcuts disabled by the operator (F10) ... nothing is toggled here"; shortcuts still enabled, command line still empty; `text "Fixture 5\n"` `[bad-argument]` "character 10 is a newline" |
+| 6 | A `input.sequence [text "Fixture 5" command-line]` with shortcuts enabled | nothing | `[unsupported]` "needs keyboard shortcuts disabled by the operator (F10) ... nothing is toggled here"; shortcuts still enabled, command line still empty; `text "Fixture 5\n"` `[bad-argument]` "character 10 is a newline"; text without `acknowledgeFocus` `[focus-unverified]`; `[tap NUM5, press MA maxHoldMs=-1]` `[bad-argument]` at step 2 with the command line still empty (nothing dispatched) |
 | 7 | operator disables shortcuts (profile property through Lua, standing in for F10); A `input.sequence [text "Fixture 5" command-line]` | 9 `char` events in chunks of 8 | `completed`, `typed = 9`, readback `observed`: `cmdtext = "Fixture 5"`; `lastcommand` unchanged (the text was **not** executed) |
 | 8 | A `input.sequence [text "abü€😀" command-line]` | 5 `char` events (one per code point, incl. U+1F600) | readback `observed`: `cmdtext = "Fixture 5abü€😀"` |
 | 9 | operator re-enables shortcuts; Escape | `Escape` press/release | shortcuts active; `cmdtext = ""` (the typed text was discarded, never committed) |
@@ -40,10 +41,8 @@ the corrected script ran clean.
 - The busy guard applies to the `lua` op as designed, which means **a probe cannot read the console while it owns
   input**: verification reads must follow the end of the interaction or sequence. What a held key put on the
   command line (`Store `, `Record `, `51`) persists after the release, so reading afterwards is sufficient.
-- The chord event's MASTATE release readback was still `pending` in the report returned at the instant the
-  sequence completed; the readback concludes on later loop iterations. The module now reports the hold's live
-  readback in `input.sequence.status` (change made after this run, covered by the harness; the console behaviour
-  itself, MASTATE false after the release, was read directly).
+- In the first run the chord event's MASTATE release readback was still `pending` in the report returned at the
+  instant the sequence completed; `input.sequence.status` now reports the hold's live readback.
 - Text typed with shortcuts disabled stayed on the command line and `lastcommand` did not change: the `char` route
   inserts, it never executes. Commit is a separate PLEASE event (not exercised here; the KB-04 run covers PLEASE).
 - A disconnect in the middle of a sequence released the in-flight tap through the session close and left the

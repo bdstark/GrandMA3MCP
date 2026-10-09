@@ -10,7 +10,7 @@ They are evidence for [KEYBOARD.md](../../KEYBOARD.md), not automated regression
 | [kb-02-loading-macos-2.5.1.md](kb-02-loading-macos-2.5.1.md) (module loading, save/reload without loose files) | macOS, onPC 2.5.1.0 |
 | [kb-03-fake-macos-2.5.1.md](kb-03-fake-macos-2.5.1.md), [script report](kb-03-fake-macos-2.5.1.json) (33/33; owned sessions on the fake backend) | macOS, onPC 2.5.1.0 |
 | [kb-04-keyboard-macos-2.5.1.md](kb-04-keyboard-macos-2.5.1.md), script reports for [run](kb-04-keyboard-macos-2.5.1.json) and [restart](kb-04-keyboard-macos-2.5.1-restart.json) (47/47, 12/12; real keys) | macOS, onPC 2.5.1.0 |
-| [kb-05-input-macos-2.5.1.md](kb-05-input-macos-2.5.1.md), [script report](kb-05-input-macos-2.5.1.json) (42/42; interactions, busy guard, sequences, command-line text) | macOS, onPC 2.5.1.0 |
+| [kb-05-input-macos-2.5.1.md](kb-05-input-macos-2.5.1.md), [script report](kb-05-input-macos-2.5.1.json) (44/44; interactions, busy guard, sequences, command-line text) | macOS, onPC 2.5.1.0 |
 
 ## Running the KB-01 probe on another platform
 

@@ -40,14 +40,15 @@ call, never taken from a request). Inside it:
 - An interaction is **never resumed**: after `end`, a lease expiry, a bridge reconnect or restart, the id is refused
   (`[no-interaction]`) and a new one must be acquired. Nothing that was in flight is replayed.
 
-While an interaction is open, a sequence runs or **any key is held**, the bridge refuses `cmd`, `set`,
-`setfader` and `lua` from **every** connection with `[busy]` (naming the owner, the interaction or sequence and the
-remaining lease): `gma3_command`, `gma3_set_property`, `gma3_playback`, `gma3_set_fader`, `gma3_lua` and every
+While an interaction is open, a sequence runs, **any key is held** or **a release stayed unresolved** (the key may
+still be down), the bridge refuses `cmd`, `set`, `setfader` and `lua` from **every** connection with `[busy]`
+(naming the owner, the interaction, sequence or hold and the remaining lease): `gma3_command`, `gma3_set_property`, `gma3_playback`, `gma3_set_fader`, `gma3_lua` and every
 workflow tool that sends a command are affected, from this server and from any other client of the bridge. Reads
 (`gma3_get_object`, the inspection tools, `gma3_hardkeys_status`, sequence status), the owner's releases,
 `gma3_hardkeys_release_all` and `end` stay available. A refusal is explicit: a command is never queued into a
-context that an input interaction may have changed. Unresolved release records do **not** make the bridge busy;
-they block their own key and are reported by status until the operator recovers them.
+context that an input interaction may have changed, and never while the keyboard state is uncertain. An unresolved
+record keeps the bridge busy for everyone (including a start that adopted records from a previous run) until
+`gma3_hardkeys_release_all recover: true` or the operator's `input recover` resolves it.
 
 This guard serialises bridge clients only. It cannot isolate a physical operator, OS-delivered input or another
 plugin pressing keys: injected and physical input share one console key state (KB-01). Use the tools on a console
@@ -107,7 +108,9 @@ not display-scoped on onPC 2.5.1.
 ## Text
 
 `gma3_type` (and `text` steps) type UTF-8 text one character event (`Keyboard(display, 'char', <code point>)`) per
-Unicode code point, in chunks of 8 per bridge loop iteration. The policy, enforced on the server and again on the
+Unicode code point, in chunks of 8 per bridge loop iteration. Which element receives characters cannot be observed
+from Lua, so `acknowledge_focus: true` is always required: the caller states that the named context is focused.
+Text is input like any key: it is refused while an exclusive long-press is held or a held key's route changed. The policy, enforced on the server and again on the
 console: at most 256 characters; newline, carriage return, tab, other C0/C1 controls, DEL and the line/paragraph
 separators are refused, so text can never execute a line, close a dialog or move focus; nothing is normalised.
 Committing text is a separate, explicit `gma3_hardkey` PLEASE tap.
@@ -118,14 +121,17 @@ The context is explicit and validated:
   `KEYBOARDSHORTCUTSACTIVE = false`). With shortcuts enabled, character events never reach the command line
   (KB-01); the tool refuses instead of substituting key presses or toggling shortcuts. The command line is read
   before typing and read back afterwards (bounded window, polled across frames): `matched` when it shows the
-  previous content plus the text, otherwise `unavailable` with what was read.
-- `text-field`: a text field (Edit Command dialog, an editor) is focused. Focus cannot be observed from Lua, so
-  `acknowledge_focus: true` is required and verification is `unavailable`. With shortcuts enabled, text goes to
-  the focused editor; with shortcuts disabled, to whatever is focused.
+  previous content plus the text. When it does not within the window, the step is **`unknown`** (typed but not
+  verified) and the sequence stops, so a later PLEASE can never commit text that was not seen.
+- `text-field`: a text field (Edit Command dialog, an editor) is focused. It cannot be read back, so verification is
+  `unavailable`, and a PLEASE/Enter step after it in the same sequence is refused at validation: check the field and
+  commit with a separate explicit call. With shortcuts enabled, text goes to the focused editor; with shortcuts
+  disabled, to whatever is focused.
 
-Between chunks the bridge rechecks the context (shortcut enablement); a change stops typing with the count of
-characters typed and the remaining ones unattempted (`failed`, code `context-changed`). A character whose dispatch
-raised is `unknown` at that position (`uncertainChar`); typing stops. Nothing is retyped.
+Between chunks the bridge rechecks the context (shortcut enablement, exclusive hold, held-key routes); a change
+stops typing with the count of characters typed (`unknown` with code `context-changed`, `exclusive-hold` or
+`route-changed`) and the remaining ones unattempted. A character whose dispatch raised is `unknown` at that
+position (`uncertainChar`); typing stops. Nothing is retyped.
 
 ## Sequences
 
@@ -133,7 +139,8 @@ raised is `unknown` at that position (`uncertainChar`); typing stops. Nothing is
 `tap` (`hold_ms` ≤ 5000, `exclusive`), `press` (held until a later `release` step or the end of the sequence),
 `release` (a key an earlier step pressed, or this server holds), `combo` (`keys`, `hold_ms` for a chord tap),
 `text` (as `gma3_type`), `wait` (`ms` ≤ 2000). The bridge validates every step before the first event (routes,
-key names, text policy, context, ownership of releases); one invalid step means nothing is dispatched. The steps
+key names, hold durations and flags of every key including combo constituents, text policy, context, ownership of
+releases, no commit after text-field text); one invalid step means nothing is dispatched. The steps
 are then serviced one after another by the plugin loop, so tap releases, leases and deadlines keep running
 meanwhile, and only one sequence runs per bridge at a time. Pass `interaction` to run inside an acquired interaction
 (its remaining lease must cover the estimate), otherwise one is begun and ended for the sequence (`lease_ms`

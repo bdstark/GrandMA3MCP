@@ -221,12 +221,13 @@ instance is quiet. While an interaction is open, every call of its session must 
 every other input (`[busy]`, reason `sequence`), and a key held by another session refuses new input from everyone
 else (`[busy]`, reason `hold`). Exclusive long-press and route-change refusals keep their precedence.
 
-**Admission across connections.** While the module reports itself busy (an open interaction, a running sequence or
-a held key, of any connection), the bridge refuses `cmd`, `set`, `setfader` and `lua` from **every** connection with
+**Admission across connections.** While the module reports itself busy (an open interaction, a running sequence, a
+held key or an unresolved release record, of any connection), the bridge refuses `cmd`, `set`, `setfader` and `lua` from **every** connection with
 `[busy]` (`detail.reason`, `owner`, `interaction`/`sequence`/`hold`, `remainingMs`) instead of running them into a
 changed context. `ping.input` reports `busy`, `interaction` and `sequence`. Reads, `input.status`,
 `input.sequence.status`, `stop` and the owner's `input.release`, `input.releaseAll`, `input.recover`, `input.end`
-and `input.close` are never guarded. Unresolved records do not make the bridge busy.
+and `input.close` are never guarded. An unresolved record (reason `unresolved`) keeps the bridge busy until a
+recover resolves it, because the key may still be down.
 
 `input.sequence {steps, interaction?, leaseMs?, label?}` validates every step before the first event and returns
 the sequence report (`id`, `state` `running`/`completed`/`failed`/`aborted`, `index`, `counts`, `events`,
@@ -234,7 +235,8 @@ the sequence report (`id`, `state` `running`/`completed`/`failed`/`aborted`, `in
 executor?, display?}`, `{kind: "press", ...}`, `{kind: "release", key|pcKey...}` (a key an earlier step pressed or
 the session holds), `{kind: "combo", keys: [...], holdMs?}`, `{kind: "text", text, context: "command-line"|
 "text-field", acknowledgeFocus?, display?}`, `{kind: "wait", ms}`; at most 16 steps, about 30 s of holds, waits
-and typing. Each event ends `completed`, `failed`, `uncertain` (a dispatch raised or a release stayed unresolved),
+and typing; hold durations, `exclusive` flags and `maxHoldMs` of every key (combo constituents included) are checked in
+this preflight, and a `text-field` text step may not be followed by a PLEASE/Enter step. Each event ends `completed`, `failed`, `uncertain` (a dispatch raised or a release stayed unresolved),
 `unattempted` or `aborted`, with `pressOutcome`/`releaseOutcome`, `typed`/`remaining` and `readback`
 (`observed`/`inconclusive`/`unavailable`/`pending`) where applicable. A failure stops the sequence, releases what it
 pressed (newest first; `cleanup`) and ends an interaction begun for it; nothing is replayed. `input.sequence.status
@@ -244,9 +246,12 @@ remaining lease must cover the estimate (`[lease-too-short]`).
 
 **Text** is UTF-8 iterated by code point (`utf8.codes`), at most 256 characters, with newline, carriage return,
 tab, other C0/C1 controls, DEL and the line/paragraph separators refused (`[bad-argument]`); nothing is normalised
-and nothing ever presses Enter. `command-line` needs `KEYBOARDSHORTCUTSACTIVE` read as `false` (`[unsupported]`
-otherwise, never toggled) and is read back from `CmdObj().cmdtext` within `readbackMs`; `text-field` needs
-`acknowledgeFocus: true` (`[focus-unverified]`; focus is not observable, readback `unavailable`). Characters go
-out as `Keyboard(display, 'char', <character>)`, 8 per loop iteration, with the enablement rechecked between
-chunks: a change stops typing (`context-changed`, `typed`/`remaining` reported); a `char` call that raises leaves
-the event `uncertain` at `uncertainChar`.
+and nothing ever presses Enter. Every text step needs `acknowledgeFocus: true` (`[focus-unverified]`: the receiving
+element is not observable). `command-line` additionally needs `KEYBOARDSHORTCUTSACTIVE` read as `false`
+(`[unsupported]` otherwise, never toggled) and is read back from `CmdObj().cmdtext` within `readbackMs`: `observed`
+completes the step, an inconclusive readback leaves it `uncertain` (`text-unverified`) and stops the sequence;
+`text-field` has readback `unavailable`. Text is refused while an exclusive hold or a route mismatch exists
+(`[exclusive-hold]`, `[route-changed]`). Characters go out as `Keyboard(display, 'char', <character>)`, 8 per loop
+iteration, with the enablement, exclusive hold and held-key routes rechecked between chunks: a change stops typing
+(`uncertain` with `context-changed`/`exclusive-hold`/`route-changed`, `typed`/`remaining` reported); a `char` call
+that raises leaves the event `uncertain` at `uncertainChar`.

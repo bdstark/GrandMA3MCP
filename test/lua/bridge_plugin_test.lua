@@ -1127,9 +1127,9 @@ do
   r = request("input.end", { interaction = IA }, nil, A)
   check("ending the interaction leaves the unresolved record to recovery", r.ok and r.result.state == "ended" and r.result.attempted == 0 and hk.instance:status().unresolved == 1, J(r))
   r = request("cmd", { command = "Go+ Sequence 1" }, nil, B)
-  check("an unresolved record does not make commands busy (it is the operator's recovery problem)", r.ok == false and r.code ~= "busy", r.error)
+  check("an unresolved record keeps commands busy until recovery (the key may still be down)", r.ok == false and r.code == "busy" and r.detail.reason == "unresolved" and r.error:find("input recover"), r.error)
   r = request("input.tap", { pcKey = "Enter" }, nil, B)
-  check("the unresolved record still blocks the tuple", r.ok == false and r.error:find("conflict"), r.error)
+  check("the unresolved record blocks another connection's input", r.ok == false and r.code == "busy" and r.detail.reason == "unresolved", r.error)
   r = request("input.recover", {}, nil, B)
   check("recover is owner-scoped: B has nothing to recover", r.ok and r.result.attempted == 0 and r.result.scope == "conn-2", J(r))
   request("input.fake", { action = "clearFailures" }, nil, A)
@@ -1192,7 +1192,9 @@ do
   check("input.status lists the adopted hold under the previous-run session", r.ok and r.result.status.holds[1].session == "previous-run" and r.result.status.holds[1].state == "unresolved" and r.result.status.holds[1].tupleKey == "Q|s0c1a0n0", J(r.result.status.holds))
   request("input.open", {}, nil, A)
   r = request("input.tap", { pcKey = "Q", ctrl = true }, nil, A)
-  check("the reserved tuple cannot be pressed by a new session before recovery", r.ok == false and r.error:find("conflict") and r.error:find("previous%-run"), r.error)
+  check("the reserved tuple cannot be pressed by a new session before recovery", r.ok == false and r.code == "busy" and r.detail.reason == "unresolved" and r.error:find("previous%-run"), r.error)
+  r = request("cmd", { command = "Go+ Sequence 1" }, nil, A)
+  check("commands stay busy after a start that adopted an unresolved record", r.ok == false and r.code == "busy" and r.detail.reason == "unresolved", r.error)
   check("nothing was dispatched for the reserved tuple", #hk.fakeAdapter.events == 0)
   before = #logs
   Main(nil, "input recover"); Cleanup()
@@ -1342,7 +1344,7 @@ do
   fakeProfile.shortcutsActive = "false"
   local A, B = { id = 31 }, { id = 32 }
   -- A sequence from a connection without a session: the session is opened on demand.
-  r = request("input.sequence", { steps = { { kind = "tap", key = "PLEASE", holdMs = 20 }, { kind = "text", text = "Fixture 5", context = "command-line" } }, label = "demo" }, nil, A)
+  r = request("input.sequence", { steps = { { kind = "tap", key = "PLEASE", holdMs = 20 }, { kind = "text", text = "Fixture 5", context = "command-line", acknowledgeFocus = true } }, label = "demo" }, nil, A)
   check("input.sequence opens the session on demand and starts the sequence", r.ok and A.session == "conn-31" and r.result.id == "q1" and r.result.state == "running" and r.result.events[1].state == "waiting" and r.result.autoInteraction == true, J(r))
   local Q = r.result.id
   r = request("ping", {}, nil, B)

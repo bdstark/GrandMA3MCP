@@ -877,9 +877,9 @@ function Instance:endInteraction(sessionId, id, now, reason)
 end
 
 -- Read-only: why a conflicting mutation would be refused right now, or nil when the instance is quiet.
--- Reasons, in order: an open interaction, a running sequence, a key that is held or being released.
--- Unresolved records do not make the instance busy (they block their own tuple and are the operator's
--- recovery problem); the consumer reports them separately.
+-- Reasons, in order: an open interaction, a running sequence, a key that is held or being released, and
+-- an UNRESOLVED record (a release that failed or could not be confirmed: the key may still be down, so the
+-- console is in an uncertain keyboard state until recover() resolves it).
 function Instance:admission(now)
   checkLive(self, "admission")
   if self._state ~= "ready" then return nil end
@@ -911,6 +911,18 @@ function Instance:_admission(now)
   if newest then
     return { code = "busy", reason = "hold", owner = newest.session, hold = newest.id, logical = newest.logical, tupleKey = newest.tupleKey, state = newest.state,
              description = string.format("session '%s' holds %s (hold %s, %s)", newest.session, tostring(newest.logical or newest.tupleKey), newest.id, newest.state) }
+  end
+  local unresolved, count = nil, 0
+  for _, h in pairs(self._holds) do
+    if h.state == "unresolved" then
+      count = count + 1
+      if unresolved == nil or h.seq > unresolved.seq then unresolved = h end
+    end
+  end
+  if unresolved then
+    return { code = "busy", reason = "unresolved", owner = unresolved.session, hold = unresolved.id, logical = unresolved.logical, tupleKey = unresolved.tupleKey, state = "unresolved", count = count,
+             description = string.format("%d unresolved release record(s): %s (hold %s, session '%s') may still be down (%s); recover it (owner recover, or the operator's \"input recover\") before anything else runs",
+               count, tostring(unresolved.logical or unresolved.tupleKey), unresolved.id, unresolved.session, tostring(unresolved.unresolved and unresolved.unresolved.reason)) }
   end
   return nil
 end
@@ -1295,16 +1307,26 @@ end
 -- key press is substituted. "text-field": focus is not observable from Lua, so the caller must have
 -- acknowledged it; the enablement is still recorded so a change during typing is noticed.
 function Instance:_textContext(st)
+  -- Text is input like any key: an exclusive long-press admits nothing, and a held key whose route changed
+  -- stops every new event until it is resolved (checked here before typing and before every chunk).
+  local ex = self:_exclusiveHold()
+  if ex then
+    return nil, { code = "exclusive-hold", message = string.format("hold %s (%s, session '%s', state %s) is an exclusive long-press; no text is typed until its release is resolved", ex.id, tostring(ex.logical or ex.tupleKey), ex.session, ex.state), owner = ex.session, hold = ex.id }
+  end
+  local mismatch = self:_checkRoutes()
+  if mismatch then
+    local m = mismatch[1]
+    return nil, { code = "route-changed", message = string.format("a held key's route changed since it was pressed: %s %s (hold %s); no text is typed until it is released or recovered", tostring(m.logical), tostring(m.mismatch), tostring(m.hold)), mismatches = mismatch }
+  end
+  if st.acknowledgeFocus ~= true then
+    return nil, { code = "focus-unverified", message = "text needs acknowledgeFocus = true: which element receives characters (the command line or a text field) cannot be observed from Lua, so the caller states it; only the command line can be read back afterwards" }
+  end
   local active, aerr = self:_readShortcutsActive()
   if st.context == "command-line" then
     if active == true then
       return nil, { code = "unsupported", message = "command-line text needs keyboard shortcuts disabled by the operator (F10): with shortcuts enabled, character events do not reach the command line and are not substituted with key presses; nothing is toggled here" }
     elseif active == nil then
       return nil, { code = "unsupported", message = "command-line text needs keyboard shortcuts disabled, but their enablement cannot be established (" .. tostring(aerr) .. "); refused rather than guessed" }
-    end
-  else
-    if st.acknowledgeFocus ~= true then
-      return nil, { code = "focus-unverified", message = "text-field text needs acknowledgeFocus = true: focus on a text field cannot be observed from Lua, so the caller states that a text field is focused and UI verification is reported as unavailable; a mapped key may otherwise edit a field instead of performing its hardkey action" }
     end
   end
   return { shortcutsActive = active, shortcutsError = aerr }
@@ -1315,6 +1337,7 @@ function Instance:_validateSequence(sessionId, steps)
   if #steps > self._config.maxSequenceSteps then return fail("bad-argument", "a sequence accepts at most " .. self._config.maxSequenceSteps .. " steps") end
   local out, estimate = {}, 0
   local pressed = {}
+  local unverifiableText = nil  -- index of a text-field text step: a later PLEASE/Enter must not commit it
   local function stepFail(i, code, message, extra)
     local _, e = fail(code, "step " .. i .. ": " .. tostring(message) .. " (nothing was dispatched)", extra)
     e.step = i
@@ -1325,11 +1348,25 @@ function Instance:_validateSequence(sessionId, steps)
     local kind = step.kind
     if not STEP_KINDS[kind] then return stepFail(i, "bad-argument", "unknown kind '" .. tostring(kind) .. "' (tap, press, release, combo, text, wait)") end
     local s = { kind = kind, index = i }
+    local function checkHoldSpec(spec, what)
+      if spec.maxHoldMs ~= nil and (type(spec.maxHoldMs) ~= "number" or spec.maxHoldMs <= 0 or spec.maxHoldMs > self._config.maxHoldMs) then
+        return what .. "maxHoldMs must be a number in (0, " .. self._config.maxHoldMs .. "]"
+      end
+      if spec.exclusive ~= nil and type(spec.exclusive) ~= "boolean" then return what .. "exclusive must be a boolean" end
+      return nil
+    end
+    local function commitsText(tuple, route)
+      return (route and route.logical == "PLEASE") or (tuple and tuple.pcKey == "Enter")
+    end
     if kind == "tap" or kind == "press" then
       local spec = stepSpec(step)
       local tuple, route, terr = self:_resolveSpec(spec, true)
       if not tuple then return stepFail(i, terr.code, terr.message, { resolution = terr.resolution }) end
-      if step.exclusive ~= nil and type(step.exclusive) ~= "boolean" then return stepFail(i, "bad-argument", "exclusive must be a boolean") end
+      local herr = checkHoldSpec(spec, "")
+      if herr then return stepFail(i, "bad-argument", herr) end
+      if unverifiableText and commitsText(tuple, route) then
+        return stepFail(i, "bad-argument", string.format("PLEASE/Enter after the text-field text of step %d would commit text that cannot be verified; check the field and commit it with a separate explicit call", unverifiableText))
+      end
       if kind == "tap" then
         local holdMs = step.holdMs or 50
         if type(holdMs) ~= "number" or holdMs <= 0 or holdMs > self._config.maxTapMs then return stepFail(i, "bad-argument", "holdMs must be a number in (0, " .. self._config.maxTapMs .. "]") end
@@ -1354,6 +1391,11 @@ function Instance:_validateSequence(sessionId, steps)
         local spec = stepSpec(ks)
         local tuple, route, terr = self:_resolveSpec(spec, true)
         if not tuple then return stepFail(i, terr.code, "key " .. k .. ": " .. tostring(terr.message), { key = k, resolution = terr.resolution }) end
+        local herr = checkHoldSpec(spec, "key " .. k .. ": ")
+        if herr then return stepFail(i, "bad-argument", herr) end
+        if unverifiableText and commitsText(tuple, route) then
+          return stepFail(i, "bad-argument", string.format("key %d: PLEASE/Enter after the text-field text of step %d would commit text that cannot be verified; commit it with a separate explicit call", k, unverifiableText))
+        end
         local tk = tupleKey(tuple)
         if seen[tk] then return stepFail(i, "bad-argument", "key " .. k .. " repeats tuple " .. tk) end
         seen[tk] = true
@@ -1393,7 +1435,8 @@ function Instance:_validateSequence(sessionId, steps)
       if not (self._adapter and type(self._adapter.char) == "function") then return stepFail(i, "unsupported", "the attached backend has no character events") end
       s.text, s.codepoints, s.context, s.acknowledgeFocus, s.display = step.text, cps, step.context, step.acknowledgeFocus, step.display
       local ctx, cerr = self:_textContext(s)
-      if not ctx then return stepFail(i, cerr.code, cerr.message) end
+      if not ctx then return stepFail(i, cerr.code, cerr.message, { mismatches = cerr.mismatches, owner = cerr.owner, hold = cerr.hold }) end
+      if step.context == "text-field" then unverifiableText = i end
       estimate = estimate + math.ceil(#cps / self._config.textCharsPerService) * 40
     elseif kind == "wait" then
       if type(step.ms) ~= "number" or step.ms <= 0 or step.ms > self._config.maxWaitMs then return stepFail(i, "bad-argument", "wait needs ms in (0, " .. self._config.maxWaitMs .. "]") end
@@ -1537,10 +1580,11 @@ function Instance:_typeStep(job, st, ev, now)
   if ev.state == "typing" then
     local ctxT, cerr = self:_textContext(st)
     if not ctxT or ctxT.shortcutsActive ~= ev.contextAtStart.shortcutsActive then
-      ev.state = "failed"
+      -- Nothing is typed once the context changed; what went out before is reported as progress.
+      ev.state = ev.typed > 0 and "uncertain" or "failed"
       ev.error = string.format("context changed after %d of %d characters: %s", ev.typed, ev.chars,
         ctxT and string.format("keyboard shortcuts are now %s (were %s)", tostring(ctxT.shortcutsActive), tostring(ev.contextAtStart.shortcutsActive)) or cerr.message)
-      ev.code = "context-changed"
+      ev.code = (cerr and (cerr.code == "exclusive-hold" or cerr.code == "route-changed")) and cerr.code or "context-changed"
       return
     end
     for _ = 1, self._config.textCharsPerService do
@@ -1580,9 +1624,12 @@ function Instance:_typeStep(job, st, ev, now)
     ev.readback = { outcome = "observed", source = "CmdObj().cmdtext", expected = ev.expected, actual = actual, note = "the command line shows the typed text; not executed" }
     ev.state = "completed"
   elseif now >= ev.readbackUntil then
+    -- Typed but not verified: the step is UNCERTAIN and the sequence stops, so a later commit (PLEASE)
+    -- never executes text that was not seen on the command line.
     ev.readback = { outcome = "inconclusive", source = "CmdObj().cmdtext", expected = ev.expected, actual = actual,
-                    reason = actual == nil and ("command line not readable: " .. tostring(rerr)) or string.format("the command line did not show the expected text within %d ms (it may have been edited meanwhile; neither success nor failure is established)", self._config.readbackMs) }
-    ev.state = "completed"
+                    reason = actual == nil and ("command line not readable: " .. tostring(rerr)) or string.format("the command line did not show the expected text within %d ms (it may have been edited meanwhile, or the characters went elsewhere; neither success nor failure is established)", self._config.readbackMs) }
+    ev.state, ev.code = "uncertain", "text-unverified"
+    ev.error = string.format("%d characters were dispatched but the command line does not show them (%s); the sequence stops here so nothing commits unverified text", ev.typed, tostring(ev.readback.reason))
   end
 end
 
@@ -1819,6 +1866,11 @@ function Instance:status(now)
         if h.state == "held" or h.state == "releasing" then busy = { reason = "hold", owner = h.session, hold = h.id }; break end
       end
     end
+    if not busy then
+      for _, h in pairs(self._holds) do
+        if h.state == "unresolved" then busy = { reason = "unresolved", owner = h.session, hold = h.id }; break end
+      end
+    end
   end
   return {
     module = NAME, version = VERSION, apiVersion = API_VERSION,
@@ -2014,6 +2066,9 @@ function Instance:_planPress(sessionId, now, spec, ctx)
   end
   if busy and busy.reason == "hold" and busy.owner ~= sessionId and self._config.requireInteraction then
     return fail("busy", string.format("session '%s' holds %s (hold %s); conflicting input is refused until it is released", busy.owner, tostring(busy.logical or busy.tupleKey), busy.hold), busy)
+  end
+  if busy and busy.reason == "unresolved" and busy.owner ~= sessionId and self._config.requireInteraction then
+    return fail("busy", busy.description, busy)
   end
   if ctx.kind == "hold" and not ia and self._config.requireInteraction then
     return fail("interaction-required", "a standalone hold needs an explicit interaction: begin one (leased) and pass its id, or use a bounded tap, chord tap or sequence", { kind = ctx.kind })

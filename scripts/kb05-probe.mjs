@@ -223,15 +223,19 @@ async function run() {
   await until(A, readCmd, (v) => v === "");
 
   // 4. Text: refused while shortcuts are enabled; typed and read back once the operator disabled them.
-  r = await A.request("input.sequence", { steps: [{ kind: "text", text: "Fixture 5", context: "command-line" }] });
+  r = await A.request("input.sequence", { steps: [{ kind: "text", text: "Fixture 5", context: "command-line", acknowledgeFocus: true }] });
   record("command-line text is refused while shortcuts are enabled (nothing typed, nothing toggled)", codeIs(r, "unsupported") && (await readCmd(A)) === "" && (await readShortcuts(A)) === true, errorOf(r));
-  r = await A.request("input.sequence", { steps: [{ kind: "text", text: "Fixture 5\n", context: "command-line" }] });
+  r = await A.request("input.sequence", { steps: [{ kind: "text", text: "Fixture 5\n", context: "command-line", acknowledgeFocus: true }] });
   record("text with a newline is refused by the policy", codeIs(r, "bad-argument") && /newline/.test(r.error), errorOf(r));
+  r = await A.request("input.sequence", { steps: [{ kind: "text", text: "Fixture 5", context: "command-line" }] });
+  record("text without the focus acknowledgment is refused", codeIs(r, "focus-unverified"), errorOf(r));
+  r = await A.request("input.sequence", { steps: [{ kind: "tap", key: "NUM5" }, { kind: "press", key: "MA", maxHoldMs: -1 }] });
+  record("an invalid maxHoldMs on a later step is refused before the first tap dispatches", codeIs(r, "bad-argument") && r.detail?.step === 2 && (await readCmd(A)) === "", errorOf(r));
   const lastBefore = await readLast(A);
   await setShortcuts(A, false);
   obs = await until(A, readShortcuts, (v) => v === false);
   record("operator disables shortcuts (property set through Lua, standing in for F10)", obs.ok, `shortcutsActive=${obs.value}`);
-  r = await A.request("input.sequence", { steps: [{ kind: "text", text: "Fixture 5", context: "command-line" }] });
+  r = await A.request("input.sequence", { steps: [{ kind: "text", text: "Fixture 5", context: "command-line", acknowledgeFocus: true }] });
   Q = r.result?.id;
   record("command-line text sequence accepted (typing in chunks)", r.ok && r.result.events[0].state !== "failed", errorOf(r));
   seq = await waitSequence(A, Q, 4000);
@@ -239,7 +243,7 @@ async function run() {
   obs = await until(A, readCmd, (v) => v === "Fixture 5");
   const lastAfter = await readLast(A);
   record("the text was NOT executed: cmdtext shows it, lastcommand unchanged", obs.ok && lastAfter === lastBefore, { cmdtext: obs.value, lastBefore, lastAfter });
-  r = await A.request("input.sequence", { steps: [{ kind: "text", text: "abü€😀", context: "command-line" }] });
+  r = await A.request("input.sequence", { steps: [{ kind: "text", text: "abü€😀", context: "command-line", acknowledgeFocus: true }] });
   Q = r.result?.id;
   seq = await waitSequence(A, Q, 4000);
   obs = await until(A, readCmd, (v) => v === "Fixture 5abü€😀", 2000);

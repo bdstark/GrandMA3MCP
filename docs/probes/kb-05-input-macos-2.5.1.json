@@ -1,6 +1,6 @@
 {
   "probe": "kb-05-run",
-  "date": "2026-10-09T14:26:58.742Z",
+  "date": "2026-10-09T14:46:15.782Z",
   "bridge": {
     "version": "0.7.0",
     "host": "127.0.0.1",
@@ -23,7 +23,7 @@
       "moduleInputEnabled": true
     }
   },
-  "passed": 42,
+  "passed": 44,
   "failed": 0,
   "steps": [
     {
@@ -34,27 +34,27 @@
     {
       "name": "A acquires an interaction (session opened on demand)",
       "pass": true,
-      "detail": "i2"
+      "detail": "i1"
     },
     {
       "name": "a command from B is [busy] while A's interaction is open",
       "pass": true,
-      "detail": "[busy] a command is refused while input ownership is active: interaction i2 of session 'conn-96' is open (29983 ms left). Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first"
+      "detail": "[busy] a command is refused while input ownership is active: interaction i1 of session 'conn-102' is open (29984 ms left). Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first"
     },
     {
       "name": "a command from A (the owner) is [busy] too",
       "pass": true,
-      "detail": "[busy] a command is refused while input ownership is active: interaction i2 of session 'conn-96' is open (29966 ms left). Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first"
+      "detail": "[busy] a command is refused while input ownership is active: interaction i1 of session 'conn-102' is open (29968 ms left). Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first"
     },
     {
       "name": "B's tap is [busy] naming A's interaction",
       "pass": true,
-      "detail": "[busy] interaction i2 of session 'conn-96' is open (29950 ms left); pass its id to act within it, or wait until it ends"
+      "detail": "[busy] interaction i1 of session 'conn-102' is open (29951 ms left); pass its id to act within it, or wait until it ends"
     },
     {
       "name": "A's press without the interaction id is [busy] (callers sharing a connection must name it)",
       "pass": true,
-      "detail": "[busy] interaction i2 of session 'conn-96' is open (29933 ms left); pass its id to act within it, or wait until it ends"
+      "detail": "[busy] interaction i1 of session 'conn-102' is open (29934 ms left); pass its id to act within it, or wait until it ends"
     },
     {
       "name": "A's press with the id is admitted and tagged",
@@ -64,15 +64,15 @@
     {
       "name": "reading through the lua op is [busy] while the interaction is open (the guard covers Lua)",
       "pass": true,
-      "detail": "[busy] arbitrary Lua is refused while input ownership is active: interaction i2 of session 'conn-96' is open (29867 ms left). Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first"
+      "detail": "[busy] arbitrary Lua is refused while input ownership is active: interaction i1 of session 'conn-102' is open (29869 ms left). Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first"
     },
     {
       "name": "status reports the active interaction and the busy descriptor",
       "pass": true,
       "detail": {
-        "interaction": "i2",
+        "interaction": "i1",
         "reason": "interaction",
-        "owner": "conn-96"
+        "owner": "conn-102"
       }
     },
     {
@@ -83,7 +83,7 @@
     {
       "name": "B cannot end A's interaction",
       "pass": true,
-      "detail": "[not-owner] interaction 'i2' belongs to session 'conn-96'"
+      "detail": "[not-owner] interaction 'i1' belongs to session 'conn-102'"
     },
     {
       "name": "A ends the interaction: STORE released (dispatched)",
@@ -92,11 +92,11 @@
         {
           "state": "released",
           "reason": "client-end",
-          "at": 1791556016.0136,
-          "hold": "h2",
+          "at": 1791557172.9852,
+          "hold": "h1",
           "outcome": "dispatched",
           "logical": "STORE",
-          "session": "conn-96",
+          "session": "conn-102",
           "verified": false,
           "ok": true,
           "tupleKey": "S|s0c0a0n0"
@@ -116,7 +116,7 @@
     {
       "name": "the ended interaction is never resumed",
       "pass": true,
-      "detail": "[no-interaction] interaction 'i2' is not open (ended); an interaction is never resumed after it ended, expired or its connection closed: begin a new one"
+      "detail": "[no-interaction] interaction 'i1' is not open (ended); an interaction is never resumed after it ended, expired or its connection closed: begin a new one"
     },
     {
       "name": "a standalone hold without an interaction is [interaction-required]",
@@ -148,7 +148,7 @@
     {
       "name": "console shows 51 on the command line",
       "pass": true,
-      "detail": "cmdtext=\"51\" after 17 ms"
+      "detail": "cmdtext=\"51\" after 32 ms"
     },
     {
       "name": "MA+STORE chord sequence accepted",
@@ -158,14 +158,14 @@
     {
       "name": "console shows Record (MA + Store), read after the chord was released",
       "pass": true,
-      "detail": "cmdtext=\"Record \" after 14 ms"
+      "detail": "cmdtext=\"Record \" after 17 ms"
     },
     {
       "name": "the chord was released newest first and the step reports the MASTATE readback separately",
       "pass": true,
       "detail": {
         "phase": "release",
-        "since": 1791556016.9071,
+        "since": 1791557173.8809,
         "source": "MASTATE",
         "outcome": "pending",
         "expect": false
@@ -185,6 +185,16 @@
       "name": "text with a newline is refused by the policy",
       "pass": true,
       "detail": "[bad-argument] step 1: character 10 is a newline (U+000A); execution and control characters are refused: commit text with an explicit PLEASE key event, never through the text (nothing was dispatched)"
+    },
+    {
+      "name": "text without the focus acknowledgment is refused",
+      "pass": true,
+      "detail": "[focus-unverified] step 1: text needs acknowledgeFocus = true: which element receives characters (the command line or a text field) cannot be observed from Lua, so the caller states it; only the command line can be read back afterwards (nothing was dispatched)"
+    },
+    {
+      "name": "an invalid maxHoldMs on a later step is refused before the first tap dispatches",
+      "pass": true,
+      "detail": "[bad-argument] step 2: maxHoldMs must be a number in (0, 30000] (nothing was dispatched)"
     },
     {
       "name": "operator disables shortcuts (property set through Lua, standing in for F10)",
@@ -248,7 +258,7 @@
     {
       "name": "A's command is [busy] while B's sequence runs",
       "pass": true,
-      "detail": "[busy] a command is refused while input ownership is active: interaction i7 of session 'conn-97' is open (14950 ms left). Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first"
+      "detail": "[busy] a command is refused while input ownership is active: interaction i6 of session 'conn-103' is open (14951 ms left). Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first"
     },
     {
       "name": "B's disconnect released the in-flight tap and cleared the busy state",

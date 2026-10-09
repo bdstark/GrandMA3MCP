@@ -1070,7 +1070,7 @@ do
   check("a release of a key the sequence never presses is refused", q == nil and err.code == "bad-argument" and err.step == 2, J(err))
   q, err = inst:startSequence("a", 1, { { kind = "tap", key = "MA1" } })
   check("an unsupported key fails validation", q == nil and err.code == "unsupported" and err.step == 1, J(err))
-  q, err = inst:startSequence("a", 1, { { kind = "text", text = "Fixture 5\n", context = "command-line" } })
+  q, err = inst:startSequence("a", 1, { { kind = "text", text = "Fixture 5\n", context = "command-line", acknowledgeFocus = true } })
   check("text with a newline fails validation", q == nil and err.code == "bad-argument" and err.message:find("newline"), J(err))
   q, err = inst:startSequence("a", 1, { { kind = "wait", ms = 9000 } })
   check("a wait beyond maxWaitMs is refused", q == nil and err.code == "bad-argument", J(err))
@@ -1138,14 +1138,18 @@ end
 do
   local inst, backend = freshStrict()
   profile.shortcutsActive = true
-  local q, err = inst:startSequence("a", 0, { { kind = "text", text = "Fixture 5", context = "command-line" } })
+  local q, err = inst:startSequence("a", 0, { { kind = "text", text = "Fixture 5", context = "command-line", acknowledgeFocus = true } })
   check("command-line text with shortcuts enabled is unsupported (never toggled)", q == nil and err.code == "unsupported" and err.message:find("F10") and #backend.events == 0, J(err))
   q, err = inst:startSequence("a", 0, { { kind = "text", text = "abc", context = "text-field" } })
   check("text-field text needs the focus acknowledgment", q == nil and err.code == "focus-unverified", J(err))
+  profile.shortcutsActive = false
+  q, err = inst:startSequence("a", 0, { { kind = "text", text = "abc", context = "command-line" } })
+  check("command-line text needs the focus acknowledgment too (the receiving element is not observable)", q == nil and err.code == "focus-unverified" and #backend.events == 0, J(err))
+  profile.shortcutsActive = true
   q, err = inst:startSequence("a", 0, { { kind = "text", text = "abc", context = "nowhere" } })
   check("an unknown context is refused", q == nil and err.code == "bad-argument", J(err))
   profile.shortcutsActive = false
-  q = inst:startSequence("a", 1, { { kind = "text", text = "Fixture 5", context = "command-line" } })
+  q = inst:startSequence("a", 1, { { kind = "text", text = "Fixture 5", context = "command-line", acknowledgeFocus = true } })
   check("command-line text starts typing in chunks of textCharsPerService", q.state == "running" and q.events[1].state == "typing" and q.events[1].typed == 8 and q.events[1].remaining == 1 and backend.typed == "Fixture ", J(q.events[1]))
   local out = inst:service(1.05)
   local rep = inst:sequenceStatus(q.id, 1.05)
@@ -1153,36 +1157,43 @@ do
   check("characters were char events, no key press, no Enter", backend.counters.char == 9 and backend.counters.press == 0, J(backend.counters))
   -- Context change between chunks stops typing with its progress.
   backend:setTypedText("")
-  q = inst:startSequence("a", 2, { { kind = "text", text = "abcdefghijklmnopqrst", context = "command-line" } })
+  q = inst:startSequence("a", 2, { { kind = "text", text = "abcdefghijklmnopqrst", context = "command-line", acknowledgeFocus = true } })
   check("first chunk typed", q.events[1].typed == 8)
   profile.shortcutsActive = true
   inst:service(2.05)
   rep = inst:sequenceStatus(q.id, 2.05)
-  check("shortcuts re-enabled between chunks: the step fails with partial progress and typing stops", rep.state == "failed" and rep.events[1].state == "failed" and rep.events[1].code == "context-changed" and rep.events[1].typed == 8 and rep.events[1].remaining == 12 and backend.typed == "abcdefgh", J(rep.events[1]))
+  check("shortcuts re-enabled between chunks: the step is uncertain with partial progress and typing stops", rep.state == "failed" and rep.events[1].state == "uncertain" and rep.events[1].code == "context-changed" and rep.events[1].typed == 8 and rep.events[1].remaining == 12 and backend.typed == "abcdefgh", J(rep.events[1]))
   profile.shortcutsActive = false
   -- A char that raises leaves the text uncertain at that character.
   backend:setTypedText("")
-  q = inst:startSequence("a", 3, { { kind = "text", text = "0123456789", context = "command-line" } })
+  q = inst:startSequence("a", 3, { { kind = "text", text = "0123456789", context = "command-line", acknowledgeFocus = true } })
   backend:raiseNext("char", "host blocked")
   inst:service(3.05)
   rep = inst:sequenceStatus(q.id, 3.05)
   check("a raised char event is uncertain at that character; nothing more is typed", rep.state == "failed" and rep.events[1].state == "uncertain" and rep.events[1].uncertainChar == 9 and rep.events[1].typed == 8 and backend.typed == "01234567", J(rep.events[1]))
   -- Unicode goes out one code point per event and reads back.
   backend:setTypedText("")
-  q = inst:startSequence("a", 4, { { kind = "text", text = "abü€😀", context = "command-line" } })
+  q = inst:startSequence("a", 4, { { kind = "text", text = "abü€😀", context = "command-line", acknowledgeFocus = true } })
   inst:service(4.05)
   rep = inst:sequenceStatus(q.id, 4.05)
   check("Unicode text is typed as one char event per code point and read back", rep.state == "completed" and rep.events[1].chars == 5 and backend.typed == "abü€😀" and backend.events[#backend.events].codepoint == 0x1F600 and rep.events[1].readback.outcome == "observed", J(rep.events[1]))
   -- Inconclusive readback: the command line shows something else; no retry, no failure claimed.
   backend:setTypedText("")
-  q = inst:startSequence("a", 5, { { kind = "text", text = "0123456789", context = "command-line" } })
+  q = inst:startSequence("a", 5, { { kind = "text", text = "0123456789", context = "command-line", acknowledgeFocus = true } })
   backend:setTypedText("zz")  -- the operator edits the line between chunks
   inst:service(5.1)
   rep = inst:sequenceStatus(q.id, 5.1)
   check("readback stays pending inside the window", rep.state == "running" and rep.events[1].state == "readback" and rep.events[1].typed == 10 and rep.events[1].readback.outcome == "pending", J(rep.events[1]))
   inst:service(6.2)
   rep = inst:sequenceStatus(q.id, 6.2)
-  check("after the window the readback is inconclusive and the step completed (dispatched), never retried", rep.state == "completed" and rep.events[1].readback.outcome == "inconclusive" and rep.events[1].readback.actual == "zz89" and backend.counters.char == 9 + 8 + 9 + 5 + 10, J(rep.events[1]))
+  check("after the window the readback is inconclusive: the step is uncertain and the sequence stops, never retried", rep.state == "failed" and rep.events[1].state == "uncertain" and rep.events[1].code == "text-unverified" and rep.events[1].readback.outcome == "inconclusive" and rep.events[1].readback.actual == "zz89" and backend.counters.char == 9 + 8 + 9 + 5 + 10, J(rep.events[1]))
+  -- Unverified text never reaches a commit: a PLEASE after it is unattempted.
+  backend:setTypedText("")
+  q = inst:startSequence("a", 6.5, { { kind = "text", text = "0123456789", context = "command-line", acknowledgeFocus = true }, { kind = "tap", key = "PLEASE", holdMs = 50 } })
+  backend:setTypedText("edited")
+  inst:service(6.6); inst:service(7.8)
+  rep = inst:sequenceStatus(q.id, 7.8)
+  check("a PLEASE after unverified command-line text is never attempted", rep.state == "failed" and rep.events[1].state == "uncertain" and rep.events[2].state == "unattempted" and backend.events[#backend.events].kind == "char", J(rep.events))
   -- Text field: acknowledged focus, verification unavailable, shortcut enablement change still stops it.
   profile.shortcutsActive = true
   backend:setTypedText("")
@@ -1192,21 +1203,69 @@ do
   profile.shortcutsActive = false
   inst:service(8.05)
   rep = inst:sequenceStatus(q.id, 8.05)
-  check("a shortcut enablement change during text-field typing stops it too", rep.state == "failed" and rep.events[1].code == "context-changed" and rep.events[1].typed == 8, J(rep.events[1]))
+  check("a shortcut enablement change during text-field typing stops it too (uncertain: 8 characters went out)", rep.state == "failed" and rep.events[1].state == "uncertain" and rep.events[1].code == "context-changed" and rep.events[1].typed == 8, J(rep.events[1]))
   profile.shortcutsActive = true
+  q, err = inst:startSequence("a", 8.5, { { kind = "text", text = "name", context = "text-field", acknowledgeFocus = true }, { kind = "tap", key = "PLEASE" } })
+  check("a PLEASE after text-field text is refused at validation (text cannot be verified; commit separately)", q == nil and err.code == "bad-argument" and err.step == 2 and err.message:find("cannot be verified"), J(err))
+  q, err = inst:startSequence("a", 8.5, { { kind = "text", text = "name", context = "text-field", acknowledgeFocus = true }, { kind = "combo", keys = { { key = "MA" }, { pcKey = "Enter" } }, holdMs = 50 } })
+  check("a combo containing Enter after text-field text is refused too", q == nil and err.code == "bad-argument" and err.step == 2, J(err))
   -- Text never commits: a following PLEASE is a separate, explicit step.
   profile.shortcutsActive = false
   backend:setTypedText("")
-  q = inst:startSequence("a", 9, { { kind = "text", text = "Clear", context = "command-line" }, { kind = "tap", key = "PLEASE", holdMs = 50 } })
+  q = inst:startSequence("a", 9, { { kind = "text", text = "Clear", context = "command-line", acknowledgeFocus = true }, { kind = "tap", key = "PLEASE", holdMs = 50 } })
   inst:service(9.05); inst:service(9.2)
   rep = inst:sequenceStatus(q.id, 9.2)
   check("text then an explicit PLEASE tap: text completed, Enter pressed and released as its own step", rep.state == "completed" and rep.events[2].kind == "tap" and rep.events[2].key == "PLEASE" and backend.events[#backend.events].pcKey == "Enter" and backend.events[#backend.events].kind == "release", J(rep.events))
   profile.shortcutsActive = true
+  -- Text is input: an exclusive long-press and a route mismatch block it, before typing and between chunks.
+  profile.shortcutsActive = false
+  local ia = inst:beginInteraction("a", 20, { leaseMs = 60000 })
+  local typedBefore = backend.typed
+  q, err = inst:startSequence("a", 20, { { kind = "press", key = "MA", exclusive = true }, { kind = "text", text = "abc", context = "command-line", acknowledgeFocus = true } }, { interaction = ia.id })
+  check("text after an exclusive press in the same sequence is refused when the step starts (nothing typed)", q and q.state == "failed" and q.events[2].state == "failed" and q.events[2].code == "exclusive-hold" and backend.typed == typedBefore and q.cleanup.released == 1, J(err or q.events))
+  local hx = inst:press("a", 21, { key = "MA", exclusive = true, interaction = ia.id })
+  q, err = inst:startSequence("a", 21, { { kind = "text", text = "abc", context = "command-line", acknowledgeFocus = true } }, { interaction = ia.id })
+  check("a text sequence is refused at validation while an exclusive key is held", q == nil and err.code == "exclusive-hold" and err.hold == hx.id, J(err))
+  inst:release("a", 22, { hold = hx.id })
+  backend:setTypedText("")
+  local hm = inst:press("a", 22.5, { key = "MA", interaction = ia.id })
+  q = inst:startSequence("a", 23, { { kind = "text", text = "0123456789", context = "command-line", acknowledgeFocus = true } }, { interaction = ia.id })
+  check("text starts while a non-exclusive key of the same interaction is held", q and q.state == "running" and q.events[1].typed == 8, J(q))
+  profile.rows = { { shortcut = "LeftShift", keyCode = 66 }, { shortcut = "Enter", keyCode = 84 } }  -- a row now collides with the held MA route
+  inst:service(23.1)
+  rep = inst:sequenceStatus(q.id, 23.1)
+  check("a route mismatch between chunks stops typing with its progress", rep.state == "failed" and rep.events[1].state == "uncertain" and rep.events[1].code == "route-changed" and rep.events[1].typed == 8 and backend.typed == "01234567", J(rep.events[1]))
+  profile.rows = defaultRows()
+  inst:recover("a", 24); inst:releaseAll("a", 24); inst:endInteraction("a", ia.id, 24)
+  check("clean again", inst:admission(24) == nil, J(inst:admission(24)))
+  profile.shortcutsActive = true
+  -- Hold durations are validated during preflight for every step and combo constituent: nothing dispatches.
+  local n0 = #backend.events
+  q, err = inst:startSequence("a", 30, { { kind = "tap", key = "STORE" }, { kind = "press", key = "MA", maxHoldMs = -1 } })
+  check("an invalid maxHoldMs on a later press is refused before the first tap", q == nil and err.code == "bad-argument" and err.step == 2 and err.message:find("maxHoldMs") and #backend.events == n0, J(err))
+  q, err = inst:startSequence("a", 30, { { kind = "tap", key = "STORE" }, { kind = "combo", keys = { { key = "MA" }, { key = "STORE", maxHoldMs = 999999 } }, holdMs = 50 } })
+  check("an invalid maxHoldMs on a combo constituent is refused before anything", q == nil and err.code == "bad-argument" and err.step == 2 and err.message:find("key 2") and #backend.events == n0, J(err))
+  q, err = inst:startSequence("a", 30, { { kind = "tap", key = "STORE" }, { kind = "tap", key = "MA", exclusive = "yes" } })
+  check("a non-boolean exclusive is refused in preflight", q == nil and err.code == "bad-argument" and err.step == 2 and #backend.events == n0, J(err))
+  check("instance quiet after refused sequences", inst:admission(30) == nil)
+  -- Unresolved records keep the instance busy until recovery resolves them.
+  backend:failNext("release", { pcKey = "S" }, "wedged", true)
+  q = inst:startSequence("a", 40, { { kind = "tap", key = "STORE", holdMs = 50 } })
+  inst:service(40.1)
+  local busy = inst:admission(40.2)
+  check("a failed tap release leaves the instance busy (reason unresolved) for conflicting mutations", busy and busy.reason == "unresolved" and busy.owner == "a" and busy.count == 1 and inst:status(40.2).busy.reason == "unresolved", J(busy))
+  local b2; b2, err = inst:beginInteraction("b", 40.2, {})
+  check("another session cannot begin an interaction meanwhile", b2 == nil and err.code == "busy" and err.reason == "unresolved", J(err))
+  local hb; hb, err = inst:tap("b", 40.2, { key = "PLEASE" }, 50)
+  check("another session's tap is busy meanwhile", hb == nil and err.code == "busy" and err.reason == "unresolved", J(err))
+  backend:clearFailures()
+  local rec2 = inst:recover("a", 41)
+  check("recovery resolves it and the instance is quiet again", #rec2.released == 1 and inst:admission(41) == nil, J(rec2))
   -- No char events on an adapter without them.
   local bare = { name = "fake", dispatches = true, press = function() return true, true end, release = function() return true, true end }
   local inst2 = HK.new({ owner = "x", deps = deps }):init(); inst2:enableInput(bare); inst2:openSession({ id = "s" }, 0)
   profile.shortcutsActive = false
-  q, err = inst2:startSequence("s", 0, { { kind = "text", text = "a", context = "command-line" } })
+  q, err = inst2:startSequence("s", 0, { { kind = "text", text = "a", context = "command-line", acknowledgeFocus = true } })
   check("a backend without char events refuses text", q == nil and err.code == "unsupported" and err.message:find("character events"), J(err))
   profile.shortcutsActive = true
 end

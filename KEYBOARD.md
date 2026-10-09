@@ -9,7 +9,7 @@ deadline servicing and recovery are covered by harness tests and verified live o
 (module 0.3.0, bridge 0.6.0): the `Keyboard()` adapter presses real console keys through validated shortcut and native routes,
 with MA combinations, exclusive long-press, remap/disable/disconnect/restart recovery verified live; Windows not exercised.
 **KB-05 implemented on macOS** (module 0.4.0, bridge 0.7.0, MCP tools): leased interactions, bridge-side admission across
-connections, the text path and bounded sequences are covered by harness tests and verified live (42/42 over two
+connections, the text path and bounded sequences are covered by harness tests and verified live (44/44 over two
 connections, real keys and command-line text); Windows not exercised.
 Windows module loading and transfer to a separate machine remain qualification gaps. KB-06–KB-08 remain implementation/qualification work.
 Completion establishes the contracts and limitations below, not production keyboard support or universal
@@ -575,16 +575,20 @@ Interactions are never resumed: after end, expiry, disconnect or restart the id 
 session lazily after a reconnect and replays nothing. *Admission:* the module reports itself busy while an interaction
 is open, a sequence runs or any key is held (of any session); the bridge then refuses `cmd`, `set`, `setfader` and
 `lua` from **every** connection with `[busy]` naming the owner, instead of delaying them into a changed context. Reads,
-`input.status`, sequence status, `stop` and the owner's release/recover/end/close are never guarded. Unresolved
-records do not make the bridge busy (they reserve their key and are the operator's recovery problem), so a wedged
-release cannot lock every command until an operator acts; a start that adopts kept records keeps commands working.
+`input.status`, sequence status, `stop` and the owner's release/recover/end/close are never guarded. An unresolved
+record keeps the bridge busy too (the key may still be down, so the keyboard state is uncertain), including after a
+start that adopted records from a previous run, until recovery resolves it (review finding, 2026-10-09).
 The module keeps a `requireInteraction=false` policy for single-caller consumers (a surface plugin), which restores
 the KB-03 per-session rules; the bridge always uses the strict policy. *Text:* UTF-8 by code point, 256 characters,
 newline/CR/tab/C0/C1/DEL/U+2028/U+2029 refused, nothing normalised, never an Enter; `command-line` needs
 `KEYBOARDSHORTCUTSACTIVE` read as false (refused, never toggled, when true or unreadable) and is read back from
-`CmdObj().cmdtext` within the readback window (`observed`/`inconclusive`, never a claimed failure); `text-field` needs
-the caller's `acknowledgeFocus` and reports verification unavailable. Typing goes out 8 characters per loop iteration
-with the enablement rechecked between chunks; a change stops it with the typed count. *Sequences:* validated as a
+`CmdObj().cmdtext` within the readback window: `observed` completes the step, `inconclusive` leaves it uncertain and
+stops the sequence so a later PLEASE never commits unseen text; `text-field` reports verification unavailable and may
+not be followed by PLEASE/Enter in the same sequence. Every text step needs the caller's `acknowledgeFocus` (which
+element receives characters is not observable). Text is refused while an exclusive hold or a route mismatch exists.
+Typing goes out 8 characters per loop iteration with the enablement, exclusive hold and routes rechecked between
+chunks; a change stops it with the typed count (uncertain). Hold durations and flags of every key, combo constituents
+included, are validated in the sequence preflight, so an invalid request dispatches nothing (review findings, 2026-10-09). *Sequences:* validated as a
 whole before the first event, then one step per loop iteration (a tap waits for its release to resolve), events end
 `completed`/`failed`/`uncertain`/`unattempted`/`aborted`, a failure releases what the sequence pressed and ends the
 interaction begun for it; one sequence per instance; a TypeScript wait that runs out reports `unknown` and never
@@ -602,13 +606,14 @@ recover available), expiry and lazy expiry, raised press/char kept uncertain, in
 owner abort, the existing tools and default startup unchanged with input disabled and `gma3_lua` hidden. Arbitrary Lua
 stays disabled in the normal-path tests (the `lua` op only appears to prove it is guarded).
 
-**Verified live** (macOS, bridge 0.7.0 on the keyboard backend, 42/42 over two real connections): an acquired
+**Verified live** (macOS, bridge 0.7.0 on the keyboard backend, 44/44 over two real connections, rerun after the review fixes): an acquired
 interaction makes `cmd` and `lua` from both connections and the other connection's tap `[busy]` naming the owner, a hold
 without the id is `[busy]` ("pass its id"), the hold with it put `Store ` on the command line, `extend` and `end` work and
 the ended id is `[no-interaction]`; a two-tap sequence (`51`) and the `MA+STORE` chord sequence (`Record `, MASTATE false
 afterwards) serviced by the loop; command-line text refused while shortcuts were enabled, then `Fixture 5` and
 `abü€😀` typed one code point per event with shortcuts disabled and read back from `cmdtext` with `lastcommand`
-unchanged (inserted, never executed), Escape discarding it; and a disconnect in the middle of a 3 s `STORE` tap releasing
+unchanged (inserted, never executed), Escape discarding it; text without the focus acknowledgment and a sequence with an
+invalid `maxHoldMs` on a later step refused with nothing dispatched; and a disconnect in the middle of a 3 s `STORE` tap releasing
 the key and leaving the sequence `aborted` with the rest unattempted. Effects landed within 14–17 ms. Because the guard
 covers `lua`, verification reads must follow the end of the interaction or sequence under test.
 

@@ -130,7 +130,7 @@ test("a sequence maps every step kind to the bridge's spec and reports completed
     steps: [
       { kind: "combo", keys: [{ key: "MA" }, { key: "STORE" }], hold_ms: 150 },
       { kind: "wait", ms: 100 },
-      { kind: "text", text: "Fixture 5", context: "command-line" },
+      { kind: "text", text: "Fixture 5", context: "command-line", acknowledge_focus: true },
       { kind: "press", pc_key: "F1", ctrl: true },
       { kind: "release", pc_key: "F1", ctrl: true },
     ],
@@ -151,7 +151,7 @@ test("a sequence maps every step kind to the bridge's spec and reports completed
     steps: [
       { kind: "combo", keys: [{ key: "MA" }, { key: "STORE" }], holdMs: 150 },
       { kind: "wait", ms: 100 },
-      { kind: "text", text: "Fixture 5", context: "command-line" },
+      { kind: "text", text: "Fixture 5", context: "command-line", acknowledgeFocus: true },
       { kind: "press", pcKey: "F1", ctrl: true },
       { kind: "release", pcKey: "F1", ctrl: true },
     ],
@@ -212,9 +212,11 @@ test("sequence arguments are validated before any request", async () => {
   assert.match(r.result.validationErrors[0], /EXEC needs executor/);
   r = await h.callJson("gma3_input_sequence", { steps: [{ kind: "tap", key: "STORE", shift: true }] });
   assert.match(r.result.validationErrors[0], /modifiers of a logical key/);
-  r = await h.callJson("gma3_input_sequence", { steps: [{ kind: "text", text: "a\tb", context: "command-line" }] });
+  r = await h.callJson("gma3_input_sequence", { steps: [{ kind: "text", text: "a\tb", context: "command-line", acknowledge_focus: true }] });
   assert.match(r.result.validationErrors[0], /tab/);
   r = await h.callJson("gma3_input_sequence", { steps: [{ kind: "text", text: "ab", context: "text-field" }] });
+  assert.match(r.result.validationErrors[0], /acknowledge_focus/);
+  r = await h.callJson("gma3_input_sequence", { steps: [{ kind: "text", text: "ab", context: "command-line" }] });
   assert.match(r.result.validationErrors[0], /acknowledge_focus/);
   r = await h.callJson("gma3_input_sequence", { steps: [{ kind: "tap" }] });
   assert.match(r.result.validationErrors[0], /key \(logical\) or pc_key \(raw\) is required/);
@@ -347,18 +349,20 @@ test("the text policy refuses control characters and unpaired surrogates without
 
 test("gma3_type sends one text step, requires the focus acknowledgment for a text field and reports the command-line readback", async () => {
   withSession();
-  let r = await h.callJson("gma3_type", { text: "Fixture 5\n", context: "command-line" });
+  let r = await h.callJson("gma3_type", { text: "Fixture 5\n", context: "command-line", acknowledge_focus: true });
   assert.equal(r.result.outcome, "failed");
   assert.match(r.result.validationErrors[0], /newline/);
   r = await h.callJson("gma3_type", { text: "name", context: "text-field" });
   assert.match(r.result.validationErrors[0], /acknowledge_focus/);
+  r = await h.callJson("gma3_type", { text: "Fixture 5", context: "command-line" });
+  assert.match(r.result.validationErrors[0], /acknowledge_focus/);
   assert.equal(h.fake.requests.length, 0);
 
   scriptSequence(report([{ kind: "text", chars: 9, typed: 9, remaining: 0, context: "command-line", state: "completed", readback: { outcome: "observed", source: "CmdObj().cmdtext", expected: "Fixture 5", actual: "Fixture 5", note: "the command line shows the typed text; not executed" } }], "completed"));
-  r = await h.callJson("gma3_type", { text: "Fixture 5", context: "command-line" });
+  r = await h.callJson("gma3_type", { text: "Fixture 5", context: "command-line", acknowledge_focus: true });
   assert.equal(r.isError, false, JSON.stringify(r.result));
   assert.equal(r.result.verification.status, "matched");
-  assert.deepEqual(h.fake.requests.find((q) => q.op === "input.sequence")!.args.steps, [{ kind: "text", text: "Fixture 5", context: "command-line" }]);
+  assert.deepEqual(h.fake.requests.find((q) => q.op === "input.sequence")!.args.steps, [{ kind: "text", text: "Fixture 5", context: "command-line", acknowledgeFocus: true }]);
 
   scriptSequence(report([{ kind: "text", chars: 4, typed: 4, remaining: 0, context: "text-field", state: "completed", readback: { outcome: "unavailable", reason: "a focused text field's content is not observable from Lua; UI verification unavailable" } }], "completed"));
   r = await h.callJson("gma3_type", { text: "name", context: "text-field", acknowledge_focus: true, display: 1 });
@@ -368,9 +372,14 @@ test("gma3_type sends one text step, requires the focus acknowledgment for a tex
   assert.deepEqual(h.fake.requests.filter((q) => q.op === "input.sequence").pop()!.args.steps, [{ kind: "text", text: "name", context: "text-field", acknowledgeFocus: true, display: 1 }]);
 
   scriptSequence(report([{ kind: "text", chars: 10, typed: 8, remaining: 2, context: "command-line", state: "uncertain", uncertainChar: 9, code: "char-raised", error: "character 9 of 10 (U+0038) raised: host blocked; whether it was delivered is unknown, typing stopped" }], "failed"));
-  r = await h.callJson("gma3_type", { text: "0123456789", context: "command-line" });
+  r = await h.callJson("gma3_type", { text: "0123456789", context: "command-line", acknowledge_focus: true });
   assert.equal(r.result.outcome, "unknown");
   assert.equal(r.result.steps[0].detail.typed, 8);
+
+  scriptSequence(report([{ kind: "text", chars: 2, typed: 2, remaining: 0, context: "command-line", state: "uncertain", code: "text-unverified", error: "2 characters were dispatched but the command line does not show them", readback: { outcome: "inconclusive", source: "CmdObj().cmdtext", expected: "ab", actual: "zz" } }], "failed"));
+  r = await h.callJson("gma3_type", { text: "ab", context: "command-line", acknowledge_focus: true });
+  assert.equal(r.result.outcome, "unknown", "typed but not seen on the command line is unknown, never a success");
+  assert.equal(r.result.verification.status, "unavailable");
 });
 
 // ---------------------------------------------------------------------------
