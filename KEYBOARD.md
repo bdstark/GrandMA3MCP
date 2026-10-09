@@ -20,7 +20,9 @@ surface plugin vendors hardkeys 0.5.0 and feedback 0.2.0, pairs with a Rust serv
 physical NX-K against onPC 2.5.1 on macOS with LEDs confirmed by the operator. Two findings from that run feed KB-09.
 KB-08 (documentation and qualification) and KB-09 (shortcut-table cache, operator-managed profile shortcuts) remain.
 Completion establishes the contracts and limitations below, not production keyboard support or universal
-platform coverage. No production keyboard operations exist yet; Quickeys remain deferred.
+platform coverage. The keyboard implementation remains available. KB-10–KB-15 now specify Quickey
+qualification, owned resource provisioning and explicit per-key dispatch policies; these are planned work,
+not completed or qualified backends.
 
 This document expands the initial request from `mtpnxk-client-pico` into dependency-ordered features
 and acceptance criteria, following the format of [FEATURES.md](FEATURES.md). The originating project's
@@ -839,126 +841,207 @@ row as a raw PC key, which bypasses route rechecks.
   save/load of the show keeps the rows and the record; harness plus a live disposable-show probe. Document
   that a profile is per user and that the rows are show data the operator owns.
 
-## KB-10 — Mode-aware digit and keyword text fallback for surfaces
+## Configurable hardkey dispatch and Quickey migration (KB-10–KB-15)
 
-**Request:** As a surface user, I want digits and supported keyword keys to enter literal text when
-keyboard shortcuts are disabled, while retaining the existing hardkey behavior when shortcuts are enabled.
-The immediate use case is entering `1 Thru 5` from the NX-K without enabling keyboard shortcuts or
-creating a shortcut row. This is text entry, not a replacement for console hardkey hold/chord behavior.
+This sequence replaces the original KB-10 text-fallback proposal. Earlier KB-04/KB-05 restrictions
+continue to govern their existing APIs; KB-14 introduces explicit new mode-changing methods rather than
+silently changing those contracts. The CmdText and macro probes remain
+valid evidence, but do not qualify Quickey dispatch. Implement a shared routing policy with these methods:
 
-**Depends on:** KB-04 and KB-05 (keyboard/text dispatch and admission), KB-07 (surface events, duplicate
-suppression and recovery), KB-08 (operator guidance and qualification). KB-09 is complementary, not a
-prerequisite: neither shortcut caching nor automatic profile editing is required here. Preserve the open
-KB-07 benchmark and flood defects identified in KB-08; this feature does not close or bypass them.
+| Method | Behavior |
+| --- | --- |
+| `quickkey` | Activate the owned Quickey assigned to the logical key, without changing shortcut state. |
+| `shortcutOrType` | Use an eligible mapped shortcut when shortcuts are enabled; otherwise insert explicitly configured text, temporarily disabling shortcuts if necessary. |
+| `shortcut` | Resolve the mapped shortcut, temporarily enable shortcuts if necessary, dispatch it, and restore the original state. |
+| `type` | Temporarily disable shortcuts if necessary, insert explicitly configured text, and restore the original state. |
 
-**Lua changes: Yes — shared hardkeys module and surface entry component.** Put mode selection, semantic
-text mapping and admission in `gma3_mcp_hardkeys`; the surface consumes that API and owns its event
-bookkeeping and configuration. Reuse the existing character dispatcher and bounded service loop; no
-surface-side copy of console semantics, `Cmd()` substitution, Quickey pool or shortcut-table writes.
-**MCP bridge/TypeScript changes: Not required for the initial surface feature.** Existing hardkey, raw-key
-and text tools retain their contracts and explicit text-context/focus acknowledgment. Do not silently
-make existing `press()` calls type text; expose the new policy explicitly to the surface consumer.
+`quickkey` is the public configuration spelling; **Quickey** is grandMA3's object terminology.
+Quickeys become the surface default only after qualification and resource setup. Existing MCP tools and
+module callers retain their behavior unless they explicitly select the new policy. Text insertion targets
+the focused input; it is not equivalent to a hardkey action and never adds an implicit Please/Enter.
+Explicit control keys such as Please retain their intended effects.
 
-### Motivation and evidence to retain
+Provisioning, routing, dispatch and restoration belong in the reusable Lua module. Surfaces own configuration,
+transport and physical-event bookkeeping; the MCP bridge owns tool exposure and client-facing validation.
+Keep the existing benchmark and flood defects tracked independently: this migration does not close them.
 
-The operator reports that Thru does not appear when using `T` on the physical keyboard or the NX-K.
-The [MA 2.5 Thru keyword reference](https://help.malighting.com/grandMA3/2.5/HTML/keyword_thru.html)
-lists `T` as an alternative typed form. Separately, the
-[keyboard-shortcut documentation](https://help.malighting.com/grandMA3/2.5/HTML/do_shortcuts_keyboard.html)
-describes user-profile mappings controlled by ShCuts/F10. A keyword abbreviation does not establish a
-physical `T` shortcut row or immediate expansion when a key is pressed. KB-07 found no default shortcut
-for `THRU` on the tested profile. Record the operator's observation as an **unconfirmed onPC issue** until
-focus, ShCuts state, active profile/mapping and typed-token behavior have been reproduced live.
+## KB-10 — Qualify programmatic Quickey dispatch
 
-### Configuration and routing contract
+**Request:** Establish a repeatable way to activate and release Quickeys from Lua before implementing the
+production backend.
 
-- The **surface enables text fallback by default**, with a documented per-start opt-out such as
-  `textfallback=off` (`on` explicitly restores it). This is enabled-by-default behavior with an opt-out,
-  not an opt-in. Startup/status and the surface's capability report expose the effective policy.
-- The reusable module defaults to its existing behavior unless the consumer explicitly selects this
-  policy. The surface's default must not change the bridge's input opt-in or any other consumer's behavior.
-  `input=off`, failed input admission and quarantine still prohibit all dispatch, including text fallback.
-- Read shortcut enablement for each new press. When positively **on**, use the existing logical route
-  with all mapping, collision, preference and ownership checks. A missing route stays unsupported:
-  do not type `T` or `Thru`, toggle F10 or create a mapping as a fallback while shortcuts are on.
-- When positively **off**, fallback is permitted only if the setting is on, the key has an explicit
-  text mapping, and the instance has no live held/releasing/unresolved key, active input operation or
-  other admission conflict. Retained records not yet adopted and quarantined instances also block it.
-  If the state cannot be read, dispatch nothing and explain why. A blocked press is never queued for later.
-- Native/control keys keep their existing routes and safeguards. Do not turn Please/Enter, MA, Clear,
-  Oops/Undo, Esc, executor actions or encoders into strings. Unsupported keys remain unsupported; they
-  are not synthesized by uppercasing/lowercasing their surface labels.
+**Depends on:** KB-01–KB-05 input probes and lifecycle; KB-07/KB-08 surface evidence.
 
-### Literal text and event semantics
+**Lua changes: Yes — probe code only initially.** Do not change production defaults. No MCP/TypeScript
+changes should be needed for the probe.
 
-- Cover all ten digits: surface `0`–`9` / logical `NUM0`–`NUM9` insert exactly their one literal digit,
-  once per physical press, without surrounding spaces or modifiers. They use a single character event
-  through the existing text backend, not a held numeric shortcut. No auto-repeat is promised initially.
-- Include `THRU` → the full token `Thru`, not its abbreviation `T`. Publish a finite, reviewed mapping
-  of other supported keyword keys (for example surface Record → logical STORE → `Store`). Enable each
-  mapping only after its literal-entry behavior is tested; a VirtualKeyCode name alone is not a text map.
-- Make separators explicit in the mapping. The initial Thru insertion is ` Thru `, so digit presses
-  `1`, Thru, `5` produce `1 Thru 5`. Keyword mappings must define leading/trailing spaces; do not infer
-  editing state, remove existing text or normalize a focused label. Document that those same spaces are
-  inserted into a text field. Punctuation and multi-function keys need separate mappings and tests.
-- Insert once on the press edge. Its matching release sends no character and no synthetic hardkey
-  release. Track the chosen handling until release: duplicate press packets, held-state heartbeats,
-  retries, reconnects and repeated down reports must not insert the token again. A blocked press stays
-  blocked for that press/release cycle, even if the mode changes before release.
-- A release belonging to a previously dispatched hardkey always follows the stored hold and tuple,
-  even if shortcuts or fallback settings changed. Preserve existing unresolved-release and recovery
-  rules; never drop a release merely because new presses would now take the text path.
-- Serialize each keyword insertion through the bounded text machinery. No new event may interleave a
-  different token into an unfinished insertion; report busy instead. Recheck shortcut state and admission
-  between chunks. If they change, stop and report partial/uncertain progress; do not erase, complete or
-  replay the token automatically. A backend exception must not trigger another dispatch path.
-- Never append Enter/Please, execute the command line, inject control characters, change focus, toggle
-  shortcuts or edit profile rows. The operator commits the line with a separate key action.
+### Acceptance criteria
 
-### Focus, held-key limits and reporting
+- Enumerate the available Quickey codes on the tested console version. Record names, values, aliases and
+  exclusions; do not assume a fixed count of 110.
+- Establish exact Lua invocation for tap, press and release. Probe direct activation first. If executors
+  are required, document their assignments, button functions and activation mechanism. Do not assume
+  `Go+ Quickey` implements press/release merely because `Go+ Macro` worked.
+- Test digits and Thru with shortcuts on and off; test Store hold/release, MA combinations, simultaneous
+  keys, and release after interruption. Test Clear, Oops, Esc and Please separately.
+- Test rapid digits followed immediately by Please without a manual delay. Record whether dispatch is
+  synchronous, queued, latched, or dependent on focus/display.
+- Exercise the command line, Edit Command and an independent popup field, including caret and selection
+  behavior. Macro observations do not establish Quickey behavior.
+- Release probe-held keys and clean up only probe-owned objects. Record final held/latched state.
+- Publish revision, module hashes, platform, console version, profile, display and tested codes. Preserve
+  the distinction between desktop-injected keyboard events and physical NX-K/hardware testing.
 
-The surface deliberately accepts a best-effort focus policy: characters go to the input currently
-focused in onPC, including a pop-up text field. It does not claim to detect that focus or to target the
-command line. Represent that consumer policy explicitly in the shared API; do not silently label an
-unknown focus as a verified command-line context. Existing MCP focus acknowledgment remains unchanged.
+**Completion gate:** Implement only demonstrated capabilities. Tap-only success does not qualify holds or
+chords. If reliable release is unavailable, do not replace the existing hold-capable backend.
 
-Only this instance's ownership and pending operations can be checked reliably. There is no complete
-physical-console or cross-plugin held-key inventory. Do not describe the gate as proof that nobody is
-holding a key. Publish this operator notice at setup and when explaining the default:
+## KB-11 — Shared per-key routing policy
 
-> This third-party surface uses best-effort keyboard emulation. With shortcuts disabled, supported keys
-> insert text into the focused input. Holding keys on the console, physical keyboard or another
-> controller while using the surface may produce unexpected results. Disable text fallback if you
-> require hardkey-only behavior.
+**Request:** Let a consumer choose a default dispatch method and override it for individual logical keys.
 
-Results identify `hardkey` versus `text-fallback`, the inserted/requested text, shortcut state, and
-whether dispatch was refused, dispatched or partial/uncertain. A no-op because input is held is a
-reported refusal, not successful execution. Replayed acknowledgments retain the original outcome.
-Dispatch does not prove the focused element accepted the text. Preserve the distinction between
-console-derived LED state and local physical-key indications.
+**Depends on:** KB-10 for Quickey capabilities. Pure policy validation can proceed independently.
 
-### Acceptance criteria and qualification
+**Lua changes: Yes — shared hardkeys module.** The surface supplies configuration and consumes results;
+it must not duplicate routing logic. MCP/TypeScript changes are needed only if exposing new bridge options
+or tools; existing tool contracts remain unchanged.
 
-- Unit tests cover all digits, exact token spacing, enabled/disabled/unreadable ShCuts, fallback off,
-  input off, missing mappings, held/releasing/unresolved records, retained records, quarantine and busy
-  operations. Existing native routes and explicit MCP text behavior are unchanged.
-- Regression tests exercise press/release across mode changes, blocked-down then mode change, duplicate
-  and reordered packets, release-only events after reconnect, heartbeat reconciliation, interrupted
-  token insertion, backend exceptions and unchanged outcome replay. No token executes a command or
-  causes a hardkey release to disappear.
-- On a disposable show, record revision/module hashes, OS/onPC version, layout, profile, shortcut rows
-  and focus. With shortcuts off, digit taps build an exact number and `1`, Thru, `5` builds `1 Thru 5`
-  without executing it. Confirm subsequent explicit Please separately. With shortcuts on, verified
-  routes behave as before and an unmapped Thru is refused. Test the opt-out and a focused pop-up field.
-- Probe the reported physical `T` behavior separately, comparing literal `T`, full `Thru`, token
-  delimiters and NX-K events with ShCuts on/off. Record the displayed text and parser behavior rather
-  than assuming immediate keyword expansion. Do not mark an onPC defect confirmed from the documentation
-  alone or change the user's shortcut profile during the test.
-- Verify blocked fallback while this instance owns a hardkey and recovery after its proper release.
-  Document physical-key/other-plugin interference as a limitation; it is not a cross-instance lock.
-- Update surface startup examples, opt-out instructions, capabilities, key mapping and LED descriptions,
-  compatibility evidence and vendoring pins/hashes. Preserve module API compatibility or document any
-  deliberate change. No platform gains qualification merely because its code path is shared.
+### Acceptance criteria
+
+- Support the four methods above, a consumer-level default and per-key overrides. Unknown or unavailable
+  methods fail validation; they do not silently select another backend.
+- Keep logical key identity, Quickey code, shortcut preference and literal text as distinct fields.
+  Require explicit text mappings rather than deriving text from arbitrary key names.
+- Digits map to one character without spaces. Keyword mappings specify exact separators. Do not provide
+  automatic text mappings for MA, Please, Clear, Oops, Esc, executors or encoders.
+- Report configured method, effective route, capabilities and unavailable requirements.
+- Resolve and validate before dispatch; retain the chosen route for the entire press/release cycle.
+- `shortcutOrType` uses a shortcut only when shortcut mode is positively enabled and resolution succeeds.
+  A confirmed missing mapping may select text. Unreadable state, ambiguity, ownership conflicts,
+  quarantine and other admission failures are refusals, not permission to type.
+- When shortcut mode is positively off, `shortcutOrType` may select its explicit text mapping without
+  requiring a shortcut row. If no text mapping exists, report unsupported.
+- Once dispatch begins, exceptions or uncertain outcomes never trigger another backend automatically.
+- Preserve input-enable, busy, ownership and recovery checks. A blocked press remains blocked for that
+  press/release cycle; mode changes and retries do not resurrect it.
+- Test configuration precedence, every selection branch, unsupported mappings, admission failures and
+  route retention across configuration/mode changes. Existing callers retain their defaults.
+
+## KB-12 — Provision and cache the complete Quickey bank
+
+**Request:** Create one owned Quickey for every qualified hardkey code, avoiding per-surface allocation.
+
+**Depends on:** KB-10 and KB-11.
+
+**Lua changes: Yes — shared provisioning/backend code and consumer startup integration.** Do not create
+a surface-specific allocator. MCP/TypeScript changes are not required unless provisioning is exposed there.
+
+### Acceptance criteria
+
+- Require explicit setup authorization and an operator-selected resource range. Provision the complete
+  qualified code set, deduplicate aliases, and report exclusions.
+- If dispatch requires executors, reserve and validate those resources as part of the same setup.
+- Preflight the complete reservation before creating objects, and recheck each target before mutation.
+  Never overwrite unowned objects; preflight is not an atomic reservation against other plugins.
+- Track ownership and expected configuration. Labels alone are insufficient proof of ownership.
+- Reuse a bank only after verifying identity, codes and configuration. Cache handles, but invalidate them
+  on relevant show/data-pool changes or object replacement. Revalidate targets before dispatch.
+- Refuse dispatch through deleted or unexpectedly modified objects. Do not silently repair operator edits.
+- On partial setup failure, remove only newly created, still-owned, unchanged objects.
+- Separate release-all from bank removal. Shutdown releases active keys; explicit teardown removes only
+  verified owned resources and refuses unsafe deletion while holds remain unresolved.
+- Define bank ownership across consumers. Initially reject a second owner unless explicit shared arbitration
+  is implemented; a common bank does not itself provide cross-plugin press/release ownership.
+- Test collisions, partial failure, deletion/replacement, operator edits, cached-handle invalidation,
+  save/reload and plugin restart. Qualify persistence and ownership recovery on a disposable show.
+
+## KB-13 — Production Quickey input backend
+
+**Request:** Dispatch surface hardkey events through the owned Quickey bank.
+
+**Depends on:** KB-12.
+
+**Lua changes: Yes — shared hardkeys module and surface integration.** Reuse existing event and recovery
+machinery. No MCP/TypeScript changes should be needed for the initial surface backend.
+
+### Acceptance criteria
+
+- Implement only qualified tap, press, release and chord behavior; advertise capability limitations.
+- Preserve duplicate suppression, event ordering, press ownership and original-outcome acknowledgment replay.
+  Repeated down reports or heartbeat reconciliation must not retrigger an activation.
+- Release using the recorded backend and target even if configuration changes while held. Do not resolve
+  a replacement object at the same pool index and release it as though it were the original target.
+- Disconnect, stop and restart attempt releases and retain unresolved failures for recovery. Block new
+  conflicting input until recovery completes; preserve retained-record and quarantine handling.
+- Apply existing admission checks. Handle asynchronous ordering, especially digits/keywords followed by
+  Please. Never retry an uncertain activation automatically.
+- Distinguish dispatched from observed completion and preserve local physical indications versus
+  console-derived feedback.
+- Test simultaneous keys, long holds, rapid sequences, duplicate/reordered packets, interruption,
+  object deletion and backend exceptions. Add live NX-K qualification for the actual surface path.
+
+## KB-14 — Scoped shortcut-state changes and text alternatives
+
+**Request:** Implement `shortcutOrType`, `shortcut` and `type` with bounded shortcut-state changes and recovery.
+
+**Depends on:** KB-11. Independent of Quickey provisioning and not a prerequisite for KB-13.
+
+**Lua changes: Yes — shared hardkeys/input module and probe code.** Consumers must not implement their
+own toggles. MCP/TypeScript changes are needed only for explicit exposure of the new policy.
+
+### Acceptance criteria
+
+- First probe when key/character events are consumed relative to mode restoration. A single Lua call is
+  not assumed atomic. Do not enable an unqualified toggling path in production.
+- Capture active profile and shortcut state before mutation; refuse if either is unreadable. Resolve
+  shortcuts and validate text before changing state.
+- Change mode only when required. Serialize module-owned input for the full temporary-state operation;
+  this is not a lock against physical input or other plugins.
+- Restore captured state after completion and handled errors when the original profile and ownership of
+  the temporary state remain valid. Detect observable profile/mode interference, stop and report it rather
+  than blindly overwriting a newer operator state. Do not mutate a replacement profile during cleanup.
+- Track unresolved restoration separately from key-release recovery, expose it in status, and block
+  conflicting operations until resolved. Document that abrupt termination and undetectable external changes
+  prevent an absolute restoration guarantee.
+- For `shortcut`, retain the necessary mode through the qualified key lifecycle. Do not restore immediately
+  after key-down unless tested release semantics allow it. Bound mode-changing holds with a timeout and
+  release/restoration recovery; advertise unsupported hold/chord combinations explicitly.
+- Text routes insert once on press and nothing on release. They refuse conflicting instance-owned held,
+  releasing, unresolved, retained or quarantined input. Native holds are not converted into text.
+- Use bounded text dispatch, rechecking admission and state between chunks. On interruption report partial
+  or uncertain progress; do not erase, complete or replay text automatically.
+- Type into the focused input without moving focus or adding Enter/Please. Preserve explicit MCP focus
+  acknowledgments; represent the surface's best-effort focus policy honestly.
+- Test initial mode on/off, missing mappings, profile/mode changes, errors at each stage, cancellation,
+  partial text and restoration failure, including interaction with existing held inputs.
+- Document that physical keys and other controllers can interfere; instance ownership is not a complete
+  inventory of keys held on the console.
+
+## KB-15 — Surface defaults, migration and qualification
+
+**Request:** Make qualified Quickey dispatch the normal surface hardkey path while retaining explicit alternatives.
+
+**Depends on:** KB-13. Alternative methods become available after KB-14; they need not delay Quickey rollout.
+
+**Lua changes: Yes — surface configuration/startup integration.** Further shared-module changes should only
+be needed for defects found during qualification. Update documentation, tests and vendoring pins/hashes.
+No MCP/TypeScript changes should be needed unless its public options are deliberately extended.
+
+### Acceptance criteria
+
+- Default surface hardkeys to `quickkey` after explicit resource setup. If the bank is unavailable, report
+  setup or recovery requirements; do not silently fall back to keyboard dispatch.
+- Allow per-key overrides and expose effective routing in startup/status. Until KB-14 is qualified,
+  reject unavailable methods rather than accepting inert configuration.
+- Preserve the keyboard backend and existing MCP tool contracts. Retain literal text entry separately
+  from hardkey dispatch; a complete Quickey bank does not replace arbitrary typing.
+- Document method differences, owned show resources, temporary mode changes, focus behavior and physical
+  interference. Include setup, opt-out/override, recovery and teardown examples.
+- Test mixed-method interactions, including shortcut mode changes while a Quickey is held. Refuse combinations
+  whose semantics have not been qualified instead of assuming independent backends cannot interfere.
+- Update module versions, vendoring pins/hashes, integration examples, capabilities, key maps and LED guidance.
+- Run lifecycle and packet-loss/reordering regressions plus live console qualification. Keep benchmark/flood
+  defects separate, and do not grant new platform coverage merely because the implementation is shared.
+
 
 ## Evidence and open questions
 
@@ -970,7 +1053,8 @@ console-derived LED state and local physical-key indications.
   Probed live on 2026-10-09 ([record](docs/probes/kb-10-cmdtext-write-macos-2.5.1.md)): on onPC 2.5.1.0 the
   property is read-only. Assignment and `Set("CmdText", ...)` return without error and leave the buffer unchanged
   (immediately, a frame later and after an unrelated value), so appending `Thru ` through `CmdText` is not a path
-  for KB-10; text reaches the command line only through key/character injection. On screen the write is inert: the
+  for insertion. Key/character injection and the separately tested macro path can populate the buffer.
+  On screen the write is inert: the
   caret, an active selection and a focused Edit Command pop-up are untouched and typing continues where it was, with
   ShCuts off and on (digit rows 124–133 = `NUM0`–`NUM9` on profile `Default`, no `Thru` row).
 - Macros with `AddToCmdline=Yes, Execute=No` probed live the same day
@@ -979,7 +1063,8 @@ console-derived LED state and local physical-key indications.
   involved; digits are contiguous (`55`); the caret ends at the end and typing continues there; the Edit Command pop-up
   (a view of the same buffer) keeps focus. Caveats: the console trims the macro command and the buffer's trailing
   whitespace, so `Thru` lands as `Fixture 1Thru` (the parser still executes `OK: Fixture 1 Thru 5`); insertion is at
-  the caret and replaces a selection. A viable KB-10 insertion path alongside character injection.
+  the caret and replaces a selection. This establishes a macro insertion path, not Quickey activation
+  or release. Preserve it as evidence; the new surface direction requires the separate KB-10 Quickey probe.
 - [RBOSCKeys author's description](https://git.riksolo.com/RikSolo/eleventy-riksolo-com/commit/8ec798f93fc873ef7c9ac485f8b5423a33999d69)
   describes dynamic Quickey allocation and executor holds. It is evidence for the pattern, not proof
   of a non-OSC implementation or compatibility with every onPC version.

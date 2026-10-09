@@ -90,8 +90,9 @@ text field (for example a label editor) remains unexercised.
 ## Consequences for KB-10
 
 - `CmdObj().CmdText` is a **read-only feedback source** (as KB-06 uses it). It cannot be used to insert `Thru` or any
-  other token into the command line; the only observed way to put text there without executing is key/character
-  injection, as in KB-05 and the KB-10 text-fallback design.
+  other token into the command line. Key/character injection remains available as in KB-05; the separate
+  [macro probe](kb-10-macro-append-macos-2.5.1.md) also demonstrated non-executing insertion. Neither result
+  establishes programmatic Quickey press/release, which is the revised KB-10 probe target.
 - No caret-restoration or focus API was proposed or tested here; nothing in this record supports one.
 - Clearing a line programmatically still requires an Escape key event (verified) or the `CLEARCMD` property, which was
   not exercised because the probe needed the line preserved.
