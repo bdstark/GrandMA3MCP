@@ -94,6 +94,7 @@ OSC is optional for the normal bridge setup and is not forwarded by an SSH tunne
 ## Contributing and security
 
 Please follow the [code of conduct](CODE_OF_CONDUCT.md).
+See [accessibility guidance and reporting](ACCESSIBILITY.md) for interface and documentation barriers.
 See [contribution guidance](CONTRIBUTING.md) for bug reports, development checks and pull requests.
 Report suspected vulnerabilities privately using the [security policy](SECURITY.md).
 

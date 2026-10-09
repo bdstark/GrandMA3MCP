@@ -41,3 +41,9 @@ Describe the expected behavior and what actually happened.
 
 Paste sanitized errors, logs or test output. State whether this is a regression and the last known
 working revision, if known. For documentation bugs, a page link and correction may be sufficient.
+
+## Accessibility context (if applicable)
+
+Describe the task and the barrier. Optionally include the client or assistive technology used and what
+alternative would help. No disability or medical information is needed. For private reports or if this
+template is a barrier, email bdstark@gmail.com with the subject `GrandMA3MCP accessibility`.

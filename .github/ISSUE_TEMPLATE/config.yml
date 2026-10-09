@@ -6,3 +6,6 @@ contact_links:
   - name: Report a conduct concern privately
     url: https://github.com/bdstark/GrandMA3MCP/blob/main/CODE_OF_CONDUCT.md#report-a-concern
     about: Find the private contact and reporting process in the code of conduct.
+  - name: Accessibility guidance and reporting
+    url: https://github.com/bdstark/GrandMA3MCP/blob/main/ACCESSIBILITY.md
+    about: Report a documentation or interface barrier, including by private email.

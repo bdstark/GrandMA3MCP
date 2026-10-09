@@ -24,6 +24,7 @@ For docs-only work, link/example checks are sufficient. Live tests are not requi
 - Lua harnesses: passed / skipped / not run / not applicable — explain:
 - Regression or failure-path coverage for changed behavior:
 - Live evidence, if needed: commit, exact console version, OS, profile/display setup and observed results:
+- Accessibility considerations for documentation or user-facing changes (if applicable):
 - Remaining limitations or unverified behavior:
 
 ## Submission checks
