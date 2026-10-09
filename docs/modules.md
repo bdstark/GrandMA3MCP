@@ -289,8 +289,14 @@ hardkeys instance's record, not console state.
 | `describe()` | Reader list with scope, source, parameters, notes and the alias. |
 
 **Identity and epochs.** The instance observes `deps.showFile()`, `deps.userName()` and `deps.profileName()`;
-a change of any readable one invalidates with `show-changed`, `user-changed` or `profile-changed`. An unreadable identity
-value is reported as nil and is never treated as a change by itself. `status()` reports `epoch`, `lastInvalidation`,
+a change of any readable one invalidates with `show-changed`, `user-changed` or `profile-changed`. A value that was never
+readable is reported as nil and is not a change. A value that was readable and becomes unreadable keeps its **last known**
+value, marks the identity uncertain (`identityUncertain` in `status()`, `readMany()` and `snapshot()`) and invalidates
+once (`identity-unreadable`); while uncertain every snapshot item is `stale`, and once readable again the new value is
+compared with the last known one, so an A → unreadable → B transition still invalidates as `show-changed`. A malformed
+item (`params` not a table, a wrong parameter type) is reported unavailable with the error under the key
+`<name>[invalid-params]` and never aborts a `readMany()` batch or a `watch()` list; an executor whose `Object` read raises
+is unavailable with the error, never reported empty. `status()` reports `epoch`, `lastInvalidation`,
 `identity`, `watched`, `cached` and the config. The bridge creates a fresh instance (epoch 1) at every start and exposes
 `readMany` through `feedback.read` ([reference](reference.md#console-feedback-plugin-v080-kb-06)); the cached
 `watch()`/`snapshot()` path is for surface consumers that poll between input deadlines. Multiple reads are never an

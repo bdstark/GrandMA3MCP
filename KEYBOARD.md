@@ -682,8 +682,12 @@ that says what it read. *Separation:* `executor` (assignment on the user's curre
 `getfader`/`executors` ops), `sequenceActive` (`HasActivePlayback`), `selectedSequence` (`SelectedSequence()`) and
 button ownership (the hardkeys record, not console state) are separate readers that are never merged. Freeze stays
 unavailable. *Freshness:* the module observes the show file, user and profile identity (at most once per second) and
-bumps its epoch on a change (`show-changed`, `user-changed`, `profile-changed`), dropping cached observations; the consumer
-can `invalidate()` on disconnect or restart; the bridge starts a fresh instance per run. *Bounded polling:* `watch()` a
+bumps its epoch on a change (`show-changed`, `user-changed`, `profile-changed`), dropping cached observations; an identity that
+becomes unreadable keeps its last known value, invalidates once and marks observations stale until it is readable again
+(review finding, 2026-10-09: an A → unreadable → B transition must neither hide the change nor serve A's values); the consumer
+can `invalidate()` on disconnect or restart; the bridge starts a fresh instance per run. A malformed item is reported
+unavailable without aborting the batch, and a raising executor `Object` read is an error, never an empty executor (review
+findings, 2026-10-09). *Bounded polling:* `watch()` a
 requested subset, `service()` reads at most 8 due items per loop iteration (round robin, 100 ms interval), `snapshot()`
 reports `ageMs`/`stale` and lists items not observed since the current epoch instead of showing old values; `readMany`
 is capped at 64 items and 32 executors/sequences per request. *Read-only access:* the bridge op is not in the guarded
