@@ -59,6 +59,8 @@ export interface FeedbackResult {
     epoch: number | null;
     atomic: false;
     identity: Record<string, unknown> | null;
+    /** Identity keys (showFile, user, profile) whose value is the last known one because the current read failed; null when verified. */
+    identityUncertain: string[] | null;
     invalidated: string | null;
     bridgeVersion: string | null;
     module: Record<string, unknown> | null;
@@ -74,7 +76,8 @@ export interface FeedbackResult {
 const NOTE =
   "Read-only observations, read one after another (not an atomic snapshot). An unavailable item has value null and a reason or error; false is an observed value. " +
   "lastCommand and maState are shared console observations, not confirmation of a request or key owner; sequenceActive is playback activity, not a button state. " +
-  "Cached values are never served: every item was read for this call at its observedAt; the epoch changes after a bridge start or a show/user/profile change.";
+  "Cached values are never served: every item was read for this call at its observedAt; the epoch changes after a bridge start or a show/user/profile change. " +
+  "context.identityUncertain lists identity keys whose value is only the last known one (unreadable on this call); treat the identity as unverified while it is set.";
 
 /** Normalise one bridge item: the console's JSON drops nil, so `value` is made an explicit null when unavailable. */
 export function normaliseItem(raw: unknown): FeedbackItem {
@@ -105,12 +108,15 @@ export function normaliseResult(raw: unknown): FeedbackResult {
   const byKey: Record<string, FeedbackItem> = {};
   for (const it of items) byKey[it.key] = it;
   const limitations = (Array.isArray(src.limitations) ? src.limitations : []).map((l) => String(l));
+  const uncertain = Array.isArray(src.identityUncertain) && src.identityUncertain.length > 0 ? src.identityUncertain.map((k) => String(k)) : null;
+  if (uncertain) limitations.push(`identity unverified: ${uncertain.join(", ")} could not be read on this call; context.identity shows the last known value and may not be current`);
   return {
     context: {
       observedAt: typeof src.observedAt === "number" ? src.observedAt : null,
       epoch: typeof src.epoch === "number" ? src.epoch : null,
       atomic: false,
       identity: src.identity && typeof src.identity === "object" ? (src.identity as Record<string, unknown>) : null,
+      identityUncertain: Array.isArray(src.identityUncertain) && src.identityUncertain.length > 0 ? src.identityUncertain.map((k) => String(k)) : null,
       invalidated: typeof src.invalidated === "string" ? src.invalidated : null,
       bridgeVersion: typeof src.bridgeVersion === "string" ? src.bridgeVersion : null,
       module: src.module && typeof src.module === "object" ? (src.module as Record<string, unknown>) : null,

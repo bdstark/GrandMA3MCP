@@ -122,6 +122,30 @@ test("an invalidation reported by the bridge (show change) is surfaced in the co
   assert.equal(result.byKey.page.value.no, 2);
 });
 
+test("an unreadable identity is surfaced on the invalidating call and on every later call while it stays unverified", async () => {
+  const replies = [
+    reply([item("blind", { available: true, value: true, epoch: 2 })], { epoch: 2, invalidated: "identity-unreadable", identityUncertain: ["showFile"] }),
+    reply([item("blind", { available: true, value: true, epoch: 2 })], { epoch: 2, identityUncertain: ["showFile"] }),
+    reply([item("blind", { available: true, value: true, epoch: 3 })], { epoch: 3, invalidated: "show-changed", identity: { showFile: "show-B", user: "Admin", profile: "Default" } }),
+  ];
+  let i = 0;
+  h.fake.on("feedback.read", () => replies[i++]);
+  const first = (await h.callJson("gma3_feedback", { readers: ["blind"] })).result;
+  assert.equal(first.context.invalidated, "identity-unreadable");
+  assert.deepEqual(first.context.identityUncertain, ["showFile"]);
+  assert.equal(first.context.identity.showFile, "mcp-test-disposable", "the last known value is still reported");
+  assert.match(first.limitations.join("\n"), /identity unverified: showFile/);
+  const second = (await h.callJson("gma3_feedback", { readers: ["blind"] })).result;
+  assert.equal(second.context.invalidated, null, "no new invalidation on the second call");
+  assert.deepEqual(second.context.identityUncertain, ["showFile"], "the continuing uncertainty is still reported");
+  assert.match(second.limitations.join("\n"), /may not be current/);
+  const third = (await h.callJson("gma3_feedback", { readers: ["blind"] })).result;
+  assert.equal(third.context.identityUncertain, null);
+  assert.equal(third.context.invalidated, "show-changed");
+  assert.equal(third.context.identity.showFile, "show-B");
+  assert.deepEqual(third.limitations, []);
+});
+
 test("an oversized or duplicated target list is refused before any request", async () => {
   const many = Array.from({ length: 33 }, (_, i) => 101 + i);
   let res = await h.callJson("gma3_feedback", { executors: many });
@@ -183,5 +207,7 @@ test("normalisation never invents values and keeps unknown fields out of the con
   assert.deepEqual(res.items, []);
   assert.equal(res.context.count, 0);
   assert.equal(res.context.truncated, 0);
+  assert.equal(res.context.identityUncertain, null);
+  assert.equal(normaliseResult({ identityUncertain: [] }).context.identityUncertain, null, "an empty list is not an uncertainty");
   assert.ok(FEEDBACK_READERS.includes("freeze") && !(FEEDBACK_READERS as readonly string[]).includes("executorActive"));
 });

@@ -47,6 +47,7 @@ Every item carries:
 | `source` | The console property or call that was read. |
 | `observedAt` | Bridge clock (seconds) at the moment that item was read. Items of one call are read one after another: **a result is not an atomic snapshot** of the console. |
 | `epoch` | The feedback instance's invalidation counter. It starts at 1 at every bridge start and increments when the show file, user or user profile changed since the previous read (checked at most once per second); `context.invalidated` names the change (`show-changed`, `user-changed`, `profile-changed`) on the call that noticed it. Compare epochs before combining observations from several calls. |
+| `context.identityUncertain` | Identity keys (`showFile`, `user`, `profile`) that could not be read on this call: `context.identity` then shows the **last known** value and the identity is unverified. It is reported on every call while the condition lasts (not only on the call that invalidated with `identity-unreadable`), and repeated in `limitations`. `null` when the identity was read. |
 | `key` | `name` plus the identifying parameters: `previewBar[display=2]`, `executor[executor=201]`, `fader[executor=201,token=SpeedMaster]`, `sequenceActive[sequence=5]`. |
 | `note` | What the value does and does not mean, where that matters (below). |
 
