@@ -282,7 +282,7 @@ started with `input=fake` over real TCP connections ([record](probes/kb-03-fake-
 `node scripts/kb04-probe.mjs run|restart` presses real keys through a bridge started with `lua input=keyboard` on a
 disposable show ([record](probes/kb-04-keyboard-macos-2.5.1.md)); `node scripts/kb05-probe.mjs run` exercises the
 interactions, the busy guard over two connections, sequences, command-line text and a disconnect mid-sequence the same
-way (no record yet).
+way ([record](probes/kb-05-input-macos-2.5.1.md)).
 `node scripts/kb02-probe.mjs verify` checks a live bridge: `ping.modules`, the `modules` op, and that the
 readers and key resolution return successful values (Blind readable, PLEASE resolved, Freeze and MA1
 reported unavailable/unsupported). It lists loose module files in the local library folder for information

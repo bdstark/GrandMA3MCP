@@ -1052,6 +1052,12 @@ do
     and rep.counts.completed == 5 and rep.cleanup.attempted == 0 and inst:status(0.27).interactions.i1.state == "ended" and inst:admission(0.27) == nil, J(rep))
   check("events in order: S down/up, LeftShift down, 5 down/up, LeftShift up", kinds(backend) == "press:S release:S press:LeftShift press:5 release:5 release:LeftShift", kinds(backend))
   check("the finished report says what completed means", rep.note:find("not that a UI effect was verified") and rep.elapsedMs == 270, rep.note)
+  -- A readback that concludes after the sequence finished is reported live by sequenceStatus().
+  local kinst, kb_ = freshStrict()
+  kinst:startSequence("a", 0, { { kind = "tap", key = "MA", holdMs = 50 } })
+  kinst:service(0.1)
+  local krep = kinst:sequenceStatus("q1", 0.1)
+  check("MA tap completed with its release readback pending", krep.state == "completed" and krep.events[1].readback.phase == "release" and krep.events[1].readback.outcome == "observed", J(krep.events[1].readback))
   local _, nerr = inst:sequenceStatus("q9", 1)
   check("unknown sequence ids are reported", nerr.code == "no-sequence", J(nerr))
   -- Validation refuses the whole request; nothing is dispatched.

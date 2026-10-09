@@ -10,7 +10,9 @@
 // readback, command-line text with shortcuts disabled by the operator (simulated through Lua, as in the KB-04
 // probe) and read back from CmdObj().cmdtext, the refusal of command-line text while shortcuts are enabled,
 // and a disconnect in the middle of a sequence. Verification reads the command line, MASTATE and the shortcut
-// enablement through the "lua" op, polling across frames; the bridge must have Lua enabled. Nothing is retried.
+// enablement through the "lua" op, polling across frames; the bridge must have Lua enabled. Because the bridge
+// refuses "lua" (like every mutating op) while input is owned, every read happens after the interaction or
+// sequence under test has ended; what a held key put on the command line stays there until Escape. Nothing is retried.
 // GMA3_BRIDGE_HOST / GMA3_BRIDGE_PORT select the bridge.
 import net from "node:net";
 import fs from "node:fs";
@@ -157,9 +159,11 @@ async function run() {
   const ping = await preflight(A);
   const B = new Conn("B");
   await B.connect();
+  let r = await B.request("input.open", { leaseMs: 60000, label: "kb05-probe B" });
+  record("B opens a session", r.ok, errorOf(r));
 
   // 1. Explicit interaction: acquire, busy for everyone else, hold needs the id, end releases.
-  let r = await A.request("input.begin", { leaseMs: 30000, label: "kb05-probe" });
+  r = await A.request("input.begin", { leaseMs: 30000, label: "kb05-probe" });
   record("A acquires an interaction (session opened on demand)", r.ok && r.result.interaction?.state === "open" && r.result.session, r.ok ? r.result.interaction?.id : r.error);
   const IA = r.result?.interaction?.id;
   r = await B.request("cmd", { command: "Echo kb05-probe" });
@@ -172,8 +176,8 @@ async function run() {
   record("A's press without the interaction id is [busy] (callers sharing a connection must name it)", codeIs(r, "busy"), errorOf(r));
   r = await A.request("input.press", { key: "STORE", interaction: IA });
   record("A's press with the id is admitted and tagged", r.ok && r.result.hold.interaction === IA && r.result.hold.state === "held", errorOf(r));
-  let obs = await until(A, readCmd, (v) => /store/i.test(v));
-  record("console shows Store on the command line while held", obs.ok, `cmdtext=${JSON.stringify(obs.value)} after ${obs.ms} ms`);
+  r = await A.request("lua", { code: "return CmdObj().cmdtext" });
+  record("reading through the lua op is [busy] while the interaction is open (the guard covers Lua)", codeIs(r, "busy"), errorOf(r));
   r = await A.request("input.status");
   record("status reports the active interaction and the busy descriptor", r.ok && r.result.status.activeInteraction === IA && r.result.policy.busy?.reason === "interaction", r.ok ? r.result.policy.busy : r.error);
   r = await A.request("input.extend", { interaction: IA, leaseMs: 20000 });
@@ -182,6 +186,8 @@ async function run() {
   record("B cannot end A's interaction", !r.ok, errorOf(r));
   r = await A.request("input.end", { interaction: IA });
   record("A ends the interaction: STORE released (dispatched)", r.ok && r.result.state === "ended" && r.result.released?.length === 1 && r.result.released[0].outcome === "dispatched", r.ok ? r.result.released : r.error);
+  let obs = await until(A, readCmd, (v) => /store/i.test(v));
+  record("the held STORE reached the console: Store on the command line (read after the end; the hold's effect persists until Escape)", obs.ok, `cmdtext=${JSON.stringify(obs.value)} after ${obs.ms} ms`);
   r = await B.request("cmd", { command: "Echo kb05-probe" });
   record("commands are admitted again after the end", r.ok, errorOf(r));
   r = await A.request("input.press", { key: "STORE", interaction: IA });
@@ -207,9 +213,9 @@ async function run() {
   r = await A.request("input.sequence", { steps: [{ kind: "combo", keys: [{ key: "MA" }, { key: "STORE" }], holdMs: 150 }] });
   Q = r.result?.id;
   record("MA+STORE chord sequence accepted", r.ok, errorOf(r));
-  obs = await until(A, readCmd, (v) => /record/i.test(v));
-  record("console shows Record (MA + Store)", obs.ok, `cmdtext=${JSON.stringify(obs.value)} after ${obs.ms} ms`);
   seq = await waitSequence(A, Q, 3000);
+  obs = await until(A, readCmd, (v) => /record/i.test(v));
+  record("console shows Record (MA + Store), read after the chord was released", obs.ok, `cmdtext=${JSON.stringify(obs.value)} after ${obs.ms} ms`);
   record("the chord was released newest first and the step reports the MASTATE readback separately", seq.ok && seq.result.state === "completed" && seq.result.events[0].readback?.source === "MASTATE", seq.ok ? seq.result.events[0].readback : seq.error);
   obs = await until(A, readMa, (v) => v === false);
   record("console MASTATE false again", obs.ok, obs.value);
@@ -251,15 +257,16 @@ async function run() {
   Q = r.result?.id;
   r = await A.request("cmd", { command: "Echo kb05-probe" });
   record("A's command is [busy] while B's sequence runs", codeIs(r, "busy") && r.detail?.owner !== undefined, errorOf(r));
-  obs = await until(A, readCmd, (v) => /store/i.test(v));
+  await sleep(300);
   B.destroy();
   let st = await pollStatus(A, (s) => s.policy.holds === 0 && !s.policy.busy, 3000);
   record("B's disconnect released the in-flight tap and cleared the busy state", st?.policy?.holds === 0 && !st?.policy?.busy, st?.policy);
   seq = await A.request("input.sequence.status", { sequence: Q });
   record("the sequence is aborted: step 1 aborted, step 2 unattempted, nothing resumed", seq.ok && seq.result.state === "aborted" && seq.result.events[0].state === "aborted" && seq.result.events[1].state === "unattempted", seq.ok ? seq.result.counts : seq.error);
-  await sleep(300);
-  obs = await until(A, readCmd, (v) => v === "", 500);
-  if (!obs.ok) { await clearLine(A, 1); obs = await until(A, readCmd, (v) => v === ""); }
+  obs = await until(A, readCmd, (v) => /store/i.test(v), 500);
+  record("the interrupted STORE tap reached the console before the disconnect", obs.ok, JSON.stringify(obs.value));
+  await clearLine(A, 1);
+  obs = await until(A, readCmd, (v) => v === "");
   record("command line clear after the disconnect test", obs.ok, JSON.stringify(obs.value));
 
   // 6. Clean up.

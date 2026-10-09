@@ -8,9 +8,9 @@ loose files; Windows not exercised. **KB-03 implemented on the fake backend** (m
 deadline servicing and recovery are covered by harness tests and verified live on macOS. **KB-04 implemented on macOS**
 (module 0.3.0, bridge 0.6.0): the `Keyboard()` adapter presses real console keys through validated shortcut and native routes,
 with MA combinations, exclusive long-press, remap/disable/disconnect/restart recovery verified live; Windows not exercised.
-**KB-05 implemented, not yet exercised live** (module 0.4.0, bridge 0.7.0, MCP tools): leased interactions, bridge-side
-admission across connections, the text path and bounded sequences are covered by harness tests; the live probe
-(`scripts/kb05-probe.mjs`) is written but has not been run on a console.
+**KB-05 implemented on macOS** (module 0.4.0, bridge 0.7.0, MCP tools): leased interactions, bridge-side admission across
+connections, the text path and bounded sequences are covered by harness tests and verified live (42/42 over two
+connections, real keys and command-line text); Windows not exercised.
 Windows module loading and transfer to a separate machine remain qualification gaps. KB-06–KB-08 remain implementation/qualification work.
 Completion establishes the contracts and limitations below, not production keyboard support or universal
 platform coverage. No production keyboard operations exist yet; Quickeys remain deferred.
@@ -555,7 +555,7 @@ TypeScript tools wrap these operations; they do not implement a second key dispa
 - Add MCP registration/schema tests, Lua dispatch tests and live interaction tests. Existing tools and
   default startup continue working with input disabled and with arbitrary Lua disabled.
 
-### KB-05 results (implementation; harness-verified, live probe pending, 2026-10-09)
+### KB-05 results (structured input; macOS, onPC 2.5.1.0, 2026-10-09)
 
 Implementation: `plugin/gma3_mcp_hardkeys.lua` 0.4.0 (`beginInteraction`/`renewInteraction`/`endInteraction`,
 `admission()`, `char()` on both adapters, `validateText()`, `startSequence`/`sequenceStatus`/`abortSequence`
@@ -564,7 +564,7 @@ serviced by `service()`), bridge 0.7.0 (`input.begin`/`extend`/`end`, `input.seq
 `code`/`detail`), `src/tools/input.ts` (the seven tools above; `BridgeError.code`/`detail` in `src/bridge.ts`).
 Contract: [docs/modules.md](docs/modules.md#interactions-text-and-sequences-gma3_mcp_hardkeys-040-kb-05); protocol:
 [docs/reference.md](docs/reference.md#interactions-admission-text-and-sequences-plugin-v070-kb-05); tools:
-[docs/tools/input.md](docs/tools/input.md).
+[docs/tools/input.md](docs/tools/input.md); evidence: [docs/probes/kb-05-input-macos-2.5.1.md](docs/probes/kb-05-input-macos-2.5.1.md).
 
 **Decisions.** *Session contract:* the KB-03 session stays bound to the TCP connection; on top of it an
 **interaction** is a leased token (`i1`, default 15 s, max 120 s, renewable) of one session. A standalone hold
@@ -602,12 +602,20 @@ recover available), expiry and lazy expiry, raised press/char kept uncertain, in
 owner abort, the existing tools and default startup unchanged with input disabled and `gma3_lua` hidden. Arbitrary Lua
 stays disabled in the normal-path tests (the `lua` op only appears to prove it is guarded).
 
-**Not exercised / limitations.** No console was driven: `scripts/kb05-probe.mjs run` (two connections, interaction and
-busy rules, tap and chord sequences, command-line text with shortcuts disabled through Lua, a disconnect mid-sequence)
-is written and gated but has not been run; `Keyboard(display, 'char', ...)` is stubbed in the harnesses, so the
-character route rests on the KB-01 evidence until the probe runs. Focus is not observable, pop-ups are not readable,
-`display` routes nothing, and the busy guard cannot isolate a physical operator or another plugin. Windows and non-US
-layouts remain unexercised.
+**Verified live** (macOS, bridge 0.7.0 on the keyboard backend, 42/42 over two real connections): an acquired
+interaction makes `cmd` and `lua` from both connections and the other connection's tap `[busy]` naming the owner, a hold
+without the id is `[busy]` ("pass its id"), the hold with it put `Store ` on the command line, `extend` and `end` work and
+the ended id is `[no-interaction]`; a two-tap sequence (`51`) and the `MA+STORE` chord sequence (`Record `, MASTATE false
+afterwards) serviced by the loop; command-line text refused while shortcuts were enabled, then `Fixture 5` and
+`abü€😀` typed one code point per event with shortcuts disabled and read back from `cmdtext` with `lastcommand`
+unchanged (inserted, never executed), Escape discarding it; and a disconnect in the middle of a 3 s `STORE` tap releasing
+the key and leaving the sequence `aborted` with the rest unattempted. Effects landed within 14–17 ms. Because the guard
+covers `lua`, verification reads must follow the end of the interaction or sequence under test.
+
+**Not exercised / limitations.** Text into a focused text field (acknowledged, not readable), an explicit interaction
+expiring with a key down on the console (harness only), Windows, a second display, non-US layouts. Focus is not
+observable, pop-ups are not readable, `display` routes nothing, and the busy guard cannot isolate a physical operator or
+another plugin.
 
 ## KB-06 — Add console feedback readers
 

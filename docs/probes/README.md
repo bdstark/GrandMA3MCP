@@ -9,6 +9,8 @@ They are evidence for [KEYBOARD.md](../../KEYBOARD.md), not automated regression
 | [kb-01-windows-2.5.1.md](kb-01-windows-2.5.1.md), script reports for [one](kb-01-windows-2.5.1.json) and [two displays](kb-01-windows-2.5.1-2displays.json) (26/26 each) | Windows 11, onPC 2.5.1.0, one and two displays |
 | [kb-02-loading-macos-2.5.1.md](kb-02-loading-macos-2.5.1.md) (module loading, save/reload without loose files) | macOS, onPC 2.5.1.0 |
 | [kb-03-fake-macos-2.5.1.md](kb-03-fake-macos-2.5.1.md), [script report](kb-03-fake-macos-2.5.1.json) (33/33; owned sessions on the fake backend) | macOS, onPC 2.5.1.0 |
+| [kb-04-keyboard-macos-2.5.1.md](kb-04-keyboard-macos-2.5.1.md), script reports for [run](kb-04-keyboard-macos-2.5.1.json) and [restart](kb-04-keyboard-macos-2.5.1-restart.json) (47/47, 12/12; real keys) | macOS, onPC 2.5.1.0 |
+| [kb-05-input-macos-2.5.1.md](kb-05-input-macos-2.5.1.md), [script report](kb-05-input-macos-2.5.1.json) (42/42; interactions, busy guard, sequences, command-line text) | macOS, onPC 2.5.1.0 |
 
 ## Running the KB-01 probe on another platform
 
@@ -91,4 +93,6 @@ releasing it, the ended id never resumed); a two-tap sequence (`51`); the `MA+ST
 readback); command-line text refused while shortcuts are enabled, then shortcuts disabled through Lua (standing in
 for the operator's F10), `Fixture 5` and `abü€😀` typed and read back without executing (`lastcommand` unchanged),
 shortcuts re-enabled and Escape clearing the line; and a disconnect in the middle of a 3 s `STORE` tap (hold released,
-sequence aborted, bridge not busy). No record exists yet; record macOS and Windows separately.
+sequence aborted, bridge not busy). Because the bridge refuses `lua` while input is owned, the probe reads the console
+only after the interaction or sequence under test ended. Record: [kb-05-input-macos-2.5.1.md](kb-05-input-macos-2.5.1.md);
+record Windows separately.

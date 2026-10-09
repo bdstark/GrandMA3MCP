@@ -1655,6 +1655,13 @@ function Instance:_eventReport(ev, now)
               readback = ev.readback, startedAt = ev.startedAt, finishedAt = ev.finishedAt }
   if ev.chars then r.remaining = ev.chars - (ev.typed or 0) end
   if ev.state == "readback" then r.readback = { outcome = "pending", source = "CmdObj().cmdtext", expected = ev.expected } end
+  -- A hold's aggregate readback (MASTATE) may conclude after the sequence finished: report the live one.
+  local hid = ev.hold or (ev.holds and ev.holds[1])
+  local h = hid and self._holds[hid]
+  if h and h.readback and ev.kind ~= "text" then
+    r.readback = shallowCopy(h.readback)
+    r.readback.until_ = nil
+  end
   return r
 end
 

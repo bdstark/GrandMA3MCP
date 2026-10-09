@@ -1,0 +1,329 @@
+{
+  "probe": "kb-05-run",
+  "date": "2026-10-09T14:26:58.742Z",
+  "bridge": {
+    "version": "0.7.0",
+    "host": "127.0.0.1",
+    "port": 9800,
+    "build": {
+      "version": "2.5.1.0",
+      "codeType": "Release",
+      "hostType": "onPC"
+    },
+    "hostname": "bdsmbpm401",
+    "showfile": "mcp-test-disposable",
+    "input": {
+      "unresolvedFromPreviousRun": 0,
+      "holds": 0,
+      "enabled": true,
+      "sessions": 0,
+      "unresolved": 0,
+      "note": "ownership records, not physical key state; see input.status. busy: cmd/set/setfader/lua are refused for every connection while it is set",
+      "backend": "keyboard",
+      "moduleInputEnabled": true
+    }
+  },
+  "passed": 42,
+  "failed": 0,
+  "steps": [
+    {
+      "name": "B opens a session",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "A acquires an interaction (session opened on demand)",
+      "pass": true,
+      "detail": "i2"
+    },
+    {
+      "name": "a command from B is [busy] while A's interaction is open",
+      "pass": true,
+      "detail": "[busy] a command is refused while input ownership is active: interaction i2 of session 'conn-96' is open (29983 ms left). Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first"
+    },
+    {
+      "name": "a command from A (the owner) is [busy] too",
+      "pass": true,
+      "detail": "[busy] a command is refused while input ownership is active: interaction i2 of session 'conn-96' is open (29966 ms left). Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first"
+    },
+    {
+      "name": "B's tap is [busy] naming A's interaction",
+      "pass": true,
+      "detail": "[busy] interaction i2 of session 'conn-96' is open (29950 ms left); pass its id to act within it, or wait until it ends"
+    },
+    {
+      "name": "A's press without the interaction id is [busy] (callers sharing a connection must name it)",
+      "pass": true,
+      "detail": "[busy] interaction i2 of session 'conn-96' is open (29933 ms left); pass its id to act within it, or wait until it ends"
+    },
+    {
+      "name": "A's press with the id is admitted and tagged",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "reading through the lua op is [busy] while the interaction is open (the guard covers Lua)",
+      "pass": true,
+      "detail": "[busy] arbitrary Lua is refused while input ownership is active: interaction i2 of session 'conn-96' is open (29867 ms left). Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first"
+    },
+    {
+      "name": "status reports the active interaction and the busy descriptor",
+      "pass": true,
+      "detail": {
+        "interaction": "i2",
+        "reason": "interaction",
+        "owner": "conn-96"
+      }
+    },
+    {
+      "name": "the owner can extend the lease",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "B cannot end A's interaction",
+      "pass": true,
+      "detail": "[not-owner] interaction 'i2' belongs to session 'conn-96'"
+    },
+    {
+      "name": "A ends the interaction: STORE released (dispatched)",
+      "pass": true,
+      "detail": [
+        {
+          "state": "released",
+          "reason": "client-end",
+          "at": 1791556016.0136,
+          "hold": "h2",
+          "outcome": "dispatched",
+          "logical": "STORE",
+          "session": "conn-96",
+          "verified": false,
+          "ok": true,
+          "tupleKey": "S|s0c0a0n0"
+        }
+      ]
+    },
+    {
+      "name": "the held STORE reached the console: Store on the command line (read after the end; the hold's effect persists until Escape)",
+      "pass": true,
+      "detail": "cmdtext=\"Store \" after 17 ms"
+    },
+    {
+      "name": "commands are admitted again after the end",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the ended interaction is never resumed",
+      "pass": true,
+      "detail": "[no-interaction] interaction 'i2' is not open (ended); an interaction is never resumed after it ended, expired or its connection closed: begin a new one"
+    },
+    {
+      "name": "a standalone hold without an interaction is [interaction-required]",
+      "pass": true,
+      "detail": "[interaction-required] a standalone hold needs an explicit interaction: begin one (leased) and pass its id, or use a bounded tap, chord tap or sequence"
+    },
+    {
+      "name": "ESC clears the command line",
+      "pass": true,
+      "detail": "\"\""
+    },
+    {
+      "name": "a two-tap sequence starts (state running, step 1 waiting for its release)",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the sequence completed: both taps released by the loop",
+      "pass": true,
+      "detail": {
+        "completed": 2,
+        "uncertain": 0,
+        "failed": 0,
+        "unattempted": 0,
+        "aborted": 0,
+        "inProgress": 0
+      }
+    },
+    {
+      "name": "console shows 51 on the command line",
+      "pass": true,
+      "detail": "cmdtext=\"51\" after 17 ms"
+    },
+    {
+      "name": "MA+STORE chord sequence accepted",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "console shows Record (MA + Store), read after the chord was released",
+      "pass": true,
+      "detail": "cmdtext=\"Record \" after 14 ms"
+    },
+    {
+      "name": "the chord was released newest first and the step reports the MASTATE readback separately",
+      "pass": true,
+      "detail": {
+        "phase": "release",
+        "since": 1791556016.9071,
+        "source": "MASTATE",
+        "outcome": "pending",
+        "expect": false
+      }
+    },
+    {
+      "name": "console MASTATE false again",
+      "pass": true,
+      "detail": false
+    },
+    {
+      "name": "command-line text is refused while shortcuts are enabled (nothing typed, nothing toggled)",
+      "pass": true,
+      "detail": "[unsupported] step 1: command-line text needs keyboard shortcuts disabled by the operator (F10): with shortcuts enabled, character events do not reach the command line and are not substituted with key presses; nothing is toggled here (nothing was dispatched)"
+    },
+    {
+      "name": "text with a newline is refused by the policy",
+      "pass": true,
+      "detail": "[bad-argument] step 1: character 10 is a newline (U+000A); execution and control characters are refused: commit text with an explicit PLEASE key event, never through the text (nothing was dispatched)"
+    },
+    {
+      "name": "operator disables shortcuts (property set through Lua, standing in for F10)",
+      "pass": true,
+      "detail": "shortcutsActive=false"
+    },
+    {
+      "name": "command-line text sequence accepted (typing in chunks)",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "text completed with the command line read back as expected",
+      "pass": true,
+      "detail": {
+        "actual": "Fixture 5",
+        "outcome": "observed",
+        "expected": "Fixture 5",
+        "note": "the command line shows the typed text; not executed",
+        "source": "CmdObj().cmdtext"
+      }
+    },
+    {
+      "name": "the text was NOT executed: cmdtext shows it, lastcommand unchanged",
+      "pass": true,
+      "detail": {
+        "cmdtext": "Fixture 5",
+        "lastBefore": "OK: Echo \"kb05\" - \"probe\"",
+        "lastAfter": "OK: Echo \"kb05\" - \"probe\""
+      }
+    },
+    {
+      "name": "Unicode text goes out one code point per event and lands on the command line",
+      "pass": true,
+      "detail": {
+        "readback": {
+          "actual": "Fixture 5abü€😀",
+          "outcome": "observed",
+          "expected": "Fixture 5abü€😀",
+          "note": "the command line shows the typed text; not executed",
+          "source": "CmdObj().cmdtext"
+        },
+        "cmdtext": "Fixture 5abü€😀"
+      }
+    },
+    {
+      "name": "operator re-enables shortcuts",
+      "pass": true,
+      "detail": "shortcutsActive=true"
+    },
+    {
+      "name": "ESC clears the typed text without executing it",
+      "pass": true,
+      "detail": "\"\""
+    },
+    {
+      "name": "B starts a sequence with a 3 s STORE tap",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "A's command is [busy] while B's sequence runs",
+      "pass": true,
+      "detail": "[busy] a command is refused while input ownership is active: interaction i7 of session 'conn-97' is open (14950 ms left). Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first"
+    },
+    {
+      "name": "B's disconnect released the in-flight tap and cleared the busy state",
+      "pass": true,
+      "detail": {
+        "unresolvedFromPreviousRun": 0,
+        "holds": 0,
+        "enabled": true,
+        "sessions": 1,
+        "unresolved": 0,
+        "note": "ownership records, not physical key state; see input.status. busy: cmd/set/setfader/lua are refused for every connection while it is set",
+        "backend": "keyboard",
+        "moduleInputEnabled": true
+      }
+    },
+    {
+      "name": "the sequence is aborted: step 1 aborted, step 2 unattempted, nothing resumed",
+      "pass": true,
+      "detail": {
+        "completed": 0,
+        "uncertain": 0,
+        "failed": 0,
+        "unattempted": 1,
+        "aborted": 1,
+        "inProgress": 0
+      }
+    },
+    {
+      "name": "the interrupted STORE tap reached the console before the disconnect",
+      "pass": true,
+      "detail": "\"Store \""
+    },
+    {
+      "name": "command line clear after the disconnect test",
+      "pass": true,
+      "detail": "\"\""
+    },
+    {
+      "name": "A releaseAll (nothing left)",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "A closes its session",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "console and bridge left clean: no holds, nothing unresolved, not busy, empty command line, MASTATE false, shortcuts active",
+      "pass": true,
+      "detail": {
+        "input": {
+          "unresolvedFromPreviousRun": 0,
+          "holds": 0,
+          "enabled": true,
+          "sessions": 0,
+          "unresolved": 0,
+          "note": "ownership records, not physical key state; see input.status. busy: cmd/set/setfader/lua are refused for every connection while it is set",
+          "backend": "keyboard",
+          "moduleInputEnabled": true
+        },
+        "cmd": "",
+        "ma": false,
+        "shortcuts": true
+      }
+    }
+  ],
+  "finalInput": {
+    "unresolvedFromPreviousRun": 0,
+    "holds": 0,
+    "enabled": true,
+    "sessions": 0,
+    "unresolved": 0,
+    "note": "ownership records, not physical key state; see input.status. busy: cmd/set/setfader/lua are refused for every connection while it is set",
+    "backend": "keyboard",
+    "moduleInputEnabled": true
+  }
+}
