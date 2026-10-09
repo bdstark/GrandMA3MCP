@@ -6,8 +6,8 @@ They are evidence for [KEYBOARD.md](../../KEYBOARD.md), not automated regression
 | Record | Platform |
 | --- | --- |
 | [kb-01-macos-2.5.1.md](kb-01-macos-2.5.1.md), [script report](kb-01-macos-2.5.1.json) (26/26) | macOS, onPC 2.5.1.0, one and two displays |
-| [kb-01-windows-2.5.1.md](kb-01-windows-2.5.1.md), [script report](kb-01-windows-2.5.1.json) (26/26) | Windows 11, onPC 2.5.1.0, one display |
-| [kb-02-loading-macos-2.5.1.md](kb-02-loading-macos-2.5.1.md) (module loading; save/reload pending) | macOS, onPC 2.5.1.0 |
+| [kb-01-windows-2.5.1.md](kb-01-windows-2.5.1.md), script reports for [one](kb-01-windows-2.5.1.json) and [two displays](kb-01-windows-2.5.1-2displays.json) (26/26 each) | Windows 11, onPC 2.5.1.0, one and two displays |
+| [kb-02-loading-macos-2.5.1.md](kb-02-loading-macos-2.5.1.md) (module loading, save/reload without loose files) | macOS, onPC 2.5.1.0 |
 
 ## Running the KB-01 probe on another platform
 
