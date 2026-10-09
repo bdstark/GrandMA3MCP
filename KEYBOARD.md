@@ -57,6 +57,9 @@ The surface integration is a separate consumer, not a new network listener insid
 **Depends on:** None.
 
 **Lua changes: No production changes.** Use a separate probe plugin and live-test fixtures.
+*Deviation (recorded 2026-10-09):* the probes ran as diagnostic `gma3_lua` chunks through the existing bridge
+and as the reproducible `scripts/kb01-probe.mjs`, not as a separate probe plugin. No production code changed;
+the script requires Lua to be enabled and a disposable show.
 
 **Original probe order (retained for context; use the confirmed contracts below for implementation):**
 
@@ -156,6 +159,10 @@ Escape can dismiss a pop-up and then clear pending text; it changes UI/command s
 implicit cleanup step. Starting an already-running bridge is not a proven restart or key reset. Follow
 [bridge stop/start instructions](docs/setup/bridge.md) when the plugin is responsive; restart onPC only
 as a last-resort operator action. A restart is not evidence that an uncertain release succeeded.
+A hold made through a shortcut that was then remapped, or held while shortcuts were disabled (F10), is not
+released by its stored tuple (follow-up F12–F13): restore the original mapping or re-enable shortcuts, then
+release with the stored tuple and confirm the effect. A physical press and release of the same key also ends
+the hold (run 3, H1–H2); for MA, a physical Shift tap clears `MASTATE`.
 
 ### Remaining qualification and scope decisions
 
@@ -165,9 +172,11 @@ as a last-resort operator action. A restart is not evidence that an uncertain re
   unsupported (see design decisions above). Evidence: the PC Shift keys are the MA key natively (MA manual;
   holding `LeftShift` or `RightShift` sets `Root().MASTATE` and turns `S` into `Record`); both feed one MA
   state; the shift *flag* argument does not produce MA.
-- **Quickeys:** mapped executor Flash down/up is proven in this run; a Quickey assigned to that executor
-  and used to hold/release an MA key is not. Keep that investigation separate and non-blocking for the
-  shortcut backend. Bridge-owned shortcuts require a separate opt-in design and are outside this phase.
+- **Quickeys (go/no-go verdict: no-go for this phase):** the Quickey backend is **unsupported** until a
+  separate probe proves non-OSC down/up of a Quickey assigned to a mapped executor, including an MA hold.
+  It is not needed for this phase: MA comes from the Shift keys, and executor down/up through executor
+  shortcuts (`ExecutorIndex`) is already a proven non-OSC hold mechanism. Mapped executor Flash down/up is
+  proven; a Quickey is not. Bridge-owned shortcuts require a separate opt-in design and are outside this phase.
 - **Follow-up results (macOS):**
   - *Shortcuts disabled* (F10; readable as `UserProfile.KeyboardShortCuts.KEYBOARDSHORTCUTSACTIVE`):
     shortcut keys do nothing, `char` types into the ordinary command line, Enter still executes (PLEASE is a

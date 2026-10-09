@@ -1,6 +1,7 @@
 # KB-01 probe evidence — macOS, onPC 2.5.1.0
 
-Date: 2026-10-09. Status: **complete for macOS / single display**. Windows, multi-display and other layouts not run.
+Date: 2026-10-09. Status: **complete for macOS**: runs 1–2 on one display, run 3 on two displays with hardware-key
+checks. Non-US layouts not run. Windows: see [kb-01-windows-2.5.1.md](kb-01-windows-2.5.1.md).
 
 ## Environment
 
@@ -131,9 +132,13 @@ during the final test window (Ctrl+F1 inject/release, OS clicks on the onPC titl
 
 ## Recovery
 
-- Stuck injected key: `Keyboard(1,'release','<Name>')` for the same name; or press and release that physical key.
+- Stuck injected key: `Keyboard(1,'release','<Name>', shift, ctrl, alt, numlock)` with the same name **and** modifier
+  flags as the press; or press and release that physical key (confirmed for Shift, H1–H2).
+- Stuck after a shortcut remap or with shortcuts disabled (F12–F13): restore the mapping or press F10, then release
+  with the stored tuple.
 - Open pop-up/dialog: Escape (physical or injected); repeat to clear the command line.
-- Unresponsive plugin: `Plugin "gma3_mcp_bridge"` restart from the console; worst case restart onPC.
+- Unresponsive plugin: stop and start the bridge per [bridge setup](../setup/bridge.md); worst case restart onPC.
+  A restart does not prove an uncertain release succeeded.
 
 ## Follow-up run (same day, after KEYBOARD.md review `3983a4f`)
 
