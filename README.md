@@ -34,6 +34,7 @@ are provided, but this does not establish equivalent live validation on Windows 
 | Structured inspection | Fixture attributes, programmer values, fixture output, DMX and supported cue contents |
 | Reference | Local grandMA3 manual, live Lua API descriptions and the `gma3://cheatsheet` resource |
 | Advanced control | Command-line commands and optional Lua execution |
+| Console input (opt-in) | Logical MA keys, raw PC keys, text and bounded input sequences with explicit ownership, once the operator enables input on the console |
 
 See the [complete tool and configuration reference](docs/reference.md). Workflow tools report command
 outcomes and read-back verification separately; an uncertain outcome requires inspecting console state
@@ -52,7 +53,10 @@ show inspection and workflow tools. The plugin also carries two instance-based
 [console interaction modules](docs/modules.md) (owned input sessions, read-only feedback) as extra
 components of the same XML. Input is off by default; the operator enables it per start on the console
 keyboard backend (`input=keyboard`, real key presses through `Keyboard()`) or the fake backend (`input=fake`,
-events recorded only). No MCP tool exposes it yet (KB-05).
+events recorded only). The [structured input tools](docs/tools/input.md) (`gma3_hardkey`, `gma3_keyboard`,
+`gma3_type`, `gma3_input_sequence`, `gma3_input_interaction`, status and release) expose it; while input is
+owned by any client, the bridge refuses commands, property changes, playback, faders and Lua from every client
+with an explicit `[busy]` error instead of running them into a changed console state.
 
 `gma3_command` also supports write-only OSC when OSC input is configured in onPC. Automatic fallback
 happens only if the bridge cannot be reached before dispatch; a command with an uncertain result is
@@ -75,7 +79,8 @@ OSC is optional for the normal bridge setup and is not forwarded by an SSH tunne
 - [Bridge import, startup, updates and troubleshooting](docs/setup/bridge.md)
 - [Configuration, tools, workflow results and bridge protocol](docs/reference.md)
 - Workflow details: [fixtures](docs/tools/fixtures.md), [cues](docs/tools/cues.md),
-  [executors](docs/tools/executors.md), [inspection](docs/tools/inspection.md)
+  [executors](docs/tools/executors.md), [inspection](docs/tools/inspection.md), [console input](docs/tools/input.md)
+- [Hardkey, keyboard and feedback feature requests and evidence](KEYBOARD.md), [console interaction modules](docs/modules.md)
 - [Optional Lua execution](docs/lua.md)
 - [Remote access over SSH](docs/remote-access.md) and [Docker](docs/docker.md)
 - [Development and automated tests](docs/development.md), [live test procedure](test/live/README.md)

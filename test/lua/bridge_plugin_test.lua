@@ -1011,7 +1011,7 @@ do
   start("")  -- bind fails in this harness, so serverMain returns and the instances are disposed again
   local hk, fb = state.modules.hardkeys, state.modules.feedback
   check("modules found through the plugin signal table", hk and hk.loaded and fb and fb.loaded, json.encode({ hk = hk and hk.error, fb = fb and fb.error }))
-  check("module versions recorded", hk.version == "0.3.0" and hk.apiVersion == 1 and fb.version == "0.1.0", json.encode({ hk.version, fb.version }))
+  check("module versions recorded", hk.version == "0.4.0" and hk.apiVersion == 1 and fb.version == "0.1.0", json.encode({ hk.version, fb.version }))
   check("modules start log line", lastLog():find("stopped") or true)
   local disposed = hk.instance and hk.instance:status().state == "disposed" and fb.instance:status().state == "disposed"
   check("instances disposed when the loop ends", disposed, hk.instance and hk.instance:status().state)
@@ -1084,12 +1084,23 @@ do
   r = request("input.open", {}, nil, A)
   check("a second open on the same connection is refused", r.ok == false and r.error:find("session%-exists"), r.error)
   r = request("input.press", { key = "PLEASE", display = 1 }, nil, A)
+  check("a standalone hold without an interaction is refused with a structured error (KB-05)", r.ok == false and r.code == "interaction-required" and r.detail.kind == "hold" and #fake.events == 0, J(r))
+  r = request("input.begin", { leaseMs = 60000, label = "hold" }, nil, A)
+  check("input.begin opens an interaction bound to the connection's session", r.ok and r.result.interaction.id == "i1" and r.result.interaction.session == "conn-1" and r.result.session == "conn-1" and r.result.interaction.remainingMs == 60000, J(r))
+  local IA = r.result.interaction.id
+  r = request("input.press", { key = "PLEASE", display = 1, interaction = IA }, nil, A)
   check("press through the bridge stores tuple and route", r.ok and r.result.hold.pcKey == "Enter" and r.result.hold.route.source == "native" and r.result.hold.route.profile == "Default" and r.result.hold.session == "conn-1" and #fake.events == 1, J(r))
-  r = request("input.press", { key = "PLEASE", display = 7 }, nil, A)
+  r = request("input.press", { key = "PLEASE", display = 7, interaction = IA }, nil, A)
   check("display validated against the console display list", r.ok == false and r.error:find("display 7"), r.error)
   request("input.open", {}, nil, B)
-  r = request("input.press", { key = "PLEASE" }, nil, B)
-  check("another connection cannot own the held key", r.ok == false and r.error:find("conflict") and r.error:find("conn%-1"), r.error)
+  r = request("input.press", { key = "PLEASE", interaction = IA }, nil, B)
+  check("another connection cannot use the interaction id", r.ok == false and r.code == "not-owner" and r.detail.owner == "conn-1", r.error)
+  r = request("input.tap", { key = "STORE" }, nil, B)
+  check("another connection's input is busy while the interaction is open", r.ok == false and r.code == "busy" and r.detail.reason == "interaction" and r.error:find("conn%-1") and #fake.events == 1, r.error)
+  r = request("cmd", { command = "Go+ Sequence 1" }, nil, B)
+  check("a command from any connection is refused as busy while the interaction is open", r.ok == false and r.code == "busy" and r.error:find("a command is refused") and r.detail.interaction == IA, r.error)
+  r = request("ping", {}, nil, B)
+  check("ping reports the busy owner", r.ok and r.result.input.busy.reason == "interaction" and r.result.input.interaction == IA, J(r.result.input))
   r = request("input.release", { key = "PLEASE" }, nil, B)
   check("another connection cannot release it", r.ok == false and r.error:find("not%-owner") and fake.counters.release == 0, r.error)
   r = request("input.renew", { leaseMs = 5000, session = "conn-1" }, nil, B)
@@ -1113,7 +1124,11 @@ do
   check("fake controls reachable", r.ok and r.result.backend == "fake" and r.result.down[1] == "Enter|s0c0a0n0", J(r))
   r = request("input.release", { key = "PLEASE" }, nil, A)
   check("a failed release is reported as unresolved, record kept", r.ok and r.result.hold.state == "unresolved" and r.result.hold.unresolved.reason:find("host blocked") and logFound("UNRESOLVED conn%-1 PLEASE"), J(r))
-  r = request("input.press", { pcKey = "Enter" }, nil, B)
+  r = request("input.end", { interaction = IA }, nil, A)
+  check("ending the interaction leaves the unresolved record to recovery", r.ok and r.result.state == "ended" and r.result.attempted == 0 and hk.instance:status().unresolved == 1, J(r))
+  r = request("cmd", { command = "Go+ Sequence 1" }, nil, B)
+  check("an unresolved record does not make commands busy (it is the operator's recovery problem)", r.ok == false and r.code ~= "busy", r.error)
+  r = request("input.tap", { pcKey = "Enter" }, nil, B)
   check("the unresolved record still blocks the tuple", r.ok == false and r.error:find("conflict"), r.error)
   r = request("input.recover", {}, nil, B)
   check("recover is owner-scoped: B has nothing to recover", r.ok and r.result.attempted == 0 and r.result.scope == "conn-2", J(r))
@@ -1130,21 +1145,25 @@ do
   check("service releases the overdue tap", hk.instance:status().capacity.used == 0 and fake.events[#fake.events].kind == "release" and fake.events[#fake.events].pcKey == "S")
   _G.FAKE_CLOCK_OFFSET = 0
   -- Disable while held: release attempted, new input refused, status/release/recover still work.
-  request("input.press", { key = "STORE" }, nil, A)
+  r = request("input.begin", {}, nil, A); IA = r.result.interaction.id
+  request("input.press", { key = "STORE", interaction = IA }, nil, A)
   Main(nil, "input=off"); Cleanup()
   check("'input=off' while running releases held keys and keeps the bridge running", state.running == true and state.input.enabled == false and hk.instance:status().capacity.used == 0 and fake.events[#fake.events].kind == "release" and fake.events[#fake.events].pcKey == "S", J(fake.events[#fake.events]))
+  check("'input=off' ended the open interaction", hk.instance:status().activeInteraction == nil and hk.instance:status().interactions[IA].state == "ended", J(hk.instance:status().interactions))
   r = request("input.press", { key = "STORE" }, nil, A)
   check("press refused while input is disabled, with the enable hint", r.ok == false and r.error:find("input%-disabled") and r.error:find("input=fake"), r.error)
   r = request("input.status", {}, nil, A)
   check("status, releaseAll and recover remain available while disabled", r.ok and r.result.policy.enabled == false and request("input.releaseAll", {}, nil, A).ok and request("input.recover", {}, nil, A).ok)
   Main(nil, "input=fake"); Cleanup()
-  check("'input=fake' re-enables while running", state.input.enabled == true and state.running == true and request("input.press", { key = "STORE" }, nil, A).ok, lastLog())
+  r = request("input.begin", {}, nil, A)
+  check("'input=fake' re-enables while running", state.input.enabled == true and state.running == true and r.ok and request("input.press", { key = "STORE", interaction = r.result.interaction.id }, nil, A).ok, lastLog())
+  IA = r.result.interaction.id
   state.stopRequested = true
   r = request("input.tap", { key = "PLEASE" }, nil, A)
   check("new input refused while the bridge is stopping", r.ok == false and r.error:find("stopping"), r.error)
   state.stopRequested = false
   -- Disconnect: closeClient releases the connection's holds newest first and logs the outcome.
-  request("input.press", { pcKey = "LeftShift" }, nil, A)
+  request("input.press", { pcKey = "LeftShift", interaction = IA }, nil, A)
   state.clients = { A, B }
   local n = #fake.events
   state._closeClient(1, "disconnect")
@@ -1153,8 +1172,9 @@ do
   r = request("input.close", {}, nil, B)
   check("a client can close its own session", r.ok and B.session == nil and r.result.session == "conn-2", J(r))
   -- Shutdown with an unresolved release keeps the record across runs; operator recovery adopts it.
-  request("input.open", {}, nil, B)
-  request("input.press", { pcKey = "Q", ctrl = true }, nil, B)
+  r = request("input.begin", {}, nil, B)
+  check("input.begin opens the connection's session on demand", r.ok and B.session == "conn-2" and r.result.session == "conn-2", J(r))
+  request("input.press", { pcKey = "Q", ctrl = true, interaction = r.result.interaction.id }, nil, B)
   request("input.fake", { action = "failRelease", pcKey = "Q", ctrl = true, sticky = true, error = "console frozen" }, nil, B)
   state.clients = { B }
   Cleanup()
@@ -1171,19 +1191,20 @@ do
   r = request("input.status", {}, nil, A)
   check("input.status lists the adopted hold under the previous-run session", r.ok and r.result.status.holds[1].session == "previous-run" and r.result.status.holds[1].state == "unresolved" and r.result.status.holds[1].tupleKey == "Q|s0c1a0n0", J(r.result.status.holds))
   request("input.open", {}, nil, A)
-  r = request("input.press", { pcKey = "Q", ctrl = true }, nil, A)
+  r = request("input.tap", { pcKey = "Q", ctrl = true }, nil, A)
   check("the reserved tuple cannot be pressed by a new session before recovery", r.ok == false and r.error:find("conflict") and r.error:find("previous%-run"), r.error)
   check("nothing was dispatched for the reserved tuple", #hk.fakeAdapter.events == 0)
   before = #logs
   Main(nil, "input recover"); Cleanup()
   check("'input recover' releases the adopted record with the stored tuple", #state.input.unresolved == 0 and hk.instance:status().unresolved == 0 and hk.fakeAdapter.events[#hk.fakeAdapter.events].kind == "release" and hk.fakeAdapter.events[#hk.fakeAdapter.events].ctrl == true and logFound("input recover: 1 released, 0 still unresolved", before), lastLog())
   check("bridge still running after operator recovery", state.running == true)
-  check("the tuple is free again", request("input.press", { pcKey = "Q", ctrl = true }, nil, A).ok)
+  check("the tuple is free again", request("input.tap", { pcKey = "Q", ctrl = true, holdMs = 20 }, nil, A).ok)
   request("input.releaseAll", {}, nil, A)
   -- A module that raises in service() must not take its holds with it: input is disabled, every
   -- held key gets a release attempt and whatever stays unresolved is kept for "input recover".
-  request("input.press", { key = "STORE" }, nil, A)
-  request("input.press", { pcKey = "W" }, nil, A)
+  r = request("input.begin", {}, nil, A)
+  request("input.press", { key = "STORE", interaction = r.result.interaction.id }, nil, A)
+  request("input.press", { pcKey = "W", interaction = r.result.interaction.id }, nil, A)
   request("input.fake", { action = "failRelease", pcKey = "W", sticky = true, error = "wedged" }, nil, A)
   fake = hk.fakeAdapter
   hk.instance.service = function() error("service exploded") end
@@ -1207,10 +1228,10 @@ do
   r = request("input.press", { pcKey = "W" }, nil, B)
   check("input stays disabled after a cleanup-only attach", r.ok == false and r.error:find("input%-disabled"), r.error)
   Main(nil, "input=fake"); Cleanup()
-  check("'input=fake' after the cleanup attach enables input on the same adapter", state.input.enabled == true and request("input.press", { pcKey = "W" }, nil, B).ok, lastLog())
+  check("'input=fake' after the cleanup attach enables input on the same adapter", state.input.enabled == true and request("input.tap", { pcKey = "W", holdMs = 20 }, nil, B).ok, lastLog())
   request("input.releaseAll", {}, nil, B)
   -- The same restart path with a KEYBOARD record: the fake adapter must never release it.
-  request("input.press", { pcKey = "V" }, nil, B)
+  request("input.tap", { pcKey = "V", holdMs = 5000 }, nil, B)
   hk.fakeAdapter:failNext("release", { pcKey = "V" }, "wedged", true)
   state.clients = { B }
   Cleanup()
@@ -1227,7 +1248,7 @@ do
   check("with no live records left, input=fake may switch the backend again", state.input.enabled == true and state.input.backend == "fake", lastLog())
   request("input.open", {}, nil, B)
   -- With input=off the backend stays attached: recover must release without the no-backend warning.
-  request("input.press", { pcKey = "W" }, nil, B)
+  request("input.tap", { pcKey = "W", holdMs = 5000 }, nil, B)
   request("input.fake", { action = "failRelease", pcKey = "W", sticky = true, error = "wedged again" }, nil, B)
   Main(nil, "input=off"); Cleanup()
   check("input=off left the wedged key unresolved", hk.instance:status().unresolved == 1 and state.input.enabled == false)
@@ -1251,7 +1272,9 @@ do
   local A, B = { id = 21 }, { id = 22 }
   request("input.open", {}, nil, A); request("input.open", {}, nil, B)
   keyboardCalls = {}
-  r = request("input.press", { key = "STORE", display = 1 }, nil, A)
+  r = request("input.begin", { leaseMs = 60000 }, nil, A)
+  local IA = r.result.interaction.id
+  r = request("input.press", { key = "STORE", display = 1, interaction = IA }, nil, A)
   check("a press reaches Keyboard() with explicit modifiers", r.ok and #keyboardCalls == 1 and keyboardCalls[1].kind == "press" and keyboardCalls[1].key == "S" and keyboardCalls[1].display == 1 and keyboardCalls[1].shift == false and keyboardCalls[1].ctrl == false, J(keyboardCalls))
   check("the hold reports dispatched, not confirmed, on the keyboard backend", r.result.hold.backend == "keyboard" and r.result.hold.pressOutcome == "dispatched" and r.result.hold.dispatch.press.confirmed == nil, J(r.result.hold))
   r = request("input.release", { key = "STORE" }, nil, A)
@@ -1262,24 +1285,29 @@ do
   r = request("input.press", { pcKey = "Bogus" }, nil, A)
   check("an unknown KeyboardCodes name is refused before dispatch", r.ok == false and r.error:find("KeyboardCodes") and #keyboardCalls == 2, r.error)
   -- MA with readback through the loop.
-  r = request("input.press", { key = "MA" }, nil, A)
+  r = request("input.press", { key = "MA", interaction = IA }, nil, A)
   check("MA presses LeftShift and schedules a MASTATE readback", r.ok and keyboardCalls[3].key == "LeftShift" and r.result.hold.readback.outcome == "pending", J(r.result.hold.readback))
   state._serviceModules(require("socket").gettime())
   r = request("input.status", {}, nil, A)
   check("the loop observed MASTATE true (aggregate) for the MA hold", r.ok and r.result.status.observed.aggregate.maState == true and r.result.status.holds[#r.result.status.holds].readback.outcome == "observed" and r.result.status.observed.available == false, J(r.result.status.observed))
   request("input.release", { key = "MA" }, nil, A)
+  request("input.end", { interaction = IA }, nil, A)
   -- Combination and exclusive long-press through the ops.
   keyboardCalls = {}
   r = request("input.combo", { keys = { { key = "MA" }, { key = "STORE" } }, holdMs = 20 }, nil, A)
   check("input.combo presses MA then STORE as one group", r.ok and r.result.count == 2 and keyboardCalls[1].key == "LeftShift" and keyboardCalls[2].key == "S" and r.result.holds[1].group == r.result.holds[2].group, J(r))
-  r = request("input.combo", { keys = { { pcKey = "Z" }, { pcKey = "Bogus" } } }, nil, B)
-  check("a combo with a bad key dispatches nothing and names the key", r.ok == false and r.error:find("key 2") and #keyboardCalls == 2, r.error)
+  r = request("input.combo", { keys = { { pcKey = "Z" }, { pcKey = "Bogus" } }, holdMs = 20 }, nil, B)
+  check("another connection's combo is busy while the chord is in flight", r.ok == false and r.code == "busy" and r.detail.reason == "hold" and r.detail.owner == "conn-21" and #keyboardCalls == 2, r.error)
   r = request("input.combo", { keys = "MA" }, nil, B)
   check("combo validates args.keys", r.ok == false and r.error:find("bad%-argument"), r.error)
   _G.FAKE_CLOCK_OFFSET = 1
   state._serviceModules(require("socket").gettime())
   _G.FAKE_CLOCK_OFFSET = 0
   check("the combo deadline released S then LeftShift", #keyboardCalls == 4 and keyboardCalls[3].kind == "release" and keyboardCalls[3].key == "S" and keyboardCalls[4].key == "LeftShift", J(keyboardCalls))
+  r = request("input.combo", { keys = { { pcKey = "Z" }, { pcKey = "Bogus" } }, holdMs = 20 }, nil, B)
+  check("a combo with a bad key dispatches nothing and names the key", r.ok == false and r.error:find("key 2") and #keyboardCalls == 4, r.error)
+  r = request("input.combo", { keys = { { pcKey = "Z" }, { pcKey = "Q" } } }, nil, B)
+  check("a combo without holdMs is a hold and needs an interaction", r.ok == false and r.code == "interaction-required" and #keyboardCalls == 4, r.error)
   r = request("input.tap", { key = "STORE", holdMs = 1000, exclusive = true }, nil, A)
   check("an exclusive tap (long-press) is accepted", r.ok and r.result.hold.exclusive == true, J(r))
   r = request("input.press", { key = "MA" }, nil, B)
@@ -1289,12 +1317,123 @@ do
   r = request("input.releaseAll", {}, nil, A)
   check("the owner can still release", r.ok and #r.result.released == 1, J(r))
   -- input=fake while keyboard holds exist is refused and keeps the keyboard policy.
-  request("input.press", { pcKey = "Q" }, nil, B)
+  r = request("input.begin", {}, nil, B)
+  request("input.press", { pcKey = "Q", interaction = r.result.interaction.id }, nil, B)
   Main(nil, "input=fake"); Cleanup()
   check("input=fake while a keyboard hold exists is refused, keyboard policy kept", state.input.backend == "keyboard" and state.input.enabled == true and lastLog():find("cannot switch"), lastLog())
   Main(nil, "input=off"); Cleanup()
   check("input=off releases the keyboard hold through Keyboard()", state.input.enabled == false and keyboardCalls[#keyboardCalls].kind == "release" and keyboardCalls[#keyboardCalls].key == "Q" and hk.instance:status().capacity.used == 0, J(keyboardCalls[#keyboardCalls]))
   request("input.close", {}, nil, A); request("input.close", {}, nil, B)
+  state.input.unresolved = {}
+  for _, rec in pairs(state.modules) do if rec.instance then rec.instance:dispose(0) end end
+  state.running = false
+end
+
+-------------------------------------------------------------------------------
+-- KB-05: interactions, admission across connections, sequences, text and structured errors
+-------------------------------------------------------------------------------
+do
+  start("input=fake lua")
+  state._loadModules(); state.running = true; state.stopRequested = false; state.ignoreNextCleanup = false
+  local hk = state.modules.hardkeys
+  local fake = hk.fakeAdapter
+  Cmd = function(c) return "OK" end
+  CmdObj = function() return { cmdtext = state.modules.hardkeys.fakeAdapter.typed } end
+  fakeProfile.shortcutsActive = "false"
+  local A, B = { id = 31 }, { id = 32 }
+  -- A sequence from a connection without a session: the session is opened on demand.
+  r = request("input.sequence", { steps = { { kind = "tap", key = "PLEASE", holdMs = 20 }, { kind = "text", text = "Fixture 5", context = "command-line" } }, label = "demo" }, nil, A)
+  check("input.sequence opens the session on demand and starts the sequence", r.ok and A.session == "conn-31" and r.result.id == "q1" and r.result.state == "running" and r.result.events[1].state == "waiting" and r.result.autoInteraction == true, J(r))
+  local Q = r.result.id
+  r = request("ping", {}, nil, B)
+  check("ping reports the running sequence and the busy owner", r.ok and r.result.input.sequence == Q and r.result.input.busy.owner == "conn-31", J(r.result.input))
+  r = request("cmd", { command = "Go+ Sequence 1" }, nil, B)
+  check("cmd from another connection is [busy] while the sequence runs", r.ok == false and r.code == "busy" and r.detail.owner == "conn-31" and r.error:find("a command is refused"), r.error)
+  r = request("cmd", { command = "Go+ Sequence 1" }, nil, A)
+  check("cmd from the owning connection is [busy] too (end the interaction first)", r.ok == false and r.code == "busy", r.error)
+  r = request("set", { ref = "Sequence 1", property = "Name", value = "x" }, nil, B)
+  check("set is guarded", r.ok == false and r.code == "busy" and r.error:find("a property change"), r.error)
+  r = request("setfader", { ref = "Sequence 1", value = 50 }, nil, B)
+  check("setfader is guarded", r.ok == false and r.code == "busy" and r.error:find("a fader change"), r.error)
+  r = request("lua", { code = "1+1" }, nil, B)
+  check("lua is guarded", r.ok == false and r.code == "busy" and r.error:find("arbitrary Lua"), r.error)
+  r = request("input.status", {}, nil, B)
+  check("input.status stays readable and shows the busy descriptor", r.ok and r.result.policy.busy.reason == "interaction" and r.result.status.sequence.id == Q, J(r.result.policy))
+  r = request("input.sequence.status", { sequence = Q }, nil, B)
+  check("input.sequence.status is readable by anyone", r.ok and r.result.id == Q and r.result.events[2].state == "pending", J(r))
+  r = request("input.sequence", { steps = { { kind = "tap", key = "PLEASE" } } }, nil, B)
+  check("another connection cannot start a sequence meanwhile", r.ok == false and r.code == "busy" and r.detail.reason == "sequence" and B.session == "conn-32", r.error)
+  r = request("input.tap", { key = "PLEASE" }, nil, B)
+  check("nor tap", r.ok == false and r.code == "busy", r.error)
+  r = request("input.tap", { key = "PLEASE" }, nil, A)
+  check("the owner's direct input is refused while its own sequence runs", r.ok == false and r.code == "busy" and r.detail.reason == "sequence", r.error)
+  _G.FAKE_CLOCK_OFFSET = 0.05
+  state._serviceModules(require("socket").gettime())
+  _G.FAKE_CLOCK_OFFSET = 0.1
+  state._serviceModules(require("socket").gettime())
+  _G.FAKE_CLOCK_OFFSET = 0
+  r = request("input.sequence.status", { sequence = Q }, nil, A)
+  check("the loop ran the sequence to completion: tap released, text typed and read back", r.ok and r.result.state == "completed" and r.result.events[1].releaseOutcome == "confirmed" and r.result.events[2].typed == 9 and r.result.events[2].readback.outcome == "observed" and fake.typed == "Fixture 5", J(r))
+  check("the loop logged the sequence outcome", logFound("input: sequence q1 completed %(2 of 2 steps completed%)") ~= nil)
+  r = request("cmd", { command = "Go+ Sequence 1" }, nil, B)
+  check("commands are admitted again once the sequence finished", r.ok and r.result.feedback == "OK", J(r))
+  fakeProfile.shortcutsActive = "true"  -- the operator re-enables shortcuts (STORE needs them)
+  -- Structured partial progress: a combo whose second key is refused after the first was pressed.
+  fake:failNext("press", { pcKey = "Enter" }, "console refused")
+  r = request("input.combo", { keys = { { key = "MA" }, { key = "PLEASE" } }, holdMs = 50 }, nil, A)
+  check("a combo failing after dispatch reports code, pressed keys and the rollback in detail", r.ok == false and r.code == "press-failed" and r.detail.key == 2 and r.detail.pressed[1].pcKey == "LeftShift" and #r.detail.rollback.released == 1 and r.error:find("key 2 of the combo"), J(r))
+  -- Shared-connection ownership: holds need the interaction id even from the owning connection.
+  r = request("input.begin", { leaseMs = 60000 }, nil, A)
+  local IA = r.result.interaction.id
+  r = request("input.press", { key = "STORE" }, nil, A)
+  check("a press from the owning connection without the id is busy (pass the interaction)", r.ok == false and r.code == "busy" and r.error:find("pass its id"), r.error)
+  r = request("input.press", { key = "STORE", interaction = IA }, nil, A)
+  check("with the id the hold is admitted and tagged", r.ok and r.result.hold.interaction == IA, J(r))
+  r = request("input.extend", { interaction = IA, leaseMs = 30000 }, nil, A)
+  check("input.extend renews the interaction", r.ok and r.result.interaction.renewals == 1 and r.result.interaction.leaseMs == 30000, J(r))
+  r = request("input.extend", { interaction = IA }, nil, B)
+  check("another connection cannot extend it", r.ok == false and r.code == "no-session" or r.code == "not-owner", r.error)
+  r = request("input.sequence", { steps = { { kind = "tap", key = "PLEASE", holdMs = 20 } }, interaction = IA }, nil, A)
+  check("a sequence may run inside the explicit interaction", r.ok and r.result.autoInteraction == false and r.result.interaction == IA, J(r))
+  _G.FAKE_CLOCK_OFFSET = 0.05
+  state._serviceModules(require("socket").gettime())
+  _G.FAKE_CLOCK_OFFSET = 0
+  r = request("input.end", { interaction = IA }, nil, A)
+  check("input.end releases the interaction's holds and reports them", r.ok and r.result.state == "ended" and #r.result.released == 1 and r.result.released[1].logical == "STORE", J(r))
+  r = request("input.end", { interaction = IA }, nil, A)
+  check("ending twice is harmless", r.ok and r.result.alreadyEnded == true, J(r))
+  r = request("input.press", { key = "STORE", interaction = IA }, nil, A)
+  check("an ended interaction is never resumed", r.ok == false and r.code == "no-interaction", r.error)
+  -- Disconnect mid-sequence: the in-flight tap is released by the session close, the rest unattempted.
+  local n = #fake.events
+  r = request("input.sequence", { steps = { { kind = "tap", key = "STORE", holdMs = 3000 }, { kind = "tap", key = "PLEASE" } } }, nil, A)
+  Q = r.result.id
+  state.clients = { A, B }
+  state._closeClient(1, "disconnect")
+  r = request("input.sequence.status", { sequence = Q }, nil, B)
+  check("a disconnect mid-sequence aborts it: step 1 aborted, step 2 unattempted, nothing resumed", r.ok and r.result.state == "aborted" and r.result.events[1].state == "aborted" and r.result.events[2].state == "unattempted" and r.result.error:find("disconnect"), J(r))
+  check("the disconnect released the in-flight tap and logged it", fake.events[n + 2].kind == "release" and fake.events[n + 2].pcKey == "S" and #fake.events == n + 2 and logFound("input: disconnect conn%-31 released conn%-31 STORE") ~= nil, J(fake.events[n + 2]))
+  check("nothing is busy after the disconnect", hk.instance:admission(0) == nil and request("cmd", { command = "x" }, nil, B).ok)
+  -- Cleanup while input is disabled: begin + press, then input=off.
+  r = request("input.begin", {}, nil, B)
+  IA = r.result.interaction.id
+  request("input.press", { key = "STORE", interaction = IA }, nil, B)
+  Main(nil, "input=off"); Cleanup()
+  check("'input=off' ends the interaction and releases its hold", state.input.enabled == false and hk.instance:status().interactions[IA].state == "ended" and hk.instance:status().capacity.used == 0 and fake.events[#fake.events].kind == "release", J(hk.instance:status().interactions))
+  r = request("input.begin", {}, nil, B)
+  check("input.begin is refused while input is disabled", r.ok == false and r.code == "input-disabled", r.error)
+  r = request("input.sequence", { steps = { { kind = "tap", key = "STORE" } } }, nil, B)
+  check("input.sequence is refused while input is disabled, before validation", r.ok == false and r.code == "input-disabled", r.error)
+  r = request("input.end", { interaction = IA }, nil, B)
+  check("input.end stays available while disabled", r.ok and r.result.alreadyEnded == true, J(r))
+  check("input.status, releaseAll and recover stay available while disabled", request("input.status", {}, nil, B).ok and request("input.releaseAll", {}, nil, B).ok and request("input.recover", {}, nil, B).ok)
+  -- Error replies: a string error with a bracketed code also reports the code.
+  r = request("input.press", { key = "STORE" }, nil, B)
+  check("string errors report their bracketed code", r.ok == false and r.code == "input-disabled" and r.detail == nil, J(r))
+  Main(nil, "input=fake"); Cleanup()
+  request("input.close", {}, nil, B)
+  fakeProfile.shortcutsActive = "true"
+  Cmd, CmdObj = nil, nil
   state.input.unresolved = {}
   for _, rec in pairs(state.modules) do if rec.instance then rec.instance:dispose(0) end end
   state.running = false
@@ -1318,7 +1457,7 @@ do
   end
   local tapper = queuedClient({ J({ id = 1, op = "input.open", args = {} }), J({ id = 2, op = "input.tap", args = { key = "PLEASE", holdMs = 10 } }) })
   local flooder = queuedClient({}, { flood = J({ id = 3, op = "ping", args = {} }) })
-  local leaver = queuedClient({ J({ id = 4, op = "input.open", args = {} }), J({ id = 5, op = "input.press", args = { key = "STORE" } }) }, { closeWhenDrained = true })
+  local leaver = queuedClient({ J({ id = 4, op = "input.open", args = {} }), J({ id = 5, op = "input.tap", args = { key = "STORE", holdMs = 3000 } }) }, { closeWhenDrained = true })
   local accepts = 0
   local fakeServer = { settimeout = function() end, close = function() end,
     accept = function()

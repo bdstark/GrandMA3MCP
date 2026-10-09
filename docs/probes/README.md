@@ -78,3 +78,17 @@ holds `STORE`, remaps it, fires Macro 106 (stop + restart with `lua` only) and M
 restoring the row in between; it leaves the bridge running with input disabled (Macro 107 re-enables
 `input=keyboard` on the test console). Record macOS and Windows separately; the fake-backend probe establishes
 lifecycle behaviour, this one establishes console effects.
+
+## Running the KB-05 structured input probe
+
+`node scripts/kb05-probe.mjs run [--out docs/probes/kb-05-input-<os>-<version>.json]` **presses real console keys
+and types text**. Same preconditions as the KB-04 probe: a bridge started with
+`Plugin "gma3_mcp_bridge" "lua input=keyboard"` (plugin 0.7.0 or newer), a show whose name contains `disposable`,
+`mcp-test` or `scratch`, no existing holds and nothing busy, an empty command line, MASTATE false and shortcuts
+active. Over two connections it checks, in order: an acquired interaction (commands from both connections and the
+other connection's tap refused `[busy]`, a hold without the id refused, a hold with it shown as `Store`, extend, end
+releasing it, the ended id never resumed); a two-tap sequence (`51`); the `MA+STORE` chord sequence (`Record`, MASTATE
+readback); command-line text refused while shortcuts are enabled, then shortcuts disabled through Lua (standing in
+for the operator's F10), `Fixture 5` and `abü€😀` typed and read back without executing (`lastcommand` unchanged),
+shortcuts re-enabled and Escape clearing the line; and a disconnect in the middle of a 3 s `STORE` tap (hold released,
+sequence aborted, bridge not busy). No record exists yet; record macOS and Windows separately.

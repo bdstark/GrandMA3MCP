@@ -62,6 +62,14 @@ const WORKFLOW_TOOLS = [
   "gma3_fixture_output",
   "gma3_dmx",
   "gma3_cue_contents",
+  // KB-05 structured input
+  "gma3_input_interaction",
+  "gma3_hardkey",
+  "gma3_keyboard",
+  "gma3_type",
+  "gma3_input_sequence",
+  "gma3_hardkeys_status",
+  "gma3_hardkeys_release_all",
 ];
 
 test("all pre-existing tools are still registered under their original names", async () => {

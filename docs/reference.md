@@ -56,6 +56,19 @@ Structured inspection tools (read-only; work with Lua execution disabled; need p
 | `gma3_dmx` | Raw or percent DMX values of a universe and channel range, with `granted` and optional patch lookup ([docs](tools/inspection.md)) |
 | `gma3_cue_contents` | Stored cue and part data without Goto or Load: timing, command, recipes and preset references (optionally expanded); hard fixture values are reported as a documented limitation on 2.5.1 ([docs](tools/inspection.md)) |
 
+Structured input tools (KB-05; need plugin v0.7.0 and the operator's `Plugin "gma3_mcp_bridge" "input=keyboard"`;
+real console keys are pressed; details in [`tools/input.md`](tools/input.md)):
+
+| Tool | What it does |
+| --- | --- |
+| `gma3_input_interaction` | `acquire`/`renew`/`end` a leased interaction: explicit ownership for holds across calls; commands from every bridge client are `[busy]` while it is open |
+| `gma3_hardkey` | Tap, press or release a logical MA key (PLEASE, STORE, ESC, CLEAR, OOPS, NUM0–9, EXEC, MA) or a 2–4 key combination through validated shortcut/native routes; press needs an interaction |
+| `gma3_keyboard` | The same for a raw `Enums.KeyboardCodes` key with explicit shift/ctrl/alt/numlock on press and release |
+| `gma3_type` | Unicode text, one character event per code point, into `command-line` (shortcuts disabled by the operator, read back) or an acknowledged `text-field`; control characters refused; never presses Enter |
+| `gma3_input_sequence` | Up to 16 ordered taps, presses, releases, combos, text and waits validated as a whole and serviced by the bridge loop; failures stop it, release what it holds and are never replayed |
+| `gma3_hardkeys_status` | Read-only: enablement, backend and limitations, ownership records, interactions, sequence, busy descriptor; works with input disabled |
+| `gma3_hardkeys_release_all` | Release this server's keys newest first with the stored tuples; `recover: true` re-attempts unresolved releases; works with input disabled |
+
 Resource `gma3://cheatsheet` holds a command syntax and object model reference.
 
 Object references accept command syntax (`Sequence 1 Cue 3`, `Page 1.201`), dotted paths from a root
@@ -138,8 +151,15 @@ Ops: `ping`, `cmd`, `lua`, `object`, `children`, `objects`, `dump`, `set`, `setf
 `modules` op (loaded [console interaction modules](modules.md), their versions, errors and instance status;
 `ping` carries the same summary under `modules`), and since v0.5.0 the owned input session ops `input.open`,
 `input.renew`, `input.close`, `input.press`, `input.tap`, `input.release`, `input.releaseAll`, `input.recover`,
-`input.status` and the fake-backend test control `input.fake` (below), and since v0.6.0 `input.combo` (below). See
+`input.status` and the fake-backend test control `input.fake` (below), since v0.6.0 `input.combo` (below), and since
+v0.7.0 the interaction and sequence ops `input.begin`, `input.extend`, `input.end`, `input.sequence`,
+`input.sequence.status`, `input.sequence.abort` ([below](#interactions-admission-text-and-sequences-plugin-v070-kb-05)). See
 [`plugin/gma3_mcp_bridge.lua`](../plugin/gma3_mcp_bridge.lua).
+
+Error replies are `{"id", "ok": false, "error": "[code] message"}`; since v0.7.0 they also carry `code` (the bracketed
+code, when there is one) and, for errors the input module reported as tables, `detail` (the structured error: owner
+and remaining lease of a busy lock, the keys a combo pressed before it failed and their rollback, the unresolved hold
+of a press that raised). The TypeScript `BridgeError` keeps both as `code` and `detail`.
 
 `ping` reports the Lua execution policy as `lua: {enabled, maxMs, maxSteps, bounded}`. The `lua` op is
 refused with an error while `enabled` is false; its optional `maxMs` / `maxSteps` args can only tighten the
@@ -182,3 +202,51 @@ records' own backend (keyboard or fake) for cleanup only, input stays disabled, 
 another backend. `input.fake {action}` (fake backend only) stages `failRelease`/`failPress` (`pcKey`, `sticky`,
 `error`), `clearFailures`, `confirm` (`mode`), `physicalRelease`/`physicalPress` (`pcKey`) and returns the
 event log; see [docs/modules.md](modules.md) for the ownership and release semantics.
+
+### Interactions, admission, text and sequences (plugin v0.7.0, KB-05)
+
+An **interaction** is a leased ownership token of one session. `input.begin {leaseMs?, label?}` opens the
+connection's session on demand and returns `{interaction: {id, session, leaseMs, expiresAt, remainingMs, state},
+session}`; it is refused `[busy]` while another interaction is open, a sequence runs or any key is held, and
+`[input-disabled]` while input is off. `input.extend {interaction, leaseMs?}` moves the deadline (the session lease
+is extended to cover it; nothing is injected). `input.end {interaction}` aborts the interaction's sequence, releases
+its holds newest first and reports `released`/`unresolved`; ending twice is harmless (`alreadyEnded`). An
+interaction is never resumed: an id that ended, expired or belonged to a closed connection is `[no-interaction]`,
+another connection's id `[not-owner]`.
+
+`input.press`, `input.tap` and `input.combo` accept `interaction`. A standalone hold (`input.press`, `input.combo`
+without `holdMs`) needs it (`[interaction-required]`); a bounded tap or chord tap may run without one while the
+instance is quiet. While an interaction is open, every call of its session must carry its id (otherwise `[busy]`,
+"pass its id"), so callers sharing one connection cannot act on each other's holds; a running sequence refuses
+every other input (`[busy]`, reason `sequence`), and a key held by another session refuses new input from everyone
+else (`[busy]`, reason `hold`). Exclusive long-press and route-change refusals keep their precedence.
+
+**Admission across connections.** While the module reports itself busy (an open interaction, a running sequence or
+a held key, of any connection), the bridge refuses `cmd`, `set`, `setfader` and `lua` from **every** connection with
+`[busy]` (`detail.reason`, `owner`, `interaction`/`sequence`/`hold`, `remainingMs`) instead of running them into a
+changed context. `ping.input` reports `busy`, `interaction` and `sequence`. Reads, `input.status`,
+`input.sequence.status`, `stop` and the owner's `input.release`, `input.releaseAll`, `input.recover`, `input.end`
+and `input.close` are never guarded. Unresolved records do not make the bridge busy.
+
+`input.sequence {steps, interaction?, leaseMs?, label?}` validates every step before the first event and returns
+the sequence report (`id`, `state` `running`/`completed`/`failed`/`aborted`, `index`, `counts`, `events`,
+`cleanup`, `estimateMs`); the loop then runs it. Steps: `{kind: "tap", key|pcKey+modifiers, holdMs?, exclusive?,
+executor?, display?}`, `{kind: "press", ...}`, `{kind: "release", key|pcKey...}` (a key an earlier step pressed or
+the session holds), `{kind: "combo", keys: [...], holdMs?}`, `{kind: "text", text, context: "command-line"|
+"text-field", acknowledgeFocus?, display?}`, `{kind: "wait", ms}`; at most 16 steps, about 30 s of holds, waits
+and typing. Each event ends `completed`, `failed`, `uncertain` (a dispatch raised or a release stayed unresolved),
+`unattempted` or `aborted`, with `pressOutcome`/`releaseOutcome`, `typed`/`remaining` and `readback`
+(`observed`/`inconclusive`/`unavailable`/`pending`) where applicable. A failure stops the sequence, releases what it
+pressed (newest first; `cleanup`) and ends an interaction begun for it; nothing is replayed. `input.sequence.status
+{sequence}` is read-only for anyone (the last 8 finished reports are kept); `input.sequence.abort {sequence}` is the
+owner's abort. Without `interaction` a sequence begins and ends its own interaction (`autoInteraction`); with one, the
+remaining lease must cover the estimate (`[lease-too-short]`).
+
+**Text** is UTF-8 iterated by code point (`utf8.codes`), at most 256 characters, with newline, carriage return,
+tab, other C0/C1 controls, DEL and the line/paragraph separators refused (`[bad-argument]`); nothing is normalised
+and nothing ever presses Enter. `command-line` needs `KEYBOARDSHORTCUTSACTIVE` read as `false` (`[unsupported]`
+otherwise, never toggled) and is read back from `CmdObj().cmdtext` within `readbackMs`; `text-field` needs
+`acknowledgeFocus: true` (`[focus-unverified]`; focus is not observable, readback `unavailable`). Characters go
+out as `Keyboard(display, 'char', <character>)`, 8 per loop iteration, with the enablement rechecked between
+chunks: a change stops typing (`context-changed`, `typed`/`remaining` reported); a `char` call that raises leaves
+the event `uncertain` at `uncertainChar`.

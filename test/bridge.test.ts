@@ -162,3 +162,30 @@ test("replies split across packets, batched, or interleaved with junk are still 
     await fake.close();
   }
 });
+
+test("an error reply keeps the bridge's code and structured detail; a bracketed code in the text is parsed too", async () => {
+  const fake = await fakeBridge((req, sock) => {
+    if (req.op === "input.press") reply(sock, { id: req.id, ok: false, error: "[busy] interaction i1 of session 'conn-2' is open", code: "busy", detail: { code: "busy", reason: "interaction", owner: "conn-2", interaction: "i1" } });
+    else reply(sock, { id: req.id, ok: false, error: "[no-session] this connection has no input session" });
+  });
+  const bridge = new Gma3Bridge({ host: "127.0.0.1", port: fake.port });
+  try {
+    await assert.rejects(bridge.request("input.press", { key: "STORE" }), (err: unknown) => {
+      assert.ok(err instanceof BridgeError);
+      assert.equal(err.dispatched, false);
+      assert.equal(err.code, "busy");
+      assert.equal(err.op, "input.press");
+      assert.deepEqual(err.detail, { code: "busy", reason: "interaction", owner: "conn-2", interaction: "i1" });
+      return true;
+    });
+    await assert.rejects(bridge.request("input.renew", {}), (err: unknown) => {
+      assert.ok(err instanceof BridgeError);
+      assert.equal(err.code, "no-session");
+      assert.equal(err.detail, undefined);
+      return true;
+    });
+  } finally {
+    bridge.close();
+    await fake.close();
+  }
+});

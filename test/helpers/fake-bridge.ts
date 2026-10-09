@@ -9,6 +9,14 @@ import net from "node:net";
 
 export type BridgeRequest = { id: string; op: string; args: Record<string, unknown> };
 export const SILENT = Symbol("silent");
+
+/** Throw this from a handler to answer with the bridge's structured error reply ({error, code, detail}, bridge 0.7.0). */
+export class BridgeReplyError extends Error {
+  constructor(message: string, public readonly code?: string, public readonly detail?: Record<string, unknown>) {
+    super(message);
+    this.name = "BridgeReplyError";
+  }
+}
 export type OpHandler = (args: Record<string, unknown>, req: BridgeRequest) => unknown | typeof SILENT | Promise<unknown | typeof SILENT>;
 
 export class FakeBridge {
@@ -49,6 +57,7 @@ export class FakeBridge {
         msg = { id: req.id, ok: true, result: result === undefined ? null : result };
       } catch (err) {
         msg = { id: req.id, ok: false, error: err instanceof Error ? err.message : String(err) };
+        if (err instanceof BridgeReplyError) msg = { ...(msg as object), code: err.code, detail: err.detail };
       }
     }
     if (!sock.destroyed) sock.write(JSON.stringify(msg) + "\n");

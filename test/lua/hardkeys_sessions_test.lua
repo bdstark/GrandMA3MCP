@@ -21,6 +21,16 @@ local function J(v) return json.encode(v) end
 local chunk = assert(loadfile(here .. "/../../plugin/gma3_mcp_hardkeys.lua"))
 local HK = chunk("test_plugin", "gma3_mcp_hardkeys", {}, nil)
 
+-- The KB-03/KB-04 sections exercise per-session ownership, routes and recovery with the KB-05 interaction
+-- admission switched off (config.requireInteraction = false, the policy a single-caller consumer such as a
+-- surface plugin uses); the KB-05 sections below use the bridge's default (true).
+local function legacyNew(opts)
+  local config = { requireInteraction = false }
+  for k, v in pairs(opts.config or {}) do config[k] = v end
+  opts.config = config
+  return HK.new(opts)
+end
+
 -- Fake console profile (KB-01 default shortcuts) that tests mutate mid-hold.
 local VK = { PLEASE = 84, STORE = 66, ESC = 88, CLEAR = 87, OOPS = 86, EXEC = 35, NUM5 = 72 }
 local profile = { name = "Default", shortcutsActive = true, rows = nil }
@@ -46,7 +56,7 @@ local deps = {
 
 local function fresh(config)
   local backend = HK.fakeBackend()
-  local inst = HK.new({ owner = "bridge", deps = deps, config = config }):init()
+  local inst = legacyNew({ owner = "bridge", deps = deps, config = config }):init()
   local ok = inst:enableInput(backend)
   assert(ok and ok.enabled, "enableInput failed")
   return inst, backend
@@ -58,7 +68,7 @@ local function lastEvent(b) return b.events[#b.events] end
 -------------------------------------------------------------------------------
 do
   local backend = HK.fakeBackend()
-  local inst = HK.new({ owner = "bridge", deps = deps }):init()
+  local inst = legacyNew({ owner = "bridge", deps = deps }):init()
   check("backends list the fake and the keyboard adapter", HK.backends.fake == "fake" and HK.backends.keyboard == "keyboard")
   local st = inst:status(0)
   check("new instance: input disabled, keyboard backend capability only", st.inputEnabled == false and st.backend.name == "keyboard" and st.backend.dispatches == false and st.holdCount == 0, J(st.backend))
@@ -166,11 +176,11 @@ do
   profile.shortcutsActive = true
   -- A backend key set makes unknown raw codes unsupported.
   local restricted = HK.fakeBackend({ validKeys = { Enter = true } })
-  local inst2 = HK.new({ owner = "x", deps = deps }):init(); inst2:enableInput(restricted); inst2:openSession({ id = "s" }, 0)
+  local inst2 = legacyNew({ owner = "x", deps = deps }):init(); inst2:enableInput(restricted); inst2:openSession({ id = "s" }, 0)
   c, err = inst2:press("s", 0, { pcKey = "Bogus" })
   check("unsupported raw code reported by the backend's key check", c == nil and err.code == "unsupported" and err.message:find("Bogus"))
   -- Display validation without a dependency is reported as unsupported, not guessed.
-  local inst3 = HK.new({ owner = "x", deps = { shortcutRows = deps.shortcutRows, virtualKeyCodes = deps.virtualKeyCodes } }):init(); inst3:enableInput(HK.fakeBackend()); inst3:openSession({ id = "s" }, 0)
+  local inst3 = legacyNew({ owner = "x", deps = { shortcutRows = deps.shortcutRows, virtualKeyCodes = deps.virtualKeyCodes } }):init(); inst3:enableInput(HK.fakeBackend()); inst3:openSession({ id = "s" }, 0)
   c, err = inst3:press("s", 0, { pcKey = "S", display = 1 })
   check("display given but not checkable is unsupported", c == nil and err.code == "unsupported" and err.message:find("displayExists"))
   c = inst3:press("s", 0, { pcKey = "S" })
@@ -452,7 +462,7 @@ do
   local inst4, backend4 = fresh(); inst4:openSession({ id = "s", leaseMs = 120000 }, 0); inst4:press("s", 0, { pcKey = "N" })
   backend4:failNext("release", { pcKey = "N" }, "wedged", true)
   local kept = inst4:dispose(1).records
-  local cold = HK.new({ owner = "bridge", deps = deps }):init()
+  local cold = legacyNew({ owner = "bridge", deps = deps }):init()
   check("adopt works with input disabled", #cold:adopt(kept, 2).adopted == 1)
   r = cold:recover(nil, 3)
   local h4 = cold:status(3).holds[1]
@@ -525,7 +535,7 @@ local function lastCall() return kb.calls[#kb.calls] end
 local function freshKb(config, depsOverride)
   kb.calls = {}; kb.ma = false; kb.raise = nil
   local adapter = HK.keyboardBackend(depsOverride or kdeps)
-  local inst = HK.new({ owner = "bridge", deps = depsOverride or kdeps, config = config }):init()
+  local inst = legacyNew({ owner = "bridge", deps = depsOverride or kdeps, config = config }):init()
   local ok, err = inst:enableInput(adapter)
   assert(ok and ok.enabled, "enableInput(keyboard) failed: " .. J(err))
   inst:openSession({ id = "a", leaseMs = 120000 }, 0); inst:openSession({ id = "b", leaseMs = 120000 }, 0)
@@ -597,7 +607,7 @@ do
   local noKb = {}
   for k, v in pairs(kdeps) do noKb[k] = v end
   noKb.Keyboard = nil
-  local inst2 = HK.new({ owner = "x", deps = noKb }):init()
+  local inst2 = legacyNew({ owner = "x", deps = noKb }):init()
   inst2:enableInput(HK.keyboardBackend(noKb)); inst2:openSession({ id = "s" }, 0)
   c, err = inst2:press("s", 0, { pcKey = "S" })
   check("without Keyboard() the press is refused before dispatch and the backend reported unavailable", c == nil and err.code == "unsupported" and err.message:find("Keyboard%(%)") and inst2:status().backend.available == false and inst2:status().backend.missing[1] == "Keyboard", J(err))
@@ -605,7 +615,7 @@ do
   local noMa = {}
   for k, v in pairs(kdeps) do noMa[k] = v end
   noMa.maState = function() return "weird" end
-  local inst3 = HK.new({ owner = "x", deps = noMa }):init()
+  local inst3 = legacyNew({ owner = "x", deps = noMa }):init()
   inst3:enableInput(HK.keyboardBackend(noMa)); inst3:openSession({ id = "s" }, 0)
   c, err = inst3:press("s", 0, { key = "MA" })
   check("MA refused when MASTATE is not readable", c == nil and err.code == "unsupported" and err.message:find("MASTATE"), J(err))
@@ -759,7 +769,7 @@ do
   local d = finst:dispose(2)
   check("dispose records carry the originating backend", d.records[1].backend == "fake", J(d.records[1]))
   kb.calls = {}
-  local inst = HK.new({ owner = "bridge", deps = kdeps }):init()
+  local inst = legacyNew({ owner = "bridge", deps = kdeps }):init()
   local ad = inst:adopt(d.records, 3)
   check("adopted record keeps its backend", #ad.adopted == 1 and ad.adopted[1].backend == "fake", J(ad))
   local att = inst:attachBackend(HK.keyboardBackend(kdeps))
@@ -775,13 +785,13 @@ do
   local sw, swerr = inst:attachBackend(HK.fakeBackend())
   check("switching backends with a live record is refused", sw == nil and swerr.code == "holds-exist", J(swerr))
   -- A fresh instance with the fake attached for cleanup clears the fake record.
-  local inst2 = HK.new({ owner = "bridge", deps = kdeps }):init()
+  local inst2 = legacyNew({ owner = "bridge", deps = kdeps }):init()
   inst2:adopt(d.records, 5)
   inst2:attachBackend(HK.fakeBackend())
   rec = inst2:recover(nil, 6)
   check("the originating (fake) backend releases the adopted fake record", #rec.released == 1 and inst2:status().unresolved == 0, J(rec))
   -- Records without a backend name are never dispatched anywhere.
-  local inst3 = HK.new({ owner = "bridge", deps = kdeps }):init()
+  local inst3 = legacyNew({ owner = "bridge", deps = kdeps }):init()
   inst3:adopt({ { pcKey = "Q", ctrl = true } }, 7)
   inst3:attachBackend(HK.keyboardBackend(kdeps))
   rec = inst3:recover(nil, 8)
@@ -792,7 +802,7 @@ do
   kb.raise = "console wedged"
   local dk = k1:dispose(2)
   check("keyboard dispose keeps the failed MA release as a keyboard record", #dk.records == 1 and dk.records[1].backend == "keyboard" and dk.records[1].pcKey == "LeftShift", J(dk.records))
-  local k2 = HK.new({ owner = "bridge", deps = kdeps }):init()
+  local k2 = legacyNew({ owner = "bridge", deps = kdeps }):init()
   k2:adopt(dk.records, 3)
   k2:attachBackend(HK.keyboardBackend(kdeps))
   kb.calls = {}
@@ -872,7 +882,7 @@ do
   check("status still names the exclusive hold", inst:status().exclusiveHold == h.id)
   local d = inst:dispose(23)
   check("the disposed record carries exclusive", d.records[1] and d.records[1].exclusive == true and d.records[1].pcKey == "S", J(d.records))
-  local inst2 = HK.new({ owner = "bridge", deps = deps }):init()
+  local inst2 = legacyNew({ owner = "bridge", deps = deps }):init()
   local b2 = HK.fakeBackend()
   inst2:adopt(d.records, 24)
   inst2:enableInput(b2)
@@ -883,6 +893,316 @@ do
   check("recover resolves the adopted exclusive record", #r.released == 1 and inst2:status().exclusiveHold == nil, J(r))
   check("input admitted again", inst2:press("c", 27, { pcKey = "Q" }) ~= nil)
   inst2:releaseAll("c", 28)
+end
+
+-------------------------------------------------------------------------------
+-- KB-05: interactions, admission, text and sequences (fake backend, strict policy = the bridge's)
+-------------------------------------------------------------------------------
+local currentFake
+deps.commandText = function() return currentFake.typed end
+local function freshStrict(config)
+  local backend = HK.fakeBackend()
+  currentFake = backend
+  local inst = HK.new({ owner = "bridge", deps = deps, config = config }):init()
+  local ok = inst:enableInput(backend)
+  assert(ok and ok.enabled, "enableInput failed")
+  inst:openSession({ id = "a", leaseMs = 120000 }, 0); inst:openSession({ id = "b", leaseMs = 120000 }, 0)
+  return inst, backend
+end
+local function kinds(b, from)
+  local t = {}
+  for i = from or 1, #b.events do t[#t + 1] = b.events[i].kind .. ":" .. tostring(b.events[i].pcKey) end
+  return table.concat(t, " ")
+end
+
+-- Text policy: UTF-8 by code point, control characters refused, nothing normalised.
+do
+  local cps = HK.validateText("ab")
+  check("validateText returns code points", cps and #cps == 2 and cps[1] == 97, J(cps))
+  cps = HK.validateText("abü€😀")
+  check("Unicode text is iterated by code point, not byte", cps and #cps == 5 and cps[3] == 0xFC and cps[4] == 0x20AC and cps[5] == 0x1F600, J(cps))
+  local _, why, pos = HK.validateText("ab\xffc")
+  check("invalid UTF-8 refused with the byte position", why:find("not valid UTF%-8") and pos == 3, why)
+  _, why, pos = HK.validateText("Fixture 5\n")
+  check("newline refused with the character index and the PLEASE hint", why:find("newline") and why:find("PLEASE") and pos == 10, why)
+  _, why = HK.validateText("a\tb")
+  check("tab refused", why:find("tab"), why)
+  _, why = HK.validateText("a\127")
+  check("DEL refused", why:find("control"), why)
+  _, why = HK.validateText("a\u{85}b")
+  check("C1 control refused", why:find("control"), why)
+  _, why = HK.validateText("a\u{2028}b")
+  check("line separator refused", why:find("separator"), why)
+  _, why = HK.validateText("\r")
+  check("carriage return refused", why:find("newline"), why)
+  _, why = HK.validateText("")
+  check("empty text refused", why:find("empty"), why)
+  _, why = HK.validateText(string.rep("x", 300), 256)
+  check("length cap by characters", why:find("300 characters"), why)
+  check("exports list the step kinds and text contexts", #HK.SEQUENCE_STEP_KINDS == 6 and HK.TEXT_CONTEXTS[1] == "command-line")
+  check("boolean config is accepted and validated", HK.new({ owner = "x", config = { requireInteraction = false } }):status().config.requireInteraction == false
+    and not pcall(HK.new, { owner = "x", config = { requireInteraction = 1 } }))
+end
+
+-- Interactions: explicit lease, ownership, busy for everyone else, never resumed.
+do
+  local inst, backend = freshStrict()
+  check("quiet instance is not busy", inst:admission(0) == nil and inst:status(0).busy == nil)
+  local h, err = inst:press("a", 1, { key = "STORE" })
+  check("a standalone hold without an interaction is refused before dispatch", h == nil and err.code == "interaction-required" and #backend.events == 0, J(err))
+  local ia; ia, err = inst:beginInteraction("a", 1, { leaseMs = 5000, label = "store" })
+  check("beginInteraction returns a leased token bound to the session", ia and ia.id == "i1" and ia.session == "a" and ia.leaseMs == 5000 and ia.remainingMs == 5000 and ia.state == "open", J(err))
+  check("the session lease was extended to cover the interaction", inst:status(1).sessions.a.expiresAt >= 6)
+  local b2; b2, err = inst:beginInteraction("b", 1, {})
+  check("another session cannot begin while an interaction is open (busy, naming the owner)", b2 == nil and err.code == "busy" and err.reason == "interaction" and err.owner == "a" and err.interaction == "i1", J(err))
+  b2, err = inst:beginInteraction("a", 1, {})
+  check("the owner cannot stack a second interaction either", b2 == nil and err.code == "busy", J(err))
+  h, err = inst:press("a", 2, { key = "STORE" })
+  check("the owner's press without the id is busy (callers sharing a connection must name the interaction)", h == nil and err.code == "busy" and err.reason == "interaction", J(err))
+  h, err = inst:press("a", 2, { key = "STORE", interaction = "i9" })
+  check("an unknown interaction id is refused", h == nil and err.code == "no-interaction", J(err))
+  h, err = inst:press("b", 2, { key = "STORE", interaction = "i1" })
+  check("another session cannot use the id (not-owner)", h == nil and err.code == "not-owner" and err.owner == "a", J(err))
+  h, err = inst:tap("b", 2, { key = "PLEASE" }, 50)
+  check("another session's tap is busy while the interaction is open", h == nil and err.code == "busy" and #backend.events == 0, J(err))
+  h, err = inst:press("a", 2, { key = "STORE", interaction = "i1" })
+  check("the owner's press with the id is admitted and tagged", h and h.state == "held" and h.interaction == "i1" and #backend.events == 1, J(err))
+  local busy = inst:admission(2)
+  check("admission reports the open interaction first", busy and busy.reason == "interaction" and busy.owner == "a" and busy.interaction == "i1" and busy.remainingMs == 4000, J(busy))
+  local st = inst:status(2)
+  check("status lists the interaction, the active one and the busy descriptor", st.interactions.i1.holds == 1 and st.activeInteraction == "i1" and st.busy.reason == "interaction", J(st.interactions))
+  local r; r, err = inst:renewInteraction("a", "i1", 3, 10000)
+  check("renewal moves the deadline and injects nothing", r and r.expiresAt == 13 and r.renewals == 1 and #backend.events == 1, J(err))
+  r, err = inst:renewInteraction("b", "i1", 3)
+  check("another session cannot renew it", r == nil and err.code == "not-owner", J(err))
+  r, err = inst:endInteraction("b", "i1", 4)
+  check("another session cannot end it", r == nil and err.code == "not-owner", J(err))
+  r, err = inst:endInteraction("a", "i1", 4)
+  check("ending releases the interaction's holds newest first and reports them", r and r.state == "ended" and #r.released == 1 and r.released[1].hold == h.id and backend.events[#backend.events].kind == "release", J(err))
+  check("instance quiet again", inst:admission(4) == nil and inst:status(4).activeInteraction == nil and inst:status(4).interactions.i1.state == "ended")
+  h, err = inst:press("a", 5, { key = "STORE", interaction = "i1" })
+  check("an ended interaction is never resumed", h == nil and err.code == "no-interaction" and err.state == "ended", J(err))
+  r = inst:endInteraction("a", "i1", 5)
+  check("ending twice is harmless", r.alreadyEnded == true and r.attempted == 0, J(r))
+  h, err = inst:tap("b", 5, { key = "PLEASE" }, 50)
+  check("a bounded tap needs no interaction once the instance is quiet", h and h.kind == "tap" and h.interaction == nil, J(err))
+  local h2; h2, err = inst:tap("a", 5, { key = "STORE" }, 50)
+  check("another session's tap is busy while a tap of someone else is in flight", h2 == nil and err.code == "busy" and err.reason == "hold" and err.owner == "b", J(err))
+  h2, err = inst:tap("b", 5, { key = "STORE" }, 50)
+  check("the same session may layer its own taps", h2 and h2.session == "b", J(err))
+  b2, err = inst:beginInteraction("a", 5, {})
+  check("beginning while taps are in flight is busy (hold)", b2 == nil and err.code == "busy" and err.reason == "hold", J(err))
+  inst:service(6)
+  check("taps released by service; quiet again", inst:admission(6) == nil)
+  -- Expiry: an expired interaction ends on service() (holds released) and cannot be renewed.
+  ia = inst:beginInteraction("a", 10, { leaseMs = 1000 })
+  inst:press("a", 10, { key = "STORE", interaction = ia.id })
+  local out = inst:service(12)
+  check("an expired interaction is ended by service(), its hold released", out.interactionsExpired and out.interactionsExpired[1] == ia.id and #out.released == 1 and inst:status(12).interactions[ia.id].state == "expired", J(out))
+  r, err = inst:renewInteraction("a", ia.id, 12)
+  check("an expired interaction is not resumed by a late renewal", r == nil and err.code == "no-interaction" and err.state == "expired", J(err))
+  -- Lazy expiry: admission between service() calls sees it too.
+  ia = inst:beginInteraction("a", 20, { leaseMs = 1000 })
+  check("admission reports the lapsed interaction as expired without waiting for service()", inst:admission(25) == nil and inst:status(25).interactions[ia.id].state == "expired")
+  -- Session close ends interactions and reports their releases through the close.
+  ia = inst:beginInteraction("a", 30, { leaseMs = 5000 })
+  inst:press("a", 30, { key = "STORE", interaction = ia.id })
+  r = inst:closeSession("a", 31, "disconnect")
+  check("closing the session ends its interaction and releases its holds in the close report", #r.released == 1 and inst:status(31).interactions[ia.id] and inst:status(31).interactions[ia.id].state == "ended" and inst:status(31).interactions[ia.id].endReason == "disconnect", J(r))
+  inst:openSession({ id = "a", leaseMs = 120000 }, 31)
+  -- Disable while an interaction is open: it ends, releases run, recovery stays available.
+  ia = inst:beginInteraction("a", 40, { leaseMs = 5000 })
+  inst:press("a", 40, { key = "STORE", interaction = ia.id })
+  r = inst:disableInput(41, "input-disabled")
+  check("disableInput ends the interaction and releases its hold", #r.released == 1 and inst:status(41).interactions[ia.id].state == "ended" and inst:admission(41) == nil, J(r))
+  b2, err = inst:beginInteraction("a", 42, {})
+  check("no interaction can begin while input is disabled", b2 == nil and err.code == "input-disabled", J(err))
+  r = inst:endInteraction("a", ia.id, 42)
+  check("ending while disabled is harmless (already ended)", r.alreadyEnded == true, J(r))
+  check("releaseAll and recover stay available while disabled", inst:releaseAll("a", 42).attempted == 0 and inst:recover("a", 42).attempted == 0)
+end
+
+-- Sequences: validated as a whole, serviced step by step, reported precisely.
+do
+  local inst, backend = freshStrict()
+  local q, err = inst:startSequence("a", 0, { { kind = "tap", key = "STORE", holdMs = 100 }, { kind = "wait", ms = 50 }, { kind = "press", key = "MA" },
+                                              { kind = "tap", key = "NUM5", holdMs = 50 }, { kind = "release", key = "MA" } }, { label = "store 5" })
+  check("startSequence validates, begins an interaction and starts the first step", q and q.id == "q1" and q.state == "running" and q.index == 1 and q.autoInteraction == true and q.interaction == "i1" and q.steps == 5
+    and q.events[1].state == "waiting" and q.events[1].hold == "h1" and q.events[2].state == "pending" and #backend.events == 1, J(err or q))
+  check("estimate covers holds and waits", q.estimateMs == 100 + 50 + 20 + 50 + 20, q.estimateMs)
+  local h; h, err = inst:tap("a", 0.01, { key = "PLEASE" }, 50)
+  check("the owner's direct input is busy while its sequence runs", h == nil and err.code == "busy" and err.reason == "sequence" and err.sequence == "q1", J(err))
+  h, err = inst:tap("b", 0.01, { key = "PLEASE" }, 50)
+  check("another session's input is busy too", h == nil and err.code == "busy", J(err))
+  local q2; q2, err = inst:startSequence("b", 0.01, { { kind = "tap", key = "PLEASE" } })
+  check("only one sequence runs at a time", q2 == nil and err.code == "busy" and err.reason == "sequence", J(err))
+  check("admission names the interaction and its sequence", inst:admission(0.01).sequence == "q1")
+  local out = inst:service(0.05)
+  check("before the tap deadline the sequence waits", out.sequence.state == "running" and out.sequence.index == 1 and #backend.events == 1, J(out.sequence))
+  out = inst:service(0.15)
+  local rep = inst:sequenceStatus("q1", 0.15)
+  check("tap released at its deadline, step completed, wait started", rep.events[1].state == "completed" and rep.events[1].releaseOutcome == "confirmed" and rep.events[2].state == "waiting" and rep.index == 2, J(rep.events))
+  out = inst:service(0.21)
+  rep = inst:sequenceStatus("q1", 0.21)
+  check("wait completed, MA pressed, NUM5 tap in flight in the same iteration", rep.events[2].state == "completed" and rep.events[3].state == "completed" and rep.events[3].pressOutcome == "confirmed" and rep.events[4].state == "waiting" and rep.index == 4, J(rep.events))
+  check("the sequence's holds are tagged with it and the interaction", inst:status(0.21).holds[2].sequence == "q1" and inst:status(0.21).holds[2].interaction == "i1")
+  out = inst:service(0.27)
+  rep = inst:sequenceStatus("q1", 0.27)
+  check("NUM5 released, MA released by the release step, sequence completed, interaction ended", rep.state == "completed" and rep.events[4].state == "completed" and rep.events[5].state == "completed" and rep.events[5].releaseOutcome == "confirmed"
+    and rep.counts.completed == 5 and rep.cleanup.attempted == 0 and inst:status(0.27).interactions.i1.state == "ended" and inst:admission(0.27) == nil, J(rep))
+  check("events in order: S down/up, LeftShift down, 5 down/up, LeftShift up", kinds(backend) == "press:S release:S press:LeftShift press:5 release:5 release:LeftShift", kinds(backend))
+  check("the finished report says what completed means", rep.note:find("not that a UI effect was verified") and rep.elapsedMs == 270, rep.note)
+  local _, nerr = inst:sequenceStatus("q9", 1)
+  check("unknown sequence ids are reported", nerr.code == "no-sequence", J(nerr))
+  -- Validation refuses the whole request; nothing is dispatched.
+  local n = #backend.events
+  q, err = inst:startSequence("a", 1, {})
+  check("empty steps refused", q == nil and err.code == "bad-argument", J(err))
+  q, err = inst:startSequence("a", 1, { { kind = "tap", key = "STORE" }, { kind = "dance" } })
+  check("unknown kind refused naming the step", q == nil and err.code == "bad-argument" and err.step == 2 and err.message:find("nothing was dispatched"), J(err))
+  q, err = inst:startSequence("a", 1, { { kind = "tap", key = "STORE" }, { kind = "release", key = "PLEASE" } })
+  check("a release of a key the sequence never presses is refused", q == nil and err.code == "bad-argument" and err.step == 2, J(err))
+  q, err = inst:startSequence("a", 1, { { kind = "tap", key = "MA1" } })
+  check("an unsupported key fails validation", q == nil and err.code == "unsupported" and err.step == 1, J(err))
+  q, err = inst:startSequence("a", 1, { { kind = "text", text = "Fixture 5\n", context = "command-line" } })
+  check("text with a newline fails validation", q == nil and err.code == "bad-argument" and err.message:find("newline"), J(err))
+  q, err = inst:startSequence("a", 1, { { kind = "wait", ms = 9000 } })
+  check("a wait beyond maxWaitMs is refused", q == nil and err.code == "bad-argument", J(err))
+  local many = {}
+  for i = 1, 7 do many[i] = { kind = "tap", key = "STORE", holdMs = 5000 } end
+  q, err = inst:startSequence("a", 1, many)
+  check("a sequence longer than maxSequenceMs is refused with its estimate", q == nil and err.code == "bad-argument" and err.estimateMs == 35000, J(err))
+  q, err = inst:startSequence("a", 1, { { kind = "combo", keys = { { key = "MA" }, { key = "STORE", exclusive = true } }, holdMs = 50 } })
+  check("an exclusive key inside a combo step is refused", q == nil and err.code == "bad-argument", J(err))
+  q, err = inst:startSequence("a", 1, { { kind = "press", key = "STORE", holdMs = 50 } })
+  check("a press with holdMs is refused (use a tap)", q == nil and err.code == "bad-argument", J(err))
+  check("nothing was dispatched by refused sequences", #backend.events == n and inst:admission(1) == nil and inst:status(1).activeInteraction == nil)
+  -- Failure midway: a refused press fails the step, later steps are unattempted, earlier holds are released.
+  backend:failNext("press", { pcKey = "Enter" }, "console refused")
+  q = inst:startSequence("a", 2, { { kind = "press", key = "MA" }, { kind = "tap", key = "PLEASE" }, { kind = "tap", key = "STORE" } })
+  check("a refused press fails the sequence at that step", q.state == "failed" and q.failedStep == 2 and q.events[1].state == "completed" and q.events[2].state == "failed" and q.events[2].code == "press-failed"
+    and q.events[3].state == "unattempted" and q.counts.unattempted == 1, J(q))
+  check("what the sequence pressed before the failure was released (MA), never replayed", q.cleanup.released == 1 and kinds(backend, n + 1) == "press:LeftShift press:Enter release:LeftShift" and inst:admission(2) == nil, kinds(backend, n + 1))
+  -- Uncertain: a press that raises leaves an unresolved record; the step is uncertain, not failed.
+  n = #backend.events
+  backend:raiseNext("press", "host blocked")
+  q = inst:startSequence("a", 3, { { kind = "tap", key = "STORE" }, { kind = "tap", key = "PLEASE" } })
+  check("a raised press is an uncertain step and stops the sequence", q.state == "failed" and q.events[1].state == "uncertain" and q.events[1].hold == inst:status(3).holds[#inst:status(3).holds].id and q.events[2].state == "unattempted", J(q))
+  check("the unresolved record is kept for recovery and blocks its tuple", inst:status(3).unresolved == 1)
+  local rec = inst:recover("a", 4)
+  check("recover clears it", #rec.released == 1 and inst:status(4).unresolved == 0, J(rec))
+  -- Uncertain at the end: a tap whose release stays unresolved.
+  backend:failNext("release", { pcKey = "S" }, "wedged", true)
+  q = inst:startSequence("a", 5, { { kind = "tap", key = "STORE", holdMs = 50 }, { kind = "tap", key = "PLEASE" } })
+  inst:service(5.1)
+  rep = inst:sequenceStatus(q.id, 5.1)
+  check("an unresolved tap release makes the step uncertain and fails the sequence", rep.state == "failed" and rep.events[1].state == "uncertain" and rep.events[1].releaseOutcome == "unresolved" and rep.events[2].state == "unattempted", J(rep))
+  backend:clearFailures()
+  inst:recover("a", 5.2)
+  -- Owner abort releases what is held; a sequence under an explicit interaction leaves it open.
+  local ia = inst:beginInteraction("a", 6, { leaseMs = 60000 })
+  q, err = inst:startSequence("a", 6, { { kind = "press", key = "MA" }, { kind = "tap", key = "STORE", holdMs = 2000 } }, { interaction = ia.id })
+  check("a sequence may run under an explicit interaction", q and q.autoInteraction == false and q.interaction == ia.id, J(err))
+  local ab; ab, err = inst:abortSequence("b", q.id, 6.5)
+  check("another session cannot abort it", ab == nil and err.code == "not-owner", J(err))
+  ab = inst:abortSequence("a", q.id, 6.5, "operator")
+  check("the owner's abort stops the sequence, releases its holds and keeps the explicit interaction open", ab.state == "aborted" and ab.events[2].state == "aborted" and ab.cleanup.released == 2 and inst:status(6.5).interactions[ia.id].state == "open", J(ab))
+  q, err = inst:startSequence("b", 6.6, { { kind = "tap", key = "STORE" } })
+  check("the explicit interaction keeps others busy after the sequence", q == nil and err.code == "busy" and err.reason == "interaction", J(err))
+  q = inst:startSequence("a", 7, { { kind = "press", key = "MA" } }, { interaction = ia.id })
+  check("a press left held at the end of a sequence is released by its completion", q.state == "completed" and q.cleanup.released == 1 and backend.events[#backend.events].kind == "release", J(q))
+  inst:endInteraction("a", ia.id, 8)
+  ia = inst:beginInteraction("a", 9, { leaseMs = 300 })
+  q, err = inst:startSequence("a", 9, { { kind = "tap", key = "STORE", holdMs = 1000 } }, { interaction = ia.id })
+  check("an interaction whose lease is shorter than the sequence is refused (renew first)", q == nil and err.code == "lease-too-short", J(err))
+  inst:endInteraction("a", ia.id, 9)
+  -- Disconnect mid-sequence: the session closes, the sequence is aborted, its hold released, nothing resumed.
+  n = #backend.events
+  q = inst:startSequence("b", 10, { { kind = "tap", key = "STORE", holdMs = 1000 }, { kind = "text", text = "abc", context = "text-field", acknowledgeFocus = true } })
+  local closed = inst:closeSession("b", 10.2, "disconnect")
+  rep = inst:sequenceStatus(q.id, 10.2)
+  check("closing the session mid-sequence aborts it with the in-flight step marked and the rest unattempted", rep.state == "aborted" and rep.events[1].state == "aborted" and rep.events[2].state == "unattempted" and rep.cleanup.deferred == 1, J(rep))
+  check("the disconnect released the in-flight tap through the session close", #closed.released == 1 and kinds(backend, n + 1) == "press:S release:S", kinds(backend, n + 1))
+  inst:service(12)
+  check("nothing is replayed afterwards", #backend.events == n + 2 and inst:admission(12) == nil)
+  inst:openSession({ id = "b", leaseMs = 120000 }, 12)
+end
+
+-- Text: explicit context, chunked typing, context recheck, readback, Unicode, uncertainty.
+do
+  local inst, backend = freshStrict()
+  profile.shortcutsActive = true
+  local q, err = inst:startSequence("a", 0, { { kind = "text", text = "Fixture 5", context = "command-line" } })
+  check("command-line text with shortcuts enabled is unsupported (never toggled)", q == nil and err.code == "unsupported" and err.message:find("F10") and #backend.events == 0, J(err))
+  q, err = inst:startSequence("a", 0, { { kind = "text", text = "abc", context = "text-field" } })
+  check("text-field text needs the focus acknowledgment", q == nil and err.code == "focus-unverified", J(err))
+  q, err = inst:startSequence("a", 0, { { kind = "text", text = "abc", context = "nowhere" } })
+  check("an unknown context is refused", q == nil and err.code == "bad-argument", J(err))
+  profile.shortcutsActive = false
+  q = inst:startSequence("a", 1, { { kind = "text", text = "Fixture 5", context = "command-line" } })
+  check("command-line text starts typing in chunks of textCharsPerService", q.state == "running" and q.events[1].state == "typing" and q.events[1].typed == 8 and q.events[1].remaining == 1 and backend.typed == "Fixture ", J(q.events[1]))
+  local out = inst:service(1.05)
+  local rep = inst:sequenceStatus(q.id, 1.05)
+  check("the last chunk typed and the command line read back as expected", rep.state == "completed" and rep.events[1].typed == 9 and rep.events[1].readback.outcome == "observed" and rep.events[1].readback.actual == "Fixture 5" and backend.typed == "Fixture 5", J(rep.events[1]))
+  check("characters were char events, no key press, no Enter", backend.counters.char == 9 and backend.counters.press == 0, J(backend.counters))
+  -- Context change between chunks stops typing with its progress.
+  backend:setTypedText("")
+  q = inst:startSequence("a", 2, { { kind = "text", text = "abcdefghijklmnopqrst", context = "command-line" } })
+  check("first chunk typed", q.events[1].typed == 8)
+  profile.shortcutsActive = true
+  inst:service(2.05)
+  rep = inst:sequenceStatus(q.id, 2.05)
+  check("shortcuts re-enabled between chunks: the step fails with partial progress and typing stops", rep.state == "failed" and rep.events[1].state == "failed" and rep.events[1].code == "context-changed" and rep.events[1].typed == 8 and rep.events[1].remaining == 12 and backend.typed == "abcdefgh", J(rep.events[1]))
+  profile.shortcutsActive = false
+  -- A char that raises leaves the text uncertain at that character.
+  backend:setTypedText("")
+  q = inst:startSequence("a", 3, { { kind = "text", text = "0123456789", context = "command-line" } })
+  backend:raiseNext("char", "host blocked")
+  inst:service(3.05)
+  rep = inst:sequenceStatus(q.id, 3.05)
+  check("a raised char event is uncertain at that character; nothing more is typed", rep.state == "failed" and rep.events[1].state == "uncertain" and rep.events[1].uncertainChar == 9 and rep.events[1].typed == 8 and backend.typed == "01234567", J(rep.events[1]))
+  -- Unicode goes out one code point per event and reads back.
+  backend:setTypedText("")
+  q = inst:startSequence("a", 4, { { kind = "text", text = "abü€😀", context = "command-line" } })
+  inst:service(4.05)
+  rep = inst:sequenceStatus(q.id, 4.05)
+  check("Unicode text is typed as one char event per code point and read back", rep.state == "completed" and rep.events[1].chars == 5 and backend.typed == "abü€😀" and backend.events[#backend.events].codepoint == 0x1F600 and rep.events[1].readback.outcome == "observed", J(rep.events[1]))
+  -- Inconclusive readback: the command line shows something else; no retry, no failure claimed.
+  backend:setTypedText("")
+  q = inst:startSequence("a", 5, { { kind = "text", text = "0123456789", context = "command-line" } })
+  backend:setTypedText("zz")  -- the operator edits the line between chunks
+  inst:service(5.1)
+  rep = inst:sequenceStatus(q.id, 5.1)
+  check("readback stays pending inside the window", rep.state == "running" and rep.events[1].state == "readback" and rep.events[1].typed == 10 and rep.events[1].readback.outcome == "pending", J(rep.events[1]))
+  inst:service(6.2)
+  rep = inst:sequenceStatus(q.id, 6.2)
+  check("after the window the readback is inconclusive and the step completed (dispatched), never retried", rep.state == "completed" and rep.events[1].readback.outcome == "inconclusive" and rep.events[1].readback.actual == "zz89" and backend.counters.char == 9 + 8 + 9 + 5 + 10, J(rep.events[1]))
+  -- Text field: acknowledged focus, verification unavailable, shortcut enablement change still stops it.
+  profile.shortcutsActive = true
+  backend:setTypedText("")
+  q = inst:startSequence("a", 7, { { kind = "text", text = "name", context = "text-field", acknowledgeFocus = true, display = 1 } })
+  check("text-field text runs with focus acknowledged and reports verification unavailable", q.state == "completed" and q.events[1].readback.outcome == "unavailable" and backend.typed == "name" and backend.events[#backend.events].display == 1, J(q.events[1]))
+  q = inst:startSequence("a", 8, { { kind = "text", text = "0123456789", context = "text-field", acknowledgeFocus = true } })
+  profile.shortcutsActive = false
+  inst:service(8.05)
+  rep = inst:sequenceStatus(q.id, 8.05)
+  check("a shortcut enablement change during text-field typing stops it too", rep.state == "failed" and rep.events[1].code == "context-changed" and rep.events[1].typed == 8, J(rep.events[1]))
+  profile.shortcutsActive = true
+  -- Text never commits: a following PLEASE is a separate, explicit step.
+  profile.shortcutsActive = false
+  backend:setTypedText("")
+  q = inst:startSequence("a", 9, { { kind = "text", text = "Clear", context = "command-line" }, { kind = "tap", key = "PLEASE", holdMs = 50 } })
+  inst:service(9.05); inst:service(9.2)
+  rep = inst:sequenceStatus(q.id, 9.2)
+  check("text then an explicit PLEASE tap: text completed, Enter pressed and released as its own step", rep.state == "completed" and rep.events[2].kind == "tap" and rep.events[2].key == "PLEASE" and backend.events[#backend.events].pcKey == "Enter" and backend.events[#backend.events].kind == "release", J(rep.events))
+  profile.shortcutsActive = true
+  -- No char events on an adapter without them.
+  local bare = { name = "fake", dispatches = true, press = function() return true, true end, release = function() return true, true end }
+  local inst2 = HK.new({ owner = "x", deps = deps }):init(); inst2:enableInput(bare); inst2:openSession({ id = "s" }, 0)
+  profile.shortcutsActive = false
+  q, err = inst2:startSequence("s", 0, { { kind = "text", text = "a", context = "command-line" } })
+  check("a backend without char events refuses text", q == nil and err.code == "unsupported" and err.message:find("character events"), J(err))
+  profile.shortcutsActive = true
 end
 
 print(string.format("%d passed, %d failed", passes, failures))
