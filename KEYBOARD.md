@@ -209,7 +209,7 @@ Mapping restoration is an explicit operator action, not automatic bridge behavio
   in both directions match macOS; injected input reached onPC with another app in the OS foreground. With two
   displays `display_index` again had no observed effect (pop-up via index 2 on Display 1). The other
   exploratory follow-ups above were not repeated on Windows.
-- **Open probes:** module loading/show portability (KB-02), non-US keyboard layouts.
+- **Open probes:** non-US keyboard layouts. Module loading/show portability was closed by KB-02 (macOS; Windows not exercised).
   Do not infer these from basic shortcut success.
 - **Side effect resolved:** `PRESERVEGRIDPOSITIONS` false→true was reproduced as a result of the cleanup
   command `Unassign Page 1.101` (parsed as `Fixture "Unassign" Page 1.101`), not keyboard input; restored.
