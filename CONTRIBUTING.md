@@ -1,5 +1,7 @@
 # Contributing
 
+Please follow the [code of conduct](CODE_OF_CONDUCT.md) in all project interactions.
+
 Contributions are welcome: bug reports, documentation corrections, platform test results and focused
 code changes. This is an independent beta project; consult the [compatibility matrix](docs/compatibility.md)
 for what has actually been tested. For suspected vulnerabilities, use [private security reporting](SECURITY.md)
