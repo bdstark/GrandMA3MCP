@@ -1,0 +1,246 @@
+{
+  "when": "2026-10-09T09:15:45.419Z",
+  "env": {
+    "profile": "Default",
+    "hostOS": "Windows",
+    "user": "Admin",
+    "displays": [
+      "Display 1"
+    ],
+    "monitors": [
+      "Generic PnP Monitor 1920x1080",
+      "Generic PnP Monitor 1920x1080"
+    ],
+    "hostType": "onPC",
+    "version": "2.5.1.0",
+    "show": "mcp-test-disposable"
+  },
+  "initial": {
+    "blind": false,
+    "ma": false,
+    "env": "Normal",
+    "sel": 0,
+    "shcuts": true
+  },
+  "final": {
+    "blind": false,
+    "cmd": "",
+    "ma": false,
+    "sel": 0,
+    "env": "Normal",
+    "shcuts": true
+  },
+  "restored": true,
+  "results": [
+    {
+      "id": "A1",
+      "description": "Keyboard() descriptor lists press/char/release",
+      "pass": true,
+      "observed": "integer:display_index, string:type('press', 'char', 'release')[ ,string:char(for type 'char') or string:keycode, boolean:shift, boolean:ctrl, boolean:alt, boolean:numlock]"
+    },
+    {
+      "id": "A2",
+      "description": "default shortcuts: Enter→PLEASE, Escape→ESC, Delete→CLEAR, Backspace→OOPS, S→STORE, Ctrl+F1→EXEC 101",
+      "pass": true,
+      "observed": {
+        "Enter": "84",
+        "Delete": "87",
+        "S": "66",
+        "Escape": "88",
+        "Backspace": "86",
+        "Ctrl+F1": "35/101"
+      }
+    },
+    {
+      "id": "A3",
+      "description": "VirtualKeys: PLEASE redirects Enter, MA1 has no PC key",
+      "pass": true,
+      "observed": {
+        "ma1": "None",
+        "please": "Enter"
+      }
+    },
+    {
+      "id": "A4",
+      "description": "MAINLOOPCOUNT advances one per yield",
+      "pass": true,
+      "observed": 5
+    },
+    {
+      "id": "K1",
+      "description": "digit key 5 types into the command line",
+      "pass": true,
+      "observed": "5"
+    },
+    {
+      "id": "K2",
+      "description": "Backspace acts as OOPS (removes 5)",
+      "pass": true,
+      "observed": ""
+    },
+    {
+      "id": "K3",
+      "description": "key names are case-sensitive ('backspace' ignored)",
+      "pass": true,
+      "observed": "5"
+    },
+    {
+      "id": "K4",
+      "description": "Escape clears the command line",
+      "pass": true,
+      "observed": ""
+    },
+    {
+      "id": "K5",
+      "description": "S tap gives Store",
+      "pass": true,
+      "observed": "Store "
+    },
+    {
+      "id": "K6",
+      "description": "Ctrl+Z (ctrl flag) acts as OOPS; plain Z does nothing",
+      "pass": true,
+      "observed": {
+        "ctrl": "5",
+        "plain": "55"
+      }
+    },
+    {
+      "id": "K7",
+      "description": "held LeftCtrl is not combined with Z",
+      "pass": true,
+      "observed": "55"
+    },
+    {
+      "id": "K8",
+      "description": "5 + Enter executes (selects one fixture); Delete clears it",
+      "pass": true,
+      "observed": {
+        "after": 1,
+        "cleared": 0
+      }
+    },
+    {
+      "id": "K9",
+      "description": "overlap: S held + 5 gives Store Cue 5",
+      "pass": true,
+      "observed": "Store Cue 5"
+    },
+    {
+      "id": "K10",
+      "description": "invalid event type and key name are accepted silently (no error)",
+      "pass": true,
+      "observed": true
+    },
+    {
+      "id": "K11",
+      "description": "display_index does not route input (indexes 2, 99, 0 all type 5)",
+      "pass": true,
+      "observed": [
+        "5",
+        "5",
+        "5"
+      ]
+    },
+    {
+      "id": "M1",
+      "description": "shift flag + S is plain Store (flag is not MA)",
+      "pass": true,
+      "observed": "Store "
+    },
+    {
+      "id": "M2",
+      "description": "LeftShift key held sets MASTATE and turns S into Record",
+      "pass": true,
+      "observed": {
+        "held": true,
+        "after": false,
+        "cmd": "Record "
+      }
+    },
+    {
+      "id": "M3",
+      "description": "RightShift behaves the same",
+      "pass": true,
+      "observed": {
+        "held": true,
+        "after": false,
+        "cmd": "Record "
+      }
+    },
+    {
+      "id": "M4",
+      "description": "MA stays held until both Shift keys are released",
+      "pass": true,
+      "observed": {
+        "bothUp": false,
+        "oneUp": true
+      }
+    },
+    {
+      "id": "F1",
+      "description": "Blind toggles Masters.Grand.Blind.FADERENABLED and back",
+      "pass": true,
+      "observed": {
+        "toggled": true,
+        "restored": false,
+        "before": false
+      }
+    },
+    {
+      "id": "F2",
+      "description": "Highlight toggles Masters.Grand.Highlight.FADERENABLED and back",
+      "pass": true,
+      "observed": {
+        "toggled": true,
+        "restored": false,
+        "before": false
+      }
+    },
+    {
+      "id": "F3",
+      "description": "Solo toggles Masters.Grand.Solo.FADERENABLED and back",
+      "pass": true,
+      "observed": {
+        "toggled": true,
+        "restored": false,
+        "before": false
+      }
+    },
+    {
+      "id": "F4",
+      "description": "Preview key sets PREVIEWBARACTIVE; Please enters Preview; Preview Off leaves",
+      "pass": true,
+      "observed": {
+        "env": "Preview",
+        "bar": true,
+        "back": "Normal"
+      }
+    },
+    {
+      "id": "S1",
+      "description": "F10 disables shortcuts: S does nothing, char types, Enter executes, Delete does not clear; F10 re-enables",
+      "pass": true,
+      "observed": {
+        "char": "5",
+        "s": "",
+        "on": true,
+        "sel": 1,
+        "off": false,
+        "selAfterDelete": 1
+      }
+    },
+    {
+      "id": "S2",
+      "description": "char without a focused text input types nothing (shortcuts on)",
+      "pass": true,
+      "observed": ""
+    },
+    {
+      "id": "D1",
+      "description": "Help double tap (8-frame gap) is a single Help, not the overlay",
+      "pass": true,
+      "observed": "Help "
+    }
+  ]
+}
