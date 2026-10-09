@@ -97,10 +97,10 @@ the script requires Lua to be enabled and a disposable show.
 
 Evidence: [docs/probes/kb-01-macos-2.5.1.md](docs/probes/kb-01-macos-2.5.1.md), reviewed as a written
 live-run record, not independently rerun here. The push adds that record and this design, not an automated
-keyboard regression harness. Two displays were tested in run 3. Windows 11 (onPC 2.5.1.0, one display, US layout)
-was run with the probe script and its manual checks, with matching results
-([docs/probes/kb-01-windows-2.5.1.md](docs/probes/kb-01-windows-2.5.1.md)). Non-US layouts and Windows
-multi-display are **unverified**.
+keyboard regression harness. Two displays were tested in run 3. Windows 11 (onPC 2.5.1.0, one and two displays, US
+layout) was run with the probe script, its manual checks and the run 3 multi-display checks, with matching
+results ([docs/probes/kb-01-windows-2.5.1.md](docs/probes/kb-01-windows-2.5.1.md)). Non-US layouts are
+**unverified**.
 The evidence page's “complete” status applies to its recorded run, not every KB-01 acceptance criterion.
 
 **Input backend (`Keyboard()`):**
@@ -191,9 +191,10 @@ the hold (run 3, H1–H2); for MA, a physical Shift tap clears `MASTATE`.
   - *Double-press:* not produced through keyboard shortcuts at 0–16 frame gaps, injected or OS-delivered.
     Keep it unsupported.
 - **Windows (script subset):** 26/26 automated checks, long-press, text entry (`aü`) and hardware Shift release
-  in both directions match macOS; injected input reached onPC with another app in the OS foreground. The
+  in both directions match macOS; injected input reached onPC with another app in the OS foreground. With two
+  displays `display_index` again had no observed effect (pop-up via index 2 on Display 1). The other
   exploratory follow-ups above were not repeated on Windows.
-- **Open probes:** module loading/show portability (KB-02), non-US keyboard layouts, Windows multi-display.
+- **Open probes:** module loading/show portability (KB-02), non-US keyboard layouts.
   Do not infer these from basic shortcut success.
 - **Side effect resolved:** `PRESERVEGRIDPOSITIONS` false→true was reproduced as a result of the cleanup
   command `Unassign Page 1.101` (parsed as `Fixture "Unassign" Page 1.101`), not keyboard input; restored.
