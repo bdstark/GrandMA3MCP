@@ -14,7 +14,11 @@ connections, real keys and command-line text); Windows not exercised.
 **KB-06 implemented on macOS** (feedback module 0.2.0, bridge 0.8.0, `gma3_feedback`): the KB-01 readers with a strict
 value contract, per-display and per-executor items, freshness epochs and bounded polling, exposed read-only through an
 unguarded bridge op; harness-tested and verified live (47/47, including reads while another connection owned input).
-Windows module loading and transfer to a separate machine remain qualification gaps. KB-07–KB-08 remain implementation/qualification work.
+Windows module loading and transfer to a separate machine remain qualification gaps.
+**KB-07 integrated live on 2026-10-09** in mtpnxk (its `KEYBOARD.md` and `docs/probes/kb-07-live-macos-2.5.1.md`): the
+surface plugin vendors hardkeys 0.5.0 and feedback 0.2.0, pairs with a Rust service over authenticated UDP, and drove a
+physical NX-K against onPC 2.5.1 on macOS with LEDs confirmed by the operator. Two findings from that run feed KB-09.
+KB-08 (documentation and qualification) and KB-09 (shortcut-table cache, operator-managed profile shortcuts) remain.
 Completion establishes the contracts and limitations below, not production keyboard support or universal
 platform coverage. No production keyboard operations exist yet; Quickeys remain deferred.
 
@@ -717,6 +721,16 @@ physical display, Windows, cross-user scopes, the cached `watch()`/`snapshot()` 
 are not display-routing evidence, not an atomic snapshot and never confirmation that a particular request or key
 source produced an observation.
 
+### Module change for KB-07 (hardkeys 0.5.0, 2026-10-09)
+
+The surface consumer's keys (Edit, Copy, Highlight, …) go beyond the fixed logical-key list. Rather than a
+surface-side fork of key resolution, `resolve()`/`describeKey()` now accept **any `Enums.VirtualKeyCode` name
+the console knows** and resolve it through the shortcut table under the same rules as `STORE` (fewest
+modifiers, duplicate rows are one route, ties and collisions refused, `KEYBOARDSHORTCUTSACTIVE` required). The
+fixed `MA` and native `PLEASE` routes are unchanged; `MA1`/`MA2` stay unsupported; a name the enum does not
+know is unsupported with a reason. Regressions in `test/lua/modules_test.lua`. No bridge op changed (the
+bridge's `hardkey` tool still validates its own key list in TypeScript). Vendored into mtpnxk as 0.5.0.
+
 ## KB-07 — Integrate the independent mtpnxk surface consumer
 
 **Request:** As a surface user, I want responsive keypad input and trustworthy LED state across network interruptions.
@@ -764,6 +778,66 @@ owning feature rather than bypassed with ad hoc Lua in documentation or tests.
 - Keep automated mock checks separate from opt-in live tests and explain what neither can guarantee.
 - Include installation/update instructions for every new module and a documented operator recovery path.
 - Preserve existing default behavior, loopback binding and the absence of automatic input replay.
+
+## KB-09 — Shortcut-table cache and operator-managed profile shortcuts
+
+**Request:** As a surface user, I want each key event to cost the console less, and keys the default
+profile does not map (Load, Macro, Thru on the NX-K) to become usable without the module guessing a route.
+
+**Depends on:** KB-04, KB-07 (live findings of 2026-10-09, mtpnxk `docs/probes/kb-07-live-macos-2.5.1.md`).
+
+**Lua changes: Yes** (hardkeys module). No new input dispatcher; one read-only report and, only if the
+operator opts in per start, one explicitly confirmed shortcut-writing operation (part B).
+
+**Evidence.** On onPC 2.5.1.0 (macOS) `describeKey()` costs about 7 ms: it reads the 157-row
+`UserProfile.KeyboardShortCuts` table through `Ptr()`/`Get()` on every call. A press costs two reads
+(`_planPress` resolution plus `_checkRoutes` over every live hold) and a release one, so a surface sending
+20 taps/s (40 events/s) spends 400 ms of every second in table reads and the plugin loop falls from 58 Hz
+to 4 Hz; 10 taps/s runs clean. Human keypad use stays below 5 events/s. Separately, the default profile has
+no row for `LOAD`, `MACRO` and `THRU`, and maps `PLUS`, `MINUS`, `DOT` and `SLASH` twice (main row and
+keypad), which the resolver refuses as ambiguous; the surface works around the latter by pressing the keypad
+row as a raw PC key, which bypasses route rechecks.
+
+### Part A — bounded cache of the shortcut rows
+
+- Cache the parsed rows per instance for the duration of **one service iteration** (same `now` value passed
+  to the call) by default, with an optional `routeCacheMs` (0 = per-iteration only; at most 100) for consumers
+  whose loop runs faster than their frames. Every press, release and `_checkRoutes()` inside the window reuses
+  the cached rows; `KEYBOARDSHORTCUTSACTIVE` and the profile identity are still read fresh on every admission
+  and release (single property reads), and any change of either, or `invalidateRoutes()` from the consumer,
+  drops the cache at once.
+- The cache may only shorten the read, never the validation: resolution, tie, collision and enablement rules
+  are unchanged; a remap is noticed no later than the end of the window. Document that a hold released within
+  the same iteration as a remap may be released against the pre-remap rows; the following iteration reports the
+  mismatch as today.
+- Harness: count `shortcutRows` reads per press/release (two and one today → at most one per iteration);
+  remap inside and outside the window; profile switch inside the window invalidates; `routeCacheMs` bound and
+  validation. Live: the 20 taps/s bench from mtpnxk (`mtpnxk bench --taps 40 --rate 20`) must lose nothing with
+  the plugin loop above 25 Hz, recorded in a probe file.
+- Also resolve the duplicate-target ambiguity without guessing: when every tied candidate maps to the **same**
+  VirtualKeyCode (and the same executor identity), the console's effect is the same whichever row fires, so the
+  route is not ambiguous in effect. Prefer the row the consumer names (`opts.prefer = "kpAdd"`), else refuse as
+  today. This removes the surface's raw-key workaround and restores route rechecks for `+ - . /`.
+
+### Part B — operator-managed profile shortcuts for unmapped keys
+
+- Read-only first: `describeKey()` of an unmapped key reports `missingRoute = { vk = "LOAD" }`, and a new
+  pure helper `freeShortcuts(rows, candidates)` returns the candidate PC key names no row claims (any modifier
+  combination), so a consumer can tell the operator "Load has no shortcut; F13, F14 … are free". The bridge
+  exposes it through the existing read-only `modules`/status path; the surface plugin logs it at start.
+- The module never creates, edits or deletes shortcut rows on its own (architecture rule). Writing is a
+  separate, per-start opt-in (`shortcuts=write`) and a bridge op `shortcuts.add { key = "LOAD", pcKey = "F13",
+  modifiers }` that: refuses while any hold or unresolved record exists; refuses a PC key any row already
+  claims; creates exactly one row with the given tuple; re-resolves the logical key and reports the result;
+  records the rows it created (show-scoped list) so `shortcuts.remove` can undo only those; and never touches
+  rows it did not create. Row creation needs a live probe first (the console command or object call that adds
+  a `KeyboardShortcut` row is unverified; KB-01 only edited an existing row with `Set KeyboardShortcut 33
+  Property "ExecutorIndex" 102`).
+- Acceptance: unmapped keys reported with free candidates; `shortcuts.add` refused without the opt-in, with
+  holds present, for a claimed PC key, for an unknown VirtualKeyCode, and for `MA1`/`MA2`; after `add`, the key
+  resolves through the normal shortcut-table route (no special casing) and `remove` restores the table;
+  save/load of the show keeps the rows and the record; harness plus a live disposable-show probe. Document
+  that a profile is per user and that the rows are show data the operator owns.
 
 ## Evidence and open questions
 

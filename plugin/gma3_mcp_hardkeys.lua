@@ -10,7 +10,9 @@
 --   the module in the plugin's signal table, the entry component looks it up and calls new(). The
 --   source travels inside the show file; no loose file is needed on the console.
 --
--- What this version provides (MODULE API 1, module version 0.4.0, KB-03 + KB-04 + KB-05):
+-- What this version provides (MODULE API 1, module version 0.5.0, KB-03 + KB-04 + KB-05; 0.5.0 adds
+-- shortcut-table resolution of any Enums.VirtualKeyCode name and opts.prefer / spec.prefer to name the
+-- row of a same-target tie, for surface consumers, KB-07):
 --   * explicit instance lifecycle: new() -> init() -> service(now) ... -> dispose(now)
 --   * owned input sessions with leases: openSession / renewSession / closeSession. Every held key
 --     belongs to a session; the consumer binds sessions to whatever identifies its clients (the bridge
@@ -87,11 +89,13 @@
 --   * Input is disabled on a new instance. enableInput(adapter) is the operator's explicit decision.
 
 local NAME        = "gma3_mcp_hardkeys"
-local VERSION     = "0.4.0"
+local VERSION     = "0.5.0"
 local API_VERSION = 1
 
--- Logical keys accepted by describeKey() and press(). Each resolves through the UserProfile
--- KeyboardShortcut table to the row whose KeyCode equals the named Enums.VirtualKeyCode, except:
+-- Logical keys with special handling in describeKey() and press(). Since 0.5.0 every other
+-- Enums.VirtualKeyCode name of the console resolves through the UserProfile KeyboardShortcut table
+-- exactly like STORE (the row whose KeyCode equals the named VirtualKeyCode); the entries below are
+-- the ones that need more than that:
 --   * MA, which is the PC LeftShift key itself (KB-01 follow-up F2-F4; verified through Root().MASTATE);
 --   * PLEASE, which has a NATIVE route: the system VirtualKey PLEASE redirects the PC key Enter
 --     (Root().VirtualKeys, KEYCODE = Enter) and executes with keyboard shortcuts disabled too (KB-01
@@ -250,7 +254,13 @@ local function resolve(rows, vkCodes, name, opts)
   if not key then return { key = tostring(name), supported = false, reason = "key name must be a string" } end
   if UNSUPPORTED_KEYS[key] then return { key = key, supported = false, reason = UNSUPPORTED_KEYS[key] } end
   local def = LOGICAL_KEYS[key]
-  if not def then return { key = key, supported = false, reason = "not a logical key of this module" } end
+  -- Any other Enums.VirtualKeyCode name (EDIT, COPY, HIGHLIGHT, ...) resolves through the shortcut table
+  -- like STORE does (0.5.0, for surface consumers whose keys go beyond the fixed list). The fixed (MA) and
+  -- native (PLEASE) routes stay special; a name the console's enum does not know is unsupported, never guessed.
+  if not def then
+    if type(vkCodes) == "table" and vkCodes[key] ~= nil then def = { vk = key }
+    else return { key = key, supported = false, reason = "not a logical key of this module" .. ((type(vkCodes) == "table") and (" and not an Enums.VirtualKeyCode name on this console") or "") } end
+  end
   local codes = opts and opts.keyboardCodes
   local function checkPcKey(r)
     if type(codes) == "table" then
@@ -324,8 +334,27 @@ local function resolve(rows, vkCodes, name, opts)
   end
   -- Several rows with the same key text (the default profile has two "Enter" rows) are one route;
   -- different shortcuts with the same modifier count are ambiguous and are rejected, never guessed.
+  -- Every tied row maps to the SAME target (the loop above only keeps rows for this VirtualKeyCode and
+  -- executor), so the console's effect is the same whichever fires; a consumer may name the row it
+  -- wants with opts.prefer (a PC key name, e.g. "kpAdd" for PLUS on a keypad). The chosen tuple still
+  -- goes through the collision check below and every later route recheck.
+  local preferred = false
   if ties then
-    return { key = key, supported = false, reason = "ambiguous: several shortcuts with the same modifier count map to " .. key .. " (" .. table.concat(ties, ", ") .. "); edit the profile or pick one with pcKey", candidates = ties }
+    local prefer = opts and opts.prefer
+    if type(prefer) == "string" then
+      for i, row in ipairs(rows) do
+        if row.keyCode == vk and ((not def.needsExecutor) or row.executorIndex == executor) then
+          local parsed = parseShortcut(row.shortcut)
+          if parsed and parsed.key == prefer and modifierCount(parsed) == modifierCount(bestParsed) then
+            best, bestParsed, bestIndex, preferred = row, parsed, i, true
+            break
+          end
+        end
+      end
+    end
+    if not preferred then
+      return { key = key, supported = false, reason = "ambiguous: several shortcuts with the same modifier count map to " .. key .. " (" .. table.concat(ties, ", ") .. "); edit the profile or name one with opts.prefer", candidates = ties }
+    end
   end
   -- The chosen tuple must not also be claimed for another target anywhere in the table.
   local c = collisions(rows, bestParsed, { keyCode = vk, executorIndex = def.needsExecutor and executor or nil, specialExec = best.specialExec })
@@ -333,7 +362,8 @@ local function resolve(rows, vkCodes, name, opts)
     return { key = key, supported = false, reason = string.format("shortcut collision: %s is mapped to %s by row %d but also to another target by %s; the console's precedence is unverified, so the route is refused", best.shortcut, key, bestIndex, table.concat(c, ", ")), collisions = c, shortcut = best.shortcut }
   end
   return checkPcKey({ key = key, supported = true, backend = "keyboard", pcKey = bestParsed.key, shift = bestParsed.shift, ctrl = bestParsed.ctrl,
-           alt = bestParsed.alt, shortcut = best.shortcut, rowIndex = bestIndex, executor = def.needsExecutor and executor or nil, source = "shortcut-table" })
+           alt = bestParsed.alt, shortcut = best.shortcut, rowIndex = bestIndex, executor = def.needsExecutor and executor or nil, source = "shortcut-table",
+           prefer = preferred and bestParsed.key or nil, candidates = ties })
 end
 
 -- The identity of an injected key event on this backend: PC key plus modifier flags. Display index is
@@ -1969,7 +1999,7 @@ function Instance:describeKey(name, opts)
   if not okR then return { key = tostring(name), supported = false, reason = "shortcut table read failed: " .. tostring(rows) } end
   local okV, vk = pcall(d.virtualKeyCodes)
   if not okV then return { key = tostring(name), supported = false, reason = "VirtualKeyCode enum read failed: " .. tostring(vk) } end
-  local ropts = { executor = opts and opts.executor }
+  local ropts = { executor = opts and opts.executor, prefer = opts and opts.prefer }
   if type(d.keyboardCodes) == "function" then
     local okK, codes = pcall(d.keyboardCodes)
     if okK and type(codes) == "table" then ropts.keyboardCodes = codes end
@@ -2196,7 +2226,8 @@ function Instance:_resolveSpec(spec, forPress)
     if spec.shift or spec.ctrl or spec.alt then
       return nil, nil, { code = "bad-argument", message = "modifiers of a logical key come from its shortcut mapping; pass them only with pcKey" }
     end
-    local r = self:describeKey(spec.key, { executor = spec.executor })
+    if spec.prefer ~= nil and type(spec.prefer) ~= "string" then return nil, nil, { code = "bad-argument", message = "prefer must be a PC key name (string)" } end
+    local r = self:describeKey(spec.key, { executor = spec.executor, prefer = spec.prefer })
     if not r.supported then return nil, nil, { code = "unsupported", message = "logical key " .. tostring(spec.key) .. " is unsupported: " .. tostring(r.reason), resolution = r } end
     -- Shortcut-backed keys need the table active; the fixed (MA) and native (PLEASE) routes do not.
     if r.source == "shortcut-table" and r.shortcutsActive == false then
@@ -2211,7 +2242,8 @@ function Instance:_resolveSpec(spec, forPress)
     end
     local tuple = { pcKey = r.pcKey, shift = r.shift, ctrl = r.ctrl, alt = r.alt, numlock = spec.numlock and true or false, display = display }
     local route = { logical = r.key, source = r.source, shortcut = r.shortcut, rowIndex = r.rowIndex, executor = r.executor, profile = r.profile,
-                    shortcutsActive = r.shortcutsActive, verify = r.verify, redirectChecked = r.redirectChecked, pcKeyValidated = r.pcKeyValidated }
+                    shortcutsActive = r.shortcutsActive, verify = r.verify, redirectChecked = r.redirectChecked, pcKeyValidated = r.pcKeyValidated,
+                    prefer = r.prefer }
     return tuple, route, nil
   end
   if type(spec.pcKey) ~= "string" or spec.pcKey == "" then return nil, nil, { code = "bad-argument", message = "spec needs key (logical name) or pcKey (non-empty PC key name)" } end
@@ -2239,7 +2271,7 @@ function Instance:_checkRoutes()
   local mismatches
   for _, h in pairs(self._holds) do
     if h.state ~= "released" and h.logical and h.route and h.route.source ~= "raw" then
-      local r = self:describeKey(h.logical, { executor = h.route.executor })
+      local r = self:describeKey(h.logical, { executor = h.route.executor, prefer = h.route.prefer })
       local why
       if not r.supported then why = "no longer resolvable: " .. tostring(r.reason)
       elseif r.pcKey ~= h.pcKey or (r.shift or false) ~= h.shift or (r.ctrl or false) ~= h.ctrl or (r.alt or false) ~= h.alt then
@@ -2538,6 +2570,8 @@ end
 local M = {
   NAME = NAME, VERSION = VERSION, API_VERSION = API_VERSION,
   LOGICAL_KEYS = { "PLEASE", "STORE", "ESC", "CLEAR", "OOPS", "NUM0", "NUM1", "NUM2", "NUM3", "NUM4", "NUM5", "NUM6", "NUM7", "NUM8", "NUM9", "EXEC", "MA" },
+  -- Plus, since 0.5.0, any other Enums.VirtualKeyCode name of the console (shortcut-table route).
+  GENERIC_VIRTUAL_KEYS = true,
   UNSUPPORTED_KEYS = { "MA1", "MA2" },
   new = new, consoleDeps = consoleDeps, resolve = resolve, parseShortcut = parseShortcut, tupleKey = tupleKey, validateText = validateText,
   fakeBackend = fakeBackend, keyboardBackend = keyboardBackend,
