@@ -1,6 +1,8 @@
 # GrandMA3MCP hardkey, keyboard and feedback feature requests
 
-Draft: 2026-10-09. Status: proposed; implementation depends on live feasibility probes.
+Updated: 2026-10-09 after review of commit `8a3782d` and its recorded live probe results.
+Status: macOS single-display input/feedback observations recorded; production implementation proposed.
+KB-01 still has qualification gaps listed below. No production keyboard operations were added by that commit.
 
 This document expands the initial request from `mtpnxk-client-pico` into dependency-ordered features
 and acceptance criteria, following the format of [FEATURES.md](FEATURES.md). The originating project's
@@ -56,7 +58,7 @@ The surface integration is a separate consumer, not a new network listener insid
 
 **Lua changes: No production changes.** Use a separate probe plugin and live-test fixtures.
 
-**Probe order:**
+**Original probe order (retained for context; use the confirmed contracts below for implementation):**
 
 1. Inspect the installed version's `HelpLua` output and live API descriptor. The proposed, undocumented
    signature is `Keyboard(display_index, type, char_or_keycode, shift, ctrl, alt, numlock)`, with
@@ -90,13 +92,16 @@ The surface integration is a separate consumer, not a new network listener insid
 
 ### KB-01 results — confirmed contracts (macOS, onPC 2.5.1.0, single display)
 
-Evidence: [docs/probes/kb-01-macos-2.5.1.md](docs/probes/kb-01-macos-2.5.1.md). Windows, multiple displays and
-non-US layouts are **unverified**.
+Evidence: [docs/probes/kb-01-macos-2.5.1.md](docs/probes/kb-01-macos-2.5.1.md), reviewed as a written
+live-run record, not independently rerun here. The push adds that record and this design, not an automated
+keyboard regression harness. Windows, multiple displays and non-US layouts are **unverified**.
+The evidence page's “complete” status applies to its recorded run, not every KB-01 acceptance criterion.
 
 **Input backend (`Keyboard()`):**
 
 - `Keyboard()` emulates a **PC keyboard**, not MA hardkeys. `keycode` is a case-sensitive `Enums.KeyboardCodes`
-  name (`Enter`, `Escape`, `S`, `F1`, `5`). No Lua function accepts an `Enums.VirtualKeyCode` (MA key).
+  name (`Enter`, `Escape`, `S`, `F1`, `5`). No direct `Enums.VirtualKeyCode` (MA key) input function
+  was found in the inspected live descriptor.
 - PC keys become MA keys through the operator-editable **UserProfile KeyboardShortcut table** (default: Enter→PLEASE,
   Escape→ESC, Delete→CLEAR, Backspace/Ctrl+Z→OOPS, S→STORE, digits→NUM, Ctrl/Alt+F-keys→EXEC with `ExecutorIndex`)
   and the system `Root().VirtualKeys` definitions. **MA1/MA2 have no default mapping.**
@@ -108,17 +113,21 @@ non-US layouts are **unverified**.
 - Effects land in the same call or one frame later, non-deterministically. The return value proves nothing;
   verification polls bounded across frames (`MAINLOOPCOUNT`).
 - Holds and long-press work (Store held → Store Settings pop-up) while onPC is in the OS background. A second key
-  or a duplicate press during a hold cancels the long-press. Two presses in one call never form a double-press.
-- Duplicate presses collapse; stray releases are harmless.
-- Injected and physical keys share **one** input and syntax state. No ownership isolation is possible at the console.
+  or a duplicate press during a hold cancels the long-press. The tested pair of presses in one call did not form a double-press.
+- In the tested cases, duplicate presses collapsed and stray releases had no visible effect. Duplicate
+  presses still suppressed long-press behavior, so they must not be forwarded as lease renewals.
+- Injected and OS-delivered input interacted in one syntax state. Internal ownership cannot isolate that
+  interaction. Same-key physical-versus-injected release remains unverified: the attempted F-key test was
+  intercepted by macOS, and the OS-event probes used synthetic events rather than a physical-key hold.
 - Executor down/up via an executor shortcut (Ctrl+F1 → exec 101) is a working **non-OSC** hold mechanism for
   executors mapped in the profile table.
 
 **Design decisions taken from these results (2026-10-09):**
 
 - `hardkey` accepts MA key names (PLEASE, STORE, …). The bridge resolves each to a PC key + modifiers from the live
-  shortcut table at request time and reports an unmapped key as unsupported. Raw `KeyboardCodes` are exposed
-  separately, labeled as profile- and focus-dependent.
+  shortcut table when admitting a new press/interaction and reports an unmapped key as unsupported. A
+  release uses the stored press tuple, never a newly resolved mapping. Raw `KeyboardCodes` have a separate
+  proposed operation, labeled as profile- and focus-dependent; they are not yet implemented.
 - MA1 and MA2 capabilities are reported individually and stay unsupported unless an operator-provided mapping has been
   validated. An unsupported combination is rejected before any part is sent. Mappings are revalidated after
   configuration changes; another key is never substituted silently. The bridge makes no automatic shortcut or show changes.
@@ -130,8 +139,33 @@ and Solo = `ShowData.Masters.Grand.{Blind,Highlight,Solo}.FADERENABLED` (show sc
 page `CurrentExecPage()`; executor activity `Sequence:HasActivePlayback()`. **Freeze: no readable state found**,
 so it is reported unavailable.
 
-**Recovery:** release with the same name *and* modifiers; Escape (repeat) closes pop-ups and clears the command line;
-restart the plugin with `Plugin "gma3_mcp_bridge"`; restart onPC as the last resort.
+**Recovery:** attempt release using the original display, case-sensitive key name and all modifier flags.
+Escape can dismiss a pop-up and then clear pending text; it changes UI/command state and must not be an
+implicit cleanup step. Starting an already-running bridge is not a proven restart or key reset. Follow
+[bridge stop/start instructions](docs/setup/bridge.md) when the plugin is responsive; restart onPC only
+as a last-resort operator action. A restart is not evidence that an uncertain release succeeded.
+
+### Remaining qualification and scope decisions
+
+- **First backend:** `Keyboard()` through existing, operator-owned shortcuts. It creates no shortcut,
+  VirtualKey, Quickey, page or executor objects. Capability is conditional on profile, display and focus.
+- **MA1/MA2:** unsupported individually until an operator-provided mapping and its press/hold/release
+  semantics are validated. Neither proposed mapping location (profile shortcuts or `VirtualKey.KEYCODE`)
+  was tested. Do not publish a guessed manual-mapping recipe; validate one before documenting it.
+- **Quickeys:** mapped executor Flash down/up is proven in this run; a Quickey assigned to that executor
+  and used to hold/release an MA key is not. Keep that investigation separate and non-blocking for the
+  shortcut backend. Bridge-owned shortcuts require a separate opt-in design and are outside this phase.
+- **Open probes:** module loading/show portability, MA combinations, same-key physical release,
+  double-press timing, shortcut-disabled behavior, remapping/profile changes during holds, and broader
+  platform/display/layout coverage. Do not infer these from basic shortcut success.
+- **Unresolved side effect:** the evidence records `PRESERVEGRIDPOSITIONS` changing from false to true,
+  without an isolated cause or restoration. Track and isolate it on a disposable show before claiming
+  side-effect-free input or complete live qualification. Preserve the observation; do not guess a cause.
+- **Freeze:** unavailable from the recorded empty-selection probe. This does not prove no getter exists;
+  further stateful probes may establish one. No false/zero fallback is permitted.
+- **Evidence limits:** retain operator/profile/display identity, mapping and focus preconditions with
+  test results. Add reproducible regression fixtures as implementation proceeds; a prose probe record
+  is not automated regression coverage.
 
 ## KB-02 — Package reusable console interaction modules
 
@@ -174,6 +208,14 @@ for automated tests until KB-04 supplies a proven console implementation.
 
 - Associate every held key with an owner/session and a lease or maximum duration. Bind bridge sessions
   to their originating connection; another connection cannot release or renew them by guessing an ID.
+- Store each press's resolved display, case-sensitive PC key, shift/ctrl/alt/numlock flags, logical
+  key and profile/mapping identity until its release is resolved. Release with that exact tuple even
+  after configuration changes; never re-resolve the logical key for cleanup. Recheck effects where
+  observable: the saved tuple alone cannot guarantee release after a host profile/remapping change.
+- Deduplicate ownership by resolved input tuple as well as logical key, so aliases cannot create two
+  owners of the same injected key. Lease renewal must not inject another press.
+- On profile/display/mapping changes during a hold, stop new interaction events, attempt stored-tuple
+  releases and retain uncertainty if release cannot be established. Test this transition explicitly.
 - Define duplicate presses/releases, unsupported codes, exhausted capacity and release ordering.
   Releasing an already released owned key is harmless. Reject conflicting ownership explicitly.
 - Service deadlines without blocking sleeps. Bound operations and work per frame; ensure a busy client
@@ -191,13 +233,15 @@ for automated tests until KB-04 supplies a proven console implementation.
 - Document recovery limitations when onPC or a host API blocks; do not describe expiry as guaranteed
   cancellation of a host call.
 
-## KB-04 — Implement the proven input backend and conditional Quickey fallback
+## KB-04 — Implement shortcut input; investigate Quickeys separately
 
 **Request:** As a consumer, I want consistent key semantics using only mechanisms proven on the target console.
 
 **Depends on:** KB-01, KB-02, KB-03.
 
-**Lua changes: Yes.** Implement the validated `Keyboard()` adapter and, only if feasible, the Quickey adapter.
+**Lua changes: Yes.** Implement the validated shortcut-based `Keyboard()` adapter. Quickey production
+support is conditional on a separate successful probe and explicit opt-in resource allocation; it is
+not required to ship this backend and must not become an automatic fallback.
 
 **Acceptance criteria:**
 
@@ -205,9 +249,26 @@ for automated tests until KB-04 supplies a proven console implementation.
   owner-scoped `release_all()`. Ownership comes from the instance/session, not an untrusted free-form ID.
 - Select a backend explicitly or from a documented capability policy at initialization. Do not switch
   it after a partially dispatched interaction. Status explains the selected mechanism and limitations.
-- Validate configured display and key codes. Fail before dispatch if the requested semantics are unsupported.
+- Resolve MA key names through live profile shortcuts and validate the actual `Enums.KeyboardCodes`
+  name, modifier tuple, display and mapping scope before a new press. Distinguish executors by
+  `ExecutorIndex`/`SpecialExec`; `EXEC` alone is not a unique target. Define deterministic handling of
+  multiple mappings and reject ambiguity rather than guessing.
+- Inspect mapping data without modifying it. Revalidate on profile/configuration changes; MA1 and MA2
+  remain separately unsupported until mapped and behaviorally validated. Preflight every requested
+  key in a combination before dispatching its first event.
+- Pass PC modifiers explicitly on every press and release. Pressing `LeftCtrl` and then a plain key
+  is not an implementation of Ctrl+key. Do not substitute PC modifiers for MA1/MA2 semantics.
+- Validate configured display and key codes. Invalid arguments can be silently ignored by onPC, so
+  a no-error return is not validation. Do not use an input event as a capability-detection side effect.
 - Timed taps schedule their release through periodic servicing. Define whether the response means
   scheduled, dispatched or completed; do not report completion before the release is attempted.
+- An intended long-press is uninterrupted: reject conflicting events during it and do not forward
+  duplicate presses. A sequence that intentionally adds another key has different semantics and
+  cannot promise the long-press pop-up. External operator activity remains outside these guarantees.
+- Keep double-press unsupported until its inter-event timing and effect are proven; two taps in one
+  handler are not established as a double-press. Make any later timing policy bounded and explicit.
+- For the optional Quickey follow-up, first test a Quickey assigned to a mapped executor with matching
+  down/up modifier tuples, including an MA hold. Do not extrapolate from Sequence Flash behavior.
 - For Quickeys, accept explicit ranges corresponding to `quickey_from`, `count`, `exec_page` and
   `exec_from`. Verify the page and all slot addresses and prove non-OSC down/up actuation first.
 - Preflight the entire reservation before mutation. Refuse occupied or overlapping ranges and preserve
@@ -232,8 +293,9 @@ TypeScript tools wrap these operations; they do not implement a second key dispa
 
 | Operation | Purpose |
 | --- | --- |
-| `hardkey` | Validated code and `press`, `release` or `tap`; bounded `hold_ms` for taps |
-| `type` | Bounded text injection into the configured display's focused input |
+| `hardkey` | Logical MA key resolved through a validated existing shortcut; `press`, `release` or bounded `tap` |
+| `keyboard` | Explicit PC key plus per-event modifiers; profile/focus-dependent, with the same gate, ownership and validation |
+| `type` | Unicode character events into a focused text input; not general command-line entry |
 | `hardkeys_status` | Capability, enablement, backend, owners, held records, capacity and cleanup status |
 | `hardkeys_release_all` | Release keys owned by the caller; recovery remains available while input is disabled |
 | `input_sequence` | Bounded ordered presses, releases, taps and text under one interaction owner |
@@ -250,9 +312,19 @@ TypeScript tools wrap these operations; they do not implement a second key dispa
 - Document that these guards cannot isolate a physical operator or a separate surface plugin. Initially
   require exclusive interactive use unless a tested cross-plugin arbitration mechanism is specified.
 - Preserve normal read-only status access and a path for owner releases while an interaction is active.
+- Treat `type` as focused-field text entry: the probe did not insert characters into the ordinary
+  command line, and numeric keycodes did not type digits into the tested editor. Do not silently
+  focus a field, open an editor, replace `type` with shortcuts or execute text via `Cmd()`.
+- Specify a focus precondition. Reject a known mismatch; if focus cannot be observed reliably,
+  require explicit caller acknowledgment and report UI verification as unavailable. A mapped key
+  may edit a field instead of performing its named hardkey action.
 - Define supported text encoding and iterate Unicode characters correctly rather than UTF-8 bytes.
   Set length limits, explicit newline/control-character rules and focus behavior; do not silently
   execute a line or close a dialog as a side effect of text normalization.
+- Perform bounded readback across frames when a suitable observable exists; the effect may appear
+  synchronously or on a later frame. The recorded `MAINLOOPCOUNT` can identify frame progress, but
+  neither one fixed delay nor one immediate read establishes failure or success. Deadline expiry
+  never triggers input replay, and verification must leave release/deadline servicing runnable.
 - Report completed and unattempted events, text progress where knowable, and any uncertain final event.
   Never equate API acceptance with confirmed UI effect. Retain existing workflow outcome conventions.
 - Do not automatically replay taps, text or sequences after timeouts/disconnects. Session reconciliation
@@ -271,12 +343,18 @@ executor and fader queries where their semantics already fit; do not duplicate t
 
 **Acceptance criteria:**
 
-- Probe command-line text using `CmdObj().cmdtext`, which appears in MA's official example; verify its
-  behavior on target versions. Keep raw text separate from any inferred pending keyword.
-- Probe Blind, Highlight, Preview, Freeze and Solo individually. Define whether each value describes
-  the current user/profile, local station, programmer, playback or another scope.
-- Define current-page and executor activity/level semantics and map only verified console properties.
-  Do not equate assigned, selected, active and nonzero-level states.
+- Implement the recorded sources with capability checks and version-specific tests: command text
+  `CmdObj().cmdtext`, raw last-command feedback `CmdObj().lastcommand`, Blind/Highlight/Solo via
+  `ShowData.Masters.Grand.<mode>.FADERENABLED`, profile Preview via
+  `CurrentProfile().Environments.ACTIVEENVIRONMENT`, and display-local `PREVIEWBARACTIVE` separately.
+- Keep raw command text separate from inferred keywords, and raw last-command feedback separate from
+  confirmation of a particular request. Shared command history alone cannot correlate concurrent UI input.
+- Preserve the observed scopes: show masters, current user profile, display, and user current page.
+  Verify cross-user behavior before making stronger scope guarantees than the single-user probe supports.
+- Use `CurrentExecPage()` for page identity and the existing fader queries for levels. Report
+  `Sequence:HasActivePlayback()` as sequence activity; it is not proof that a particular executor
+  caused that playback or that its button remains held. Do not conflate assignment, selection, level
+  and activity. Freeze stays unavailable unless a new probe establishes readable state.
 - Unknown or unsupported values are `null`/unavailable with a reason, never guessed `false` or zero.
   Include snapshot freshness and scope; cached state becomes stale after disconnect or show change.
 - Reads do not change selection, command text, programmer, playback or UI focus and work with both
@@ -345,6 +423,7 @@ owning feature rather than bypassed with ad hoc Lua in documentation or tests.
   describes dynamic Quickey allocation and executor holds. It is evidence for the pattern, not proof
   of a non-OSC implementation or compatibility with every onPC version.
 - The originating proposal cites a community v2.3 `Keyboard()` API dump and MA forum thread 9022.
-  Their signature and hardkey semantics remain probe inputs, not confirmed contracts here.
+  The recorded live descriptor and observations above now supersede those references for the tested
+  macOS configuration; they do not establish compatibility on other versions or platforms.
 - Claims that no other external hardkey mechanism exists, or that OSC executor keys fail on a particular
   release, are not prerequisites for this design and should not be published as universal facts.
