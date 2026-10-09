@@ -18,7 +18,11 @@ Windows module loading and transfer to a separate machine remain qualification g
 **KB-07 integrated live on 2026-10-09** in mtpnxk (its `KEYBOARD.md` and `docs/probes/kb-07-live-macos-2.5.1.md`): the
 surface plugin vendors hardkeys 0.5.0 and feedback 0.2.0, pairs with a Rust service over authenticated UDP, and drove a
 physical NX-K against onPC 2.5.1 on macOS with LEDs confirmed by the operator. Two findings from that run feed KB-09.
-KB-08 (documentation and qualification) and KB-09 (shortcut-table cache, operator-managed profile shortcuts) remain.
+**KB-08 closed on 2026-10-09** in mtpnxk (`docs/kb-08-acceptance.md`, `docs/deployments.md`, `docs/operator-guide.md`,
+`docs/probes/kb-08-qualification-macos-2.5.1.md`) with a bounded macOS beta scope: lifecycle observed on the console,
+two limits (press-to-effect p99 at 10 taps/s, flood resilience) recorded as not met and filed against KB-07. The module
+pin here is hardkeys 0.5.0 / feedback 0.2.0 at `main` after PR #12. KB-09 (shortcut-table cache, operator-managed
+profile shortcuts) remains.
 Completion establishes the contracts and limitations below, not production keyboard support or universal
 platform coverage. The keyboard implementation remains available. KB-10–KB-15 now specify Quickey
 qualification, owned resource provisioning and explicit per-key dispatch policies; these are planned work,
