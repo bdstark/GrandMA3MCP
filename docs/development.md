@@ -34,15 +34,19 @@ The suite in `test/` has no extra dependencies:
 * `test/lua/hardkeys_sessions_test.lua` runs the KB-03 owned input sessions of `plugin/gma3_mcp_hardkeys.lua`
   against the module's fake backend with a staged fake user profile: admission, leases, stored tuples and
   routes, duplicates/aliases/displays/capacity, release ordering, remap/disable/profile-switch during a hold,
-  taps and bounded deadline servicing, observed physical releases, disconnect, disable, dispose and adopt.
+  taps and bounded deadline servicing, observed physical releases, disconnect, disable, dispose and adopt; and the
+  KB-04 keyboard adapter over stubbed console deps (`Keyboard()` argument passing, pre-dispatch refusals, raising
+  calls kept as unresolved, bounded MASTATE readback, exclusive long-press, combos, backend-origin records).
 * `test/lua/bridge_plugin_test.lua` exercises the console plugin under a stock Lua 5.4+ interpreter with the
   grandMA3 API and LuaSocket stubbed: Lua execution off by default, budget behavior and execution-environment restrictions (hook removal,
   child coroutines, deadlines across yields), argument parsing, loopback-only binding and rejection of a
   non-loopback peer, and the connection-bound `input.*` ops (control invocations that never release, cleanup
-  on disconnect/stop, records kept across a restart, a flooding client that cannot starve deadline servicing).
+  on disconnect/stop, records kept across a restart, `input=keyboard` through a stubbed `Keyboard()`, refused backend
+  switches, `input.combo`, cleanup-only attach in `input recover`, a flooding client that cannot starve deadline servicing).
   `npm test` runs them when `lua` is on PATH and skips them otherwise (`brew install lua`).
-* `kb02-probe.test.ts` and `kb03-probe.test.ts` run the live probe scripts against fake bridges to make sure
-  their checks fail when a bridge misbehaves and that they refuse unsafe preconditions.
+* `kb02-probe.test.ts`, `kb03-probe.test.ts` and `kb04-probe.test.ts` run the live probe scripts against fake bridges to
+  make sure their checks fail when a bridge misbehaves and that they refuse unsafe preconditions (the KB-04 probe presses
+  real keys, so its gate — keyboard backend, Lua on, disposable show, idle console — is what the test guards).
 
 Live tests live in `test/live/*.live.ts`, are never picked up by `npm test`, and refuse to run unless
 `GMA3_LIVE=1` is set and the loaded show file name matches `GMA3_LIVE_SHOW` (default: a name containing

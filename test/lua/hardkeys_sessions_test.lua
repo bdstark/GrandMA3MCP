@@ -67,7 +67,7 @@ do
   local h; h, err = inst:press("c1", 0, { key = "PLEASE" })
   check("press refused while input disabled; nothing dispatched", h == nil and err.code == "input-disabled" and #backend.events == 0, J(err))
   local r; r, err = inst:enableInput({ name = "keyboard", dispatches = false, press = function() end, release = function() end })
-  check("an adapter without dispatch (keyboard in this version) is refused", r == nil and err.code == "backend-no-dispatch" and err.message:find("KB%-04"), J(err))
+  check("an adapter without dispatch is refused", r == nil and err.code == "backend-no-dispatch", J(err))
   r, err = inst:enableInput({})
   check("a malformed adapter is refused", r == nil and err.code == "bad-adapter")
   r = inst:enableInput(backend)
@@ -114,8 +114,9 @@ do
   local inst, backend = fresh({ maxHolds = 3 })
   inst:openSession({ id = "a", leaseMs = 120000 }, 0); inst:openSession({ id = "b", leaseMs = 120000 }, 0)
   local h = inst:press("a", 1, { key = "please", display = 1 })
-  check("logical press stores the resolved tuple and route", h.logical == "PLEASE" and h.pcKey == "Enter" and h.shift == false and h.display == 1
-    and h.route.source == "shortcut-table" and h.route.shortcut == "Enter" and h.route.profile == "Default" and h.route.shortcutsActive == true and h.tupleKey == "Enter|s0c0a0n0", J(h))
+  check("logical press stores the resolved tuple and route (PLEASE: native Enter route)", h.logical == "PLEASE" and h.pcKey == "Enter" and h.shift == false and h.display == 1
+    and h.route.source == "native" and h.route.shortcut == nil and h.route.profile == "Default" and h.route.shortcutsActive == true and h.tupleKey == "Enter|s0c0a0n0" and h.backend == "fake", J(h))
+  check("press report spells out the outcomes", h.pressOutcome == "confirmed" and h.releaseOutcome == "scheduled" and h.dispatch.press.outcome == "confirmed", J(h))
   check("fake backend recorded exactly one press event", #backend.events == 1 and lastEvent(backend).kind == "press" and lastEvent(backend).pcKey == "Enter" and backend:isDown({ pcKey = "Enter" }))
   local d = inst:press("a", 2, { key = "PLEASE", display = 2 })
   check("duplicate press by the owner is harmless (no second event), display ignored for identity", d.duplicate == true and d.id == h.id and #backend.events == 1, J(d))
@@ -216,23 +217,23 @@ end
 do
   local inst, backend = fresh()
   inst:openSession({ id = "a", leaseMs = 120000 }, 0); inst:openSession({ id = "b", leaseMs = 120000 }, 0)
-  local h = inst:press("a", 1, { key = "PLEASE" })
-  -- Operator remaps PLEASE from Enter to Space while it is held.
-  profile.rows = { { shortcut = "Space", keyCode = 84 }, { shortcut = "S", keyCode = 66 } }
-  local c, err = inst:press("a", 2, { key = "STORE" })
+  local h = inst:press("a", 1, { key = "STORE" })
+  -- Operator remaps STORE from S to T while it is held.
+  profile.rows = { { shortcut = "Enter", keyCode = 84 }, { shortcut = "T", keyCode = 66 } }
+  local c, err = inst:press("a", 2, { key = "PLEASE" })
   check("new interaction events stop after a remap, reporting original route and mismatch",
-    c == nil and err.code == "route-changed" and err.mismatches[1].hold == h.id and err.mismatches[1].original.tupleKey == "Enter|s0c0a0n0" and err.mismatches[1].mismatch:find("Space"), J(err))
+    c == nil and err.code == "route-changed" and err.mismatches[1].hold == h.id and err.mismatches[1].original.tupleKey == "S|s0c0a0n0" and err.mismatches[1].mismatch:find("T|s0c0a0n0"), J(err))
   check("nothing was dispatched for the refused press", backend.counters.press == 1)
-  c, err = inst:press("b", 2, { pcKey = "Space" })
+  c, err = inst:press("b", 2, { pcKey = "T" })
   check("other sessions are blocked too while a route mismatch is unresolved", c == nil and err.code == "route-changed")
   local st = inst:status(2)
-  check("status shows the mismatch on the hold", st.holds[1].routeMismatch and st.holds[1].routeMismatch.reason:find("Space") and st.holds[1].state == "held", J(st.holds[1]))
-  -- Release goes out with the STORED tuple (Enter), never the re-resolved Space.
+  check("status shows the mismatch on the hold", st.holds[1].routeMismatch and st.holds[1].routeMismatch.reason:find("T|s0c0a0n0") and st.holds[1].state == "held", J(st.holds[1]))
+  -- Release goes out with the STORED tuple (S), never the re-resolved T.
   backend:setConfirmMode(nil)  -- this backend cannot observe the effect
-  local r = inst:release("a", 3, { key = "PLEASE" })
-  check("release uses the stored tuple after the remap", lastEvent(backend).kind == "release" and lastEvent(backend).pcKey == "Enter", J(lastEvent(backend)))
-  check("unconfirmed release after a route change stays unresolved; the record is kept", r.state == "unresolved" and r.unresolved.reason:find("route changed") and inst:status().unresolved == 1 and inst:status().capacity.used == 1, J(r))
-  c, err = inst:press("b", 4, { pcKey = "Enter" })
+  local r = inst:release("a", 3, { key = "STORE" })
+  check("release uses the stored tuple after the remap", lastEvent(backend).kind == "release" and lastEvent(backend).pcKey == "S", J(lastEvent(backend)))
+  check("unconfirmed release after a route change stays unresolved; the record is kept", r.state == "unresolved" and r.unresolved.reason:find("route changed") and r.releaseOutcome == "unresolved" and inst:status().unresolved == 1 and inst:status().capacity.used == 1, J(r))
+  c, err = inst:press("b", 4, { pcKey = "S" })
   check("an unresolved record still blocks the tuple for others", c == nil and (err.code == "conflict" or err.code == "route-changed"), J(err))
   -- A second release attempt is explicit (recover); service() does not retry on its own.
   local sv = inst:service(5)
@@ -245,7 +246,7 @@ do
   check("after the route is restored, recover releases with the stored tuple and clears the record", #rec.released == 1 and rec.released[1].verified == false and inst:status().unresolved == 0 and inst:status().holds[1].routeRestored ~= nil, J(rec))
   check("recover reports its scope", rec.scope == "a")
   backend:setConfirmMode(true)
-  check("new input admitted again after resolution", inst:press("b", 8, { pcKey = "Enter" }) ~= nil)
+  check("new input admitted again after resolution", inst:press("b", 8, { pcKey = "S" }) ~= nil)
   inst:releaseAll("b", 8)
 
   -- Shortcut disable during a hold.
@@ -500,6 +501,388 @@ do
   r = inst:release("a", 9, { pcKey = "U" })
   check("a release the backend reports as not confirmed stays unresolved", r.state == "unresolved" and r.unresolved.reason:find("still down"), J(r))
   check("service and press need a numeric clock", not pcall(inst.service, inst) and not pcall(inst.press, inst, "a", nil, { pcKey = "Q" }))
+end
+
+-------------------------------------------------------------------------------
+-- KB-04: the Keyboard() adapter over stubbed console deps
+-------------------------------------------------------------------------------
+-- The stub records every Keyboard() call, can raise on demand, and exposes a mutable aggregate MASTATE
+-- the way Root():Get("MAState") does. Nothing here infers per-key state from it.
+local kb = { calls = {}, raise = nil, ma = false, codes = { Enter = 257, Escape = 256, S = 83, T = 84, F1 = 290, LeftShift = 340, RightShift = 344, Delete = 261, Backspace = 259, ["5"] = 53, Z = 90, Q = 81, A = 65, W = 87 } }
+local kdeps = {
+  shortcutRows = deps.shortcutRows, virtualKeyCodes = deps.virtualKeyCodes, shortcutsActive = deps.shortcutsActive, profileName = deps.profileName,
+  displayExists = function(n) return n == 1 or n == 2 end,
+  Keyboard = function(display, kind, key, shift, ctrl, alt, numlock)
+    if kb.raise then local e = kb.raise; kb.raise = nil; error(e) end
+    kb.calls[#kb.calls + 1] = { display = display, kind = kind, key = key, shift = shift, ctrl = ctrl, alt = alt, numlock = numlock }
+    if key == "LeftShift" or key == "RightShift" then kb.ma = (kind == "press") end
+  end,
+  keyboardCodes = function() return kb.codes end,
+  maState = function() return kb.ma end,
+  virtualKeyRedirects = function() return { PLEASE = "Enter", MA1 = "None" } end,
+}
+local function lastCall() return kb.calls[#kb.calls] end
+local function freshKb(config, depsOverride)
+  kb.calls = {}; kb.ma = false; kb.raise = nil
+  local adapter = HK.keyboardBackend(depsOverride or kdeps)
+  local inst = HK.new({ owner = "bridge", deps = depsOverride or kdeps, config = config }):init()
+  local ok, err = inst:enableInput(adapter)
+  assert(ok and ok.enabled, "enableInput(keyboard) failed: " .. J(err))
+  inst:openSession({ id = "a", leaseMs = 120000 }, 0); inst:openSession({ id = "b", leaseMs = 120000 }, 0)
+  return inst, adapter
+end
+do
+  check("keyboardBackend needs deps", not pcall(HK.keyboardBackend))
+  local inst, adapter = freshKb()
+  local st = inst:status(0)
+  check("keyboard backend attached, dispatches, lists its limitations and is not display-scoped", st.inputEnabled and st.backend.name == "keyboard" and st.backend.dispatches and st.backend.available and type(st.backend.limitations) == "table" and #st.backend.limitations >= 5 and st.backend.displayScoped == false, J(st.backend))
+  -- Explicit modifiers on every event; the display argument is passed as API context only.
+  local h = inst:press("a", 1, { key = "STORE", display = 2 })
+  check("press sends Keyboard(display,'press',key,shift,ctrl,alt,numlock) with explicit booleans", h and lastCall().kind == "press" and lastCall().key == "S" and lastCall().display == 2
+    and lastCall().shift == false and lastCall().ctrl == false and lastCall().alt == false and lastCall().numlock == false and #kb.calls == 1, J(lastCall()))
+  check("keyboard press is dispatched, not confirmed; backend recorded on the hold", h.pressOutcome == "dispatched" and h.dispatch.press.confirmed == nil and h.backend == "keyboard" and h.route.pcKeyValidated == true, J(h))
+  local r = inst:release("a", 2, { key = "STORE" })
+  check("release repeats the stored tuple with the same modifiers and display", lastCall().kind == "release" and lastCall().key == "S" and lastCall().display == 2 and lastCall().shift == false, J(lastCall()))
+  check("keyboard release is 'dispatched': released state, verified=false, no readback for a non-MA key", r.state == "released" and r.releaseOutcome == "dispatched" and r.attempt.outcome == "dispatched" and r.attempt.verified == false and r.readback == nil, J(r))
+  -- Raw keys with modifiers: the tuple's flags travel on both events; no LeftCtrl press is synthesised.
+  h = inst:press("a", 3, { pcKey = "F1", ctrl = true })
+  check("Ctrl+F1 is one event with ctrl=true", #kb.calls == 3 and lastCall().key == "F1" and lastCall().ctrl == true and lastCall().shift == false, J(lastCall()))
+  inst:release("a", 4, { hold = h.id })
+  check("Ctrl+F1 release carries ctrl=true", lastCall().kind == "release" and lastCall().key == "F1" and lastCall().ctrl == true, J(lastCall()))
+  -- EXEC through the mapped executor shortcut.
+  h = inst:press("a", 5, { key = "EXEC", executor = 101 })
+  check("EXEC 101 dispatches Ctrl+F1 from the shortcut row", h and lastCall().key == "F1" and lastCall().ctrl == true and h.route.shortcut == "Ctrl+F1", J(h))
+  inst:release("a", 5, { hold = h.id })
+  -- Validation before dispatch: unknown KeyboardCodes name, missing display, logical key whose row names an unknown PC key.
+  local n = #kb.calls
+  local c, err = inst:press("a", 6, { pcKey = "Bogus" })
+  check("unknown Enums.KeyboardCodes name refused before dispatch", c == nil and err.code == "unsupported" and err.message:find("KeyboardCodes") and #kb.calls == n, J(err))
+  c, err = inst:press("a", 6, { pcKey = "S", display = 9 })
+  check("non-existent display refused before dispatch", c == nil and err.code == "bad-argument" and #kb.calls == n, J(err))
+  profile.rows = { { shortcut = "Weird", keyCode = 66 }, { shortcut = "Enter", keyCode = 84 } }
+  c, err = inst:press("a", 6, { key = "STORE" })
+  check("logical key whose shortcut names a non-KeyboardCodes key is unsupported, nothing sent", c == nil and err.code == "unsupported" and err.message:find("KeyboardCodes") and #kb.calls == n, J(err))
+  profile.rows = defaultRows()
+  -- Native PLEASE route: admitted with shortcuts disabled; shortcut-table keys are not.
+  profile.shortcutsActive = false
+  h = inst:press("a", 7, { key = "PLEASE" })
+  check("PLEASE admitted through the native Enter route while shortcuts are inactive", h and h.route.source == "native" and h.route.redirectChecked == true and lastCall().key == "Enter", J(h))
+  c, err = inst:press("a", 7, { key = "STORE" })
+  check("STORE still refused while shortcuts are inactive", c == nil and err.code == "unsupported" and err.message:find("inactive"), J(err))
+  profile.shortcutsActive = true
+  c, err = inst:press("a", 8, { key = "MA" })
+  check("re-enabling shortcuts during a native PLEASE hold is not a route change", c ~= nil and c.pcKey == "LeftShift", J(err))
+  inst:release("a", 8, { hold = c.id })
+  profile.rows = { { shortcut = "Enter", keyCode = 66 }, { shortcut = "S", keyCode = 66 } }
+  c, err = inst:press("a", 9, { key = "MA" })
+  check("a shortcut row claiming plain Enter for another key makes the native PLEASE route ambiguous (route-changed during the hold)", c == nil and err.code == "route-changed" and err.mismatches[1].mismatch:find("ambiguous"), J(err))
+  profile.rows = defaultRows()
+  r = inst:release("a", 10, { key = "PLEASE" })
+  check("PLEASE released with the stored Enter tuple once the table is restored", r.state == "released" and lastCall().key == "Enter" and lastCall().kind == "release", J(r))
+  -- Keyboard() raising: delivery unknown, record kept as unresolved and its tuple reserved.
+  kb.raise = "host exploded"
+  c, err = inst:press("a", 11, { pcKey = "Z" })
+  check("Keyboard() raising on press keeps an unresolved record", c == nil and err.code == "press-failed" and err.unresolved == true and inst:status().unresolved == 1 and inst:status().holds[#inst:status().holds].unresolved.reason:find("unknown"), J(err))
+  c, err = inst:press("b", 11, { pcKey = "Z" })
+  check("the unresolved tuple is reserved", c == nil and err.code == "conflict", J(err))
+  local rec = inst:recover("a", 12)
+  check("recover releases it with the stored tuple through Keyboard()", #rec.released == 1 and rec.released[1].outcome == "dispatched" and lastCall().kind == "release" and lastCall().key == "Z", J(rec))
+  h = inst:press("a", 13, { pcKey = "Q" })
+  kb.raise = "host exploded again"
+  r = inst:release("a", 14, { hold = h.id })
+  check("Keyboard() raising on release is unresolved, never silently released", r.state == "unresolved" and r.releaseOutcome == "unresolved" and r.unresolved.reason:find("raised"), J(r))
+  rec = inst:recover("a", 15)
+  check("recover after the fault dispatches the stored release", #rec.released == 1 and lastCall().key == "Q", J(rec))
+  -- Keyboard() missing: refused before dispatch; the instance reports the backend unavailable.
+  local noKb = {}
+  for k, v in pairs(kdeps) do noKb[k] = v end
+  noKb.Keyboard = nil
+  local inst2 = HK.new({ owner = "x", deps = noKb }):init()
+  inst2:enableInput(HK.keyboardBackend(noKb)); inst2:openSession({ id = "s" }, 0)
+  c, err = inst2:press("s", 0, { pcKey = "S" })
+  check("without Keyboard() the press is refused before dispatch and the backend reported unavailable", c == nil and err.code == "unsupported" and err.message:find("Keyboard%(%)") and inst2:status().backend.available == false and inst2:status().backend.missing[1] == "Keyboard", J(err))
+  -- MASTATE unreadable: MA is refused (verification unavailable), other keys are not.
+  local noMa = {}
+  for k, v in pairs(kdeps) do noMa[k] = v end
+  noMa.maState = function() return "weird" end
+  local inst3 = HK.new({ owner = "x", deps = noMa }):init()
+  inst3:enableInput(HK.keyboardBackend(noMa)); inst3:openSession({ id = "s" }, 0)
+  c, err = inst3:press("s", 0, { key = "MA" })
+  check("MA refused when MASTATE is not readable", c == nil and err.code == "unsupported" and err.message:find("MASTATE"), J(err))
+  check("a shortcut key is still admitted without MASTATE", inst3:press("s", 0, { key = "STORE" }) ~= nil)
+  inst3:releaseAll("s", 1)
+  inst:releaseAll("a", 16)
+end
+
+-------------------------------------------------------------------------------
+-- KB-04: MA through LeftShift with bounded aggregate MASTATE readback
+-------------------------------------------------------------------------------
+do
+  local inst = freshKb({ readbackMs = 500 })
+  local h = inst:press("a", 1, { key = "MA" })
+  check("MA dispatches a LeftShift press without the shift flag", lastCall().key == "LeftShift" and lastCall().shift == false and h.route.verify == "MASTATE", J(lastCall()))
+  check("press readback pending until service() observes", h.readback.outcome == "pending" and h.readback.phase == "press" and h.pressOutcome == "dispatched", J(h.readback))
+  inst:service(1.1)
+  local st = inst:status(1.1)
+  check("service observes MASTATE true: press readback 'observed' (aggregate), hold stays held", st.holds[1].readback.outcome == "observed" and st.holds[1].readback.value == true and st.holds[1].state == "held" and st.holds[1].observed.aggregate.value == true and st.holds[1].observed.down == nil, J(st.holds[1]))
+  check("status reports aggregate MASTATE separately and no per-key observation", st.observed.available == false and st.observed.aggregate.maState == true and st.backend.perKeyObservation == false, J(st.observed))
+  -- Physical Shift release behind our back: MASTATE false rules out every Shift key -> observed up, never re-pressed.
+  kb.ma = false
+  local calls = #kb.calls
+  inst:service(1.2)
+  st = inst:status(1.2)
+  check("MASTATE false while held: observed.down=false, observedReleasedAt set, no re-press", st.holds[1].observed.down == false and st.holds[1].observedReleasedAt == 1.2 and st.holds[1].state == "held" and #kb.calls == calls, J(st.holds[1]))
+  -- Release: dispatched; the readback then sees MASTATE false (consistent, not a per-key confirmation).
+  kb.ma = true
+  local r = inst:release("a", 2, { key = "MA" })
+  check("MA release is dispatched, not confirmed, with a pending readback", r.state == "released" and r.releaseOutcome == "dispatched" and r.attempt.verified == false and r.readback.outcome == "pending" and r.readback.phase == "release", J(r))
+  inst:service(2.1)
+  st = inst:status(2.1)
+  check("release readback observed when MASTATE drops, worded as aggregate", st.holds[1].readback.outcome == "observed" and st.holds[1].readback.value == false and st.holds[1].readback.note:find("aggregate") and st.holds[1].state == "released", J(st.holds[1].readback))
+  -- Another Shift source keeps MASTATE true after our release: inconclusive, neither confirmed nor failed.
+  h = inst:press("a", 3, { key = "MA" })
+  inst:service(3.1)
+  local keepTrue = function() return true end
+  kdeps.maState = keepTrue
+  r = inst:release("a", 4, { key = "MA" })
+  inst:service(4.2); inst:service(4.4)
+  st = inst:status(4.4)
+  check("readback stays pending inside the window", st.holds[2].readback.outcome == "pending", J(st.holds[2].readback))
+  inst:service(4.6)
+  st = inst:status(4.6)
+  check("MASTATE still true after the window: inconclusive, hold remains released (dispatched), not unresolved", st.holds[2].readback.outcome == "inconclusive" and st.holds[2].readback.reason:find("another Shift source") and st.holds[2].state == "released" and st.unresolved == 0, J(st.holds[2].readback))
+  kdeps.maState = function() return kb.ma end
+  -- Press with no effect: MASTATE stays false -> inconclusive with the honest reason; record stays owned.
+  kb.ma = false
+  kdeps.Keyboard = function() end  -- a Keyboard() that does nothing
+  h = inst:press("a", 5, { key = "MA" })
+  inst:service(5.6)
+  st = inst:status(5.6)
+  check("press readback: MASTATE stayed false -> no observable effect, record stays owned", st.holds[3].readback.outcome == "inconclusive" and st.holds[3].readback.reason:find("no observable effect") and st.holds[3].state == "held", J(st.holds[3].readback))
+  kdeps.Keyboard = (function() local f = kdeps.Keyboard; return function(display, kind, key, shift, ctrl, alt, numlock)
+    if kb.raise then local e = kb.raise; kb.raise = nil; error(e) end
+    kb.calls[#kb.calls + 1] = { display = display, kind = kind, key = key, shift = shift, ctrl = ctrl, alt = alt, numlock = numlock }
+    if key == "LeftShift" or key == "RightShift" then kb.ma = (kind == "press") end
+  end end)()
+  inst:releaseAll("a", 6)
+  -- The fake backend offers the same aggregate, so the readback logic is exercised without a console.
+  local finst, fb = fresh()
+  finst:openSession({ id = "a" }, 0)
+  h = finst:press("a", 1, { key = "MA" })
+  finst:service(1.1)
+  check("fake backend aggregate: MA press readback observed", finst:status().holds[1].readback.outcome == "observed" and finst:status().observed.aggregate.maState == true, J(finst:status().holds[1].readback))
+  fb:physicalPress({ pcKey = "RightShift" })
+  finst:release("a", 2, { key = "MA" })
+  finst:service(3.5)
+  check("fake backend: RightShift keeps the aggregate true -> release readback inconclusive while the per-key state confirmed it", finst:status().holds[1].readback.outcome == "inconclusive" and finst:status().holds[1].releaseOutcome == "confirmed", J(finst:status().holds[1]))
+  fb:physicalRelease({ pcKey = "RightShift" })
+end
+
+-------------------------------------------------------------------------------
+-- KB-04: exclusive long-press and combinations
+-------------------------------------------------------------------------------
+do
+  local inst = freshKb()
+  local h = inst:tap("a", 1, { key = "STORE", exclusive = true }, 1500)
+  check("exclusive tap admitted when nothing else is held", h and h.exclusive == true and h.kind == "tap" and inst:status().exclusiveHold == h.id, J(h))
+  local n = #kb.calls
+  local c, err = inst:press("a", 1.1, { key = "STORE" })
+  check("owner's duplicate press rejected during the long-press (it would cancel it)", c == nil and err.code == "exclusive-hold" and err.hold == h.id and #kb.calls == n, J(err))
+  c, err = inst:press("b", 1.2, { key = "MA" })
+  check("another session's press rejected during the long-press, naming the owner and remaining time", c == nil and err.code == "exclusive-hold" and err.owner == "a" and err.deadlineInMs ~= nil and #kb.calls == n, J(err))
+  c, err = inst:combo("b", 1.2, { { key = "MA" }, { key = "PLEASE" } })
+  check("a combo is rejected during the long-press", c == nil and err.code == "exclusive-hold" and #kb.calls == n, J(err))
+  c, err = inst:tap("b", 1.3, { pcKey = "Z" }, 20)
+  check("a tap is rejected during the long-press", c == nil and err.code == "exclusive-hold", J(err))
+  check("releases stay allowed: the owner can end the long-press early", inst:release("a", 1.4, { hold = h.id }).state == "released" and lastCall().kind == "release" and lastCall().key == "S")
+  check("exclusive hold cleared", inst:status().exclusiveHold == nil)
+  inst:press("b", 2, { pcKey = "Z" })
+  c, err = inst:press("a", 2.1, { key = "STORE", exclusive = true })
+  check("an exclusive press is refused while another key is held", c == nil and err.code == "exclusive-refused" and err.holds == 1, J(err))
+  inst:releaseAll("b", 2.2)
+  c, err = inst:press("a", 2.3, { key = "STORE", exclusive = "yes" })
+  check("exclusive must be a boolean", c == nil and err.code == "bad-argument", J(err))
+  local sv = inst:tap("a", 3, { key = "STORE", exclusive = true }, 100)
+  local res = inst:service(3.2)
+  check("the loop releases the exclusive tap at its deadline", #res.released == 1 and res.released[1].hold == sv.id and inst:status().exclusiveHold == nil, J(res))
+  -- Combinations: every key preflighted first.
+  n = #kb.calls
+  c, err = inst:combo("a", 4, { { key = "MA" }, { key = "MA1" } })
+  check("a combo with an unsupported key dispatches nothing", c == nil and err.code == "unsupported" and err.key == 2 and err.message:find("nothing was dispatched") and #kb.calls == n, J(err))
+  c, err = inst:combo("a", 4, { { key = "MA" }, { pcKey = "Bogus" } })
+  check("a combo with an invalid KeyboardCodes name dispatches nothing", c == nil and err.code == "unsupported" and err.key == 2 and #kb.calls == n, J(err))
+  c, err = inst:combo("a", 4, { { key = "MA" }, { pcKey = "LeftShift" } })
+  check("the same tuple twice in a combo is rejected", c == nil and err.code == "bad-argument" and err.message:find("twice") and #kb.calls == n, J(err))
+  c, err = inst:combo("a", 4, { { key = "MA" } })
+  check("a combo needs at least two keys", c == nil and err.code == "bad-argument")
+  c, err = inst:combo("a", 4, { { key = "MA" }, { key = "STORE", exclusive = true } })
+  check("a combo cannot be exclusive", c == nil and err.code == "bad-argument" and err.message:find("exclusive"))
+  inst:press("b", 4, { pcKey = "S" })
+  c, err = inst:combo("a", 4.1, { { key = "MA" }, { key = "STORE" } })
+  check("a combo whose key another session holds is a conflict before dispatch", c == nil and err.code == "conflict" and err.key == 2 and #kb.calls == n + 1, J(err))
+  inst:releaseAll("b", 4.2)
+  n = #kb.calls
+  c = inst:combo("a", 5, { { key = "MA" }, { key = "STORE" } }, { holdMs = 200 })
+  check("MA+STORE combo presses LeftShift then S, both in one group with a shared deadline", c and c.count == 2 and c.holds[1].pcKey == "LeftShift" and c.holds[2].pcKey == "S" and c.holds[1].group == c.holds[2].group and c.holds[2].kind == "combo-tap"
+    and kb.calls[n + 1].key == "LeftShift" and kb.calls[n + 1].kind == "press" and kb.calls[n + 2].key == "S" and #kb.calls == n + 2, J(c))
+  res = inst:service(5.25)
+  check("combo deadline releases newest first: S then LeftShift", #res.released == 2 and res.released[1].tupleKey == "S|s0c0a0n0" and res.released[2].tupleKey == "LeftShift|s0c0a0n0" and kb.calls[n + 3].key == "S" and kb.calls[n + 4].key == "LeftShift" and kb.calls[n + 4].kind == "release", J(res))
+  -- A press failing midway rolls back what was pressed.
+  n = #kb.calls
+  local pressCount = 0
+  local origKeyboard = kdeps.Keyboard
+  kdeps.Keyboard = function(...) pressCount = pressCount + 1; if pressCount == 2 then error("second key exploded") end; return origKeyboard(...) end
+  c, err = inst:combo("a", 6, { { key = "MA" }, { key = "STORE" } })
+  kdeps.Keyboard = origKeyboard
+  check("a press raising midway releases the keys already pressed and reports the partial outcome", c == nil and err.code == "press-failed" and err.key == 2 and #err.pressed == 1 and err.pressed[1].pcKey == "LeftShift" and #err.rollback.released == 1 and lastCall().kind == "release" and lastCall().key == "LeftShift", J(err))
+  check("the raising key stays as an unresolved record (delivery unknown)", inst:status().unresolved == 1 and inst:status().holds[#inst:status().holds].pcKey == "S", J(inst:status().holds))
+  inst:recover("a", 7)
+  check("recover clears it", inst:status().unresolved == 0)
+  c, err = inst:combo("a", 8, { { key = "MA" }, { key = "STORE" } }, { holdMs = 99999 })
+  check("combo holdMs is bounded by maxTapMs", c == nil and err.code == "bad-argument")
+  -- Capacity counts the whole combo.
+  local small = freshKb({ maxHolds = 2 })
+  small:press("a", 1, { pcKey = "Z" })
+  c, err = small:combo("a", 1, { { key = "MA" }, { key = "STORE" } })
+  check("a combo that would exceed capacity dispatches nothing", c == nil and err.code == "capacity" and #kb.calls == 1, J(err))
+end
+
+-------------------------------------------------------------------------------
+-- KB-04: records carry their backend; attachBackend() for cleanup without admitting input
+-------------------------------------------------------------------------------
+do
+  -- Fake records must never become real key events.
+  local finst, fb = fresh()
+  finst:openSession({ id = "a" }, 0)
+  finst:press("a", 1, { pcKey = "Z" })
+  fb:failNext("release", { pcKey = "Z" }, "stuck", true)
+  local d = finst:dispose(2)
+  check("dispose records carry the originating backend", d.records[1].backend == "fake", J(d.records[1]))
+  kb.calls = {}
+  local inst = HK.new({ owner = "bridge", deps = kdeps }):init()
+  local ad = inst:adopt(d.records, 3)
+  check("adopted record keeps its backend", #ad.adopted == 1 and ad.adopted[1].backend == "fake", J(ad))
+  local att = inst:attachBackend(HK.keyboardBackend(kdeps))
+  check("attachBackend attaches without enabling input", att and att.attached and att.enabled == false and inst:status().inputEnabled == false and inst:status().backend.attached == true and inst:status().backend.dispatches == true, J(att))
+  inst:openSession({ id = "s" }, 3)
+  local c, err = inst:press("s", 3, { pcKey = "A" })
+  check("input stays disabled after attachBackend", c == nil and err.code == "input-disabled", J(err))
+  local rec = inst:recover(nil, 4)
+  check("a fake record is not released through the keyboard backend: unresolved, nothing sent", #rec.unresolved == 1 and rec.unresolved[1].error:find("originates from backend 'fake'") and #kb.calls == 0, J(rec))
+  check("the record stays reserved", inst:status().unresolved == 1 and inst:status().holds[1].backend == "fake")
+  -- Switching to the originating backend is refused while the record exists? No: attach is allowed when
+  -- the adapter changes only if no live records exist, so the operator must use the fake to clear it.
+  local sw, swerr = inst:attachBackend(HK.fakeBackend())
+  check("switching backends with a live record is refused", sw == nil and swerr.code == "holds-exist", J(swerr))
+  -- A fresh instance with the fake attached for cleanup clears the fake record.
+  local inst2 = HK.new({ owner = "bridge", deps = kdeps }):init()
+  inst2:adopt(d.records, 5)
+  inst2:attachBackend(HK.fakeBackend())
+  rec = inst2:recover(nil, 6)
+  check("the originating (fake) backend releases the adopted fake record", #rec.released == 1 and inst2:status().unresolved == 0, J(rec))
+  -- Records without a backend name are never dispatched anywhere.
+  local inst3 = HK.new({ owner = "bridge", deps = kdeps }):init()
+  inst3:adopt({ { pcKey = "Q", ctrl = true } }, 7)
+  inst3:attachBackend(HK.keyboardBackend(kdeps))
+  rec = inst3:recover(nil, 8)
+  check("a record of unknown origin is never dispatched", #rec.unresolved == 1 and rec.unresolved[1].error:find("'unknown'") and #kb.calls == 0, J(rec))
+  -- Keyboard records released by a keyboard adapter after a "restart".
+  local k1 = freshKb()
+  k1:press("a", 1, { key = "MA" })
+  kb.raise = "console wedged"
+  local dk = k1:dispose(2)
+  check("keyboard dispose keeps the failed MA release as a keyboard record", #dk.records == 1 and dk.records[1].backend == "keyboard" and dk.records[1].pcKey == "LeftShift", J(dk.records))
+  local k2 = HK.new({ owner = "bridge", deps = kdeps }):init()
+  k2:adopt(dk.records, 3)
+  k2:attachBackend(HK.keyboardBackend(kdeps))
+  kb.calls = {}
+  rec = k2:recover(nil, 4)
+  check("recover through the keyboard adapter sends the stored LeftShift release with input still disabled", #rec.released == 1 and lastCall().kind == "release" and lastCall().key == "LeftShift" and k2:status().inputEnabled == false, J(rec))
+end
+
+-------------------------------------------------------------------------------
+-- Review of PR #9: collisions, unestablished enablement, exclusivity across failed releases
+-------------------------------------------------------------------------------
+do
+  -- 1. A colliding row is detected at press time and as a route change during a hold.
+  local inst, backend = fresh()
+  inst:openSession({ id = "a", leaseMs = 120000 }, 0)
+  profile.rows = { { shortcut = "Enter", keyCode = 84 }, { shortcut = "S", keyCode = 66 }, { shortcut = "S", keyCode = 87 } }
+  local c, err = inst:press("a", 1, { key = "STORE" })
+  check("STORE refused when S is also mapped to CLEAR; nothing dispatched", c == nil and err.code == "unsupported" and err.message:find("collision") and backend.counters.press == 0, J(err))
+  profile.rows = defaultRows()
+  local h = inst:press("a", 2, { key = "STORE" })
+  profile.rows = { { shortcut = "Enter", keyCode = 84 }, { shortcut = "S", keyCode = 66 }, { shortcut = "S", keyCode = 87 } }
+  c, err = inst:press("a", 3, { key = "MA" })
+  check("a collision appearing during a hold is a route change", c == nil and err.code == "route-changed" and err.message:find("collision"), J(err))
+  backend:setConfirmMode(nil)
+  local r = inst:release("a", 4, { key = "STORE" })
+  check("the unconfirmable release stays unresolved while the collision exists", r.state == "unresolved", J(r))
+  profile.rows = defaultRows()
+  r = inst:recover("a", 5)
+  check("recover releases once the table is clean again", #r.released == 1, J(r))
+  backend:setConfirmMode(true)
+
+  -- 2. Shortcut enablement must be positively established.
+  local savedActive = deps.shortcutsActive
+  deps.shortcutsActive = function() error("profile unreadable") end
+  c, err = inst:press("a", 6, { key = "STORE" })
+  check("shortcut-backed press refused when enablement cannot be read", c == nil and err.code == "unsupported" and err.message:find("cannot be established") and err.message:find("profile unreadable"), J(err))
+  deps.shortcutsActive = function() return nil end
+  c, err = inst:press("a", 6, { key = "STORE" })
+  check("shortcut-backed press refused when enablement reads as nil", c == nil and err.code == "unsupported" and err.message:find("cannot be established"), J(err))
+  c = inst:press("a", 6, { key = "MA" })
+  check("the fixed MA route does not need enablement", c and c.pcKey == "LeftShift", J(c))
+  inst:release("a", 6, { key = "MA" })
+  c = inst:press("a", 6, { key = "PLEASE" })
+  check("the native PLEASE route does not need enablement", c and c.route.source == "native", J(c))
+  inst:release("a", 6, { key = "PLEASE" })
+  deps.shortcutsActive = savedActive
+  h = inst:press("a", 7, { key = "STORE" })
+  deps.shortcutsActive = function() error("profile unreadable") end
+  backend:setConfirmMode(nil)
+  r = inst:release("a", 8, { key = "STORE" })
+  check("release with unreadable enablement is unresolved, not released; the record is kept", r.state == "unresolved" and r.unresolved.reason:find("cannot be established") and inst:status().unresolved == 1, J(r))
+  c, err = inst:press("a", 8, { pcKey = "Z" })
+  check("new input stops while enablement cannot be established", c == nil and err.code == "route-changed", J(err))
+  deps.shortcutsActive = savedActive
+  r = inst:recover("a", 9)
+  check("recover resolves it once enablement is readable again", #r.released == 1 and inst:status().unresolved == 0, J(r))
+  -- Profile identity unreadable during a hold is a mismatch too.
+  h = inst:press("a", 10, { key = "STORE" })
+  local savedProfile = deps.profileName
+  deps.profileName = function() error("no profile") end
+  r = inst:release("a", 11, { key = "STORE" })
+  check("release with unreadable profile identity is unresolved", r.state == "unresolved" and r.unresolved.reason:find("profile identity"), J(r))
+  deps.profileName = savedProfile
+  inst:recover("a", 12)
+  backend:setConfirmMode(true)
+  check("clean again", inst:status().unresolved == 0 and inst:status().capacity.used == 0)
+
+  -- 3. Exclusivity survives a failed release, disposal and adoption.
+  inst:openSession({ id = "b", leaseMs = 120000 }, 0)
+  h = inst:press("a", 20, { key = "STORE", exclusive = true })
+  backend:failNext("release", { pcKey = "S" }, "wedged", true)
+  r = inst:release("a", 21, { key = "STORE" })
+  check("exclusive release fails -> unresolved", r.state == "unresolved", J(r))
+  c, err = inst:press("b", 22, { pcKey = "Q" })
+  check("another session is still locked out while the exclusive release is unresolved", c == nil and err.code == "exclusive-hold" and err.state == "unresolved" and err.message:find("recover"), J(err))
+  c, err = inst:press("a", 22, { pcKey = "Q" })
+  check("the owner is locked out too", c == nil and err.code == "exclusive-hold", J(err))
+  check("status still names the exclusive hold", inst:status().exclusiveHold == h.id)
+  local d = inst:dispose(23)
+  check("the disposed record carries exclusive", d.records[1] and d.records[1].exclusive == true and d.records[1].pcKey == "S", J(d.records))
+  local inst2 = HK.new({ owner = "bridge", deps = deps }):init()
+  local b2 = HK.fakeBackend()
+  inst2:adopt(d.records, 24)
+  inst2:enableInput(b2)
+  inst2:openSession({ id = "c" }, 24)
+  c, err = inst2:press("c", 25, { pcKey = "Q" })
+  check("an adopted exclusive record keeps the lock in the new instance", c == nil and err.code == "exclusive-hold" and err.owner == "previous-run", J(err))
+  r = inst2:recover(nil, 26)
+  check("recover resolves the adopted exclusive record", #r.released == 1 and inst2:status().exclusiveHold == nil, J(r))
+  check("input admitted again", inst2:press("c", 27, { pcKey = "Q" }) ~= nil)
+  inst2:releaseAll("c", 28)
 end
 
 print(string.format("%d passed, %d failed", passes, failures))

@@ -138,7 +138,7 @@ Ops: `ping`, `cmd`, `lua`, `object`, `children`, `objects`, `dump`, `set`, `setf
 `modules` op (loaded [console interaction modules](modules.md), their versions, errors and instance status;
 `ping` carries the same summary under `modules`), and since v0.5.0 the owned input session ops `input.open`,
 `input.renew`, `input.close`, `input.press`, `input.tap`, `input.release`, `input.releaseAll`, `input.recover`,
-`input.status` and the fake-backend test control `input.fake` (below). See
+`input.status` and the fake-backend test control `input.fake` (below), and since v0.6.0 `input.combo` (below). See
 [`plugin/gma3_mcp_bridge.lua`](../plugin/gma3_mcp_bridge.lua).
 
 `ping` reports the Lua execution policy as `lua: {enabled, maxMs, maxSteps, bounded}`. The `lua` op is
@@ -147,19 +147,26 @@ console's budget, never loosen it.
 
 ### Owned input sessions (plugin v0.5.0, KB-03)
 
-Owned input is a separate per-start opt-in (`Plugin "gma3_mcp_bridge" "input=fake"`, or `input=off`); `ping`
-reports it as `input: {enabled, backend, sessions, holds, unresolved, unresolvedFromPreviousRun}`. Only the
-**fake backend** exists in this version: it records events and simulates aggregate key state, and nothing
-reaches a console key. `input=keyboard` is refused until KB-04.
+Owned input is a separate per-start opt-in (`Plugin "gma3_mcp_bridge" "input=keyboard"`, `input=fake`, or
+`input=off`); `ping` reports it as `input: {enabled, backend, sessions, holds, unresolved, unresolvedFromPreviousRun}`.
+The **keyboard backend** (v0.6.0, KB-04) presses real console keys through `Keyboard()`; the **fake backend**
+records events and simulates aggregate key state, and nothing reaches a console key. A switch between them is
+refused while ownership records exist and leaves the previous policy intact.
 
 A session belongs to the TCP connection that opened it (`input.open {leaseMs?, label?}`; the id is derived
 from the connection and never taken from a request), so another connection cannot release or renew it.
-`input.press {key | pcKey, shift?, ctrl?, alt?, numlock?, display?, executor?, maxHoldMs?}` and
-`input.tap {..., holdMs?}` need input enabled; `input.release {hold | key | pcKey...}`, `input.releaseAll`,
+`input.press {key | pcKey, shift?, ctrl?, alt?, numlock?, display?, executor?, maxHoldMs?, exclusive?}`,
+`input.tap {..., holdMs?}` and `input.combo {keys: [spec, ...], holdMs?}` need input enabled; `input.release {hold | key | pcKey...}`, `input.releaseAll`,
 `input.recover` (own session only), `input.close` and the read-only `input.status` stay available while input
 is disabled, because they are the recovery path. Errors carry a bracketed code: `[no-session]`, `[conflict]`
-(with the owning session), `[not-owner]`, `[lease-expired]`, `[route-changed]`, `[unsupported]`, `[capacity]`,
-`[input-disabled]`, `[stopping]`. A disconnect, lease expiry, `input=off`, `stop` and `Cleanup` attempt to
+(with the owning session), `[not-owner]`, `[lease-expired]`, `[route-changed]` (naming the key, the original tuple and
+the mismatch), `[unsupported]`, `[capacity]`, `[exclusive-hold]`, `[exclusive-refused]`, `[press-failed]`,
+`[input-disabled]`, `[stopping]`. Hold reports carry `backend`, `pressOutcome` and `releaseOutcome`
+(`scheduled`/`dispatched`/`confirmed`/`unresolved`; a `Keyboard()` release is `dispatched`, never `confirmed`) and,
+for MA, `pressReadback`/`releaseReadback` with the bounded aggregate MASTATE readback (`observed`/`inconclusive`).
+A tap's response means press dispatched and release scheduled. `exclusive: true` is the long-press: while it is
+held every new press from every connection is `[exclusive-hold]`; it is `[exclusive-refused]` while any other record
+exists. `input.combo` preflights every key before the first event, presses in order and releases newest first. A disconnect, lease expiry, `input=off`, `stop` and `Cleanup` attempt to
 release what a session holds; a release that fails or cannot be confirmed is kept as an unresolved record,
 survives a bridge restart and is cleared only by the operator's console-side
 `Plugin "gma3_mcp_bridge" "input recover"` (or the owner's `input.recover`). At the next start the kept
@@ -170,6 +177,8 @@ disabled, every held key got a release attempt and the unresolved records were k
 attached backend, so `input recover` still releases then; only on an instance that never had a backend
 attached (the default after a restart) can it dispatch nothing: it says so, the records stay reserved and
 unresolved, and a later `input recover` after `input=fake` releases them. `input.status` never releases
-anything. `input.fake {action}` (fake backend only) stages `failRelease`/`failPress` (`pcKey`, `sticky`,
+anything. Since v0.6.0 the records carry their backend: `input recover` on an instance without a backend attaches the
+records' own backend (keyboard or fake) for cleanup only, input stays disabled, and a record is never released through
+another backend. `input.fake {action}` (fake backend only) stages `failRelease`/`failPress` (`pcKey`, `sticky`,
 `error`), `clearFailures`, `confirm` (`mode`), `physicalRelease`/`physicalPress` (`pcKey`) and returns the
 event log; see [docs/modules.md](modules.md) for the ownership and release semantics.

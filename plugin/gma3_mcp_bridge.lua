@@ -21,17 +21,22 @@
 --   Plugin "gma3_mcp_bridge" "lua luahook=replace"
 --                                               enforce the budget even over the console's own hook
 --
--- Owned input sessions (KB-03) are OFF by default too and enabled per start, or toggled while running:
+-- Owned input sessions (KB-03/KB-04) are OFF by default too and enabled per start, or toggled while running:
+--   Plugin "gma3_mcp_bridge" "input=keyboard"   admit input.* ops on the KEYBOARD backend: console keys
+--                                               are really pressed through Keyboard() (KB-04)
 --   Plugin "gma3_mcp_bridge" "input=fake"       admit input.* ops on the FAKE backend (records events,
---                                               touches no key; the console keyboard backend is KB-04)
+--                                               touches no key; lifecycle testing only)
 --   Plugin "gma3_mcp_bridge" "input=off"        stop admitting input; attempt to release every held key
 --   Plugin "gma3_mcp_bridge" "input status"     print sessions, holds and unresolved releases
 --   Plugin "gma3_mcp_bridge" "input recover"    operator recovery: re-attempt every unresolved release,
---                                               including records kept from a previous run
+--                                               including records kept from a previous run. With no
+--                                               backend attached it attaches the records' own backend
+--                                               for cleanup only; input stays disabled.
 -- Every held key belongs to a session bound to the TCP connection that opened it; a client can only
 -- act on its own session, and a disconnect, lease expiry, "input=off", stop or Cleanup attempts to
 -- release what that session still holds. A release that fails or cannot be confirmed is kept as an
--- unresolved record (visible in input.status / ping.input) until "input recover" succeeds.
+-- unresolved record (visible in input.status / ping.input) until "input recover" succeeds. Records
+-- remember the backend that pressed them; a fake record is never released through Keyboard().
 -- Arguments are whitespace separated tokens; "luatime" is milliseconds of wall-clock time and
 -- "luasteps" a count of Lua VM instructions (0 = unlimited). A request that exceeds its budget is
 -- aborted with an error so the bridge loop (and the console) regain control. The budget is
@@ -67,7 +72,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.5.0"
+local VERSION      = "0.6.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -1523,12 +1528,26 @@ local function hardkeysRec()
   return rec
 end
 
-enableInputOn = function(rec)
+-- One adapter per backend per module instance record; the keyboard adapter gets the module's own
+-- console deps (Keyboard(), Enums.KeyboardCodes, Root().MASTATE, displays).
+local function adapterFor(rec, backend)
   local mod = rec.module
-  if state.input.backend ~= "fake" then return false, "backend '" .. tostring(state.input.backend) .. "' cannot dispatch in this version; only input=fake is available until KB-04" end
-  if type(mod.fakeBackend) ~= "function" then return false, "the loaded hardkeys module has no fakeBackend() (module " .. tostring(rec.version) .. ")" end
-  if not rec.fakeAdapter then rec.fakeAdapter = mod.fakeBackend() end
-  local ok, err = rec.instance:enableInput(rec.fakeAdapter)
+  if backend == "fake" then
+    if type(mod.fakeBackend) ~= "function" then return nil, "the loaded hardkeys module has no fakeBackend() (module " .. tostring(rec.version) .. ")" end
+    if not rec.fakeAdapter then rec.fakeAdapter = mod.fakeBackend() end
+    return rec.fakeAdapter
+  elseif backend == "keyboard" then
+    if type(mod.keyboardBackend) ~= "function" then return nil, "the loaded hardkeys module has no keyboardBackend() (module " .. tostring(rec.version) .. "; KB-04 needs 0.3.0 or newer)" end
+    if not rec.keyboardAdapter then rec.keyboardAdapter = mod.keyboardBackend(mod.consoleDeps(_G)) end
+    return rec.keyboardAdapter
+  end
+  return nil, "unknown input backend '" .. tostring(backend) .. "'"
+end
+
+enableInputOn = function(rec)
+  local adapter, aerr = adapterFor(rec, state.input.backend)
+  if not adapter then return false, aerr end
+  local ok, err = rec.instance:enableInput(adapter)
   if not ok then return false, err and err.message or "enableInput failed" end
   return true
 end
@@ -1577,11 +1596,32 @@ local function inputRecover()
     return
   end
   adoptKeptRecords(rec)
-  -- "input=off" keeps the attached backend, so releases still work then; only an instance that never
-  -- had a dispatching backend attached (the default after a restart) cannot release anything.
+  -- "input=off" keeps the attached backend, so releases still work then. An instance that never had a
+  -- backend attached (the default after a restart) gets the records' OWN backend attached for cleanup
+  -- only: input stays disabled, and a record is only ever released through the backend that pressed it.
   local st = rec.instance:status(now())
   if not (st.backend and st.backend.dispatches) then
-    logerr('input recover: no dispatching backend is attached, so no release can be sent; the records stay reserved. Attach one first:  Plugin "gma3_mcp_bridge" "input=fake"')
+    local wanted
+    for _, h in ipairs(st.holds) do
+      if h.state ~= "released" then
+        if h.backend == "keyboard" then wanted = "keyboard"; break end
+        if h.backend == "fake" and wanted == nil then wanted = "fake" end
+      end
+    end
+    if wanted == nil then
+      log("input recover: nothing to recover and no backend attached")
+    elseif type(rec.instance.attachBackend) ~= "function" then
+      logerr("input recover: the loaded hardkeys module cannot attach a backend for cleanup (module %s); enable input first", tostring(rec.version))
+    else
+      local adapter, aerr = adapterFor(rec, wanted)
+      if not adapter then
+        logerr("input recover: cannot attach the %s backend for cleanup: %s; the records stay reserved", wanted, tostring(aerr))
+      else
+        local ok, err = rec.instance:attachBackend(adapter)
+        if ok then log("input recover: attached the %s backend for cleanup only (input stays disabled)", wanted)
+        else logerr("input recover: attaching the %s backend failed: %s; the records stay reserved", wanted, tostring(err and err.message or err)) end
+      end
+    end
   end
   local r = rec.instance:recover(nil, now())
   logReleaseResult("input recover", r)
@@ -1612,8 +1652,8 @@ end
 
 local function requireInputEnabled()
   if not state.input.enabled then
-    error('[input-disabled] input is disabled on the console. The console operator can enable the fake backend with:  Plugin "gma3_mcp_bridge" "input=fake"  ' ..
-          '(or start the bridge with that argument). input.status, input.release, input.releaseAll, input.recover and input.close remain available.', 0)
+    error('[input-disabled] input is disabled on the console. The console operator can enable it with:  Plugin "gma3_mcp_bridge" "input=keyboard"  (real console keys) ' ..
+          'or  "input=fake"  (lifecycle only), or start the bridge with that argument. input.status, input.release, input.releaseAll, input.recover and input.close remain available.', 0)
   end
   if state.stopRequested then error("[stopping] the bridge is stopping; new input is refused while it releases held keys", 0) end
 end
@@ -1659,7 +1699,7 @@ end
 
 local function pressSpec(args)
   return { key = args.key, pcKey = args.pcKey, shift = args.shift, ctrl = args.ctrl, alt = args.alt, numlock = args.numlock,
-           display = args.display, executor = args.executor, maxHoldMs = args.maxHoldMs }
+           display = args.display, executor = args.executor, maxHoldMs = args.maxHoldMs, exclusive = args.exclusive }
 end
 
 ops["input.press"] = function(args, ctx)
@@ -1676,6 +1716,25 @@ ops["input.tap"] = function(args, ctx)
   local h, err = inputInstance().instance:tap(sid, now(), pressSpec(args), args.holdMs)
   if not h then raise(err) end
   return { hold = h }
+end
+
+-- A combination: args.keys = list of press specs pressed in order after every key passed preflight;
+-- args.holdMs schedules the release of all of them (newest first) at one deadline. Nothing is
+-- dispatched when any key fails validation.
+ops["input.combo"] = function(args, ctx)
+  requireInputEnabled()
+  local _, sid = ownSession(ctx, true)
+  local inst = inputInstance().instance
+  if type(inst.combo) ~= "function" then error("[no-module] the loaded hardkeys module has no combo() (KB-04 needs 0.3.0 or newer)", 0) end
+  if type(args.keys) ~= "table" then error("[bad-argument] args.keys (list of key specs) is required", 0) end
+  local specs = {}
+  for i, k in ipairs(args.keys) do
+    if type(k) ~= "table" then error("[bad-argument] args.keys[" .. i .. "] must be a key spec table", 0) end
+    specs[i] = pressSpec(k)
+  end
+  local r, err = inst:combo(sid, now(), specs, { holdMs = args.holdMs })
+  if not r then raise(err) end
+  return r
 end
 
 -- Allowed while input is disabled: releasing is part of the recovery path.
@@ -2546,7 +2605,9 @@ end
 --   luatime=<ms>  luasteps=<n>   Lua execution budget (0 = unlimited)
 --   luahook=preserve|replace  keep the console's own hook on the plugin thread (default; no hard
 --                             quota while it is present) or replace it with the budget hook
---   input=fake | input=off | noinput   owned input sessions on the fake backend (KB-03) / disabled
+--   input=keyboard | input=fake | input=off | noinput
+--                            owned input sessions on the console keyboard backend (KB-04), on the
+--                            fake backend (KB-03 lifecycle only) or disabled
 --   input status | input recover       print input state / operator recovery of unresolved releases
 local function parseArgument(argument)
   local opts = {}
@@ -2565,9 +2626,9 @@ local function parseArgument(argument)
       opts.input = false
     elseif key == "input" then
       if val == "fake" then opts.input, opts.inputBackend = true, "fake"
+      elseif val == "keyboard" or val == "kb" then opts.input, opts.inputBackend = true, "keyboard"
       elseif val == "off" or val == "0" or val == "no" or val == "false" or val == "none" then opts.input = false
-      elseif val == "keyboard" then return nil, string.format("\"%s\": the console keyboard backend has no dispatch yet (KB-04); use input=fake for the lifecycle, or input=off", tok)
-      else return nil, string.format("\"%s\": expected input=fake or input=off", tok) end
+      else return nil, string.format("\"%s\": expected input=keyboard, input=fake or input=off", tok) end
     elseif l == "lua" then
       opts.lua = true
     elseif l == "nolua" then
@@ -2593,12 +2654,12 @@ local function parseArgument(argument)
       if not port or port < 1 or port > 65535 then return nil, string.format("\"%s\" is not a valid port number (expected 1-65535)", tok) end
       opts.port = port
     else
-      return nil, string.format("\"%s\" is not a recognised argument (expected a port number, \"stop\", \"status\", \"lua\", \"lua on|off\", \"luatime=<ms>\", \"luasteps=<n>\", \"luahook=preserve|replace\", \"input=fake|off\", \"input status\" or \"input recover\")", tok)
+      return nil, string.format("\"%s\" is not a recognised argument (expected a port number, \"stop\", \"status\", \"lua\", \"lua on|off\", \"luatime=<ms>\", \"luasteps=<n>\", \"luahook=preserve|replace\", \"input=keyboard|fake|off\", \"input status\" or \"input recover\")", tok)
     end
     prev = l
   end
   if opts.inputToken and opts.command == nil and opts.input == nil then
-    return nil, "\"input\": expected input=fake, input=off, \"input status\" or \"input recover\" (there is no default input backend)"
+    return nil, "\"input\": expected input=keyboard, input=fake, input=off, \"input status\" or \"input recover\" (there is no default input backend)"
   end
   return opts
 end
@@ -2616,13 +2677,19 @@ local function applyInputPolicy(opts)
   if opts.input == nil then return end
   local rec = hardkeysRec()
   if opts.input then
+    -- A refused switch (e.g. records of the other backend still exist) leaves the previous policy intact.
+    local prevBackend, prevEnabled = state.input.backend, state.input.enabled
     state.input.backend = opts.inputBackend or "fake"
     if rec then
       local ok, err = enableInputOn(rec)
-      if not ok then state.input.enabled = false; logerr("input: %s; input stays disabled", tostring(err)); return end
+      if not ok then
+        state.input.backend, state.input.enabled = prevBackend, prevEnabled
+        logerr("input: %s; input stays %s", tostring(err), prevEnabled and (tostring(prevBackend) .. " enabled") or "disabled")
+        return
+      end
     end
     state.input.enabled = true
-    log("input now enabled on the %s backend (%s)", state.input.backend, state.input.backend == "fake" and "nothing reaches the console" or "?")
+    log("input now enabled on the %s backend (%s)", state.input.backend, state.input.backend == "fake" and "nothing reaches the console" or "console keys are really pressed through Keyboard()")
   else
     state.input.enabled = false
     if rec then

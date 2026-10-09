@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <GMA3 DataVersion="0.8.84.0">
-    <UserPlugin Name="gma3_mcp_bridge" Author="gma3-mcp" Version="0.5.0">
+    <UserPlugin Name="gma3_mcp_bridge" Author="gma3-mcp" Version="0.6.0">
         <ComponentLua Name="gma3_mcp_bridge" FileName="gma3_mcp_bridge.lua" />
         <ComponentLua Name="gma3_mcp_hardkeys" FileName="gma3_mcp_hardkeys.lua" />
         <ComponentLua Name="gma3_mcp_feedback" FileName="gma3_mcp_feedback.lua" />

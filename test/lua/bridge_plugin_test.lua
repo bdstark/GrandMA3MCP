@@ -22,7 +22,14 @@ local logs = {}
 Echo = function(m) logs[#logs + 1] = m end
 ErrEcho = Echo; Printf = Echo; ErrPrintf = Echo
 GetPath = function() return nil end
-Enums = { PathType = { Temp = 1 }, VirtualKeyCode = { PLEASE = 84, STORE = 66 } }
+Enums = { PathType = { Temp = 1 }, VirtualKeyCode = { PLEASE = 84, STORE = 66 }, KeyboardCodes = { Enter = 257, S = 83, V = 86, W = 87, Q = 81, Z = 90, LeftShift = 340, RightShift = 344, A = 65 } }
+-- Console keyboard stub for the KB-04 backend: records every Keyboard() call and keeps an aggregate MASTATE.
+keyboardCalls = {}
+fakeMaState = false
+Keyboard = function(display, kind, key, shift, ctrl, alt, numlock)
+  keyboardCalls[#keyboardCalls + 1] = { display = display, kind = kind, key = key, shift = shift, ctrl = ctrl, alt = alt, numlock = numlock }
+  if key == "LeftShift" or key == "RightShift" then fakeMaState = (kind == "press") end
+end
 -- Fake user profile for the KB-03 tests: shortcut rows as the hardkeys consoleDeps read them.
 local fakeProfile = { name = "Default", shortcutsActive = "true", rows = { { Shortcut = "Enter", KeyCode = 84 }, { Shortcut = "S", KeyCode = 66 } } }
 CurrentProfile = function()
@@ -33,7 +40,9 @@ CurrentProfile = function()
 end
 GetDisplayByIndex = function(n) if n == 1 then return {} end return nil end
 BuildDetails = function() return {} end
-Root = function() error("no console") end
+Root = function() return { Get = function(_, k) if k == "MAState" then return fakeMaState end error("no console property " .. tostring(k)) end,
+                           VirtualKeys = { Count = function() return 1 end, Ptr = function(_, i) return i == 1 and { Get = function(_, k) if k == "Code" then return "PLEASE" elseif k == "KeyCode" then return "Enter" end end } or nil end },
+                           MANetSocket = { Get = function() return nil end }, maNetSocket = {} } end
 CurrentUser = function() return nil end
 
 -- The console runs every ComponentLua of a plugin with (pluginName, componentName, signalTable, handle)
@@ -1002,7 +1011,7 @@ do
   start("")  -- bind fails in this harness, so serverMain returns and the instances are disposed again
   local hk, fb = state.modules.hardkeys, state.modules.feedback
   check("modules found through the plugin signal table", hk and hk.loaded and fb and fb.loaded, json.encode({ hk = hk and hk.error, fb = fb and fb.error }))
-  check("module versions recorded", hk.version == "0.2.0" and hk.apiVersion == 1 and fb.version == "0.1.0", json.encode({ hk.version, fb.version }))
+  check("module versions recorded", hk.version == "0.3.0" and hk.apiVersion == 1 and fb.version == "0.1.0", json.encode({ hk.version, fb.version }))
   check("modules start log line", lastLog():find("stopped") or true)
   local disposed = hk.instance and hk.instance:status().state == "disposed" and fb.instance:status().state == "disposed"
   check("instances disposed when the loop ends", disposed, hk.instance and hk.instance:status().state)
@@ -1075,7 +1084,7 @@ do
   r = request("input.open", {}, nil, A)
   check("a second open on the same connection is refused", r.ok == false and r.error:find("session%-exists"), r.error)
   r = request("input.press", { key = "PLEASE", display = 1 }, nil, A)
-  check("press through the bridge stores tuple and route", r.ok and r.result.hold.pcKey == "Enter" and r.result.hold.route.shortcut == "Enter" and r.result.hold.route.profile == "Default" and r.result.hold.session == "conn-1" and #fake.events == 1, J(r))
+  check("press through the bridge stores tuple and route", r.ok and r.result.hold.pcKey == "Enter" and r.result.hold.route.source == "native" and r.result.hold.route.profile == "Default" and r.result.hold.session == "conn-1" and #fake.events == 1, J(r))
   r = request("input.press", { key = "PLEASE", display = 7 }, nil, A)
   check("display validated against the console display list", r.ok == false and r.error:find("display 7"), r.error)
   request("input.open", {}, nil, B)
@@ -1096,9 +1105,9 @@ do
   Main(nil, "input"); Cleanup()
   check("'input' alone is refused (no default backend)", lastLog():find("no default input backend") and state.running == true, lastLog())
   Main(nil, "input=keyboard"); Cleanup()
-  check("input=keyboard refused until KB-04", lastLog():find("KB%-04") and state.input.backend == "fake" and state.running == true, lastLog())
+  check("input=keyboard while fake records exist is refused and leaves the fake policy intact", lastLog():find("cannot switch the backend") and lastLog():find("fake enabled") and state.input.backend == "fake" and state.input.enabled == true and state.running == true, lastLog())
   Main(nil, "input=maybe"); Cleanup()
-  check("input=maybe refused", lastLog():find("expected input=fake or input=off"), lastLog())
+  check("input=maybe refused", lastLog():find("expected input=keyboard, input=fake or input=off"), lastLog())
   -- Fake controls and owner-scoped recovery.
   r = request("input.fake", { action = "failRelease", pcKey = "Enter", sticky = true, error = "host blocked" }, nil, A)
   check("fake controls reachable", r.ok and r.result.backend == "fake" and r.result.down[1] == "Enter|s0c0a0n0", J(r))
@@ -1193,14 +1202,30 @@ do
   check("kept record adopted at a start with input disabled", state.input.enabled == false and hk.instance:status().unresolved == 1 and hk.instance:status().holds[1].tupleKey == "W|s0c0a0n0")
   before = #logs
   Main(nil, "input recover"); Cleanup()
-  check("'input recover' without a backend explains itself and keeps the record unresolved", logFound("no dispatching backend is attached", before) and hk.instance:status().holds[1].state == "unresolved" and hk.instance:status().holds[1].unresolved.reason:find("no backend"), J(hk.instance:status().holds[1]))
-  Main(nil, "input=fake"); Cleanup()
+  check("'input recover' without a backend attaches the record's own (fake) backend for cleanup only and releases it", logFound("attached the fake backend for cleanup only", before) and hk.instance:status().unresolved == 0 and hk.instance:status().holds[1].state == "released" and hk.instance:status().holds[1].backend == "fake" and state.input.enabled == false and hk.instance:status().inputEnabled == false, J(hk.instance:status().holds[1]))
   request("input.open", {}, nil, B)
   r = request("input.press", { pcKey = "W" }, nil, B)
-  check("the record still reserves its key after enabling input", r.ok == false and r.error:find("previous%-run"), r.error)
+  check("input stays disabled after a cleanup-only attach", r.ok == false and r.error:find("input%-disabled"), r.error)
+  Main(nil, "input=fake"); Cleanup()
+  check("'input=fake' after the cleanup attach enables input on the same adapter", state.input.enabled == true and request("input.press", { pcKey = "W" }, nil, B).ok, lastLog())
+  request("input.releaseAll", {}, nil, B)
+  -- The same restart path with a KEYBOARD record: the fake adapter must never release it.
+  request("input.press", { pcKey = "V" }, nil, B)
+  hk.fakeAdapter:failNext("release", { pcKey = "V" }, "wedged", true)
+  state.clients = { B }
+  Cleanup()
+  check("a fake record is kept with its backend name", #state.input.unresolved == 1 and state.input.unresolved[1].backend == "fake", J(state.input.unresolved))
+  state.input.unresolved[1].backend = "keyboard"  -- pretend the previous run pressed it through Keyboard()
+  start("")
+  state._loadModules(); state.running = true; state.stopRequested = false; state.ignoreNextCleanup = false
+  hk = state.modules.hardkeys
   before = #logs
   Main(nil, "input recover"); Cleanup()
-  check("'input recover' with a backend releases the record", hk.instance:status().unresolved == 0 and logFound("input recover: 1 released, 0 still unresolved", before) and hk.fakeAdapter.events[#hk.fakeAdapter.events].pcKey == "W", lastLog())
+  check("'input recover' attaches the keyboard backend for a keyboard record and releases it through Keyboard() with input disabled",
+    logFound("attached the keyboard backend for cleanup only", before) and hk.instance:status().unresolved == 0 and #keyboardCalls == 1 and keyboardCalls[1].kind == "release" and keyboardCalls[1].key == "V" and state.input.enabled == false, J(keyboardCalls))
+  Main(nil, "input=fake"); Cleanup()
+  check("with no live records left, input=fake may switch the backend again", state.input.enabled == true and state.input.backend == "fake", lastLog())
+  request("input.open", {}, nil, B)
   -- With input=off the backend stays attached: recover must release without the no-backend warning.
   request("input.press", { pcKey = "W" }, nil, B)
   request("input.fake", { action = "failRelease", pcKey = "W", sticky = true, error = "wedged again" }, nil, B)
@@ -1209,9 +1234,67 @@ do
   request("input.fake", { action = "clearFailures" }, nil, B)
   before = #logs
   Main(nil, "input recover"); Cleanup()
-  check("'input recover' with input off but a backend attached releases without warning", hk.instance:status().unresolved == 0 and logFound("input recover: 1 released, 0 still unresolved", before) and not logFound("no dispatching backend", before), lastLog())
+  check("'input recover' with input off but a backend attached releases without attaching anything", hk.instance:status().unresolved == 0 and logFound("input recover: 1 released, 0 still unresolved", before) and not logFound("attached the", before), lastLog())
   Main(nil, "input=fake"); Cleanup()
   request("input.close", {}, nil, B)
+end
+
+-------------------------------------------------------------------------------
+-- KB-04: the keyboard backend through the bridge
+-------------------------------------------------------------------------------
+do
+  start("input=keyboard")
+  check("input=keyboard parsed at start", state.input.enabled == true and state.input.backend == "keyboard", J(state.input))
+  state._loadModules(); state.running = true; state.stopRequested = false; state.ignoreNextCleanup = false
+  local hk = state.modules.hardkeys
+  check("hardkeys instance runs with the keyboard adapter attached and enabled", hk.instance:status().inputEnabled == true and hk.instance:status().backend.name == "keyboard" and hk.keyboardAdapter ~= nil, J(hk.instance:status().backend))
+  local A, B = { id = 21 }, { id = 22 }
+  request("input.open", {}, nil, A); request("input.open", {}, nil, B)
+  keyboardCalls = {}
+  r = request("input.press", { key = "STORE", display = 1 }, nil, A)
+  check("a press reaches Keyboard() with explicit modifiers", r.ok and #keyboardCalls == 1 and keyboardCalls[1].kind == "press" and keyboardCalls[1].key == "S" and keyboardCalls[1].display == 1 and keyboardCalls[1].shift == false and keyboardCalls[1].ctrl == false, J(keyboardCalls))
+  check("the hold reports dispatched, not confirmed, on the keyboard backend", r.result.hold.backend == "keyboard" and r.result.hold.pressOutcome == "dispatched" and r.result.hold.dispatch.press.confirmed == nil, J(r.result.hold))
+  r = request("input.release", { key = "STORE" }, nil, A)
+  check("the release repeats the stored tuple through Keyboard() and is 'dispatched'", r.ok and #keyboardCalls == 2 and keyboardCalls[2].kind == "release" and keyboardCalls[2].key == "S" and r.result.hold.releaseOutcome == "dispatched" and r.result.hold.attempt.verified == false, J(r))
+  check("the dispatched release was logged with its outcome", logFound("input: release conn%-21 released conn%-21 STORE%(S|s0c0a0n0%) released %(dispatched, effect not observable%)") ~= nil)
+  r = request("input.fake", { action = "events" }, nil, A)
+  check("fake controls are refused on the keyboard backend", r.ok == false and r.error:find("not%-fake"), r.error)
+  r = request("input.press", { pcKey = "Bogus" }, nil, A)
+  check("an unknown KeyboardCodes name is refused before dispatch", r.ok == false and r.error:find("KeyboardCodes") and #keyboardCalls == 2, r.error)
+  -- MA with readback through the loop.
+  r = request("input.press", { key = "MA" }, nil, A)
+  check("MA presses LeftShift and schedules a MASTATE readback", r.ok and keyboardCalls[3].key == "LeftShift" and r.result.hold.readback.outcome == "pending", J(r.result.hold.readback))
+  state._serviceModules(require("socket").gettime())
+  r = request("input.status", {}, nil, A)
+  check("the loop observed MASTATE true (aggregate) for the MA hold", r.ok and r.result.status.observed.aggregate.maState == true and r.result.status.holds[#r.result.status.holds].readback.outcome == "observed" and r.result.status.observed.available == false, J(r.result.status.observed))
+  request("input.release", { key = "MA" }, nil, A)
+  -- Combination and exclusive long-press through the ops.
+  keyboardCalls = {}
+  r = request("input.combo", { keys = { { key = "MA" }, { key = "STORE" } }, holdMs = 20 }, nil, A)
+  check("input.combo presses MA then STORE as one group", r.ok and r.result.count == 2 and keyboardCalls[1].key == "LeftShift" and keyboardCalls[2].key == "S" and r.result.holds[1].group == r.result.holds[2].group, J(r))
+  r = request("input.combo", { keys = { { pcKey = "Z" }, { pcKey = "Bogus" } } }, nil, B)
+  check("a combo with a bad key dispatches nothing and names the key", r.ok == false and r.error:find("key 2") and #keyboardCalls == 2, r.error)
+  r = request("input.combo", { keys = "MA" }, nil, B)
+  check("combo validates args.keys", r.ok == false and r.error:find("bad%-argument"), r.error)
+  _G.FAKE_CLOCK_OFFSET = 1
+  state._serviceModules(require("socket").gettime())
+  _G.FAKE_CLOCK_OFFSET = 0
+  check("the combo deadline released S then LeftShift", #keyboardCalls == 4 and keyboardCalls[3].kind == "release" and keyboardCalls[3].key == "S" and keyboardCalls[4].key == "LeftShift", J(keyboardCalls))
+  r = request("input.tap", { key = "STORE", holdMs = 1000, exclusive = true }, nil, A)
+  check("an exclusive tap (long-press) is accepted", r.ok and r.result.hold.exclusive == true, J(r))
+  r = request("input.press", { key = "MA" }, nil, B)
+  check("another connection's press is rejected during the long-press", r.ok == false and r.error:find("exclusive%-hold") and r.error:find("conn%-21"), r.error)
+  r = request("input.press", { key = "STORE" }, nil, A)
+  check("the owner's duplicate is rejected during the long-press", r.ok == false and r.error:find("exclusive%-hold"), r.error)
+  r = request("input.releaseAll", {}, nil, A)
+  check("the owner can still release", r.ok and #r.result.released == 1, J(r))
+  -- input=fake while keyboard holds exist is refused and keeps the keyboard policy.
+  request("input.press", { pcKey = "Q" }, nil, B)
+  Main(nil, "input=fake"); Cleanup()
+  check("input=fake while a keyboard hold exists is refused, keyboard policy kept", state.input.backend == "keyboard" and state.input.enabled == true and lastLog():find("cannot switch"), lastLog())
+  Main(nil, "input=off"); Cleanup()
+  check("input=off releases the keyboard hold through Keyboard()", state.input.enabled == false and keyboardCalls[#keyboardCalls].kind == "release" and keyboardCalls[#keyboardCalls].key == "Q" and hk.instance:status().capacity.used == 0, J(keyboardCalls[#keyboardCalls]))
+  request("input.close", {}, nil, A); request("input.close", {}, nil, B)
   state.input.unresolved = {}
   for _, rec in pairs(state.modules) do if rec.instance then rec.instance:dispose(0) end end
   state.running = false

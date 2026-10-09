@@ -63,3 +63,18 @@ started or toggled with `Plugin "gma3_mcp_bridge" "input=fake"` and no existing 
 not required. Nothing reaches a console key on the fake backend. Operator-side paths (`input=off`,
 `input status`, a restart with an unresolved record and `input recover`) are console commands; the record
 describes how they were driven from macros.
+
+## Running the KB-04 keyboard backend probe
+
+`node scripts/kb04-probe.mjs run [--out docs/probes/kb-04-keyboard-<os>-<version>.json]` **presses real console
+keys**. It needs the bridge started with `Plugin "gma3_mcp_bridge" "lua input=keyboard"` (Lua is used to read
+`CmdObj().cmdtext`, `MASTATE` and the shortcut enablement for verification), a show whose name contains
+`disposable`, `mcp-test` or `scratch`, no existing holds, an empty command line, MASTATE false and shortcuts
+active; it refuses otherwise. Steps, in order: tap `NUM5` and `ESC`, native `PLEASE`, the `MA+STORE` combo
+(`Record`), a 1.2 s exclusive `STORE` long-press (the Store Settings pop-up is not readable; the operator
+confirms it by eye and the probe closes it with Escape), a remap of the `S` row and an `F10` toggle during a
+hold (both reversed by the probe through `cmd`/Lua, standing in for the operator), and a disconnect. `restart`
+holds `STORE`, remaps it, fires Macro 106 (stop + restart with `lua` only) and Macro 102 (`input recover`) twice,
+restoring the row in between; it leaves the bridge running with input disabled (Macro 107 re-enables
+`input=keyboard` on the test console). Record macOS and Windows separately; the fake-backend probe establishes
+lifecycle behaviour, this one establishes console effects.

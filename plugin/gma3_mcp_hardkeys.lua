@@ -10,24 +10,35 @@
 --   the module in the plugin's signal table, the entry component looks it up and calls new(). The
 --   source travels inside the show file; no loose file is needed on the console.
 --
--- What this version provides (MODULE API 1, module version 0.2.0, KB-03):
+-- What this version provides (MODULE API 1, module version 0.3.0, KB-03 + KB-04):
 --   * explicit instance lifecycle: new() -> init() -> service(now) ... -> dispose(now)
 --   * owned input sessions with leases: openSession / renewSession / closeSession. Every held key
 --     belongs to a session; the consumer binds sessions to whatever identifies its clients (the bridge
 --     binds them to TCP connections) and never accepts a session id from an untrusted caller.
---   * press / release / tap / releaseAll / recover on a backend adapter. The only adapter that
---     dispatches anything in this version is the FAKE backend (fakeBackend()), which records events
---     and simulates aggregate console key state for tests. The "keyboard" adapter remains capability
---     only until KB-04 proves it; a press on it is refused before anything is dispatched.
---   * stored press tuples: each hold keeps the resolved PC key, modifier flags, display, logical key and
---     the shortcut-table route (shortcut text, row, profile, enablement) it was pressed with. Release
---     always uses that stored tuple. Nothing is ever re-resolved to release a hold.
+--   * press / tap / combo / release / releaseAll / recover on a backend adapter. Two adapters dispatch:
+--     the FAKE backend (fakeBackend(); records events, simulates aggregate key state, touches no key)
+--     and, since KB-04, the KEYBOARD backend (keyboardBackend(deps); the console's Keyboard() PC-key
+--     emulation with explicit per-event modifiers, routed through the operator's shortcut table or a
+--     verified native route). The adapter only dispatches validated events and observes; ownership,
+--     leases, deadlines and recovery stay in this lifecycle.
+--   * stored press tuples: each hold keeps the resolved PC key, modifier flags, display, logical key,
+--     the route it was pressed with (shortcut text, row, profile, enablement, or the native route) and
+--     the name of the backend that pressed it. Release always uses that stored tuple on that backend.
+--     Nothing is ever re-resolved to release a hold, and a record from one backend is never released
+--     through another.
+--   * release-result semantics: an attempt is CONFIRMED (the backend observed the key up), DISPATCHED
+--     (the call returned; the effect is not observable per key on this backend) or UNRESOLVED (refused,
+--     raised, route changed, or the backend reports the key still down). Keyboard() releases are
+--     "dispatched"; the aggregate MASTATE readback is reported separately and never turned into a
+--     per-key confirmation or failure.
 --   * deadline servicing without sleeps: service(now) releases taps and expired leases, a bounded
---     number of attempts per call, and takes an aggregate console-state snapshot for status().
+--     number of attempts per call, takes the backend's console-state snapshot and completes bounded
+--     readbacks (MASTATE after an MA press/release) for status().
 --   * recovery: a release that fails, or that cannot be confirmed after the route changed, leaves the
 --     hold in the "unresolved" state. The record is kept (and still blocks conflicting presses) until
 --     a recover() attempt succeeds. dispose() hands unresolved records back so a consumer can keep
---     them across a restart and adopt() them into a new instance.
+--     them across a restart and adopt() them into a new instance. attachBackend() attaches an adapter
+--     for cleanup without admitting new presses.
 --   * status(now): read-only. It performs no cleanup and calls nothing on the backend; the observed
 --     console state it reports is the snapshot taken by the last service().
 --
@@ -35,6 +46,14 @@
 -- can end a synthetic hold and MASTATE is aggregate, so an ownership record here means "this session is
 -- responsible for releasing this tuple", not "the key is down because of us". The module never
 -- re-presses a key because the console no longer reports it down.
+--
+-- Interaction semantics (KB-04): an EXCLUSIVE hold (spec.exclusive, the intended long-press) rejects
+-- every new press from every session, including the owner's duplicate, until it is released, and is
+-- itself refused while any other ownership record exists; releases stay allowed. A COMBO presses several
+-- keys in order after every constituent key passed resolution, admission and the backend preflight;
+-- nothing is dispatched if one fails, and a press that fails midway releases what was pressed. A
+-- double-press is unsupported. Input is not display-scoped: the display argument is validated to exist
+-- and passed to Keyboard() as API context only.
 --
 -- Rules every consumer must keep:
 --   * One instance per consumer. Instances never share mutable state; the module table is read-only.
@@ -45,14 +64,18 @@
 --   * Input is disabled on a new instance. enableInput(adapter) is the operator's explicit decision.
 
 local NAME        = "gma3_mcp_hardkeys"
-local VERSION     = "0.2.0"
+local VERSION     = "0.3.0"
 local API_VERSION = 1
 
 -- Logical keys accepted by describeKey() and press(). Each resolves through the UserProfile
--- KeyboardShortcut table to the row whose KeyCode equals the named Enums.VirtualKeyCode, except MA,
--- which is the PC LeftShift key itself (KB-01 follow-up F2-F4; verified through Root().MASTATE).
+-- KeyboardShortcut table to the row whose KeyCode equals the named Enums.VirtualKeyCode, except:
+--   * MA, which is the PC LeftShift key itself (KB-01 follow-up F2-F4; verified through Root().MASTATE);
+--   * PLEASE, which has a NATIVE route: the system VirtualKey PLEASE redirects the PC key Enter
+--     (Root().VirtualKeys, KEYCODE = Enter) and executes with keyboard shortcuts disabled too (KB-01
+--     follow-up F7). The native route is admitted only while the shortcut table does not map the plain
+--     Enter key to another MA key, and while the redirect (when readable) still names Enter.
 local LOGICAL_KEYS = {
-  PLEASE = { vk = "PLEASE" }, STORE = { vk = "STORE" }, ESC = { vk = "ESC" },
+  PLEASE = { vk = "PLEASE", native = "Enter" }, STORE = { vk = "STORE" }, ESC = { vk = "ESC" },
   CLEAR  = { vk = "CLEAR" },  OOPS  = { vk = "OOPS" },
   NUM0 = { vk = "NUM0" }, NUM1 = { vk = "NUM1" }, NUM2 = { vk = "NUM2" }, NUM3 = { vk = "NUM3" }, NUM4 = { vk = "NUM4" },
   NUM5 = { vk = "NUM5" }, NUM6 = { vk = "NUM6" }, NUM7 = { vk = "NUM7" }, NUM8 = { vk = "NUM8" }, NUM9 = { vk = "NUM9" },
@@ -65,18 +88,31 @@ local UNSUPPORTED_KEYS = {
   MA2 = "both PC Shift keys feed one MA state, so MA1 and MA2 cannot be distinguished; use MA (KB-01)",
 }
 
+-- What the Keyboard() backend can and cannot promise (KB-01 evidence, onPC 2.5.1.0, US layout).
+local KEYBOARD_LIMITATIONS = {
+  "Keyboard() emulates a PC keyboard: MA keys are reached through the operator's shortcut table or a verified native route (MA = LeftShift, PLEASE = Enter redirect); unresolved routes are unsupported",
+  "input is not display-scoped on 2.5.1: the display argument must exist but does not route input, focus or pop-up placement",
+  "no per-key readback exists; Root().MASTATE is aggregate (any Shift source), so a release is reported as dispatched, never confirmed, and MASTATE is reported separately",
+  "injected and physical input share one key state: a physical release ends an injected hold and vice versa; ownership records responsibility, not console state",
+  "a remapped or disabled shortcut during a hold prevents the stored-tuple release until the operator restores the route; the module never changes mappings or toggles F10",
+  "invalid arguments are accepted silently by onPC; validation happens here before dispatch and a no-error return is not evidence of effect",
+  "double-press is unsupported; a long-press is promised only as an exclusive hold with no other key down",
+}
+
 local BACKENDS = {
   keyboard = {
     name = "keyboard",
-    description = "Keyboard(): PC-key emulation routed through the operator's UserProfile shortcut table (capability only; dispatch is KB-04)",
+    description = "Keyboard(): PC-key emulation with explicit per-event modifiers, routed through the operator's UserProfile shortcut table or a verified native route; console keys are really pressed",
     requires = { "Keyboard" },
-    dispatches = false,
+    dispatches = true,
+    limitations = KEYBOARD_LIMITATIONS,
   },
   fake = {
     name = "fake",
     description = "in-memory fake: records events and simulates aggregate console key state; nothing reaches the console",
     requires = {},
     dispatches = true,
+    limitations = { "nothing reaches a console key; lifecycle behaviour only" },
   },
 }
 
@@ -86,9 +122,11 @@ local DEFAULT_CONFIG = {
   defaultLeaseMs     = 15000,   -- session lease when openSession() gives none
   maxLeaseMs         = 120000,  -- longest lease a session may ask for
   maxHoldMs          = 30000,   -- longest a press may stay held before service() releases it
-  maxTapMs           = 5000,    -- longest hold a tap() may ask for
+  maxTapMs           = 5000,    -- longest hold a tap() or combo() may ask for
   maxWorkPerService  = 4,       -- release attempts one service() call may make
   eventLog           = 64,      -- fake backend event history length
+  readbackMs         = 1000,    -- how long service() waits for an aggregate readback (MASTATE) before calling it inconclusive
+  maxComboKeys       = 4,       -- keys one combo() may press
 }
 
 -- Pure helpers ---------------------------------------------------------------
@@ -113,34 +151,108 @@ end
 
 local function modifierCount(r) return (r.shift and 1 or 0) + (r.ctrl and 1 or 0) + (r.alt and 1 or 0) end
 
+local function sameTuple(a, b) return a.key == b.key and a.shift == b.shift and a.ctrl == b.ctrl and a.alt == b.alt end
+
+-- Every shortcut row whose PC key + modifiers equal `parsed` but whose target differs from the one being
+-- resolved (another VirtualKeyCode, or the same EXEC/SpecialExec key with another executor identity). The
+-- console's behaviour with colliding rows is unverified, so a collision makes the route unsupported rather
+-- than dispatching an action that may not be the requested one. `target` = { keyCode, executorIndex,
+-- specialExec } or nil for the fixed/native routes (any row claiming the tuple collides).
+local function collisions(rows, parsed, target)
+  local out = {}
+  for i, row in ipairs(rows or {}) do
+    local p = parseShortcut(row.shortcut)
+    if p and sameTuple(p, parsed) then
+      local same = target ~= nil and row.keyCode == target.keyCode
+        and (target.executorIndex == nil or row.executorIndex == target.executorIndex)
+        and ((row.specialExec == nil and target.specialExec == nil) or row.specialExec == target.specialExec)
+      if not same then
+        out[#out + 1] = string.format("row %d (%s -> VirtualKeyCode %s%s%s)", i, tostring(row.shortcut), tostring(row.keyCode),
+          row.executorIndex and (" executor " .. tostring(row.executorIndex)) or "", row.specialExec and (" special " .. tostring(row.specialExec)) or "")
+      end
+    end
+  end
+  return #out > 0 and out or nil
+end
+
 -- rows: list of { shortcut = "Ctrl+F1", keyCode = <VirtualKeyCode number>, executorIndex = <number|nil> }
 -- vkCodes: VirtualKeyCode name -> number (Enums.VirtualKeyCode on the console)
--- opts: { executor = <number> } for EXEC
+-- opts: { executor = <number> } for EXEC;
+--       { keyboardCodes = <KeyboardCodes name -> number> } validates the resolved PC key name (optional);
+--       { redirects = <VirtualKeyCode name -> PC key name> } the Root().VirtualKeys KEYCODE redirects (optional)
+-- Route kinds: "fixed" (MA = LeftShift), "native" (PLEASE = Enter redirect, independent of shortcut
+-- enablement) and "shortcut-table" (every other logical key; needs KEYBOARDSHORTCUTSACTIVE). The caller
+-- decides on enablement; resolve() only reports the route and its validity.
 local function resolve(rows, vkCodes, name, opts)
   local key = type(name) == "string" and name:upper() or nil
   if not key then return { key = tostring(name), supported = false, reason = "key name must be a string" } end
   if UNSUPPORTED_KEYS[key] then return { key = key, supported = false, reason = UNSUPPORTED_KEYS[key] } end
   local def = LOGICAL_KEYS[key]
   if not def then return { key = key, supported = false, reason = "not a logical key of this module" } end
+  local codes = opts and opts.keyboardCodes
+  local function checkPcKey(r)
+    if type(codes) == "table" then
+      if codes[r.pcKey] == nil then
+        return { key = key, supported = false, reason = "route names PC key '" .. tostring(r.pcKey) .. "', which is not an Enums.KeyboardCodes name on this console", route = r.source, shortcut = r.shortcut }
+      end
+      r.pcKeyValidated = true
+    else
+      r.pcKeyValidated = false
+    end
+    return r
+  end
   if def.pcKey then
-    return { key = key, supported = true, backend = "keyboard", pcKey = def.pcKey, shift = false, ctrl = false, alt = false,
-             verify = def.verify, source = "fixed", note = "MA is the PC Shift key itself; it does not use the shortcut table" }
+    -- The fixed route is native console behaviour; a shortcut row claiming the same PC key is a collision
+    -- whose precedence is unverified.
+    local c = type(rows) == "table" and collisions(rows, { key = def.pcKey, shift = false, ctrl = false, alt = false }, nil) or nil
+    if c then return { key = key, supported = false, source = "fixed", pcKey = def.pcKey, reason = "shortcut collision: " .. table.concat(c, ", ") .. " also claims the plain " .. def.pcKey .. " key", collisions = c } end
+    return checkPcKey({ key = key, supported = true, backend = "keyboard", pcKey = def.pcKey, shift = false, ctrl = false, alt = false,
+             verify = def.verify, source = "fixed", note = "MA is the PC Shift key itself; it does not use the shortcut table" })
   end
   if type(rows) ~= "table" or type(vkCodes) ~= "table" then
     return { key = key, supported = false, reason = "shortcut table or VirtualKeyCode enum unavailable" }
   end
   local vk = vkCodes[def.vk]
   if vk == nil then return { key = key, supported = false, reason = "VirtualKeyCode " .. def.vk .. " unknown on this console" } end
+  if def.native then
+    -- Native route: the PC key must not be claimed by the shortcut table for another MA key (which
+    -- one would win is unverified), and the system redirect, when readable, must still name it.
+    local c = collisions(rows, { key = def.native, shift = false, ctrl = false, alt = false }, { keyCode = vk })
+    if c then
+      return { key = key, supported = false, source = "native", pcKey = def.native, collisions = c,
+               reason = string.format("ambiguous: %s maps the plain %s key to another target than %s; the native %s redirect cannot be relied on", table.concat(c, ", "), def.native, def.vk, def.native) }
+    end
+    local redirects = opts and opts.redirects
+    local redirect, redirectChecked = nil, false
+    if type(redirects) == "table" then
+      redirect = redirects[def.vk]
+      if redirect ~= nil then
+        redirectChecked = true
+        if tostring(redirect) ~= def.native then
+          return { key = key, supported = false, source = "native", pcKey = def.native,
+                   reason = string.format("the VirtualKey %s redirect is '%s' on this console, not '%s'", def.vk, tostring(redirect), def.native) }
+        end
+      end
+    end
+    return checkPcKey({ key = key, supported = true, backend = "keyboard", pcKey = def.native, shift = false, ctrl = false, alt = false, source = "native",
+             redirectChecked = redirectChecked,
+             note = "PLEASE uses the system VirtualKey redirect of the Enter key (KB-01 F7); it works with shortcuts disabled and does not depend on a shortcut row" })
+  end
   local executor = opts and opts.executor
   if def.needsExecutor then
     if type(executor) ~= "number" then return { key = key, supported = false, reason = "EXEC needs opts.executor (the ExecutorIndex of a mapped executor shortcut)" } end
   end
-  local best, bestParsed, bestIndex
+  local best, bestParsed, bestIndex, ties
   for i, row in ipairs(rows) do
     if row.keyCode == vk and ((not def.needsExecutor) or row.executorIndex == executor) then
       local parsed = parseShortcut(row.shortcut)
-      if parsed and (best == nil or modifierCount(parsed) < modifierCount(bestParsed)) then
-        best, bestParsed, bestIndex = row, parsed, i
+      if parsed then
+        if best == nil or modifierCount(parsed) < modifierCount(bestParsed) then
+          best, bestParsed, bestIndex, ties = row, parsed, i, nil
+        elseif modifierCount(parsed) == modifierCount(bestParsed) and row.shortcut ~= best.shortcut then
+          ties = ties or { best.shortcut }
+          ties[#ties + 1] = row.shortcut
+        end
       end
     end
   end
@@ -148,8 +260,18 @@ local function resolve(rows, vkCodes, name, opts)
     local what = def.needsExecutor and ("EXEC with ExecutorIndex " .. tostring(executor)) or key
     return { key = key, supported = false, reason = "no keyboard shortcut maps to " .. what .. " in the current user profile" }
   end
-  return { key = key, supported = true, backend = "keyboard", pcKey = bestParsed.key, shift = bestParsed.shift, ctrl = bestParsed.ctrl,
-           alt = bestParsed.alt, shortcut = best.shortcut, rowIndex = bestIndex, executor = def.needsExecutor and executor or nil, source = "shortcut-table" }
+  -- Several rows with the same key text (the default profile has two "Enter" rows) are one route;
+  -- different shortcuts with the same modifier count are ambiguous and are rejected, never guessed.
+  if ties then
+    return { key = key, supported = false, reason = "ambiguous: several shortcuts with the same modifier count map to " .. key .. " (" .. table.concat(ties, ", ") .. "); edit the profile or pick one with pcKey", candidates = ties }
+  end
+  -- The chosen tuple must not also be claimed for another target anywhere in the table.
+  local c = collisions(rows, bestParsed, { keyCode = vk, executorIndex = def.needsExecutor and executor or nil, specialExec = best.specialExec })
+  if c then
+    return { key = key, supported = false, reason = string.format("shortcut collision: %s is mapped to %s by row %d but also to another target by %s; the console's precedence is unverified, so the route is refused", best.shortcut, key, bestIndex, table.concat(c, ", ")), collisions = c, shortcut = best.shortcut }
+  end
+  return checkPcKey({ key = key, supported = true, backend = "keyboard", pcKey = bestParsed.key, shift = bestParsed.shift, ctrl = bestParsed.ctrl,
+           alt = bestParsed.alt, shortcut = best.shortcut, rowIndex = bestIndex, executor = def.needsExecutor and executor or nil, source = "shortcut-table" })
 end
 
 -- The identity of an injected key event on this backend: PC key plus modifier flags. Display index is
@@ -197,6 +319,7 @@ local function consoleDeps(env)
             shortcut = tostring(r:Get("Shortcut")),
             keyCode = tonumber(r:Get("KeyCode")),
             executorIndex = tonumber(r:Get("ExecutorIndex")),
+            specialExec = tonumber(r:Get("SpecialExec")),
           }
         end
       end
@@ -206,6 +329,29 @@ local function consoleDeps(env)
     profileName = function() return tostring(env.CurrentProfile().name) end,
     -- Display validation only: input is not display-scoped on this console (KB-01).
     displayExists = function(n) return env.GetDisplayByIndex(n) ~= nil end,
+    -- PC key names Keyboard() accepts (GLFW-style Enums.KeyboardCodes). onPC ignores unknown names
+    -- silently, so this is the only validation there is.
+    keyboardCodes = function() return env.Enums and env.Enums.KeyboardCodes end,
+    -- Aggregate MA state (any Shift source). true/false, or nil when the property is not readable.
+    maState = function()
+      local v = env.Root():Get("MAState")
+      if v == true or v == "true" or v == "True" or v == 1 then return true end
+      if v == false or v == "false" or v == "False" or v == 0 then return false end
+      return nil
+    end,
+    -- System VirtualKey redirects (Root().VirtualKeys: CODE -> KEYCODE), e.g. PLEASE -> "Enter".
+    virtualKeyRedirects = function()
+      local vks = env.Root().VirtualKeys
+      local out = {}
+      for i = 1, vks:Count() do
+        local v = vks:Ptr(i)
+        if v then
+          local code = tostring(v:Get("Code"))
+          if code ~= "" and code ~= "nil" then out[code] = tostring(v:Get("KeyCode")) end
+        end
+      end
+      return out
+    end,
   }
 end
 
@@ -271,10 +417,15 @@ function FakeBackend:release(tuple)
   return true, self.confirmMode
 end
 
+-- Per-tuple state plus the aggregate MA state the way the console reports it: true while any Shift
+-- key (either side, any flags) is down. The aggregate is what the readback logic is tested against.
 function FakeBackend:observe()
-  local down = {}
-  for k in pairs(self.down) do down[k] = true end
-  return { available = true, down = down }
+  local down, ma = {}, false
+  for k in pairs(self.down) do
+    down[k] = true
+    if k:match("^LeftShift|") or k:match("^RightShift|") then ma = true end
+  end
+  return { available = true, down = down, aggregate = { maState = ma } }
 end
 
 function FakeBackend:supportsKey(pcKey)
@@ -300,6 +451,103 @@ function FakeBackend:eventCount(kind)
   local n = 0
   for _, e in ipairs(self.events) do if kind == nil or e.kind == kind then n = n + 1 end end
   return n
+end
+
+-- Keyboard backend (KB-04) ----------------------------------------------------
+
+-- The console adapter: Keyboard(display, 'press'|'release', <KeyboardCodes name>, shift, ctrl, alt,
+-- numlock). It is deliberately small. It validates what onPC would accept silently (function present,
+-- key name in Enums.KeyboardCodes, display exists, MASTATE readable when a route is verified by it),
+-- passes every modifier explicitly on every event, and observes aggregate state. It owns nothing:
+-- ownership, leases, deadlines and recovery live in the instance.
+--   press/release(tuple) -> true, nil          dispatched; the effect is not observable per key
+--                        -> false, nil, err    refused before anything was sent
+--                        -> raises             Keyboard() itself raised: delivery unknown, the caller
+--                                              keeps the record as unresolved
+--   observe() -> { available = false (no per-key state), aggregate = { maState = bool|nil, error } }
+--   supportsKey(pcKey), preflight(tuple, route)
+local KeyboardBackend = {}
+KeyboardBackend.__index = KeyboardBackend
+
+local function keyboardBackend(deps, opts)
+  if type(deps) ~= "table" then error(NAME .. ".keyboardBackend: deps table required (consoleDeps(_G))", 2) end
+  opts = opts or {}
+  return setmetatable({
+    name = "keyboard", dispatches = true, description = BACKENDS.keyboard.description, limitations = KEYBOARD_LIMITATIONS,
+    deps = deps, defaultDisplay = tonumber(opts.defaultDisplay) or 1,
+    counters = { press = 0, release = 0, refused = 0, raised = 0, observe = 0 },
+    lastEvent = nil,
+  }, KeyboardBackend)
+end
+
+function KeyboardBackend:supportsKey(pcKey)
+  if type(pcKey) ~= "string" or pcKey == "" then return false, "PC key must be a non-empty Enums.KeyboardCodes name" end
+  if type(self.deps.keyboardCodes) ~= "function" then return false, "Enums.KeyboardCodes cannot be read (deps.keyboardCodes missing); key names cannot be validated" end
+  local ok, codes = pcall(self.deps.keyboardCodes)
+  if not ok or type(codes) ~= "table" then return false, "Enums.KeyboardCodes unavailable: " .. tostring(ok and "not a table" or codes) end
+  if codes[pcKey] == nil then return false, "'" .. pcKey .. "' is not an Enums.KeyboardCodes name (names are case-sensitive, e.g. Enter, Escape, LeftShift, F1, 5)" end
+  return true
+end
+
+-- Everything that must hold before the first event of a press or combo goes out. Nothing is sent.
+function KeyboardBackend:preflight(tuple, route)
+  if type(self.deps.Keyboard) ~= "function" then return false, "Keyboard() is not available in this Lua environment" end
+  local ok, reason = self:supportsKey(tuple.pcKey)
+  if not ok then return false, reason end
+  local display = tuple.display or self.defaultDisplay
+  if type(self.deps.displayExists) == "function" then
+    local okD, exists = pcall(self.deps.displayExists, display)
+    if not okD or not exists then return false, "display " .. tostring(display) .. " does not exist (input is not display-scoped; the index is API context only)" end
+  end
+  if route and route.verify == "MASTATE" then
+    if type(self.deps.maState) ~= "function" then return false, "MASTATE cannot be read (deps.maState missing); MA cannot be verified" end
+    local okM, v = pcall(self.deps.maState)
+    if not okM or type(v) ~= "boolean" then return false, "Root().MASTATE is not readable (" .. tostring(okM and ("value " .. tostring(v)) or v) .. "); MA cannot be verified" end
+  end
+  return true
+end
+
+function KeyboardBackend:_send(kind, tuple)
+  self.counters[kind] = self.counters[kind] + 1
+  if type(self.deps.Keyboard) ~= "function" then
+    self.counters.refused = self.counters.refused + 1
+    return false, nil, "Keyboard() is not available in this Lua environment"
+  end
+  local display = tuple.display or self.defaultDisplay
+  local args = { display, kind, tuple.pcKey, tuple.shift and true or false, tuple.ctrl and true or false, tuple.alt and true or false, tuple.numlock and true or false }
+  self.lastEvent = { kind = kind, args = args }
+  local ok, err = pcall(self.deps.Keyboard, table.unpack(args, 1, 7))
+  if not ok then
+    self.counters.raised = self.counters.raised + 1
+    error(string.format("Keyboard(%d, '%s', '%s', %s, %s, %s, %s) raised: %s (whether the event was delivered is unknown)",
+      display, kind, tuple.pcKey, tostring(args[4]), tostring(args[5]), tostring(args[6]), tostring(args[7]), tostring(err)), 0)
+  end
+  return true, nil  -- dispatched; no per-key confirmation exists on this backend
+end
+
+-- press() validates again right before sending (the preflight may have run for a whole combo a moment
+-- earlier); release() does not revalidate the key name: the stored tuple is what was pressed.
+function KeyboardBackend:press(tuple)
+  local ok, reason = self:preflight(tuple, nil)
+  if not ok then self.counters.press = self.counters.press + 1; self.counters.refused = self.counters.refused + 1; return false, nil, reason end
+  return self:_send("press", tuple)
+end
+
+function KeyboardBackend:release(tuple)
+  return self:_send("release", tuple)
+end
+
+function KeyboardBackend:observe()
+  self.counters.observe = self.counters.observe + 1
+  local out = { available = false, reason = "Keyboard() exposes no per-key state; only the aggregate MASTATE is readable", aggregate = {} }
+  if type(self.deps.maState) == "function" then
+    local ok, v = pcall(self.deps.maState)
+    if ok and type(v) == "boolean" then out.aggregate.maState = v
+    else out.aggregate.error = ok and ("MASTATE value " .. tostring(v)) or tostring(v) end
+  else
+    out.aggregate.error = "deps.maState missing"
+  end
+  return out
 end
 
 -- Instances -------------------------------------------------------------------
@@ -333,21 +581,32 @@ function Instance:init()
   return self
 end
 
--- Operator decision: attach a dispatching adapter and admit presses. Refused while any ownership
--- record exists, so a backend never changes under a partially dispatched interaction.
-function Instance:enableInput(adapter)
-  checkReady(self, "enableInput")
+-- Attaches a dispatching adapter WITHOUT admitting presses: the cleanup path (recover(), release())
+-- can then dispatch while input stays disabled. Refused while ownership records exist and the adapter
+-- would change, so a backend never changes under a partially dispatched interaction. Records that
+-- originate from another backend are never released through this one (see _attemptRelease), so
+-- attaching the keyboard adapter cannot turn a fake record into a real key event.
+function Instance:attachBackend(adapter)
+  checkReady(self, "attachBackend")
   if type(adapter) ~= "table" or type(adapter.press) ~= "function" or type(adapter.release) ~= "function" or type(adapter.name) ~= "string" then
-    return fail("bad-adapter", "enableInput needs a backend adapter table with name, press() and release()")
+    return fail("bad-adapter", "attachBackend needs a backend adapter table with name, press() and release()")
   end
   if not adapter.dispatches then
-    return fail("backend-no-dispatch", "backend '" .. adapter.name .. "' has no dispatch in module " .. VERSION .. " (the console keyboard backend is KB-04)")
+    return fail("backend-no-dispatch", "backend '" .. adapter.name .. "' has no dispatch")
   end
   if self._adapter ~= nil and self._adapter ~= adapter and self:_liveCount() > 0 then
     return fail("holds-exist", "cannot switch the backend while ownership records exist; release or recover them first", { holds = self:_liveCount() })
   end
   self._adapter = adapter
   self._backend = adapter.name
+  return { attached = true, backend = adapter.name, enabled = self._inputEnabled and true or false }
+end
+
+-- Operator decision: attach a dispatching adapter and admit presses.
+function Instance:enableInput(adapter)
+  checkReady(self, "enableInput")
+  local r, err = self:attachBackend(adapter)
+  if not r then return nil, err end
   self._inputEnabled = true
   return { enabled = true, backend = adapter.name }
 end
@@ -423,58 +682,27 @@ end
 
 -- Holds -------------------------------------------------------------------------
 
--- spec: { key = "PLEASE" | pcKey = "Enter", shift, ctrl, alt, numlock, display, executor, maxHoldMs }
+-- spec: { key = "PLEASE" | pcKey = "Enter", shift, ctrl, alt, numlock, display, executor, maxHoldMs,
+--         exclusive }. exclusive=true is the intended long-press: while it is held no new press from any
+-- session is admitted (a second key or a duplicate press cancels the console's long-press, KB-01), and
+-- it is refused while any other ownership record exists.
 -- Returns the hold report, or nil, { code, message, ... }. Nothing is dispatched when an error is returned.
 function Instance:press(sessionId, now, spec)
   checkReady(self, "press")
   checkNow(now, "press")
   local s, serr = self:_admit(sessionId, now)
   if not s then return nil, serr end
-  local tuple, route, terr = self:_resolveSpec(spec)
-  if not tuple then return nil, terr end
-  -- A route change during an existing hold stops every new interaction event until it is resolved.
-  local mismatch = self:_checkRoutes()
-  if mismatch then
-    return fail("route-changed", "a held key's route changed since it was pressed; release or recover before new input", { mismatches = mismatch })
-  end
-  local tk = tupleKey(tuple)
-  local existing = self._byTuple[tk]
-  if existing then
-    if existing.session == sessionId and existing.state == "held" then
-      -- Duplicate press by the owner: harmless, nothing is injected.
-      return self:_holdReport(existing, now, { duplicate = true })
-    end
-    return fail("conflict", string.format("tuple %s is already owned by session '%s' (state %s)%s", tk, existing.session, existing.state,
-      existing.logical and (" as " .. existing.logical) or ""), { owner = existing.session, hold = existing.id, state = existing.state })
-  end
-  if self:_liveCount() >= self._config.maxHolds then
-    return fail("capacity", "no capacity: " .. self._config.maxHolds .. " ownership records exist (held or unresolved)", { maxHolds = self._config.maxHolds })
-  end
-  local maxHoldMs = spec.maxHoldMs or self._config.maxHoldMs
-  if type(maxHoldMs) ~= "number" or maxHoldMs <= 0 or maxHoldMs > self._config.maxHoldMs then
-    return fail("bad-argument", "maxHoldMs must be a number in (0, " .. self._config.maxHoldMs .. "]")
-  end
-  local hold = self:_newHold(s, tuple, route, now, now + maxHoldMs / 1000, "max-hold")
-  local ok, aOk, confirmed, err = pcall(self._adapter.press, self._adapter, copyTuple(tuple))
-  if not ok then
-    -- The adapter raised: whether the key went down is unknown, so the record is kept as unresolved
-    -- (it blocks conflicting presses and recover() will try to release it) rather than dropped.
-    hold.dispatch.press = { ok = false, at = now, error = tostring(aOk) }
-    self:_markUnresolved(hold, now, "press raised an error; whether the key went down is unknown: " .. tostring(aOk))
-    return nil, { code = "press-failed", message = "press raised an error: " .. tostring(aOk), hold = hold.id, unresolved = true }
-  end
-  if aOk == false then
-    -- Refused before dispatch (adapter contract): nothing went down, nothing to own.
-    hold.dispatch.press = { ok = false, at = now, error = tostring(err or confirmed) }
-    self:_dropHold(hold)
-    return nil, { code = "press-failed", message = "press was refused by the backend: " .. tostring(err or confirmed) }
-  end
-  hold.dispatch.press = { ok = true, confirmed = confirmed, at = now }
-  self._pressCount = self._pressCount + 1
+  local plan, perr = self:_planPress(sessionId, now, spec)
+  if not plan then return nil, perr end
+  if plan.duplicate then return self:_holdReport(plan.duplicate, now, { duplicate = true }) end
+  local hold, derr = self:_dispatchPress(s, plan, now)
+  if not hold then return nil, derr end
   return self:_holdReport(hold, now)
 end
 
--- holdMs bounded by config.maxTapMs; the release is serviced by service(now) at the deadline.
+-- holdMs bounded by config.maxTapMs; the release is serviced by service(now) at the deadline. The
+-- response means: press dispatched, release SCHEDULED (releaseOutcome = "scheduled"); completion is
+-- visible later through status() / the service() result, never claimed here.
 function Instance:tap(sessionId, now, spec, holdMs)
   checkReady(self, "tap")
   checkNow(now, "tap")
@@ -482,13 +710,80 @@ function Instance:tap(sessionId, now, spec, holdMs)
   if type(holdMs) ~= "number" or holdMs <= 0 or holdMs > self._config.maxTapMs then
     return fail("bad-argument", "holdMs must be a number in (0, " .. self._config.maxTapMs .. "]")
   end
-  local report, err = self:press(sessionId, now, spec)
-  if not report then return nil, err end
-  if report.duplicate then return fail("conflict", "tuple is already held by this session; a tap cannot be layered on a hold", { hold = report.id }) end
-  local hold = self._holds[report.id]
+  local s, serr = self:_admit(sessionId, now)
+  if not s then return nil, serr end
+  local plan, perr = self:_planPress(sessionId, now, spec)
+  if not plan then return nil, perr end
+  if plan.duplicate then return fail("conflict", "tuple is already held by this session; a tap cannot be layered on a hold", { hold = plan.duplicate.id }) end
+  local hold, derr = self:_dispatchPress(s, plan, now)
+  if not hold then return nil, derr end
   hold.kind = "tap"
   self:_setDeadline(hold, now + holdMs / 1000, "tap")
   return self:_holdReport(hold, now)
+end
+
+-- A combination: several keys pressed in order (e.g. { {key="MA"}, {key="STORE"} }). Every constituent
+-- key is resolved, admitted and preflighted by the backend BEFORE the first event goes out; one failure
+-- means nothing is dispatched. A press that fails midway releases what was already pressed (newest
+-- first) and reports the partial outcome. opts.holdMs schedules the release of every key at the same
+-- deadline, newest first (a chord tap). A combo is never exclusive: adding a key is not a long-press.
+function Instance:combo(sessionId, now, specs, opts)
+  checkReady(self, "combo")
+  checkNow(now, "combo")
+  opts = opts or {}
+  if type(specs) ~= "table" or #specs < 2 then return fail("bad-argument", "combo needs a list of at least two key specs") end
+  if #specs > self._config.maxComboKeys then return fail("bad-argument", "combo accepts at most " .. self._config.maxComboKeys .. " keys") end
+  local holdMs = opts.holdMs
+  if holdMs ~= nil and (type(holdMs) ~= "number" or holdMs <= 0 or holdMs > self._config.maxTapMs) then
+    return fail("bad-argument", "holdMs must be a number in (0, " .. self._config.maxTapMs .. "]")
+  end
+  local s, serr = self:_admit(sessionId, now)
+  if not s then return nil, serr end
+  -- Preflight every key: resolution, routes, ownership, capacity, exclusivity, backend checks.
+  local plans, seen = {}, {}
+  for i, spec in ipairs(specs) do
+    if type(spec) == "table" and spec.exclusive then return fail("bad-argument", "key " .. i .. ": a combo cannot be exclusive; a long-press is a single exclusive press/tap") end
+    local plan, perr = self:_planPress(sessionId, now, spec, { comboIndex = i, reserved = seen, extra = #plans })
+    if not plan then
+      perr.key = i
+      perr.message = "key " .. i .. " of the combo: " .. tostring(perr.message) .. " (nothing was dispatched)"
+      return nil, perr
+    end
+    if plan.duplicate then
+      return fail("conflict", "key " .. i .. " of the combo is already held by this session; a combo presses every key itself (nothing was dispatched)", { hold = plan.duplicate.id, key = i })
+    end
+    seen[plan.tupleKey] = i
+    plans[#plans + 1] = plan
+  end
+  -- Dispatch in order. A failure releases what went down and reports everything.
+  self._seq = self._seq + 1
+  local group = string.format("g%d", self._seq)
+  local holds = {}
+  for i, plan in ipairs(plans) do
+    local hold, derr = self:_dispatchPress(s, plan, now)
+    if not hold then
+      local rollback = self:_releaseHolds(holds, now, "combo-aborted")
+      derr.message = "key " .. i .. " of the combo: " .. tostring(derr.message) .. string.format("; %d key(s) pressed before it were released (%d released, %d unresolved)", #holds, #rollback.released, #rollback.unresolved)
+      derr.key = i
+      derr.pressed = {}
+      for _, h in ipairs(holds) do derr.pressed[#derr.pressed + 1] = self:_holdReport(h, now) end
+      derr.rollback = rollback
+      return nil, derr
+    end
+    hold.group = group
+    hold.groupIndex = i
+    if holdMs then
+      hold.kind = "combo-tap"
+      self:_setDeadline(hold, now + holdMs / 1000, "combo")
+    else
+      hold.kind = "combo"
+    end
+    holds[#holds + 1] = hold
+  end
+  local reports = {}
+  for _, h in ipairs(holds) do reports[#reports + 1] = self:_holdReport(h, now) end
+  return { group = group, holds = reports, count = #reports,
+           releaseOrder = "newest first" .. (holdMs and (" at the deadline in " .. holdMs .. " ms") or " on release/releaseAll") }
 end
 
 -- selector: { hold = <id> } or a spec (key / pcKey + modifiers) owned by the session. Releasing an
@@ -553,6 +848,9 @@ function Instance:adopt(records, now, sessionId)
         end
         local hold = self:_newHold(s, tuple, rec.route, now, nil, nil)
         hold.logical = rec.logical
+        -- The originating backend travels with the record; "unknown" is never released through any adapter.
+        hold.backend = type(rec.backend) == "string" and rec.backend or "unknown"
+        hold.exclusive = rec.exclusive and true or false
         hold.pressedAt = rec.pressedAt or now
         hold.dispatch = shallowCopy(rec.dispatch) or hold.dispatch
         hold.adopted = true
@@ -594,17 +892,49 @@ function Instance:service(now)
     if h.state == "released" then out.released[#out.released + 1] = r else out.unresolved[#out.unresolved + 1] = r end
   end
   out.pending = math.max(0, #due - out.work)
-  -- Aggregate console state (observed, never ownership). A hold whose tuple the console no longer
-  -- reports down is annotated, never re-pressed.
+  -- Console state (observed, never ownership). A hold whose tuple the console no longer reports down
+  -- is annotated, never re-pressed. Per-key state exists only on the fake backend; the aggregate
+  -- MASTATE (any Shift source) is reported for MA holds: false rules out every Shift key, so the key is
+  -- not down; true says nothing about which source holds it.
   if self._adapter and type(self._adapter.observe) == "function" then
     local ok, obs = pcall(self._adapter.observe, self._adapter)
     if ok and type(obs) == "table" then
-      self._observed = { available = obs.available and true or false, down = obs.down or {}, at = now }
+      local agg = type(obs.aggregate) == "table" and obs.aggregate or nil
+      self._observed = { available = obs.available and true or false, down = obs.down or {}, at = now, reason = obs.reason,
+                         aggregate = agg and { maState = agg.maState, error = agg.error } or nil }
+      local ma = agg and agg.maState
       for _, h in pairs(self._holds) do
-        if h.state == "held" and obs.available then
-          local down = obs.down and obs.down[h.tupleKey] == true
-          h.observed = { down = down, at = now }
-          if not down and not h.observedReleasedAt then h.observedReleasedAt = now end
+        if h.state == "held" then
+          if obs.available then
+            local down = obs.down and obs.down[h.tupleKey] == true
+            h.observed = { down = down, at = now }
+            if not down and not h.observedReleasedAt then h.observedReleasedAt = now end
+          elseif h.route and h.route.verify == "MASTATE" and type(ma) == "boolean" then
+            h.observed = { aggregate = { source = "MASTATE", value = ma }, at = now,
+                           note = ma and "MASTATE true: some Shift source is down; this does not identify ours" or "MASTATE false: no Shift key is down, so this key is up (not re-pressed)" }
+            if ma == false then
+              h.observed.down = false
+              if not h.observedReleasedAt then h.observedReleasedAt = now end
+            end
+          end
+        end
+        -- Bounded readback after an MA press/release.
+        local rb = h.readback
+        if rb and rb.outcome == "pending" then
+          if type(ma) == "boolean" and ma == rb.expect then
+            rb.outcome, rb.value, rb.at = "observed", ma, now
+            rb.note = rb.phase == "release" and "MASTATE false after the release: no Shift key is down (aggregate; consistent with the release, not a per-key confirmation)"
+              or "MASTATE true after the press (aggregate: another Shift source could also set it)"
+          elseif now >= rb.until_ then
+            rb.outcome, rb.value, rb.at = "inconclusive", ma, now
+            if type(ma) ~= "boolean" then
+              rb.reason = "MASTATE was not readable during the readback window" .. (agg and agg.error and (": " .. tostring(agg.error)) or "")
+            elseif rb.phase == "release" then
+              rb.reason = string.format("MASTATE stayed true for %d ms after the release was dispatched; another Shift source may be held, so this is neither a confirmed release nor a definite failure", math.floor((now - rb.since) * 1000 + 0.5))
+            else
+              rb.reason = string.format("MASTATE stayed false for %d ms after the press was dispatched: no Shift key is down, so the press had no observable effect (the record stays owned; its release is harmless)", math.floor((now - rb.since) * 1000 + 0.5))
+            end
+          end
         end
       end
     else
@@ -632,19 +962,25 @@ function Instance:status(now)
   end
   local avail, missing = true, {}
   if self._state ~= "disposed" then avail, missing = self:backendAvailable() end
+  local bdef = BACKENDS[self._backend] or self._adapter or {}
+  local ex = self._state ~= "disposed" and self:_exclusiveHold() or nil
   return {
     module = NAME, version = VERSION, apiVersion = API_VERSION,
     owner = self._owner, state = self._state,
     inputEnabled = self._inputEnabled and true or false,
-    backend = { name = self._backend, dispatches = (self._adapter and self._adapter.dispatches) and true or false,
-                available = avail, missing = missing, description = (BACKENDS[self._backend] or self._adapter or {}).description },
+    backend = { name = self._backend, attached = self._adapter ~= nil, dispatches = (self._adapter and self._adapter.dispatches) and true or false,
+                available = avail, missing = missing, description = bdef.description, limitations = bdef.limitations,
+                displayScoped = false, perKeyObservation = self._observed and self._observed.available or false,
+                counters = self._adapter and self._adapter.counters or nil },
     capacity = { maxHolds = self._config.maxHolds, used = self:_liveCount() },
     config = shallowCopy(self._config),
     sessions = sessions, sessionCount = count(sessions),
     holds = holds, holdCount = #holds, unresolved = unresolved,
+    exclusiveHold = ex and ex.id or nil,
     observed = { available = self._observed and self._observed.available or false, down = observedDown, at = self._observed and self._observed.at,
-                 error = self._observed and self._observed.error,
-                 note = "aggregate console key state from the last service(); it is not ownership and is never used to re-press" },
+                 error = self._observed and self._observed.error, reason = self._observed and self._observed.reason,
+                 aggregate = self._observed and self._observed.aggregate or nil,
+                 note = "console key state from the last service(); it is not ownership and is never used to re-press. aggregate.maState is any Shift source, not a per-key state" },
     counters = { presses = self._pressCount, releaseAttempts = self._releaseAttempts, serviced = self._serviced },
     lastServiced = self._lastServiced,
     note = "status() performs no cleanup; releases happen in service(), release(), releaseAll(), closeSession(), disableInput(), recover() and dispose()",
@@ -666,6 +1002,8 @@ function Instance:dispose(now)
     if h.state ~= "released" then
       local rec = copyTuple(h)
       rec.logical, rec.route, rec.session, rec.pressedAt, rec.dispatch, rec.id = h.logical, h.route, h.session, h.pressedAt, h.dispatch, h.id
+      rec.backend = h.backend or "unknown"
+      rec.exclusive = h.exclusive or nil
       rec.unresolved = h.unresolved or { reason = "instance disposed without a release attempt (no clock or adapter)", since = now }
       rec.tupleKey = h.tupleKey
       records[#records + 1] = rec
@@ -702,14 +1040,31 @@ function Instance:describeKey(name, opts)
   if not okR then return { key = tostring(name), supported = false, reason = "shortcut table read failed: " .. tostring(rows) } end
   local okV, vk = pcall(d.virtualKeyCodes)
   if not okV then return { key = tostring(name), supported = false, reason = "VirtualKeyCode enum read failed: " .. tostring(vk) } end
-  local r = resolve(rows, vk, name, opts)
+  local ropts = { executor = opts and opts.executor }
+  if type(d.keyboardCodes) == "function" then
+    local okK, codes = pcall(d.keyboardCodes)
+    if okK and type(codes) == "table" then ropts.keyboardCodes = codes end
+  end
+  -- The system redirect table is read only for the native route and only if the console offers it;
+  -- an unreadable table leaves the route on the KB-01 evidence and is reported as redirectChecked=false.
+  local key = type(name) == "string" and LOGICAL_KEYS[name:upper()] or nil
+  if key and key.native and type(d.virtualKeyRedirects) == "function" then
+    local okR, redirects = pcall(d.virtualKeyRedirects)
+    if okR and type(redirects) == "table" then ropts.redirects = redirects end
+  end
+  local r = resolve(rows, vk, name, ropts)
+  -- Enablement and profile identity are reported as read; a failed or non-boolean read leaves the value
+  -- nil with the error, and the caller treats "not established" as not admissible for shortcut routes.
   if type(d.shortcutsActive) == "function" then
     local okA, active = pcall(d.shortcutsActive)
-    if okA then r.shortcutsActive = active end
+    if okA and type(active) == "boolean" then r.shortcutsActive = active
+    else r.shortcutsActiveError = okA and ("value " .. tostring(active)) or tostring(active) end
+  else
+    r.shortcutsActiveError = "deps.shortcutsActive missing"
   end
   if type(d.profileName) == "function" then
     local okP, p = pcall(d.profileName)
-    if okP then r.profile = p end
+    if okP then r.profile = p else r.profileError = tostring(p) end
   end
   return r
 end
@@ -746,8 +1101,118 @@ function Instance:_expireSession(s, now)
   end
 end
 
+-- Everything press()/tap()/combo() check before an event goes out, as a plan: { tuple, route, tupleKey,
+-- maxHoldMs, exclusive } or { duplicate = <hold> } for the owner's harmless duplicate. ctx (combo):
+-- reserved = tuples already planned in this combo, extra = how many records the combo will add before
+-- this one (capacity). Nothing is dispatched here.
+function Instance:_planPress(sessionId, now, spec, ctx)
+  ctx = ctx or {}
+  local tuple, route, terr = self:_resolveSpec(spec, true)
+  if not tuple then return nil, terr end
+  -- A route change during an existing hold stops every new interaction event until it is resolved.
+  local mismatch = self:_checkRoutes()
+  if mismatch then
+    local m = mismatch[1]
+    return fail("route-changed", string.format("a held key's route changed since it was pressed: %s %s (hold %s, session '%s', original %s); release or recover before new input (the operator restores the route; nothing is toggled here)",
+      tostring(m.logical), tostring(m.mismatch), tostring(m.hold), tostring(self._holds[m.hold] and self._holds[m.hold].session), tostring(m.original.tupleKey)), { mismatches = mismatch })
+  end
+  local tk = tupleKey(tuple)
+  if ctx.reserved and ctx.reserved[tk] then
+    return fail("bad-argument", "tuple " .. tk .. " appears twice in the combo (key " .. ctx.reserved[tk] .. ")")
+  end
+  -- An exclusive hold (intended long-press) admits no new press from anyone, the owner included: a
+  -- second key or a duplicate press cancels the console's long-press (KB-01).
+  local ex = self:_exclusiveHold()
+  if ex then
+    return fail("exclusive-hold", string.format("hold %s (%s, session '%s', state %s) is an exclusive long-press; no new press is admitted until its release is resolved%s", ex.id, tostring(ex.logical or ex.tupleKey), ex.session, ex.state,
+        ex.state == "unresolved" and (" (release unresolved: " .. tostring(ex.unresolved and ex.unresolved.reason) .. "; recover it)") or ""),
+      { owner = ex.session, hold = ex.id, logical = ex.logical, tupleKey = ex.tupleKey, state = ex.state, deadlineInMs = ex.deadline and math.max(0, math.floor((ex.deadline - now) * 1000 + 0.5)) or nil })
+  end
+  local existing = self._byTuple[tk]
+  if existing then
+    if existing.session == sessionId and existing.state == "held" and not spec.exclusive then
+      return { duplicate = existing }
+    end
+    if existing.session == sessionId and existing.state == "held" then
+      return fail("exclusive-refused", "tuple " .. tk .. " is already held by this session; an exclusive long-press must start from a released key", { hold = existing.id })
+    end
+    return fail("conflict", string.format("tuple %s is already owned by session '%s' (state %s)%s", tk, existing.session, existing.state,
+      existing.logical and (" as " .. existing.logical) or ""), { owner = existing.session, hold = existing.id, state = existing.state })
+  end
+  if spec.exclusive then
+    if type(spec.exclusive) ~= "boolean" then return fail("bad-argument", "exclusive must be a boolean") end
+    local live = self:_liveCount()
+    if live > 0 or (ctx.extra or 0) > 0 then
+      return fail("exclusive-refused", "cannot promise an uninterrupted long-press while " .. live .. " other ownership record(s) exist (held or unresolved); release or recover them first", { holds = live })
+    end
+  end
+  if self:_liveCount() + (ctx.extra or 0) >= self._config.maxHolds then
+    return fail("capacity", "no capacity: " .. self._config.maxHolds .. " ownership records exist or would exist (held or unresolved)", { maxHolds = self._config.maxHolds })
+  end
+  local maxHoldMs = spec.maxHoldMs or self._config.maxHoldMs
+  if type(maxHoldMs) ~= "number" or maxHoldMs <= 0 or maxHoldMs > self._config.maxHoldMs then
+    return fail("bad-argument", "maxHoldMs must be a number in (0, " .. self._config.maxHoldMs .. "]")
+  end
+  -- Backend preflight (Keyboard() present, key name valid, display exists, MASTATE readable for MA).
+  if type(self._adapter.preflight) == "function" then
+    local ok, accepted, reason = pcall(self._adapter.preflight, self._adapter, copyTuple(tuple), route)
+    if not ok then return fail("unsupported", "backend preflight failed: " .. tostring(accepted)) end
+    if not accepted then return fail("unsupported", "backend refuses " .. tk .. ": " .. tostring(reason)) end
+  end
+  return { tuple = tuple, route = route, tupleKey = tk, maxHoldMs = maxHoldMs, exclusive = spec.exclusive and true or false }
+end
+
+-- Creates the record and sends the press. The adapter contract decides the record's fate:
+--   refused (ok=false)  -> nothing went down, the record is dropped
+--   raised              -> delivery unknown, the record stays as unresolved (blocks the tuple, recover() releases)
+--   ok                  -> held; confirmed is what the backend could observe (nil = not observable)
+function Instance:_dispatchPress(s, plan, now)
+  local hold = self:_newHold(s, plan.tuple, plan.route, now, now + plan.maxHoldMs / 1000, "max-hold")
+  hold.exclusive = plan.exclusive
+  local ok, aOk, confirmed, err = pcall(self._adapter.press, self._adapter, copyTuple(plan.tuple))
+  if not ok then
+    hold.dispatch.press = { ok = false, at = now, error = tostring(aOk) }
+    self:_markUnresolved(hold, now, "press raised an error; whether the key went down is unknown: " .. tostring(aOk))
+    return nil, { code = "press-failed", message = "press raised an error: " .. tostring(aOk), hold = hold.id, unresolved = true }
+  end
+  if aOk == false then
+    hold.dispatch.press = { ok = false, at = now, error = tostring(err or confirmed) }
+    self:_dropHold(hold)
+    return nil, { code = "press-failed", message = "press was refused by the backend: " .. tostring(err or confirmed) }
+  end
+  hold.dispatch.press = { ok = true, confirmed = confirmed, at = now, outcome = confirmed == true and "confirmed" or "dispatched" }
+  self:_scheduleReadback(hold, "press", true, now)
+  self._pressCount = self._pressCount + 1
+  return hold
+end
+
+-- Bounded aggregate readback for routes verified through MASTATE: service() watches the backend's
+-- aggregate state for config.readbackMs and records what it saw next to the dispatch, separately from
+-- the hold state. It never confirms a per-key release and never marks a release failed.
+function Instance:_scheduleReadback(hold, phase, expect, now)
+  if not (hold.route and hold.route.verify == "MASTATE") then return end
+  local rb = { source = "MASTATE", phase = phase, expect = expect, since = now, until_ = now + self._config.readbackMs / 1000 }
+  if not (self._adapter and type(self._adapter.observe) == "function") then
+    rb.outcome, rb.reason = "unavailable", "the backend has no observe()"
+  else
+    rb.outcome = "pending"
+  end
+  hold.readback = rb
+  hold.dispatch[phase].readback = rb
+end
+
+-- An exclusive record keeps the interaction lock until its release is RESOLVED: a refused or raised
+-- release leaves the key possibly down, so the long-press is still in effect for everyone.
+function Instance:_exclusiveHold()
+  for _, h in pairs(self._holds) do
+    if h.exclusive and h.state ~= "released" then return h end
+  end
+  return nil
+end
+
 -- Turns a press spec into a stored tuple plus the route it was resolved by. Nothing is dispatched.
-function Instance:_resolveSpec(spec)
+-- forPress adds the backend's key check; release selectors skip it (the stored tuple is released).
+function Instance:_resolveSpec(spec, forPress)
   if type(spec) ~= "table" then return nil, nil, { code = "bad-argument", message = "press needs a spec table" } end
   local display = spec.display
   if display ~= nil then
@@ -768,22 +1233,39 @@ function Instance:_resolveSpec(spec)
     end
     local r = self:describeKey(spec.key, { executor = spec.executor })
     if not r.supported then return nil, nil, { code = "unsupported", message = "logical key " .. tostring(spec.key) .. " is unsupported: " .. tostring(r.reason), resolution = r } end
+    -- Shortcut-backed keys need the table active; the fixed (MA) and native (PLEASE) routes do not.
     if r.source == "shortcut-table" and r.shortcutsActive == false then
       return nil, nil, { code = "unsupported", message = "logical key " .. r.key .. " routes through the shortcut table but keyboard shortcuts are inactive; the operator must enable them (never toggled here)", resolution = r }
     end
+    if r.source == "shortcut-table" and r.shortcutsActive ~= true then
+      return nil, nil, { code = "unsupported", message = "logical key " .. r.key .. " routes through the shortcut table but shortcut enablement cannot be established (" .. tostring(r.shortcutsActiveError or "unreadable") .. "); refused rather than guessed", resolution = r }
+    end
+    if forPress then
+      local ok, err = self:_backendKeyCheck(r.pcKey)
+      if not ok then return nil, nil, err end
+    end
     local tuple = { pcKey = r.pcKey, shift = r.shift, ctrl = r.ctrl, alt = r.alt, numlock = spec.numlock and true or false, display = display }
-    local route = { logical = r.key, source = r.source, shortcut = r.shortcut, rowIndex = r.rowIndex, executor = r.executor, profile = r.profile, shortcutsActive = r.shortcutsActive, verify = r.verify }
+    local route = { logical = r.key, source = r.source, shortcut = r.shortcut, rowIndex = r.rowIndex, executor = r.executor, profile = r.profile,
+                    shortcutsActive = r.shortcutsActive, verify = r.verify, redirectChecked = r.redirectChecked, pcKeyValidated = r.pcKeyValidated }
     return tuple, route, nil
   end
   if type(spec.pcKey) ~= "string" or spec.pcKey == "" then return nil, nil, { code = "bad-argument", message = "spec needs key (logical name) or pcKey (non-empty PC key name)" } end
-  if self._adapter and type(self._adapter.supportsKey) == "function" then
-    local ok, supported, reason = pcall(self._adapter.supportsKey, self._adapter, spec.pcKey)
-    if not ok then return nil, nil, { code = "unsupported", message = "backend key check failed: " .. tostring(supported) } end
-    if not supported then return nil, nil, { code = "unsupported", message = tostring(reason or ("PC key " .. spec.pcKey .. " is not supported")) } end
+  if forPress then
+    local ok, err = self:_backendKeyCheck(spec.pcKey)
+    if not ok then return nil, nil, err end
   end
   local tuple = { pcKey = spec.pcKey, shift = spec.shift and true or false, ctrl = spec.ctrl and true or false, alt = spec.alt and true or false,
                   numlock = spec.numlock and true or false, display = display }
   return tuple, { source = "raw" }, nil
+end
+
+function Instance:_backendKeyCheck(pcKey)
+  if self._adapter and type(self._adapter.supportsKey) == "function" then
+    local ok, supported, reason = pcall(self._adapter.supportsKey, self._adapter, pcKey)
+    if not ok then return nil, { code = "unsupported", message = "backend key check failed: " .. tostring(supported) } end
+    if not supported then return nil, { code = "unsupported", message = tostring(reason or ("PC key " .. tostring(pcKey) .. " is not supported")) } end
+  end
+  return true
 end
 
 -- Re-resolves the logical key of every live hold and compares with the stored route. Returns a list
@@ -797,9 +1279,16 @@ function Instance:_checkRoutes()
       if not r.supported then why = "no longer resolvable: " .. tostring(r.reason)
       elseif r.pcKey ~= h.pcKey or (r.shift or false) ~= h.shift or (r.ctrl or false) ~= h.ctrl or (r.alt or false) ~= h.alt then
         why = string.format("now maps to %s (was %s)", tupleKey({ pcKey = r.pcKey, shift = r.shift, ctrl = r.ctrl, alt = r.alt, numlock = h.numlock }), h.tupleKey)
-      elseif h.route.source == "shortcut-table" and r.shortcutsActive ~= nil and r.shortcutsActive ~= h.route.shortcutsActive then
+      elseif h.route.source == "shortcut-table" and r.shortcutsActive == nil then
+        -- Unreadable enablement is not "unchanged": the route's validity cannot be established, so the
+        -- hold stays unresolved rather than being reported released.
+        why = "keyboard shortcut enablement cannot be established (" .. tostring(r.shortcutsActiveError or "unreadable") .. ")"
+      elseif h.route.source == "shortcut-table" and r.shortcutsActive ~= h.route.shortcutsActive then
         why = "keyboard shortcuts are now " .. tostring(r.shortcutsActive and "active" or "inactive") .. " (were " .. tostring(h.route.shortcutsActive and "active" or "inactive") .. ")"
-      elseif r.profile ~= nil and h.route.profile ~= nil and r.profile ~= h.route.profile then
+      elseif h.route.source == "shortcut-table" and h.route.profile ~= nil and r.profile == nil then
+        why = "user profile identity cannot be established (" .. tostring(r.profileError or "unreadable") .. ")"
+      elseif h.route.source == "shortcut-table" and r.profile ~= nil and h.route.profile ~= nil and r.profile ~= h.route.profile then
+        -- Native and fixed routes do not depend on the profile's table; a shortcut-table route does.
         why = "user profile is now '" .. tostring(r.profile) .. "' (was '" .. tostring(h.route.profile) .. "')"
       end
       if why then
@@ -826,6 +1315,7 @@ function Instance:_newHold(s, tuple, route, now, deadline, deadlineReason)
   hold.tupleKey = tupleKey(tuple)
   hold.route = route
   hold.logical = route and route.logical or nil
+  hold.backend = self._adapter and self._adapter.name or "none"
   hold.pressedAt = now
   hold.state = "held"
   hold.kind = "hold"
@@ -873,6 +1363,16 @@ function Instance:_attemptRelease(hold, now, reason)
     attempt.state = "unresolved"
     return attempt
   end
+  -- A record is only ever released through the backend that pressed it: a fake record must never
+  -- become a real Keyboard() event, and a real hold cannot be "released" by the fake.
+  local origin = hold.backend or "unknown"
+  if origin ~= self._adapter.name then
+    attempt.ok, attempt.error = false, string.format("record originates from backend '%s' but the attached backend is '%s'; not dispatched (attach the originating backend to release it)", origin, self._adapter.name)
+    hold.dispatch.release = { ok = false, at = now, error = attempt.error, reason = reason }
+    self:_markUnresolved(hold, now, attempt.error)
+    attempt.state, attempt.outcome = "unresolved", "unresolved"
+    return attempt
+  end
   hold.state = "releasing"
   local ok, aOk, confirmed, err = pcall(self._adapter.release, self._adapter, copyTuple(hold))
   if not ok then
@@ -885,7 +1385,7 @@ function Instance:_attemptRelease(hold, now, reason)
   hold.dispatch.release = { ok = attempt.ok, confirmed = attempt.confirmed, at = now, error = attempt.error, reason = reason }
   if not attempt.ok then
     self:_markUnresolved(hold, now, attempt.error)
-    attempt.state = "unresolved"
+    attempt.state, attempt.outcome = "unresolved", "unresolved"
   elseif attempt.confirmed == true or (attempt.confirmed == nil and not hold.routeMismatch) then
     hold.state = "released"
     hold.releasedAt = now
@@ -894,12 +1394,18 @@ function Instance:_attemptRelease(hold, now, reason)
     if self._byTuple[hold.tupleKey] == hold then self._byTuple[hold.tupleKey] = nil end
     attempt.state = "released"
     attempt.verified = attempt.confirmed == true
+    -- "confirmed": the backend observed the key up. "dispatched": the call returned and nothing on this
+    -- backend can observe the single key (Keyboard(); the aggregate MASTATE readback is separate).
+    attempt.outcome = attempt.verified and "confirmed" or "dispatched"
+    self:_scheduleReadback(hold, "release", false, now)
+    attempt.readback = hold.readback
   else
     local why = attempt.confirmed == false and "release was dispatched but the backend reports the key still down"
       or ("release was dispatched with the stored tuple, but the route changed during the hold (" .. tostring(hold.routeMismatch and hold.routeMismatch.reason) .. ") and the effect cannot be confirmed")
     self:_markUnresolved(hold, now, why)
-    attempt.state = "unresolved"
+    attempt.state, attempt.outcome = "unresolved", "unresolved"
   end
+  hold.dispatch.release.outcome = attempt.outcome
   if hold.state == "released" then
     -- Released records are kept only until their session is reported; they free their tuple now.
     self._released[#self._released + 1] = hold
@@ -1012,11 +1518,24 @@ function Instance:_holdReport(h, now, extra)
   local r = {
     id = h.id, session = h.session, state = h.state, kind = h.kind,
     logical = h.logical, pcKey = h.pcKey, shift = h.shift, ctrl = h.ctrl, alt = h.alt, numlock = h.numlock, display = h.display,
-    tupleKey = h.tupleKey, route = h.route, pressedAt = h.pressedAt, releasedAt = h.releasedAt,
+    tupleKey = h.tupleKey, route = h.route, backend = h.backend, pressedAt = h.pressedAt, releasedAt = h.releasedAt,
     deadline = h.deadline, deadlineReason = h.deadlineReason,
+    exclusive = h.exclusive or nil, group = h.group, groupIndex = h.groupIndex,
     dispatch = h.dispatch, unresolved = h.unresolved, routeMismatch = h.routeMismatch, observed = h.observed,
     observedReleasedAt = h.observedReleasedAt, adopted = h.adopted, routeRestored = h.routeRestored,
+    readback = h.readback,
+    -- Flat copies for consumers with a bounded JSON depth (the bridge caps nesting).
+    pressReadback = h.dispatch and h.dispatch.press and h.dispatch.press.readback or nil,
+    releaseReadback = h.dispatch and h.dispatch.release and h.dispatch.release.readback or nil,
   }
+  -- Result semantics spelled out: what the press did, and where the release stands.
+  local dp, dr = h.dispatch and h.dispatch.press, h.dispatch and h.dispatch.release
+  r.pressOutcome = dp and (dp.ok and (dp.outcome or (dp.confirmed == true and "confirmed" or "dispatched")) or "failed") or (h.adopted and "adopted" or "none")
+  if h.state == "released" then r.releaseOutcome = dr and dr.outcome or (dr and dr.confirmed == true and "confirmed" or "dispatched")
+  elseif h.state == "unresolved" then r.releaseOutcome = "unresolved"
+  elseif h.state == "releasing" then r.releaseOutcome = "in-progress"
+  elseif h.deadline then r.releaseOutcome = "scheduled"
+  else r.releaseOutcome = "pending" end
   if now then
     r.heldMs = math.floor(((h.releasedAt or now) - h.pressedAt) * 1000 + 0.5)
     if h.deadline then r.deadlineInMs = math.max(0, math.floor((h.deadline - now) * 1000 + 0.5)) end
@@ -1052,8 +1571,9 @@ local M = {
   LOGICAL_KEYS = { "PLEASE", "STORE", "ESC", "CLEAR", "OOPS", "NUM0", "NUM1", "NUM2", "NUM3", "NUM4", "NUM5", "NUM6", "NUM7", "NUM8", "NUM9", "EXEC", "MA" },
   UNSUPPORTED_KEYS = { "MA1", "MA2" },
   new = new, consoleDeps = consoleDeps, resolve = resolve, parseShortcut = parseShortcut, tupleKey = tupleKey,
-  fakeBackend = fakeBackend,
+  fakeBackend = fakeBackend, keyboardBackend = keyboardBackend,
   backends = { keyboard = BACKENDS.keyboard.name, fake = BACKENDS.fake.name },
+  KEYBOARD_LIMITATIONS = KEYBOARD_LIMITATIONS,
   DEFAULT_CONFIG = shallowCopy(DEFAULT_CONFIG),
 }
 
