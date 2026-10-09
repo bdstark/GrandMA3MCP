@@ -14,7 +14,8 @@ Choose the guide for the computer running grandMA3 onPC and your MCP client:
 | Windows | [Install and connect on Windows](docs/setup/windows.md) |
 
 Both guides cover building the server, copying the plugin, importing it into onPC, configuring your
-MCP client, and checking the connection. Start with the native setup for your platform.
+MCP client (ChatGPT desktop, Claude Code or Claude Desktop), and checking the connection.
+Start with the native setup for your platform. For ChatGPT in a browser, see [ChatGPT web](docs/setup/chatgpt-web.md).
 
 Running the MCP client on a different computer? See [remote access over SSH](docs/remote-access.md).
 For container deployment, see [Docker](docs/docker.md).
