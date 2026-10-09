@@ -37,7 +37,7 @@ end
 
 local HK = loadModule("gma3_mcp_hardkeys.lua")
 local FB = loadModule("gma3_mcp_feedback.lua")
-check("hardkeys loads without console API", type(HK) == "table" and HK.API_VERSION == 1 and HK.VERSION == "0.1.0" and type(HK.new) == "function")
+check("hardkeys loads without console API", type(HK) == "table" and HK.API_VERSION == 1 and HK.VERSION == "0.2.0" and type(HK.new) == "function")
 check("feedback loads without console API", type(FB) == "table" and FB.API_VERSION == 1 and FB.VERSION == "0.1.0" and type(FB.new) == "function")
 check("module tables are read-only", not pcall(function() HK.state = {} end) and not pcall(function() FB.cache = {} end) and HK.state == nil)
 check("modules publish nothing globally", package.loaded["gma3_mcp_hardkeys"] == nil and _G.gma3_mcp_hardkeys == nil and _G.gma3_mcp_feedback == nil)
@@ -67,14 +67,14 @@ check("unknown backend refused", not pcall(HK.new, { owner = "x", backend = "osc
 check("instances are distinct objects", a ~= b and a:status().owner == "consumer-a" and b:status().owner == "consumer-b")
 check("service() before init() is an error", not pcall(a.service, a, 0))
 a:init(); b:init()
-check("status after init", a:status().state == "ready" and a:status().holds == 0 and a:status().inputOperations == false)
+check("status after init", a:status().state == "ready" and a:status().holdCount == 0 and a:status().inputEnabled == false and a:status().backend.dispatches == false)
 a:service(1.0); a:service(2.0)
-check("servicing is per instance", a:status().serviced == 2 and b:status().serviced == 0)
-a._holds["PLEASE"] = { since = 1 }
-check("mutable state is not shared between instances", b:status().holds == 0 and a:status().holds == 1)
+check("servicing is per instance", a:status().counters.serviced == 2 and b:status().counters.serviced == 0)
+a._holds["h1"] = { id = "h1", seq = 1, state = "held", session = "s", pcKey = "Enter", tupleKey = "Enter|s0c0a0n0", pressedAt = 1, dispatch = { attempts = 0 } }
+check("mutable state is not shared between instances", b:status().holdCount == 0 and a:status().holdCount == 1 and a:status().capacity.used == 1)
 check("no dependency was called by new/init/status/service", next(hkCalls) == nil, json.encode(hkCalls))
 local disposed = a:dispose()
-check("dispose clears holds and is idempotent", a:status().state == "disposed" and a:status().holds == 0 and disposed.holds == 0 and a:dispose().holds == 0)
+check("dispose without a clock hands the record back unresolved and is idempotent", a:status().state == "disposed" and a:status().holdCount == 0 and disposed.holds == 1 and disposed.records[1].pcKey == "Enter" and a:dispose().holds == 0, json.encode(disposed))
 check("disposed instance refuses service and describeKey", not pcall(a.service, a, 3) and not pcall(a.describeKey, a, "PLEASE"))
 check("disposing one instance leaves the other usable", b:service(3.0).released ~= nil and b:status().state == "ready")
 local ok, missing = b:backendAvailable()
@@ -153,7 +153,7 @@ check("reader failure reported as unsupported", r.supported == false and r.reaso
 local touched = {}
 local fakeEnv = setmetatable({}, { __index = function(_, k) touched[#touched + 1] = k; return nil end })
 local cd = HK.consoleDeps(fakeEnv)
-check("hardkeys consoleDeps touches nothing but reads the Keyboard field", type(cd.shortcutRows) == "function" and #touched == 1 and touched[1] == "Keyboard", json.encode(touched))
+check("hardkeys consoleDeps touches nothing but reads the Keyboard field", type(cd.shortcutRows) == "function" and type(cd.profileName) == "function" and type(cd.displayExists) == "function" and #touched == 1 and touched[1] == "Keyboard", json.encode(touched))
 
 -------------------------------------------------------------------------------
 -- Feedback readers

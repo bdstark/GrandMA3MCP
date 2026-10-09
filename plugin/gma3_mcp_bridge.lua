@@ -20,6 +20,18 @@
 --                                               enable with a 2 s / 5 M VM-instruction budget per request
 --   Plugin "gma3_mcp_bridge" "lua luahook=replace"
 --                                               enforce the budget even over the console's own hook
+--
+-- Owned input sessions (KB-03) are OFF by default too and enabled per start, or toggled while running:
+--   Plugin "gma3_mcp_bridge" "input=fake"       admit input.* ops on the FAKE backend (records events,
+--                                               touches no key; the console keyboard backend is KB-04)
+--   Plugin "gma3_mcp_bridge" "input=off"        stop admitting input; attempt to release every held key
+--   Plugin "gma3_mcp_bridge" "input status"     print sessions, holds and unresolved releases
+--   Plugin "gma3_mcp_bridge" "input recover"    operator recovery: re-attempt every unresolved release,
+--                                               including records kept from a previous run
+-- Every held key belongs to a session bound to the TCP connection that opened it; a client can only
+-- act on its own session, and a disconnect, lease expiry, "input=off", stop or Cleanup attempts to
+-- release what that session still holds. A release that fails or cannot be confirmed is kept as an
+-- unresolved record (visible in input.status / ping.input) until "input recover" succeeds.
 -- Arguments are whitespace separated tokens; "luatime" is milliseconds of wall-clock time and
 -- "luasteps" a count of Lua VM instructions (0 = unlimited). A request that exceeds its budget is
 -- aborted with an error so the bridge loop (and the console) regain control. The budget is
@@ -55,7 +67,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.4.0"
+local VERSION      = "0.5.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -80,6 +92,11 @@ state.lua = state.lua or { enabled = LUA_DEFAULT_ENABLED, maxMs = LUA_DEFAULT_MA
 state.lua.hookMode = state.lua.hookMode or LUA_DEFAULT_HOOK_MODE
 -- Loaded console interaction modules (KB-02); filled in by loadModules() at every start.
 state.modules = state.modules or {}
+-- Owned input policy (KB-03). enabled/backend reset at every start like the Lua policy; "unresolved"
+-- keeps the release records a previous run could not resolve so "input recover" can act on them.
+state.input = state.input or { enabled = false, backend = nil, unresolved = {} }
+state.input.unresolved = state.input.unresolved or {}
+state.nextClientId = state.nextClientId or 0
 
 -- Log to the System Monitor (Echo), the Command Line History (Printf) and a log file in the temp folder.
 local function logFile()
@@ -1326,6 +1343,8 @@ local MODULE_COMPONENTS = {
   { key = "feedback", component = "gma3_mcp_feedback" },
 }
 
+local enableInputOn  -- defined with the input ops below; used by loadModules()
+
 -- Best-effort detail for an error message: is the component in the plugin, and did it fail to parse?
 local function componentInfo(name)
   if my_handle == nil then return "" end
@@ -1370,12 +1389,19 @@ local function loadModules()
     local rec = { component = entry.component, loaded = false }
     local mod, err = loadModule(entry)
     if mod then
-      rec.loaded, rec.version, rec.apiVersion = true, mod.VERSION, mod.API_VERSION
+      rec.loaded, rec.version, rec.apiVersion, rec.module = true, mod.VERSION, mod.API_VERSION, mod
       local okI, inst = pcall(function()
         local deps = type(mod.consoleDeps) == "function" and mod.consoleDeps(_G) or nil
         return mod.new({ owner = "gma3_mcp_bridge", deps = deps }):init()
       end)
       if okI then rec.instance = inst else rec.loaded, rec.error = false, "instance: " .. tostring(inst) end
+      if okI and entry.key == "hardkeys" and state.input.enabled then
+        local okE, err = enableInputOn(rec)
+        if not okE then
+          state.input.enabled = false
+          logerr("input: %s; input stays disabled", tostring(err))
+        end
+      end
     else
       rec.error = err
     end
@@ -1385,18 +1411,56 @@ local function loadModules()
   log("modules: %s", table.concat(summary, ", "))
 end
 
+local function describeAttempt(a)
+  return string.format("%s %s(%s) %s%s", tostring(a.session), tostring(a.logical or "raw"), tostring(a.tupleKey), tostring(a.state),
+    a.error and (": " .. tostring(a.error)) or (a.verified == false and " (dispatched, effect not observable)" or ""))
+end
+
+local function logReleaseResult(prefix, r)
+  if type(r) ~= "table" then return end
+  for _, a in ipairs(r.released or {}) do log("%s released %s", prefix, describeAttempt(a)) end
+  for _, a in ipairs(r.unresolved or {}) do logerr("%s UNRESOLVED %s", prefix, describeAttempt(a)) end
+end
+
 local function serviceModules(now)
-  for _, rec in pairs(state.modules) do
+  for key, rec in pairs(state.modules) do
     if rec.instance then
-      local ok, err = pcall(rec.instance.service, rec.instance, now)
-      if not ok then rec.error = "service: " .. tostring(err); rec.instance = nil end
+      local ok, res = pcall(rec.instance.service, rec.instance, now)
+      if not ok then
+        rec.error = "service: " .. tostring(res); rec.instance = nil
+        logerr("module %s failed in service() and was detached: %s", key, tostring(res))
+      elseif key == "hardkeys" and type(res) == "table" then
+        for _, sid in ipairs(res.expired or {}) do log("input: lease of session %s expired", tostring(sid)) end
+        logReleaseResult("input: deadline", res)
+      end
     end
   end
 end
 
-local function disposeModules()
-  for _, rec in pairs(state.modules) do
-    if rec.instance then pcall(rec.instance.dispose, rec.instance) end
+-- Disposes every module instance. The hardkeys instance attempts to release everything it still holds
+-- and hands back the records it could not resolve; they are kept in state.input.unresolved (which
+-- survives in _G until the plugin is reloaded) so "input recover" can act on them after a restart.
+local function disposeModules(reason)
+  local t = now()
+  for key, rec in pairs(state.modules) do
+    if rec.instance then
+      local ok, res = pcall(rec.instance.dispose, rec.instance, t)
+      if key == "hardkeys" then
+        if ok and type(res) == "table" then
+          logReleaseResult("input: " .. tostring(reason or "dispose"), res)
+          for _, r in ipairs(res.records or {}) do
+            r.keptAt, r.keptReason = t, reason or "dispose"
+            state.input.unresolved[#state.input.unresolved + 1] = r
+            logerr("input: keeping unresolved record %s(%s) of session %s: %s", tostring(r.logical or "raw"), tostring(r.tupleKey), tostring(r.session), tostring(r.unresolved and r.unresolved.reason))
+          end
+          if #(res.records or {}) > 0 then
+            logerr("input: %d unresolved release record(s) kept; run  Plugin \"gma3_mcp_bridge\" \"input recover\"  once the bridge runs again", #res.records)
+          end
+        elseif not ok then
+          logerr("input: dispose failed: %s", tostring(res))
+        end
+      end
+    end
   end
 end
 
@@ -1410,7 +1474,232 @@ end
 
 state._loadModules = loadModules  -- exposed for local testing
 
+-------------------------------------------------------------------------------
+-- Owned input sessions (KB-03)
+-------------------------------------------------------------------------------
+-- The hardkeys module keeps the ownership records; the bridge binds one session to each TCP client
+-- that opens one (session id = the connection's id, never taken from the request) and admits the
+-- input.* ops only for the connection's own session. Only the FAKE backend dispatches in this
+-- version: "input=fake" is an operator decision made at start or while running, like "lua on".
+
+local function hardkeysRec()
+  if not state.running then return nil, "the bridge is not running" end
+  local rec = state.modules.hardkeys
+  if not rec or not rec.instance then return nil, "the hardkeys module is not loaded" .. (rec and rec.error and (": " .. tostring(rec.error)) or "") end
+  local ok, st = pcall(rec.instance.status, rec.instance)
+  if not ok or type(st) ~= "table" or st.state ~= "ready" then return nil, "the hardkeys instance is not ready" end
+  return rec
+end
+
+enableInputOn = function(rec)
+  local mod = rec.module
+  if state.input.backend ~= "fake" then return false, "backend '" .. tostring(state.input.backend) .. "' cannot dispatch in this version; only input=fake is available until KB-04" end
+  if type(mod.fakeBackend) ~= "function" then return false, "the loaded hardkeys module has no fakeBackend() (module " .. tostring(rec.version) .. ")" end
+  if not rec.fakeAdapter then rec.fakeAdapter = mod.fakeBackend() end
+  local ok, err = rec.instance:enableInput(rec.fakeAdapter)
+  if not ok then return false, err and err.message or "enableInput failed" end
+  return true
+end
+
+local function inputSummary()
+  local rec = hardkeysRec()
+  local st = rec and rec.instance:status(now()) or nil
+  return {
+    enabled = state.input.enabled and true or false,
+    backend = state.input.backend,
+    moduleInputEnabled = st and st.inputEnabled or false,
+    sessions = st and st.sessionCount or 0,
+    holds = st and st.capacity.used or 0,
+    unresolved = st and st.unresolved or 0,
+    unresolvedFromPreviousRun = #state.input.unresolved,
+    note = "ownership records, not physical key state; see input.status",
+  }
+end
+
+local function describeInput()
+  local s = inputSummary()
+  return string.format("input=%s sessions=%d holds=%d unresolved=%d keptFromPreviousRun=%d",
+    s.enabled and (tostring(s.backend) .. " enabled") or "disabled", s.sessions, s.holds, s.unresolved, s.unresolvedFromPreviousRun)
+end
+
+-- Operator-only recovery (plugin argument "input recover"): adopt the records kept from a previous
+-- run, then re-attempt every unresolved release of every session. Nothing is retried automatically.
+local function inputRecover()
+  local rec, err = hardkeysRec()
+  if not rec then
+    log("input recover: %s; %d record(s) from a previous run are kept", tostring(err), #state.input.unresolved)
+    return
+  end
+  if #state.input.unresolved > 0 then
+    local ad = rec.instance:adopt(state.input.unresolved, now())
+    local kept = {}
+    for _, rj in ipairs(ad.rejected or {}) do kept[#kept + 1] = rj.record; logerr("input recover: record %s not adopted: %s", tostring(rj.record and rj.record.tupleKey), tostring(rj.reason)) end
+    state.input.unresolved = kept
+    log("input recover: adopted %d record(s) from a previous run", #(ad.adopted or {}))
+  end
+  local r = rec.instance:recover(nil, now())
+  logReleaseResult("input recover", r)
+  log("input recover: %d released, %d still unresolved", #(r.released or {}), #(r.unresolved or {}))
+end
+
+local function raise(err)
+  if type(err) == "table" then
+    local msg = tostring(err.message or err.code)
+    if err.code then msg = "[" .. tostring(err.code) .. "] " .. msg end
+    error(msg, 0)
+  end
+  error(tostring(err), 0)
+end
+
+local function wantClient(ctx)
+  if type(ctx) ~= "table" or type(ctx.client) ~= "table" or ctx.client.id == nil then
+    error("[no-connection] input ops need a connection context; sessions are bound to the TCP connection", 0)
+  end
+  return ctx.client
+end
+
+local function inputInstance()
+  local rec, err = hardkeysRec()
+  if not rec then error("[no-module] " .. tostring(err), 0) end
+  return rec
+end
+
+local function requireInputEnabled()
+  if not state.input.enabled then
+    error('[input-disabled] input is disabled on the console. The console operator can enable the fake backend with:  Plugin "gma3_mcp_bridge" "input=fake"  ' ..
+          '(or start the bridge with that argument). input.status, input.release, input.releaseAll, input.recover and input.close remain available.', 0)
+  end
+  if state.stopRequested then error("[stopping] the bridge is stopping; new input is refused while it releases held keys", 0) end
+end
+
+local function ownSession(ctx, mustExist)
+  local client = wantClient(ctx)
+  if client.session == nil and mustExist then error("[no-session] this connection has no input session; call input.open first", 0) end
+  return client, client.session
+end
+
 local ops = {}
+
+-- Opens this connection's session. args: leaseMs, label. The session id is derived from the connection.
+ops["input.open"] = function(args, ctx)
+  local client = wantClient(ctx)
+  local rec = inputInstance()
+  if client.session ~= nil then
+    local st = rec.instance:status(now()).sessions[client.session]
+    if st and st.state ~= "closed" then error("[session-exists] this connection already has session '" .. client.session .. "'", 0) end
+  end
+  local id = "conn-" .. tostring(client.id)
+  local s, err = rec.instance:openSession({ id = id, leaseMs = args.leaseMs, label = args.label, binding = "client " .. tostring(client.id) }, now())
+  if not s then raise(err) end
+  client.session = id
+  return { session = s, inputEnabled = state.input.enabled and true or false, backend = state.input.backend }
+end
+
+ops["input.renew"] = function(args, ctx)
+  local _, sid = ownSession(ctx, true)
+  local s, err = inputInstance().instance:renewSession(sid, now(), args.leaseMs)
+  if not s then raise(err) end
+  return { session = s }
+end
+
+ops["input.close"] = function(args, ctx)
+  local client, sid = ownSession(ctx, true)
+  local r, err = inputInstance().instance:closeSession(sid, now(), "client-close")
+  if not r then raise(err) end
+  client.session = nil
+  logReleaseResult("input: close " .. sid, r)
+  return r
+end
+
+local function pressSpec(args)
+  return { key = args.key, pcKey = args.pcKey, shift = args.shift, ctrl = args.ctrl, alt = args.alt, numlock = args.numlock,
+           display = args.display, executor = args.executor, maxHoldMs = args.maxHoldMs }
+end
+
+ops["input.press"] = function(args, ctx)
+  requireInputEnabled()
+  local _, sid = ownSession(ctx, true)
+  local h, err = inputInstance().instance:press(sid, now(), pressSpec(args))
+  if not h then raise(err) end
+  return { hold = h }
+end
+
+ops["input.tap"] = function(args, ctx)
+  requireInputEnabled()
+  local _, sid = ownSession(ctx, true)
+  local h, err = inputInstance().instance:tap(sid, now(), pressSpec(args), args.holdMs)
+  if not h then raise(err) end
+  return { hold = h }
+end
+
+-- Allowed while input is disabled: releasing is part of the recovery path.
+ops["input.release"] = function(args, ctx)
+  local _, sid = ownSession(ctx, true)
+  local selector = args.hold ~= nil and { hold = args.hold } or pressSpec(args)
+  local h, err = inputInstance().instance:release(sid, now(), selector)
+  if not h then raise(err) end
+  if h.attempt then
+    local a = h.attempt
+    logReleaseResult("input: release " .. sid, { released = a.state == "released" and { a } or {}, unresolved = a.state ~= "released" and { a } or {} })
+  end
+  return { hold = h }
+end
+
+ops["input.releaseAll"] = function(args, ctx)
+  local _, sid = ownSession(ctx, true)
+  local r, err = inputInstance().instance:releaseAll(sid, now(), "release-all")
+  if not r then raise(err) end
+  logReleaseResult("input: releaseAll " .. sid, r)
+  return r
+end
+
+-- Owner-scoped: only this connection's unresolved records. The administrative all-sessions recovery
+-- is the console-side plugin argument "input recover".
+ops["input.recover"] = function(args, ctx)
+  local _, sid = ownSession(ctx, true)
+  local r = inputInstance().instance:recover(sid, now())
+  logReleaseResult("input: recover " .. sid, r)
+  return r
+end
+
+-- Read-only: never releases anything (the module's status() performs no cleanup).
+ops["input.status"] = function(args, ctx)
+  local rec, err = hardkeysRec()
+  local out = { policy = inputSummary(), session = nil }
+  if type(ctx) == "table" and type(ctx.client) == "table" then out.session = ctx.client.session end
+  if not rec then out.error = err; return out end
+  out.status = rec.instance:status(now())
+  out.unresolvedFromPreviousRun = state.input.unresolved
+  return out
+end
+
+-- Test controls of the fake backend (only while it is the active backend): make the console "fail"
+-- or an operator "touch" a key so recovery paths can be exercised live without a real key.
+ops["input.fake"] = function(args, ctx)
+  wantClient(ctx)
+  local rec = inputInstance()
+  if state.input.backend ~= "fake" or not rec.fakeAdapter then error("[not-fake] the fake backend is not active", 0) end
+  local b = rec.fakeAdapter
+  local tuple = { pcKey = args.pcKey, shift = args.shift, ctrl = args.ctrl, alt = args.alt, numlock = args.numlock }
+  local action = args.action
+  if action == "failRelease" or action == "failPress" then
+    if type(args.pcKey) ~= "string" then error("args.pcKey (string) is required", 0) end
+    b:failNext(action == "failRelease" and "release" or "press", tuple, args.error or (action .. " (fake)"), args.sticky and true or false)
+  elseif action == "clearFailures" then b:clearFailures()
+  elseif action == "confirm" then
+    if args.mode == "true" or args.mode == true then b:setConfirmMode(true)
+    elseif args.mode == "false" or args.mode == false then b:setConfirmMode(false)
+    elseif args.mode == "nil" or args.mode == nil then b:setConfirmMode(nil)
+    else error("args.mode must be true, false or nil", 0) end
+  elseif action == "physicalRelease" then if type(args.pcKey) ~= "string" then error("args.pcKey (string) is required", 0) end; b:physicalRelease(tuple)
+  elseif action == "physicalPress" then if type(args.pcKey) ~= "string" then error("args.pcKey (string) is required", 0) end; b:physicalPress(tuple)
+  elseif action == "events" or action == nil then -- read-only
+  else error("unknown action '" .. tostring(action) .. "' (failRelease, failPress, clearFailures, confirm, physicalRelease, physicalPress, events)", 0) end
+  local down = {}
+  for k in pairs(b.down) do down[#down + 1] = k end
+  table.sort(down)
+  return { backend = "fake", events = b.events, down = down, counters = b.counters, confirmMode = b.confirmMode == nil and "nil" or b.confirmMode }
+end
 
 ops.ping = function(args)
   local build = {}
@@ -1436,6 +1725,7 @@ ops.ping = function(args)
     showfile      = showfile,
     user          = (pcall(CurrentUser) and CurrentUser() and CurrentUser().name) or nil,
     modules       = moduleSummary(),
+    input         = inputSummary(),
   }
 end
 
@@ -2090,7 +2380,8 @@ local function handleLine(client, line)
     return encode({ id = id, ok = false, error = "unknown op '" .. tostring(req.op) .. "'" })
   end
   local args = req.args or {}
-  local okR, result = xpcall(function() return op(args) end, debug.traceback)
+  local ctx = { client = client, now = now() }
+  local okR, result = xpcall(function() return op(args, ctx) end, debug.traceback)
   if okR then
     return encode({ id = id, ok = true, result = toJsonSafe(result) })
   end
@@ -2102,23 +2393,40 @@ end
 
 state._handleLine = handleLine  -- exposed for local testing
 
-local function closeClient(i)
+-- Closing a connection ends its input session: every key it still holds gets a release attempt and
+-- the outcome is logged. A failed or unconfirmed release stays as an unresolved record.
+local function releaseClientSession(c, reason)
+  if not c or c.session == nil then return end
+  local rec = hardkeysRec()
+  if rec then
+    local ok, r = pcall(rec.instance.closeSession, rec.instance, c.session, now(), reason)
+    if ok and type(r) == "table" then logReleaseResult("input: " .. tostring(reason) .. " " .. tostring(c.session), r)
+    else logerr("input: closing session %s on %s failed: %s", tostring(c.session), tostring(reason), tostring(r)) end
+  end
+  c.session = nil
+end
+
+local function closeClient(i, reason)
   local c = state.clients[i]
-  if c then pcall(function() c.sock:close() end) end
+  if c then
+    releaseClientSession(c, reason or "disconnect")
+    pcall(function() c.sock:close() end)
+  end
   table.remove(state.clients, i)
 end
+state._closeClient = closeClient  -- exposed for local testing
 
 local function serverMain()
   local server, err = socket.bind(state.host, state.port)
   if not server then
     logerr("could not bind %s:%d (%s)", state.host, state.port, tostring(err))
     state.running = false
-    disposeModules()
+    disposeModules("bind-failed")
     return
   end
   server:settimeout(0)
   state.server = server
-  log("listening on %s:%d (v%s); Lua execution %s", state.host, state.port, VERSION, describeLuaPolicy())
+  log("listening on %s:%d (v%s); Lua execution %s; %s", state.host, state.port, VERSION, describeLuaPolicy(), describeInput())
   if not state.lua.enabled then
     log('Lua execution (gma3_lua) is off; enable it with  Plugin "gma3_mcp_bridge" "lua on"')
   end
@@ -2138,8 +2446,9 @@ local function serverMain()
       else
         c:settimeout(0)
         pcall(function() c:setoption("tcp-nodelay", true) end)
-        table.insert(state.clients, { sock = c, buf = "" })
-        log("client connected (%d total)", #state.clients)
+        state.nextClientId = state.nextClientId + 1
+        table.insert(state.clients, { sock = c, buf = "", id = state.nextClientId })
+        log("client %d connected (%d total)", state.nextClientId, #state.clients)
       end
     end
 
@@ -2171,12 +2480,12 @@ local function serverMain()
     coroutine.yield()
   end
 
-  for i = #state.clients, 1, -1 do closeClient(i) end
+  for i = #state.clients, 1, -1 do closeClient(i, "shutdown") end
   pcall(function() server:close() end)
   state.server = nil
   state.running = false
   state.stopRequested = false
-  disposeModules()
+  disposeModules("shutdown")
   log("stopped")
 end
 
@@ -2191,6 +2500,8 @@ end
 --   luatime=<ms>  luasteps=<n>   Lua execution budget (0 = unlimited)
 --   luahook=preserve|replace  keep the console's own hook on the plugin thread (default; no hard
 --                             quota while it is present) or replace it with the budget hook
+--   input=fake | input=off | noinput   owned input sessions on the fake backend (KB-03) / disabled
+--   input status | input recover       print input state / operator recovery of unresolved releases
 local function parseArgument(argument)
   local opts = {}
   local text = argument and tostring(argument) or ""
@@ -2198,8 +2509,19 @@ local function parseArgument(argument)
   for tok in text:gmatch("[^%s,]+") do
     local l = tok:lower()
     local key, val = l:match("^(%a+)=(.*)$")
-    if l == "stop" or l == "status" then
+    if (l == "status" or l == "recover") and prev == "input" then
+      opts.command = "input-" .. l
+    elseif l == "stop" or l == "status" then
       opts.command = l
+    elseif l == "input" then
+      opts.inputToken = true  -- followed by "status" or "recover"; alone it is an error (no default backend)
+    elseif l == "noinput" then
+      opts.input = false
+    elseif key == "input" then
+      if val == "fake" then opts.input, opts.inputBackend = true, "fake"
+      elseif val == "off" or val == "0" or val == "no" or val == "false" or val == "none" then opts.input = false
+      elseif val == "keyboard" then return nil, string.format("\"%s\": the console keyboard backend has no dispatch yet (KB-04); use input=fake for the lifecycle, or input=off", tok)
+      else return nil, string.format("\"%s\": expected input=fake or input=off", tok) end
     elseif l == "lua" then
       opts.lua = true
     elseif l == "nolua" then
@@ -2225,9 +2547,12 @@ local function parseArgument(argument)
       if not port or port < 1 or port > 65535 then return nil, string.format("\"%s\" is not a valid port number (expected 1-65535)", tok) end
       opts.port = port
     else
-      return nil, string.format("\"%s\" is not a recognised argument (expected a port number, \"stop\", \"status\", \"lua\", \"lua on|off\", \"luatime=<ms>\", \"luasteps=<n>\" or \"luahook=preserve|replace\")", tok)
+      return nil, string.format("\"%s\" is not a recognised argument (expected a port number, \"stop\", \"status\", \"lua\", \"lua on|off\", \"luatime=<ms>\", \"luasteps=<n>\", \"luahook=preserve|replace\", \"input=fake|off\", \"input status\" or \"input recover\")", tok)
     end
     prev = l
+  end
+  if opts.inputToken and opts.command == nil and opts.input == nil then
+    return nil, "\"input\": expected input=fake, input=off, \"input status\" or \"input recover\" (there is no default input backend)"
   end
   return opts
 end
@@ -2237,6 +2562,29 @@ local function applyLuaPolicy(opts)
   if opts.maxMs ~= nil then state.lua.maxMs = opts.maxMs end
   if opts.maxSteps ~= nil then state.lua.maxSteps = opts.maxSteps end
   if opts.hookMode ~= nil then state.lua.hookMode = opts.hookMode end
+end
+
+-- Enabling attaches the fake adapter to the running hardkeys instance; disabling asks it to release
+-- every held key and keeps whatever could not be released as unresolved records.
+local function applyInputPolicy(opts)
+  if opts.input == nil then return end
+  local rec = hardkeysRec()
+  if opts.input then
+    state.input.backend = opts.inputBackend or "fake"
+    if rec then
+      local ok, err = enableInputOn(rec)
+      if not ok then state.input.enabled = false; logerr("input: %s; input stays disabled", tostring(err)); return end
+    end
+    state.input.enabled = true
+    log("input now enabled on the %s backend (%s)", state.input.backend, state.input.backend == "fake" and "nothing reaches the console" or "?")
+  else
+    state.input.enabled = false
+    if rec then
+      local ok, r = pcall(rec.instance.disableInput, rec.instance, now(), "input-disabled")
+      if ok then logReleaseResult("input: disable", r) else logerr("input: disableInput failed: %s", tostring(r)) end
+    end
+    log("input now disabled (%s)", describeInput())
+  end
 end
 
 local function MainImpl(display_handle, argument)
@@ -2256,8 +2604,29 @@ local function MainImpl(display_handle, argument)
     return
   end
 
+  -- Control invocations: they read and print, they never release keys (the running bridge owns them).
   if opts.command == "status" then
-    log("running=%s bind=%s:%d clients=%d requests=%d lua=%s", tostring(state.running), state.host, state.port, #state.clients, state.requests, describeLuaPolicy())
+    log("running=%s bind=%s:%d clients=%d requests=%d lua=%s %s", tostring(state.running), state.host, state.port, #state.clients, state.requests, describeLuaPolicy(), describeInput())
+    return
+  end
+  if opts.command == "input-status" then
+    log("%s", describeInput())
+    local rec = hardkeysRec()
+    if rec then
+      local st = rec.instance:status(now())
+      for id, sess in pairs(st.sessions) do log("input session %s: %s lease %s ms remaining=%s holds=%d (%s)", id, sess.state, tostring(sess.leaseMs), tostring(sess.remainingMs), sess.holds, tostring(sess.binding)) end
+      for _, h in ipairs(st.holds) do
+        if h.state ~= "released" then
+          log("input hold %s: %s %s(%s) session %s held %s ms%s%s", h.id, h.state, tostring(h.logical or "raw"), h.tupleKey, h.session, tostring(h.heldMs),
+            h.unresolved and (" UNRESOLVED: " .. tostring(h.unresolved.reason)) or "", h.routeMismatch and (" ROUTE CHANGED: " .. tostring(h.routeMismatch.reason)) or "")
+        end
+      end
+    end
+    for _, r in ipairs(state.input.unresolved) do log("input kept from previous run: %s(%s) session %s: %s", tostring(r.logical or "raw"), tostring(r.tupleKey), tostring(r.session), tostring(r.unresolved and r.unresolved.reason)) end
+    return
+  end
+  if opts.command == "input-recover" then
+    inputRecover()
     return
   end
 
@@ -2266,10 +2635,17 @@ local function MainImpl(display_handle, argument)
       log("already running on port %d (use argument \"stop\" to stop)", state.port)
       return
     end
+    local changed = false
     if opts.lua ~= nil or opts.maxMs ~= nil or opts.maxSteps ~= nil or opts.hookMode ~= nil then
       applyLuaPolicy(opts)
       log("Lua execution now %s", describeLuaPolicy())
-    else
+      changed = true
+    end
+    if opts.input ~= nil then
+      applyInputPolicy(opts)
+      changed = true
+    end
+    if not changed then
       log("already running on port %d (use argument \"stop\" to stop)", state.port)
     end
     return
@@ -2284,10 +2660,15 @@ local function MainImpl(display_handle, argument)
   -- earlier run, so enabling Lua is always a visible decision in the start command.
   state.lua = { enabled = LUA_DEFAULT_ENABLED, maxMs = LUA_DEFAULT_MAX_MS, maxSteps = LUA_DEFAULT_MAX_STEPS, hookMode = LUA_DEFAULT_HOOK_MODE }
   applyLuaPolicy(opts)
+  -- Input is likewise an explicit per-start decision; only the unresolved records carry over.
+  state.input = { enabled = opts.input == true, backend = opts.input == true and (opts.inputBackend or "fake") or nil, unresolved = state.input.unresolved or {} }
   state.running = true
   state.stopRequested = false
   state.clients = {}
   loadModules()
+  if #state.input.unresolved > 0 then
+    logerr("input: %d unresolved release record(s) kept from a previous run; inspect with \"input status\" and run \"input recover\"", #state.input.unresolved)
+  end
   -- Run the server loop inside this plugin call. The loop yields every frame so the console stays
   -- responsive, and the plugin stays "running" until it is stopped (onPC calls Cleanup when the
   -- plugin call ends, so the loop must not be handed off to a Timer).
@@ -2310,11 +2691,11 @@ local function Cleanup()
     return
   end
   state.stopRequested = true
-  for i = #state.clients, 1, -1 do closeClient(i) end
+  for i = #state.clients, 1, -1 do closeClient(i, "cleanup") end
   if state.server then pcall(function() state.server:close() end) end
   state.server = nil
   state.running = false
-  disposeModules()
+  disposeModules("cleanup")
 end
 
 return Main, Cleanup

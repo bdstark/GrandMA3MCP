@@ -136,8 +136,33 @@ Ops: `ping`, `cmd`, `lua`, `object`, `children`, `objects`, `dump`, `set`, `setf
 `programmer`, `fixtureOutput`, `dmx`, `cueContents` (arguments and result shapes in
 [docs/tools/inspection.md](tools/inspection.md#bridge-protocol-additions)), and since v0.4.0 the read-only
 `modules` op (loaded [console interaction modules](modules.md), their versions, errors and instance status;
-`ping` carries the same summary under `modules`). See [`plugin/gma3_mcp_bridge.lua`](../plugin/gma3_mcp_bridge.lua).
+`ping` carries the same summary under `modules`), and since v0.5.0 the owned input session ops `input.open`,
+`input.renew`, `input.close`, `input.press`, `input.tap`, `input.release`, `input.releaseAll`, `input.recover`,
+`input.status` and the fake-backend test control `input.fake` (below). See
+[`plugin/gma3_mcp_bridge.lua`](../plugin/gma3_mcp_bridge.lua).
 
 `ping` reports the Lua execution policy as `lua: {enabled, maxMs, maxSteps, bounded}`. The `lua` op is
 refused with an error while `enabled` is false; its optional `maxMs` / `maxSteps` args can only tighten the
 console's budget, never loosen it.
+
+### Owned input sessions (plugin v0.5.0, KB-03)
+
+Owned input is a separate per-start opt-in (`Plugin "gma3_mcp_bridge" "input=fake"`, or `input=off`); `ping`
+reports it as `input: {enabled, backend, sessions, holds, unresolved, unresolvedFromPreviousRun}`. Only the
+**fake backend** exists in this version: it records events and simulates aggregate key state, and nothing
+reaches a console key. `input=keyboard` is refused until KB-04.
+
+A session belongs to the TCP connection that opened it (`input.open {leaseMs?, label?}`; the id is derived
+from the connection and never taken from a request), so another connection cannot release or renew it.
+`input.press {key | pcKey, shift?, ctrl?, alt?, numlock?, display?, executor?, maxHoldMs?}` and
+`input.tap {..., holdMs?}` need input enabled; `input.release {hold | key | pcKey...}`, `input.releaseAll`,
+`input.recover` (own session only), `input.close` and the read-only `input.status` stay available while input
+is disabled, because they are the recovery path. Errors carry a bracketed code: `[no-session]`, `[conflict]`
+(with the owning session), `[not-owner]`, `[lease-expired]`, `[route-changed]`, `[unsupported]`, `[capacity]`,
+`[input-disabled]`, `[stopping]`. A disconnect, lease expiry, `input=off`, `stop` and `Cleanup` attempt to
+release what a session holds; a release that fails or cannot be confirmed is kept as an unresolved record,
+survives a bridge restart (`unresolvedFromPreviousRun`) and is cleared only by the operator's console-side
+`Plugin "gma3_mcp_bridge" "input recover"` (or the owner's `input.recover`). `input.status` never releases
+anything. `input.fake {action}` (fake backend only) stages `failRelease`/`failPress` (`pcKey`, `sticky`,
+`error`), `clearFailures`, `confirm` (`mode`), `physicalRelease`/`physicalPress` (`pcKey`) and returns the
+event log; see [docs/modules.md](modules.md) for the ownership and release semantics.
