@@ -358,7 +358,7 @@ re-pressed. Deadline servicing is bounded per loop iteration (`maxWorkPerService
 I/O, so a flooding client cannot starve it. The `keyboard` adapter has no dispatch yet: `input=keyboard` is
 refused with a KB-04 pointer, and `enableInput()` refuses any adapter without dispatch.
 
-**Verified by harness** (`npm test`, 482 Lua checks across the three harnesses): everything above, plus
+**Verified by harness** (`npm test`, 484 Lua checks across the three harnesses): everything above, plus
 capacity, unsupported codes (MA1/MA2, unmapped EXEC, inactive shortcuts, backend key set), release
 ordering (newest first), disconnect/stop/disable/dispose paths with failing releases, adopt/recover across
 instances, and a server-loop run with a flooding client while a tap deadline is serviced.

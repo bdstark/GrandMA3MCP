@@ -1193,7 +1193,7 @@ do
   check("kept record adopted at a start with input disabled", state.input.enabled == false and hk.instance:status().unresolved == 1 and hk.instance:status().holds[1].tupleKey == "W|s0c0a0n0")
   before = #logs
   Main(nil, "input recover"); Cleanup()
-  check("'input recover' without a backend explains itself and keeps the record unresolved", logFound("input is disabled, so no backend", before) and hk.instance:status().holds[1].state == "unresolved" and hk.instance:status().holds[1].unresolved.reason:find("no backend"), J(hk.instance:status().holds[1]))
+  check("'input recover' without a backend explains itself and keeps the record unresolved", logFound("no dispatching backend is attached", before) and hk.instance:status().holds[1].state == "unresolved" and hk.instance:status().holds[1].unresolved.reason:find("no backend"), J(hk.instance:status().holds[1]))
   Main(nil, "input=fake"); Cleanup()
   request("input.open", {}, nil, B)
   r = request("input.press", { pcKey = "W" }, nil, B)
@@ -1201,6 +1201,16 @@ do
   before = #logs
   Main(nil, "input recover"); Cleanup()
   check("'input recover' with a backend releases the record", hk.instance:status().unresolved == 0 and logFound("input recover: 1 released, 0 still unresolved", before) and hk.fakeAdapter.events[#hk.fakeAdapter.events].pcKey == "W", lastLog())
+  -- With input=off the backend stays attached: recover must release without the no-backend warning.
+  request("input.press", { pcKey = "W" }, nil, B)
+  request("input.fake", { action = "failRelease", pcKey = "W", sticky = true, error = "wedged again" }, nil, B)
+  Main(nil, "input=off"); Cleanup()
+  check("input=off left the wedged key unresolved", hk.instance:status().unresolved == 1 and state.input.enabled == false)
+  request("input.fake", { action = "clearFailures" }, nil, B)
+  before = #logs
+  Main(nil, "input recover"); Cleanup()
+  check("'input recover' with input off but a backend attached releases without warning", hk.instance:status().unresolved == 0 and logFound("input recover: 1 released, 0 still unresolved", before) and not logFound("no dispatching backend", before), lastLog())
+  Main(nil, "input=fake"); Cleanup()
   request("input.close", {}, nil, B)
   state.input.unresolved = {}
   for _, rec in pairs(state.modules) do if rec.instance then rec.instance:dispose(0) end end
