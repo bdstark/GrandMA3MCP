@@ -7,6 +7,7 @@ They are evidence for [KEYBOARD.md](../../KEYBOARD.md), not automated regression
 | --- | --- |
 | [kb-01-macos-2.5.1.md](kb-01-macos-2.5.1.md), [script report](kb-01-macos-2.5.1.json) (26/26) | macOS, onPC 2.5.1.0, one and two displays |
 | [kb-01-windows-2.5.1.md](kb-01-windows-2.5.1.md), script reports for [one](kb-01-windows-2.5.1.json) and [two displays](kb-01-windows-2.5.1-2displays.json) (26/26 each) | Windows 11, onPC 2.5.1.0, one and two displays |
+| [kb-02-loading-macos-2.5.1.md](kb-02-loading-macos-2.5.1.md) (module loading, save/reload without loose files) | macOS, onPC 2.5.1.0 |
 
 ## Running the KB-01 probe on another platform
 
@@ -42,3 +43,11 @@ node scripts/kb01-probe.mjs hw-b
 `hw-b` need the onPC window focused and a physical Left Shift. Record the JSON report, the manual results,
 keyboard layout, displays/monitors and OS foreground state in a new `kb-01-<os>-<version>.md`.
 Set `GMA3_BRIDGE_HOST`/`GMA3_BRIDGE_PORT` if the bridge is not on `127.0.0.1:9800`.
+
+## Running the KB-02 loading probe
+
+`node scripts/kb02-probe.mjs probe` imports a throwaway two-component plugin into a free Plugin slot
+(`--slot N`, default 2), records how the console runs its chunks, how `require`, `FileContent` and the
+signal table behave, then deletes the slot and its files. `node scripts/kb02-probe.mjs verify` checks a
+running bridge for loaded modules and loose module files. Both need Lua enabled on the bridge and a
+disposable show.

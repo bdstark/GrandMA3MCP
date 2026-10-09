@@ -1,10 +1,12 @@
 # GrandMA3MCP hardkey, keyboard and feedback feature requests
 
-Updated: 2026-10-09 after review of the KB-01 follow-up evidence and documentation through `e99f23c` (merged in `1069f1d`).
+Updated: 2026-10-09 after review of the KB-01 follow-up evidence and documentation through `e99f23c` (merged in `1069f1d`),
+and after the KB-02 module packaging work.
 Status: **KB-01 complete for the initial onPC 2.5.1.0 / US-layout feasibility scope**: macOS and Windows 11, each with one and two
-onPC displays. KB-02–KB-08 remain implementation/qualification work.
+onPC displays. **KB-02 complete on macOS**: modules packaged and their loading verified live, including save/reload without
+loose files; Windows not exercised. KB-03–KB-08 remain implementation/qualification work.
 Completion establishes the contracts and limitations below, not production keyboard support or universal
-platform coverage. Module loading/show portability belongs to KB-02; Quickeys remain deferred.
+platform coverage. No production keyboard operations exist yet; Quickeys remain deferred.
 
 This document expands the initial request from `mtpnxk-client-pico` into dependency-ordered features
 and acceptance criteria, following the format of [FEATURES.md](FEATURES.md). The originating project's
@@ -207,7 +209,7 @@ Mapping restoration is an explicit operator action, not automatic bridge behavio
   in both directions match macOS; injected input reached onPC with another app in the OS foreground. With two
   displays `display_index` again had no observed effect (pop-up via index 2 on Display 1). The other
   exploratory follow-ups above were not repeated on Windows.
-- **Open probes:** module loading/show portability (KB-02), non-US keyboard layouts.
+- **Open probes:** non-US keyboard layouts. Module loading/show portability was closed by KB-02 (macOS; Windows not exercised).
   Do not infer these from basic shortcut success.
 - **Side effect resolved:** `PRESERVEGRIDPOSITIONS` false→true was reproduced as a result of the cleanup
   command `Unassign Page 1.101` (parsed as `Fixture "Unassign" Page 1.101`), not keyboard input; restored.
@@ -250,6 +252,37 @@ module for read-only state. Filenames and loader details are finalized by the pa
   every needed module is included. Preserve the existing bridge's import and startup behavior.
 - Define a module API/version and a reproducible way for mtpnxk to vendor the same source and license.
   Surface-specific changes must not create an undocumented fork of console semantics.
+
+### KB-02 results (macOS, onPC 2.5.1.0, 2026-10-09)
+
+Evidence: [docs/probes/kb-02-loading-macos-2.5.1.md](docs/probes/kb-02-loading-macos-2.5.1.md); contract and
+API: [docs/modules.md](docs/modules.md). Modules: `plugin/gma3_mcp_hardkeys.lua` (input lifecycle, backend
+registry, read-only key resolution) and `plugin/gma3_mcp_feedback.lua` (read-only readers), module API 1,
+version 0.1.0, shipped as extra `ComponentLua` entries of `gma3_mcp_bridge.xml` (bridge 0.4.0).
+
+**Loader decision.** The console runs every component chunk at import and show load with
+`(pluginName, componentName, signalTable, handle)` and hands all components of one plugin the same
+`signalTable`; a module chunk registers its read-only table there and the entry component looks it up in
+`Main`. Rejected after live probes: `require` (searches loose library files only, one stale cache for every
+plugin, fails without the loose file), reading a sibling component's `FileContent` (capped at ~1 KB) and
+`Export` (returns false). The source is stored in the show (`FullPath = <Showfile>`), so no loose file is
+needed after import.
+
+**Verified live:** initial import; update by delete/re-import/`ReloadAllPlugins`/start (run from a Macro so
+the stopped bridge restarts without typing); stop/start with fresh instances; `ping.modules` and the read-only
+`modules` op; every feedback reader (freeze reported unavailable); key resolution for the default profile
+(MA1/MA2 and unmapped EXEC reported unsupported); a separate consumer plugin vendoring the same two files got
+its own module tables and instances, and a hold recorded on its instance was invisible to the bridge's.
+Loading touched no socket, timer, show object or key: the chunks only build tables, and the harnesses load
+the modules with no console API present. `ReloadAllPlugins` did not re-run idle show-embedded chunks and
+preserved `_G`.
+
+**Save/reload:** the show was saved from the Backup window, the bridge stopped, all four plugin files deleted
+from the library folder, the show loaded and the bridge started: `node scripts/kb02-probe.mjs verify` passed,
+and a marker placed on the previous module copy was gone after a second load (fresh chunks from the show,
+nothing reused). `_G` survives `LoadShow` while chunks re-run. **Not exercised:** Windows and a physically
+separate machine; non-US layouts remain unverified (KB-01). `SaveShow`/`LoadShow` must not be sent through
+the bridge (`SaveShow` treats the next token as a file name and stalls the plugin thread on its dialog).
 
 ## KB-03 — Add owned input sessions and recovery
 

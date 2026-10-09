@@ -28,6 +28,9 @@ The suite in `test/` has no extra dependencies:
   listener standing in for OSC input (transport decisions, tool registration, serialised mutations).
 * Per-area tool tests (`fixtures.test.ts`, `cues.test.ts`, ...) run the tool modules in-process against a
   scripted fake bridge (`test/helpers/`).
+* `test/lua/modules_test.lua` loads `plugin/gma3_mcp_hardkeys.lua` and `plugin/gma3_mcp_feedback.lua` with no
+  console API at all (any global read while loading fails the test), then checks lifecycle, instance isolation,
+  signal-table registration, key resolution against the KB-01 default profile and the feedback readers.
 * `test/lua/bridge_plugin_test.lua` exercises the console plugin under a stock Lua 5.4+ interpreter with the
   grandMA3 API and LuaSocket stubbed: Lua execution off by default, budget behavior and execution-environment restrictions (hook removal,
   child coroutines, deadlines across yields), argument parsing, loopback-only binding and rejection of a

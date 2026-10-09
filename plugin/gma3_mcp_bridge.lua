@@ -55,7 +55,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.3.4"
+local VERSION      = "0.4.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -78,6 +78,8 @@ local state = _G.__gma3_mcp_bridge
 -- Lua execution policy (older state tables from before 0.2.0 do not have it).
 state.lua = state.lua or { enabled = LUA_DEFAULT_ENABLED, maxMs = LUA_DEFAULT_MAX_MS, maxSteps = LUA_DEFAULT_MAX_STEPS, hookMode = LUA_DEFAULT_HOOK_MODE }
 state.lua.hookMode = state.lua.hookMode or LUA_DEFAULT_HOOK_MODE
+-- Loaded console interaction modules (KB-02); filled in by loadModules() at every start.
+state.modules = state.modules or {}
 
 -- Log to the System Monitor (Echo), the Command Line History (Printf) and a log file in the temp folder.
 local function logFile()
@@ -1303,6 +1305,111 @@ end
 -- Operations
 -------------------------------------------------------------------------------
 
+-------------------------------------------------------------------------------
+-- Console interaction modules (KB-02)
+-------------------------------------------------------------------------------
+-- The input and feedback modules ship as additional ComponentLua entries of this plugin
+-- (gma3_mcp_bridge.xml). The console stores every component's source inside the show file and runs
+-- each chunk once at import and at show load, passing (pluginName, componentName, signalTable,
+-- handle); signalTable is one table per plugin instance shared by all of its components. Each module
+-- chunk registers its module table there under its NAME, and the bridge looks it up when it starts.
+-- Nothing goes through require()/package.loaded (shared by every plugin, searches loose library
+-- files only, keeps stale copies across re-import) or globals, so a second plugin that ships the same
+-- components gets its own copies. Reading the sibling component's FileContent is not an option: the
+-- property is capped at about 1 KB on onPC 2.5.1.
+-- Probe evidence and the vendoring contract: docs/modules.md, docs/probes/kb-02-loading-macos-2.5.1.md.
+
+local MODULE_API_VERSION  = 1
+local MODULE_REGISTRY_KEY = "__gma3_mcp_modules"
+local MODULE_COMPONENTS = {
+  { key = "hardkeys", component = "gma3_mcp_hardkeys" },
+  { key = "feedback", component = "gma3_mcp_feedback" },
+}
+
+-- Best-effort detail for an error message: is the component in the plugin, and did it fail to parse?
+local function componentInfo(name)
+  if my_handle == nil then return "" end
+  local ok, info = pcall(function()
+    local parent = my_handle:Parent()
+    for i = 1, parent:Count() do
+      local c = parent:Ptr(i)
+      if c and tostring(c.name) == name then
+        local se = c:Get("SyntaxError")
+        return (se == true or se == "true") and " (the component is present but has a syntax error)" or " (the component is present; its chunk did not register)"
+      end
+    end
+    return " (no ComponentLua of that name in this plugin; check gma3_mcp_bridge.xml)"
+  end)
+  return ok and info or ""
+end
+
+local function loadModule(entry)
+  if type(signalTable) ~= "table" then return nil, "no signal table (the plugin was not loaded by the console)" end
+  local reg = rawget(signalTable, MODULE_REGISTRY_KEY)
+  if type(reg) ~= "table" then
+    return nil, "no module registered: the module components did not run" .. componentInfo(entry.component)
+  end
+  local mod = reg[entry.component]
+  if mod == nil then return nil, "module '" .. entry.component .. "' is not registered" .. componentInfo(entry.component) end
+  if type(mod) ~= "table" or type(mod.new) ~= "function" or mod.API_VERSION == nil then
+    return nil, "registered value for '" .. entry.component .. "' is not a module table with new() and API_VERSION"
+  end
+  if mod.API_VERSION ~= MODULE_API_VERSION then
+    return nil, string.format("module API version %s, this bridge expects %d", tostring(mod.API_VERSION), MODULE_API_VERSION)
+  end
+  return mod
+end
+
+-- Looks up every module and creates this bridge's own instance of each. Loading creates no socket,
+-- timer, show object or input: the chunks only return tables and new()/init() only record state.
+-- A module that fails to load is reported (ping / modules op) and the bridge still starts.
+local function loadModules()
+  state.modules = {}
+  local summary = {}
+  for _, entry in ipairs(MODULE_COMPONENTS) do
+    local rec = { component = entry.component, loaded = false }
+    local mod, err = loadModule(entry)
+    if mod then
+      rec.loaded, rec.version, rec.apiVersion = true, mod.VERSION, mod.API_VERSION
+      local okI, inst = pcall(function()
+        local deps = type(mod.consoleDeps) == "function" and mod.consoleDeps(_G) or nil
+        return mod.new({ owner = "gma3_mcp_bridge", deps = deps }):init()
+      end)
+      if okI then rec.instance = inst else rec.loaded, rec.error = false, "instance: " .. tostring(inst) end
+    else
+      rec.error = err
+    end
+    state.modules[entry.key] = rec
+    summary[#summary + 1] = entry.key .. (rec.loaded and (" " .. tostring(rec.version)) or (" FAILED (" .. tostring(rec.error) .. ")"))
+  end
+  log("modules: %s", table.concat(summary, ", "))
+end
+
+local function serviceModules(now)
+  for _, rec in pairs(state.modules) do
+    if rec.instance then
+      local ok, err = pcall(rec.instance.service, rec.instance, now)
+      if not ok then rec.error = "service: " .. tostring(err); rec.instance = nil end
+    end
+  end
+end
+
+local function disposeModules()
+  for _, rec in pairs(state.modules) do
+    if rec.instance then pcall(rec.instance.dispose, rec.instance) end
+  end
+end
+
+local function moduleSummary()
+  local out = {}
+  for key, rec in pairs(state.modules) do
+    out[key] = { loaded = rec.loaded, version = rec.version, error = rec.error }
+  end
+  return out
+end
+
+state._loadModules = loadModules  -- exposed for local testing
+
 local ops = {}
 
 ops.ping = function(args)
@@ -1328,7 +1435,23 @@ ops.ping = function(args)
     hostname      = hostname,
     showfile      = showfile,
     user          = (pcall(CurrentUser) and CurrentUser() and CurrentUser().name) or nil,
+    modules       = moduleSummary(),
   }
+end
+
+-- Read-only report of the console interaction modules this bridge loaded (KB-02). Usable with Lua
+-- execution disabled; it performs no input and no show change.
+ops.modules = function(args)
+  local out = { apiVersion = MODULE_API_VERSION, modules = {} }
+  for key, rec in pairs(state.modules) do
+    local status
+    if rec.instance then
+      local ok, st = pcall(rec.instance.status, rec.instance)
+      status = ok and st or { error = tostring(st) }
+    end
+    out.modules[key] = { component = rec.component, loaded = rec.loaded, version = rec.version, apiVersion = rec.apiVersion, error = rec.error, status = status }
+  end
+  return out
 end
 
 ops.cmd = function(args)
@@ -1990,6 +2113,7 @@ local function serverMain()
   if not server then
     logerr("could not bind %s:%d (%s)", state.host, state.port, tostring(err))
     state.running = false
+    disposeModules()
     return
   end
   server:settimeout(0)
@@ -2000,6 +2124,7 @@ local function serverMain()
   end
 
   while state.running and not state.stopRequested do
+    serviceModules(socket.gettime())
     -- accept new clients
     local c = server:accept()
     if c then
@@ -2051,6 +2176,7 @@ local function serverMain()
   state.server = nil
   state.running = false
   state.stopRequested = false
+  disposeModules()
   log("stopped")
 end
 
@@ -2161,6 +2287,7 @@ local function MainImpl(display_handle, argument)
   state.running = true
   state.stopRequested = false
   state.clients = {}
+  loadModules()
   -- Run the server loop inside this plugin call. The loop yields every frame so the console stays
   -- responsive, and the plugin stays "running" until it is stopped (onPC calls Cleanup when the
   -- plugin call ends, so the loop must not be handed off to a Timer).
@@ -2187,6 +2314,7 @@ local function Cleanup()
   if state.server then pcall(function() state.server:close() end) end
   state.server = nil
   state.running = false
+  disposeModules()
 end
 
 return Main, Cleanup

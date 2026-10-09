@@ -34,7 +34,7 @@ if (-not (Test-Path $gma3Library)) {
 }
 $pluginDirectory = Join-Path $gma3Library 'datapools\plugins'
 New-Item -ItemType Directory -Force -Path $pluginDirectory | Out-Null
-Copy-Item .\plugin\gma3_mcp_bridge.lua, .\plugin\gma3_mcp_bridge.xml -Destination $pluginDirectory -Force
+Copy-Item .\plugin\gma3_mcp_bridge.lua, .\plugin\gma3_mcp_hardkeys.lua, .\plugin\gma3_mcp_feedback.lua, .\plugin\gma3_mcp_bridge.xml -Destination $pluginDirectory -Force
 ```
 
 ## 3. Import and start the bridge in onPC
