@@ -51,7 +51,7 @@ local function startModules(pluginName, signalTable, retained, now)
   assert(type(now) == "number", "supply the consumer clock in seconds")
   local reg = rawget(signalTable, "__gma3_mcp_modules") or {}
   local HK, FB = reg.gma3_mcp_hardkeys, reg.gma3_mcp_feedback
-  assert(HK and HK.API_VERSION == 1 and HK.VERSION == "0.4.0", "wrong hardkeys module")
+  assert(HK and HK.API_VERSION == 1 and HK.VERSION == "0.5.0", "wrong hardkeys module")
   assert(FB and FB.API_VERSION == 1 and FB.VERSION == "0.2.0", "wrong feedback module")
   local hardkeys = HK.new({ owner = pluginName, deps = HK.consoleDeps(_G) }):init()
   local feedback = FB.new({ owner = pluginName, deps = FB.consoleDeps(_G) }):init()
@@ -346,15 +346,16 @@ atomic snapshot against other console activity.
 
 ## Vendoring into another plugin (mtpnxk)
 
-Use the immutable upstream revision **`9da14544155f921c5dd4fd1cbb9a1ea4bd6f6e78`** for this
-reviewed module pair. The machine-readable [modules.lock.json](../plugin/modules.lock.json) records the
+Use the immutable upstream revision **`6e0d9c1918dd22e4703a9a36cf0440b20b4014ee`** (`main` after PR #12,
+hardkeys 0.5.0) for the current module pair; the earlier reviewed pair (hardkeys 0.4.0) was
+`9da14544155f921c5dd4fd1cbb9a1ea4bd6f6e78`. The machine-readable [modules.lock.json](../plugin/modules.lock.json) records the
 repository, full revision, module versions, API versions and SHA-256 of each file. This is a vendoring
 manifest, not an automatic updater or a runtime dependency on GitHub.
 
-| File | Module version | API version |
-| --- | --- | --- |
-| `plugin/gma3_mcp_hardkeys.lua` | 0.4.0 | 1 |
-| `plugin/gma3_mcp_feedback.lua` | 0.2.0 | 1 |
+| File | Module version | API version | SHA-256 |
+| --- | --- | --- | --- |
+| `plugin/gma3_mcp_hardkeys.lua` | 0.5.0 | 1 | `d73a8e10a53260275b9bf45b9182cb5601b48843646ec1812376ff1095f6266e` |
+| `plugin/gma3_mcp_feedback.lua` | 0.2.0 | 1 | `349bb2ed1cc88bdbaf197aa20e957811df44306133c04652663da01a585d2cf9` |
 
 1. Obtain both Lua files from that exact revision of `bdstark/GrandMA3MCP`, rather than a moving branch.
    Copy them unchanged with [LICENSE](../LICENSE) and the manifest into the surface package. The manifest
@@ -373,6 +374,8 @@ manifest, not an automatic updater or a runtime dependency on GitHub.
    a surface-only fork. The pin is reproducible; it does not imply every platform is qualified.
 
 See the [tested platform/version matrix](compatibility.md) for the evidence and remaining gaps.
+mtpnxk vendors this pair (its `tools/ma3/VENDOR.md` records the same commits and hashes) and
+qualified the surface consumer against it on macOS in its KB-08 record.
 
 ## Verification
 
