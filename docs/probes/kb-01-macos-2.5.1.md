@@ -124,13 +124,53 @@ diff again. Baseline noise: clocks, `ELAPSEDTIME`, `REALTIMEITERATION`, `Masters
 
 Blind was **on** at the start of the session; it was restored to on at the end.
 
-Unexplained side effect: `UserProfile 1.Environments.Normal.Selection.PRESERVEGRIDPOSITIONS` changed false → true
+Side effect (explained in follow-up F16): `UserProfile 1.Environments.Normal.Selection.PRESERVEGRIDPOSITIONS` changed false → true
 during the final test window (Ctrl+F1 inject/release, OS clicks on the onPC title bar, OS keystrokes, injected S/Escape/B,
-`Unassign Page 1.101`). Cause not isolated;
-not reverted.
+`Unassign Page 1.101`). Caused by `Unassign Page 1.101` (see F16); restored to false.
+
 
 ## Recovery
 
 - Stuck injected key: `Keyboard(1,'release','<Name>')` for the same name; or press and release that physical key.
 - Open pop-up/dialog: Escape (physical or injected); repeat to clear the command line.
 - Unresponsive plugin: `Plugin "gma3_mcp_bridge"` restart from the console; worst case restart onPC.
+
+## Follow-up run (same day, after KEYBOARD.md review `3983a4f`)
+
+Same environment. Diff helper as above, additionally excluding undo history. Frame waits use `coroutine.yield()`
+inside the probe chunk (1 yield = 1 main-loop pass ≈ 12 ms on this host).
+
+| # | Action | Observed |
+| --- | --- | --- |
+| F1 | `S` with **shift flag** (`Keyboard(1,'press','S',true,…)`) | plain `Store` — the shift *flag* is not MA |
+| F2 | press `LeftShift` key (held), tap `S`, release `LeftShift` | `Root().MASTATE` false→true on press; cmdline `Record`; MASTATE true→false on release. **The Shift keys are the MA key** (manual, `do_shortcuts_keyboard.html`: "The Shift keys on the keyboard correspond with the MA keys on the console") |
+| F3 | same with `RightShift` | identical (MASTATE, `Record`); no separate MA2 signal observed |
+| F4 | press LeftShift + RightShift, release Left, then Right | MASTATE stays true until both are up (per-key counting) |
+| F5 | `F10` | toggles `UserProfile.KeyboardShortCuts.KEYBOARDSHORTCUTSACTIVE` (true↔false); F10 works in both states |
+| F6 | shortcuts off: `S` keycode; `char 'x'` | `S` does nothing; `x` **typed into the ordinary command line** |
+| F7 | shortcuts off: Backspace; `char '5'` + `Enter` | Backspace edits text; Enter executed `Fixture 5` (PLEASE via `VirtualKey.KEYCODE=Enter`, not the shortcut table) |
+| F8 | shortcuts off: `Delete` | no CLEAR (selection unchanged) |
+| F9 | Freeze (Alt+F) with fixture 5 selected; `Freeze On` command | `lastcommand` `OK: Freeze` / `OK: Freeze On Executor`; deep search (13k objects, any `*FREEZE*` property) found no change. Freeze state remains **unavailable** |
+| F10 | Preview (Ctrl+Alt+P) double tap with gaps 0, 4, 8, 10, 16 frames, press held 3 frames | always a single `Preview`; ACTIVEENVIRONMENT unchanged |
+| F11 | Help (Ctrl+Alt+H, DOUBLEPRESS = `Menu HelpOverlay`) double tap, 8-frame gap; and OS-level double Ctrl+Alt+H | single `Help` both ways — double-press is **not reachable through keyboard shortcuts** at these timings, injected or OS-delivered |
+| F12 | Fixture 1.101 = Seq 2 Flash. Hold Ctrl+F1, then `Set KeyboardShortcut 33 Property "ExecutorIndex" 102`, release stored tuple | **hold not released** (20 frames). Restoring ExecutorIndex 101 and releasing again → released after 1 frame |
+| F13 | Hold Ctrl+F1, F10 (shortcuts off), release stored tuple | **hold not released**. F10 on, release again → released |
+| F14 | inject `LeftShift` press, OS-level Shift tap | MASTATE true→false — OS release ends injected hold |
+| F15 | OS-level Shift held 3.5 s; injected `LeftShift` release mid-hold | MASTATE true→false immediately while the OS key was still down — injected release ends OS hold |
+| F16 | `PRESERVEGRIDPOSITIONS` isolation: set false, run `Unassign Page 1.101` | parsed as `OK: Fixture "Unassign" Page 1.101` and set PRESERVEGRIDPOSITIONS true. **Cause reproduced: the cleanup command.** No keyboard step in the follow-up run changed it. Restored to false |
+
+Watcher: none of F1–F15 changed PRESERVEGRIDPOSITIONS (diff watched throughout).
+
+Consequences:
+
+- MA hold/combination is natively available via the Shift *keys* and observable via `Root().MASTATE`. MA1 vs MA2
+  are not distinguishable from Lua (one MA state; both Shifts behave identically).
+- A hold made through a shortcut cannot be released by its stored tuple after the shortcut is remapped or shortcuts
+  are disabled; it is released only once the mapping/enablement is restored. Plain `Enter` (PLEASE) and Shift (MA)
+  are not affected by the shortcut table.
+- Key state is shared between injected and OS input in both directions (synthetic CGEvents; a hardware-key hold
+  was not performed).
+
+Cleanup after follow-up: executor 1.101 deleted; KeyboardShortcut 33 ExecutorIndex 101; shortcuts active;
+environment Normal; Blind on (initial state); Highlight/Solo off; selection empty; MASTATE false;
+PRESERVEGRIDPOSITIONS false.

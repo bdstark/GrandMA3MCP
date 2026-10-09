@@ -104,7 +104,8 @@ The evidence page's “complete” status applies to its recorded run, not every
   was found in the inspected live descriptor.
 - PC keys become MA keys through the operator-editable **UserProfile KeyboardShortcut table** (default: Enter→PLEASE,
   Escape→ESC, Delete→CLEAR, Backspace/Ctrl+Z→OOPS, S→STORE, digits→NUM, Ctrl/Alt+F-keys→EXEC with `ExecutorIndex`)
-  and the system `Root().VirtualKeys` definitions. **MA1/MA2 have no default mapping.**
+  and the system `Root().VirtualKeys` definitions. MA1/MA2 have no shortcut entry; the PC **Shift keys are the
+  MA key** natively (follow-up F2–F4), observable as `Root().MASTATE`.
 - When a text input has focus, keycodes act as text editing (Backspace deletes a character) and shortcuts do not
   apply; `type='char'` inserts one Unicode character per call and works **only** in a focused text input.
 - Modifiers apply only as per-event arguments; a held `LeftCtrl` key is not combined. **A release must repeat the
@@ -116,9 +117,9 @@ The evidence page's “complete” status applies to its recorded run, not every
   or a duplicate press during a hold cancels the long-press. The tested pair of presses in one call did not form a double-press.
 - In the tested cases, duplicate presses collapsed and stray releases had no visible effect. Duplicate
   presses still suppressed long-press behavior, so they must not be forwarded as lease renewals.
-- Injected and OS-delivered input interacted in one syntax state. Internal ownership cannot isolate that
-  interaction. Same-key physical-versus-injected release remains unverified: the attempted F-key test was
-  intercepted by macOS, and the OS-event probes used synthetic events rather than a physical-key hold.
+- Injected and OS-delivered input interacted in one syntax and key state. Internal ownership cannot isolate that
+  interaction. A release from either source ends a Shift (MA) hold made by the other (follow-up F14–F15,
+  synthetic OS events); a hardware-key hold was not performed.
 - Executor down/up via an executor shortcut (Ctrl+F1 → exec 101) is a working **non-OSC** hold mechanism for
   executors mapped in the profile table.
 
@@ -128,9 +129,15 @@ The evidence page's “complete” status applies to its recorded run, not every
   shortcut table when admitting a new press/interaction and reports an unmapped key as unsupported. A
   release uses the stored press tuple, never a newly resolved mapping. Raw `KeyboardCodes` have a separate
   proposed operation, labeled as profile- and focus-dependent; they are not yet implemented.
-- MA1 and MA2 capabilities are reported individually and stay unsupported unless an operator-provided mapping has been
-  validated. An unsupported combination is rejected before any part is sent. Mappings are revalidated after
-  configuration changes; another key is never substituted silently. The bridge makes no automatic shortcut or show changes.
+- **MA (decided 2026-10-09 after follow-up F2–F4):** `hardkey` supports one logical key `MA`, dispatched as a
+  `LeftShift` key press/release (never the shift flag) and verified through `Root().MASTATE`. It does not depend
+  on the shortcut table or `KEYBOARDSHORTCUTSACTIVE`. MA1 and MA2 are reported separately as **unsupported**:
+  both Shift keys feed one MA state, so Lua cannot distinguish them. MA combinations (MA held + another key)
+  are supported only when every other key in the combination resolves; an unsupported combination is rejected
+  before any part is sent. Because MA state is shared with the physical keyboard, `MASTATE` confirms the MA
+  state, not ownership; status reports it as observed console state.
+- Shortcut mappings are revalidated after configuration changes; another key is never substituted silently.
+  The bridge makes no automatic shortcut or show changes.
 - The Quickey path remains a separate follow-up. Bridge-owned shortcuts are a possible later opt-in feature.
 
 **Feedback readers:** command text `CmdObj().cmdtext`; last command and result `CmdObj().lastcommand`; Blind, Highlight
@@ -149,20 +156,31 @@ as a last-resort operator action. A restart is not evidence that an uncertain re
 
 - **First backend:** `Keyboard()` through existing, operator-owned shortcuts. It creates no shortcut,
   VirtualKey, Quickey, page or executor objects. Capability is conditional on profile, display and focus.
-- **MA1/MA2:** unsupported individually until an operator-provided mapping and its press/hold/release
-  semantics are validated. Neither proposed mapping location (profile shortcuts or `VirtualKey.KEYCODE`)
-  was tested. Do not publish a guessed manual-mapping recipe; validate one before documenting it.
+- **MA:** decided — logical `MA` via the `LeftShift` key with `MASTATE` verification; MA1/MA2 individually
+  unsupported (see design decisions above). Evidence: the PC Shift keys are the MA key natively (MA manual;
+  holding `LeftShift` or `RightShift` sets `Root().MASTATE` and turns `S` into `Record`); both feed one MA
+  state; the shift *flag* argument does not produce MA.
 - **Quickeys:** mapped executor Flash down/up is proven in this run; a Quickey assigned to that executor
   and used to hold/release an MA key is not. Keep that investigation separate and non-blocking for the
   shortcut backend. Bridge-owned shortcuts require a separate opt-in design and are outside this phase.
-- **Open probes:** module loading/show portability, MA combinations, same-key physical release,
-  double-press timing, shortcut-disabled behavior, remapping/profile changes during holds, and broader
+- **Follow-up results (macOS):**
+  - *Shortcuts disabled* (F10; readable as `UserProfile.KeyboardShortCuts.KEYBOARDSHORTCUTSACTIVE`):
+    shortcut keys do nothing, `char` types into the ordinary command line, Enter still executes (PLEASE is a
+    `VirtualKey.KEYCODE` redirect, not a shortcut), Delete does not CLEAR, F10 still toggles.
+  - *Remap or disable during a hold:* the stored tuple **does not release** the hold after the shortcut is
+    remapped or shortcuts are disabled; it releases once the mapping/enablement is restored. Admission must
+    observe `KEYBOARDSHORTCUTSACTIVE` and the mapping; a change during a hold is an unresolved-release state.
+  - *Same-key cross-source release:* OS-delivered and injected events share one key state in both
+    directions (injected Shift hold ended by an OS Shift tap; OS Shift hold ended by an injected release).
+    OS events were synthetic; a hardware-key hold was not performed.
+  - *Double-press:* not produced through keyboard shortcuts at 0–16 frame gaps, injected or OS-delivered.
+    Keep it unsupported.
+- **Open probes:** module loading/show portability (KB-02), a hardware-key hold, broader
   platform/display/layout coverage. Do not infer these from basic shortcut success.
-- **Unresolved side effect:** the evidence records `PRESERVEGRIDPOSITIONS` changing from false to true,
-  without an isolated cause or restoration. Track and isolate it on a disposable show before claiming
-  side-effect-free input or complete live qualification. Preserve the observation; do not guess a cause.
-- **Freeze:** unavailable from the recorded empty-selection probe. This does not prove no getter exists;
-  further stateful probes may establish one. No false/zero fallback is permitted.
+- **Side effect resolved:** `PRESERVEGRIDPOSITIONS` false→true was reproduced as a result of the cleanup
+  command `Unassign Page 1.101` (parsed as `Fixture "Unassign" Page 1.101`), not keyboard input; restored.
+- **Freeze:** unavailable after empty-selection, with-selection and `Freeze On` probes plus a deep property
+  search. This does not prove no getter exists. No false/zero fallback is permitted.
 - **Evidence limits:** retain operator/profile/display identity, mapping and focus preconditions with
   test results. Add reproducible regression fixtures as implementation proceeds; a prose probe record
   is not automated regression coverage.
@@ -253,11 +271,14 @@ not required to ship this backend and must not become an automatic fallback.
   name, modifier tuple, display and mapping scope before a new press. Distinguish executors by
   `ExecutorIndex`/`SpecialExec`; `EXEC` alone is not a unique target. Define deterministic handling of
   multiple mappings and reject ambiguity rather than guessing.
-- Inspect mapping data without modifying it. Revalidate on profile/configuration changes; MA1 and MA2
-  remain separately unsupported until mapped and behaviorally validated. Preflight every requested
-  key in a combination before dispatching its first event.
+- Inspect mapping data without modifying it. Revalidate on profile/configuration changes. Preflight every
+  requested key in a combination before dispatching its first event.
+- Implement logical `MA` as a `LeftShift` key event pair (not the shift flag), independent of the shortcut
+  table, and verify with bounded `MASTATE` readback. Report MA1 and MA2 as unsupported. Track MA ownership
+  like any other held key; on release, a still-true `MASTATE` (e.g. physical Shift held) is reported as
+  observed state, not as a failed release.
 - Pass PC modifiers explicitly on every press and release. Pressing `LeftCtrl` and then a plain key
-  is not an implementation of Ctrl+key. Do not substitute PC modifiers for MA1/MA2 semantics.
+  is not an implementation of Ctrl+key. The shift flag is a PC modifier, not MA.
 - Validate configured display and key codes. Invalid arguments can be silently ignored by onPC, so
   a no-error return is not validation. Do not use an input event as a capability-detection side effect.
 - Timed taps schedule their release through periodic servicing. Define whether the response means
@@ -293,7 +314,7 @@ TypeScript tools wrap these operations; they do not implement a second key dispa
 
 | Operation | Purpose |
 | --- | --- |
-| `hardkey` | Logical MA key resolved through a validated existing shortcut; `press`, `release` or bounded `tap` |
+| `hardkey` | Logical MA key resolved through a validated existing shortcut (or `MA` via `LeftShift`); `press`, `release` or bounded `tap` |
 | `keyboard` | Explicit PC key plus per-event modifiers; profile/focus-dependent, with the same gate, ownership and validation |
 | `type` | Unicode character events into a focused text input; not general command-line entry |
 | `hardkeys_status` | Capability, enablement, backend, owners, held records, capacity and cleanup status |
