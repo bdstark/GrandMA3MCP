@@ -1,8 +1,8 @@
 # GrandMA3MCP hardkey, keyboard and feedback feature requests
 
-Updated: 2026-10-09 after review of the KB-01 follow-up evidence and documentation through `1c7e62d`.
-Status: **KB-01 complete for the initial onPC 2.5.1.0 / US-layout feasibility scope**: macOS (one and two
-onPC displays) and Windows 11 (one onPC display). KB-02–KB-08 remain implementation/qualification work.
+Updated: 2026-10-09 after review of the KB-01 follow-up evidence and documentation through `e99f23c` (merged in `1069f1d`).
+Status: **KB-01 complete for the initial onPC 2.5.1.0 / US-layout feasibility scope**: macOS and Windows 11, each with one and two
+onPC displays. KB-02–KB-08 remain implementation/qualification work.
 Completion establishes the contracts and limitations below, not production keyboard support or universal
 platform coverage. Module loading/show portability belongs to KB-02; Quickeys remain deferred.
 
@@ -104,10 +104,9 @@ subset and describe manual checks. This is opt-in live evidence, not console-fre
 | Evidence | Coverage |
 | --- | --- |
 | [macOS record](docs/probes/kb-01-macos-2.5.1.md), [JSON report](docs/probes/kb-01-macos-2.5.1.json) | 26/26 automated checks; manual long-press/text and hardware Shift checks; two-display routing and exploratory remap/disable probes |
-| [Windows record](docs/probes/kb-01-windows-2.5.1.md), [JSON report](docs/probes/kb-01-windows-2.5.1.json) | 26/26 automated checks; manual long-press/text and hardware Shift checks; one configured onPC display despite two attached monitors |
+| [Windows record](docs/probes/kb-01-windows-2.5.1.md), JSON reports for [one](docs/probes/kb-01-windows-2.5.1.json) and [two displays](docs/probes/kb-01-windows-2.5.1-2displays.json) | 26/26 automated checks in each run; manual long-press/text and hardware Shift checks; two-display key/text/Escape routing and pop-up placement checks |
 
-Both used onPC 2.5.1.0 and a US layout. Non-US layouts, Windows multi-display, Windows remap/disable-during-
-hold behavior, and other releases remain unverified. Apply the conservative release policy on both
+Both used onPC 2.5.1.0 and a US layout. Non-US layouts, Windows remap/disable-during-hold behavior, and other releases remain unverified. Apply the conservative release policy on both
 platforms; do not describe macOS-only exploratory observations as Windows validation.
 
 **Input backend (`Keyboard()`):**
@@ -126,8 +125,10 @@ platforms; do not describe macOS-only exploratory observations as Windows valida
   distinct held Shift-key behavior below, not the shift flag. **A release must repeat the
   press's modifier arguments**, otherwise it targets a different shortcut and the hold persists.
 - Invalid display index, event type and keycode are **accepted silently**. All validation is the bridge's job.
-- `display_index` had **no observed effect** (run 3, two displays): keys, `char`, Escape and pop-up placement
-  behaved identically for every index, including nonexistent ones. Input is not display-specific.
+- `display_index` had **no observed routing effect** in the two-display tests on both platforms
+  (macOS run 3; Windows run 2, M1–M4). Character events sent with indexes 1, 2 and 9 reached the
+  focused Display 2 editor; Escape via index 1 closed it; Store held via index 2 opened its pop-up on
+  Display 1. Input must not be advertised as display-targeted on the tested 2.5.1.0 configurations.
 - Effects land in the same call or one frame later, non-deterministically. The return value proves nothing;
   verification polls bounded across frames (`MAINLOOPCOUNT`).
 - Holds and long-press work (Store held → Store Settings pop-up) while onPC is in the OS background. A second key
@@ -203,9 +204,10 @@ Mapping restoration is an explicit operator action, not automatic bridge behavio
   - *Double-press:* not produced through keyboard shortcuts at 0–16 frame gaps, injected or OS-delivered.
     Keep it unsupported.
 - **Windows (script subset):** 26/26 automated checks, long-press, text entry (`aü`) and hardware Shift release
-  in both directions match macOS; injected input reached onPC with another app in the OS foreground. The
+  in both directions match macOS; injected input reached onPC with another app in the OS foreground. With two
+  displays `display_index` again had no observed effect (pop-up via index 2 on Display 1). The other
   exploratory follow-ups above were not repeated on Windows.
-- **Open probes:** module loading/show portability (KB-02), non-US keyboard layouts, Windows multi-display.
+- **Open probes:** module loading/show portability (KB-02), non-US keyboard layouts.
   Do not infer these from basic shortcut success.
 - **Side effect resolved:** `PRESERVEGRIDPOSITIONS` false→true was reproduced as a result of the cleanup
   command `Unassign Page 1.101` (parsed as `Fixture "Unassign" Page 1.101`), not keyboard input; restored.
@@ -330,7 +332,10 @@ not required to ship this backend and must not become an automatic fallback.
   is not an implementation of Ctrl+key. The shift flag is a PC modifier, not MA.
 - Validate configured display and key codes. Invalid arguments can be silently ignored by onPC, so
   a no-error return is not validation. Because `display_index` does not route input on 2.5.1, accept only an
-  existing display, report input as not display-scoped, and never promise per-display focus or pop-up placement. Do not use an input event as a capability-detection side effect.
+  existing display, report input as not display-scoped, and never promise per-display focus or pop-up
+  placement. This requirement applies to both macOS and Windows. A display argument is API context,
+  not an input destination; reject requests that require routing to that display rather than silently
+  accepting an unmet targeting constraint. Do not use input events to detect capabilities.
 - Timed taps schedule their release through periodic servicing. Define whether the response means
   scheduled, dispatched or completed; do not report completion before the release is attempted.
 - An intended long-press is uninterrupted: reject conflicting events during it and do not forward
