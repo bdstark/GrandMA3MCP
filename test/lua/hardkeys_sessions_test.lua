@@ -800,6 +800,91 @@ do
   check("recover through the keyboard adapter sends the stored LeftShift release with input still disabled", #rec.released == 1 and lastCall().kind == "release" and lastCall().key == "LeftShift" and k2:status().inputEnabled == false, J(rec))
 end
 
+-------------------------------------------------------------------------------
+-- Review of PR #9: collisions, unestablished enablement, exclusivity across failed releases
+-------------------------------------------------------------------------------
+do
+  -- 1. A colliding row is detected at press time and as a route change during a hold.
+  local inst, backend = fresh()
+  inst:openSession({ id = "a", leaseMs = 120000 }, 0)
+  profile.rows = { { shortcut = "Enter", keyCode = 84 }, { shortcut = "S", keyCode = 66 }, { shortcut = "S", keyCode = 87 } }
+  local c, err = inst:press("a", 1, { key = "STORE" })
+  check("STORE refused when S is also mapped to CLEAR; nothing dispatched", c == nil and err.code == "unsupported" and err.message:find("collision") and backend.counters.press == 0, J(err))
+  profile.rows = defaultRows()
+  local h = inst:press("a", 2, { key = "STORE" })
+  profile.rows = { { shortcut = "Enter", keyCode = 84 }, { shortcut = "S", keyCode = 66 }, { shortcut = "S", keyCode = 87 } }
+  c, err = inst:press("a", 3, { key = "MA" })
+  check("a collision appearing during a hold is a route change", c == nil and err.code == "route-changed" and err.message:find("collision"), J(err))
+  backend:setConfirmMode(nil)
+  local r = inst:release("a", 4, { key = "STORE" })
+  check("the unconfirmable release stays unresolved while the collision exists", r.state == "unresolved", J(r))
+  profile.rows = defaultRows()
+  r = inst:recover("a", 5)
+  check("recover releases once the table is clean again", #r.released == 1, J(r))
+  backend:setConfirmMode(true)
+
+  -- 2. Shortcut enablement must be positively established.
+  local savedActive = deps.shortcutsActive
+  deps.shortcutsActive = function() error("profile unreadable") end
+  c, err = inst:press("a", 6, { key = "STORE" })
+  check("shortcut-backed press refused when enablement cannot be read", c == nil and err.code == "unsupported" and err.message:find("cannot be established") and err.message:find("profile unreadable"), J(err))
+  deps.shortcutsActive = function() return nil end
+  c, err = inst:press("a", 6, { key = "STORE" })
+  check("shortcut-backed press refused when enablement reads as nil", c == nil and err.code == "unsupported" and err.message:find("cannot be established"), J(err))
+  c = inst:press("a", 6, { key = "MA" })
+  check("the fixed MA route does not need enablement", c and c.pcKey == "LeftShift", J(c))
+  inst:release("a", 6, { key = "MA" })
+  c = inst:press("a", 6, { key = "PLEASE" })
+  check("the native PLEASE route does not need enablement", c and c.route.source == "native", J(c))
+  inst:release("a", 6, { key = "PLEASE" })
+  deps.shortcutsActive = savedActive
+  h = inst:press("a", 7, { key = "STORE" })
+  deps.shortcutsActive = function() error("profile unreadable") end
+  backend:setConfirmMode(nil)
+  r = inst:release("a", 8, { key = "STORE" })
+  check("release with unreadable enablement is unresolved, not released; the record is kept", r.state == "unresolved" and r.unresolved.reason:find("cannot be established") and inst:status().unresolved == 1, J(r))
+  c, err = inst:press("a", 8, { pcKey = "Z" })
+  check("new input stops while enablement cannot be established", c == nil and err.code == "route-changed", J(err))
+  deps.shortcutsActive = savedActive
+  r = inst:recover("a", 9)
+  check("recover resolves it once enablement is readable again", #r.released == 1 and inst:status().unresolved == 0, J(r))
+  -- Profile identity unreadable during a hold is a mismatch too.
+  h = inst:press("a", 10, { key = "STORE" })
+  local savedProfile = deps.profileName
+  deps.profileName = function() error("no profile") end
+  r = inst:release("a", 11, { key = "STORE" })
+  check("release with unreadable profile identity is unresolved", r.state == "unresolved" and r.unresolved.reason:find("profile identity"), J(r))
+  deps.profileName = savedProfile
+  inst:recover("a", 12)
+  backend:setConfirmMode(true)
+  check("clean again", inst:status().unresolved == 0 and inst:status().capacity.used == 0)
+
+  -- 3. Exclusivity survives a failed release, disposal and adoption.
+  inst:openSession({ id = "b", leaseMs = 120000 }, 0)
+  h = inst:press("a", 20, { key = "STORE", exclusive = true })
+  backend:failNext("release", { pcKey = "S" }, "wedged", true)
+  r = inst:release("a", 21, { key = "STORE" })
+  check("exclusive release fails -> unresolved", r.state == "unresolved", J(r))
+  c, err = inst:press("b", 22, { pcKey = "Q" })
+  check("another session is still locked out while the exclusive release is unresolved", c == nil and err.code == "exclusive-hold" and err.state == "unresolved" and err.message:find("recover"), J(err))
+  c, err = inst:press("a", 22, { pcKey = "Q" })
+  check("the owner is locked out too", c == nil and err.code == "exclusive-hold", J(err))
+  check("status still names the exclusive hold", inst:status().exclusiveHold == h.id)
+  local d = inst:dispose(23)
+  check("the disposed record carries exclusive", d.records[1] and d.records[1].exclusive == true and d.records[1].pcKey == "S", J(d.records))
+  local inst2 = HK.new({ owner = "bridge", deps = deps }):init()
+  local b2 = HK.fakeBackend()
+  inst2:adopt(d.records, 24)
+  inst2:enableInput(b2)
+  inst2:openSession({ id = "c" }, 24)
+  c, err = inst2:press("c", 25, { pcKey = "Q" })
+  check("an adopted exclusive record keeps the lock in the new instance", c == nil and err.code == "exclusive-hold" and err.owner == "previous-run", J(err))
+  r = inst2:recover(nil, 26)
+  check("recover resolves the adopted exclusive record", #r.released == 1 and inst2:status().exclusiveHold == nil, J(r))
+  check("input admitted again", inst2:press("c", 27, { pcKey = "Q" }) ~= nil)
+  inst2:releaseAll("c", 28)
+end
+
 print(string.format("%d passed, %d failed", passes, failures))
 print(failures == 0 and "ALL PASSED" or "FAILED")
 os.exit(failures == 0 and 0 or 1)

@@ -1,6 +1,6 @@
 {
   "probe": "kb-04-restart",
-  "date": "2026-10-09T12:34:56.719Z",
+  "date": "2026-10-09T13:11:42.642Z",
   "bridge": {
     "version": "0.6.0",
     "host": "127.0.0.1",
@@ -70,11 +70,11 @@
         "backend": "keyboard",
         "kind": "hold",
         "unresolved": {
-          "since": 1791549289.4646,
+          "since": 1791551495.3959,
           "reason": "release was dispatched with the stored tuple, but the route changed during the hold (now maps to T|s0c0a0n0 (was S|s0c0a0n0)) and the effect cannot be confirmed",
-          "lastAttempt": 1791549289.4646
+          "lastAttempt": 1791551495.3959
         },
-        "heldMs": 6096,
+        "heldMs": 6099,
         "logical": "STORE",
         "numlock": false,
         "shift": false,
@@ -94,14 +94,14 @@
         "dispatch": {
           "attempts": 1,
           "press": {
-            "at": 1791549287.4115,
+            "at": 1791551493.3292,
             "outcome": "dispatched",
             "ok": true
           },
           "release": {
             "reason": "disconnect",
             "ok": true,
-            "at": 1791549287.4776,
+            "at": 1791551493.3978,
             "outcome": "unresolved"
           }
         },
@@ -109,7 +109,7 @@
         "adopted": true,
         "pressOutcome": "dispatched",
         "session": "previous-run",
-        "pressedAt": 1791549287.4115,
+        "pressedAt": 1791551493.3292,
         "ctrl": false,
         "pcKey": "S"
       }
@@ -159,7 +159,7 @@
     {
       "name": "operator follow-up",
       "pass": null,
-      "detail": "the bridge is running with input disabled; re-enable with  Plugin \"gma3_mcp_bridge\" \"input=keyboard\"  (Macro 105 if updated) and clear the command line with Escape if needed"
+      "detail": "the bridge is running with input disabled; re-enable with  Plugin \"gma3_mcp_bridge\" \"input=keyboard\"  (Macro 107 on the test console) and clear the command line with Escape if needed"
     }
   ],
   "finalInput": {

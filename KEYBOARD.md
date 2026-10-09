@@ -444,12 +444,17 @@ one sound inference (no Shift key is down) and is annotated, never re-pressed. *
 `KEYBOARDSHORTCUTSACTIVE` and their validated row; `MA` is the fixed `LeftShift` route; `PLEASE` is a native route
 (`Enter`, the system VirtualKey redirect, admitted with shortcuts disabled too) that is rejected as ambiguous when a
 shortcut row claims plain `Enter` for another key or the readable redirect no longer names `Enter`. Several rows with the
-same shortcut text are one route; different shortcuts with equal modifier count are ambiguous and rejected. Shortcut
-names outside `Enums.KeyboardCodes` are unsupported. A profile switch is a route change for shortcut-table routes only.
+same shortcut text and target are one route; different shortcuts with equal modifier count are ambiguous and rejected; a
+tuple that another row maps to a different target (another MA key, or the same EXEC key with another executor identity)
+is a collision and rejected, so a requested key never dispatches an action that may be another one. Shortcut names
+outside `Enums.KeyboardCodes` are unsupported. Shortcut enablement must read as a positive boolean: unreadable
+enablement refuses new shortcut-backed presses and keeps a release unresolved. A profile switch (or an unreadable
+profile identity) is a route change for shortcut-table routes only.
 **Combinations** (`combo`) preflight every key (resolution, routes, ownership, capacity, exclusivity, backend) before the
 first event; a press failing midway releases what was pressed and reports it. **Exclusive** holds (the intended
 long-press) refuse every new press from every session, including the owner's duplicate and an injected `F10`, until
-released; they are refused while any other record exists; releases stay allowed. Double-press stays unsupported.
+their release is resolved (an unresolved exclusive record keeps the lock, also across a restart); they are refused while
+any other record exists; releases stay allowed. Double-press stays unsupported.
 **Records carry their backend**; a record is only released through the backend that pressed it, so a fake record can
 never become a real `Keyboard()` event. `input recover` on an instance without a backend attaches the records' own backend
 for cleanup only (`attachBackend`); admitting new presses remains the separate `input=keyboard` decision. A refused

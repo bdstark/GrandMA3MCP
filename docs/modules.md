@@ -86,8 +86,10 @@ unsupported; the result carries `source` (`shortcut-table`, `fixed` for MA, `nat
 `shortcutsActive`, the current `profile` name, `pcKeyValidated` against `Enums.KeyboardCodes` and, for the
 native route, `redirectChecked`) and `backendAvailable()`. The pure functions `resolve(rows, vkCodes, name,
 opts)`, `parseShortcut(text)` and `tupleKey(t)` are exported for tests. Resolution prefers the row with the
-fewest modifiers, treats several rows with the same shortcut text as one route, rejects different shortcuts
-with equal modifier count as ambiguous and never substitutes another key.
+fewest modifiers, treats several rows with the same shortcut text and target as one route, rejects different
+shortcuts with equal modifier count as ambiguous, refuses a tuple that any other row maps to a different target
+(another VirtualKeyCode, or the same EXEC key with another `ExecutorIndex`/`SpecialExec`; a row claiming `LeftShift`
+or plain `Enter` collides with the fixed/native routes) and never substitutes another key.
 
 ## Owned input sessions (`gma3_mcp_hardkeys` 0.2.0, KB-03)
 
@@ -171,16 +173,19 @@ the instance.
   `pressReadback` / `releaseReadback` in reports): `observed` (value matched; worded as aggregate),
   `inconclusive` (window elapsed: "another Shift source may be held" after a release, "no observable effect"
   after a press) or `unavailable`. The hold's state never changes because of a readback.
-- **Routes.** Shortcut-table keys need `KEYBOARDSHORTCUTSACTIVE` and are revalidated before every press and
-  release. `MA` is the fixed `LeftShift` route. `PLEASE` is the **native** `Enter` route (the system VirtualKey
+- **Routes.** Shortcut-table keys need `KEYBOARDSHORTCUTSACTIVE` read as a positive boolean (an unreadable or nil
+  value refuses the press and, during a hold, is a route mismatch that keeps the release unresolved; the same for
+  an unreadable profile identity) and are revalidated before every press and release. `MA` is the fixed `LeftShift` route. `PLEASE` is the **native** `Enter` route (the system VirtualKey
   `PLEASE` redirects `Enter`; `deps.virtualKeyRedirects` reads `Root().VirtualKeys` when available): admitted with
   shortcuts disabled, rejected as ambiguous when a shortcut row maps plain `Enter` to another MA key or the
   redirect no longer names `Enter`. Enabling or disabling shortcuts and switching profiles are route changes
   for shortcut-table routes only.
 - **Exclusive hold** (`spec.exclusive = true`, the intended long-press): while it is held, every new press,
-  tap or combo from every session is refused with `exclusive-hold` (owner, hold, remaining time), including the
-  owner's duplicate and an injected `F10`; releases stay allowed. It is refused (`exclusive-refused`) while any
-  other ownership record exists. Only one exists at a time; `status().exclusiveHold` names it.
+  tap or combo from every session is refused with `exclusive-hold` (owner, hold, state, remaining time), including the
+  owner's duplicate and an injected `F10`; releases stay allowed. The lock holds until the release is *resolved*: a
+  refused or raised release leaves an unresolved exclusive record that still blocks everyone (the key may be down),
+  and the flag travels through `dispose()`/`adopt()`. It is refused (`exclusive-refused`) while any other ownership
+  record exists. Only one exists at a time; `status().exclusiveHold` names it.
 - **Backend origin.** Every record stores `backend`; `dispose()` records and `adopt()` keep it; `recover()`
   never releases a record through another backend. The bridge's `input recover` attaches the records' own
   backend for cleanup only (`attachBackend`) when none is attached; enabling input stays a separate decision.

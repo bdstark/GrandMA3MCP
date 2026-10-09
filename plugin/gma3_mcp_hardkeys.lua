@@ -151,6 +151,30 @@ end
 
 local function modifierCount(r) return (r.shift and 1 or 0) + (r.ctrl and 1 or 0) + (r.alt and 1 or 0) end
 
+local function sameTuple(a, b) return a.key == b.key and a.shift == b.shift and a.ctrl == b.ctrl and a.alt == b.alt end
+
+-- Every shortcut row whose PC key + modifiers equal `parsed` but whose target differs from the one being
+-- resolved (another VirtualKeyCode, or the same EXEC/SpecialExec key with another executor identity). The
+-- console's behaviour with colliding rows is unverified, so a collision makes the route unsupported rather
+-- than dispatching an action that may not be the requested one. `target` = { keyCode, executorIndex,
+-- specialExec } or nil for the fixed/native routes (any row claiming the tuple collides).
+local function collisions(rows, parsed, target)
+  local out = {}
+  for i, row in ipairs(rows or {}) do
+    local p = parseShortcut(row.shortcut)
+    if p and sameTuple(p, parsed) then
+      local same = target ~= nil and row.keyCode == target.keyCode
+        and (target.executorIndex == nil or row.executorIndex == target.executorIndex)
+        and ((row.specialExec == nil and target.specialExec == nil) or row.specialExec == target.specialExec)
+      if not same then
+        out[#out + 1] = string.format("row %d (%s -> VirtualKeyCode %s%s%s)", i, tostring(row.shortcut), tostring(row.keyCode),
+          row.executorIndex and (" executor " .. tostring(row.executorIndex)) or "", row.specialExec and (" special " .. tostring(row.specialExec)) or "")
+      end
+    end
+  end
+  return #out > 0 and out or nil
+end
+
 -- rows: list of { shortcut = "Ctrl+F1", keyCode = <VirtualKeyCode number>, executorIndex = <number|nil> }
 -- vkCodes: VirtualKeyCode name -> number (Enums.VirtualKeyCode on the console)
 -- opts: { executor = <number> } for EXEC;
@@ -178,6 +202,10 @@ local function resolve(rows, vkCodes, name, opts)
     return r
   end
   if def.pcKey then
+    -- The fixed route is native console behaviour; a shortcut row claiming the same PC key is a collision
+    -- whose precedence is unverified.
+    local c = type(rows) == "table" and collisions(rows, { key = def.pcKey, shift = false, ctrl = false, alt = false }, nil) or nil
+    if c then return { key = key, supported = false, source = "fixed", pcKey = def.pcKey, reason = "shortcut collision: " .. table.concat(c, ", ") .. " also claims the plain " .. def.pcKey .. " key", collisions = c } end
     return checkPcKey({ key = key, supported = true, backend = "keyboard", pcKey = def.pcKey, shift = false, ctrl = false, alt = false,
              verify = def.verify, source = "fixed", note = "MA is the PC Shift key itself; it does not use the shortcut table" })
   end
@@ -189,12 +217,10 @@ local function resolve(rows, vkCodes, name, opts)
   if def.native then
     -- Native route: the PC key must not be claimed by the shortcut table for another MA key (which
     -- one would win is unverified), and the system redirect, when readable, must still name it.
-    for i, row in ipairs(rows) do
-      local parsed = parseShortcut(row.shortcut)
-      if parsed and parsed.key == def.native and modifierCount(parsed) == 0 and row.keyCode ~= vk then
-        return { key = key, supported = false, source = "native", pcKey = def.native,
-                 reason = string.format("ambiguous: shortcut row %d maps the plain %s key to VirtualKeyCode %s, not %s; the native %s redirect cannot be relied on", i, def.native, tostring(row.keyCode), def.vk, def.native) }
-      end
+    local c = collisions(rows, { key = def.native, shift = false, ctrl = false, alt = false }, { keyCode = vk })
+    if c then
+      return { key = key, supported = false, source = "native", pcKey = def.native, collisions = c,
+               reason = string.format("ambiguous: %s maps the plain %s key to another target than %s; the native %s redirect cannot be relied on", table.concat(c, ", "), def.native, def.vk, def.native) }
     end
     local redirects = opts and opts.redirects
     local redirect, redirectChecked = nil, false
@@ -238,6 +264,11 @@ local function resolve(rows, vkCodes, name, opts)
   -- different shortcuts with the same modifier count are ambiguous and are rejected, never guessed.
   if ties then
     return { key = key, supported = false, reason = "ambiguous: several shortcuts with the same modifier count map to " .. key .. " (" .. table.concat(ties, ", ") .. "); edit the profile or pick one with pcKey", candidates = ties }
+  end
+  -- The chosen tuple must not also be claimed for another target anywhere in the table.
+  local c = collisions(rows, bestParsed, { keyCode = vk, executorIndex = def.needsExecutor and executor or nil, specialExec = best.specialExec })
+  if c then
+    return { key = key, supported = false, reason = string.format("shortcut collision: %s is mapped to %s by row %d but also to another target by %s; the console's precedence is unverified, so the route is refused", best.shortcut, key, bestIndex, table.concat(c, ", ")), collisions = c, shortcut = best.shortcut }
   end
   return checkPcKey({ key = key, supported = true, backend = "keyboard", pcKey = bestParsed.key, shift = bestParsed.shift, ctrl = bestParsed.ctrl,
            alt = bestParsed.alt, shortcut = best.shortcut, rowIndex = bestIndex, executor = def.needsExecutor and executor or nil, source = "shortcut-table" })
@@ -288,6 +319,7 @@ local function consoleDeps(env)
             shortcut = tostring(r:Get("Shortcut")),
             keyCode = tonumber(r:Get("KeyCode")),
             executorIndex = tonumber(r:Get("ExecutorIndex")),
+            specialExec = tonumber(r:Get("SpecialExec")),
           }
         end
       end
@@ -818,6 +850,7 @@ function Instance:adopt(records, now, sessionId)
         hold.logical = rec.logical
         -- The originating backend travels with the record; "unknown" is never released through any adapter.
         hold.backend = type(rec.backend) == "string" and rec.backend or "unknown"
+        hold.exclusive = rec.exclusive and true or false
         hold.pressedAt = rec.pressedAt or now
         hold.dispatch = shallowCopy(rec.dispatch) or hold.dispatch
         hold.adopted = true
@@ -970,6 +1003,7 @@ function Instance:dispose(now)
       local rec = copyTuple(h)
       rec.logical, rec.route, rec.session, rec.pressedAt, rec.dispatch, rec.id = h.logical, h.route, h.session, h.pressedAt, h.dispatch, h.id
       rec.backend = h.backend or "unknown"
+      rec.exclusive = h.exclusive or nil
       rec.unresolved = h.unresolved or { reason = "instance disposed without a release attempt (no clock or adapter)", since = now }
       rec.tupleKey = h.tupleKey
       records[#records + 1] = rec
@@ -1019,13 +1053,18 @@ function Instance:describeKey(name, opts)
     if okR and type(redirects) == "table" then ropts.redirects = redirects end
   end
   local r = resolve(rows, vk, name, ropts)
+  -- Enablement and profile identity are reported as read; a failed or non-boolean read leaves the value
+  -- nil with the error, and the caller treats "not established" as not admissible for shortcut routes.
   if type(d.shortcutsActive) == "function" then
     local okA, active = pcall(d.shortcutsActive)
-    if okA then r.shortcutsActive = active end
+    if okA and type(active) == "boolean" then r.shortcutsActive = active
+    else r.shortcutsActiveError = okA and ("value " .. tostring(active)) or tostring(active) end
+  else
+    r.shortcutsActiveError = "deps.shortcutsActive missing"
   end
   if type(d.profileName) == "function" then
     local okP, p = pcall(d.profileName)
-    if okP then r.profile = p end
+    if okP then r.profile = p else r.profileError = tostring(p) end
   end
   return r
 end
@@ -1085,8 +1124,9 @@ function Instance:_planPress(sessionId, now, spec, ctx)
   -- second key or a duplicate press cancels the console's long-press (KB-01).
   local ex = self:_exclusiveHold()
   if ex then
-    return fail("exclusive-hold", string.format("hold %s (%s, session '%s') is an exclusive long-press; no new press is admitted until it is released", ex.id, tostring(ex.logical or ex.tupleKey), ex.session),
-      { owner = ex.session, hold = ex.id, logical = ex.logical, tupleKey = ex.tupleKey, deadlineInMs = ex.deadline and math.max(0, math.floor((ex.deadline - now) * 1000 + 0.5)) or nil })
+    return fail("exclusive-hold", string.format("hold %s (%s, session '%s', state %s) is an exclusive long-press; no new press is admitted until its release is resolved%s", ex.id, tostring(ex.logical or ex.tupleKey), ex.session, ex.state,
+        ex.state == "unresolved" and (" (release unresolved: " .. tostring(ex.unresolved and ex.unresolved.reason) .. "; recover it)") or ""),
+      { owner = ex.session, hold = ex.id, logical = ex.logical, tupleKey = ex.tupleKey, state = ex.state, deadlineInMs = ex.deadline and math.max(0, math.floor((ex.deadline - now) * 1000 + 0.5)) or nil })
   end
   local existing = self._byTuple[tk]
   if existing then
@@ -1161,9 +1201,11 @@ function Instance:_scheduleReadback(hold, phase, expect, now)
   hold.dispatch[phase].readback = rb
 end
 
+-- An exclusive record keeps the interaction lock until its release is RESOLVED: a refused or raised
+-- release leaves the key possibly down, so the long-press is still in effect for everyone.
 function Instance:_exclusiveHold()
   for _, h in pairs(self._holds) do
-    if h.exclusive and h.state == "held" then return h end
+    if h.exclusive and h.state ~= "released" then return h end
   end
   return nil
 end
@@ -1194,6 +1236,9 @@ function Instance:_resolveSpec(spec, forPress)
     -- Shortcut-backed keys need the table active; the fixed (MA) and native (PLEASE) routes do not.
     if r.source == "shortcut-table" and r.shortcutsActive == false then
       return nil, nil, { code = "unsupported", message = "logical key " .. r.key .. " routes through the shortcut table but keyboard shortcuts are inactive; the operator must enable them (never toggled here)", resolution = r }
+    end
+    if r.source == "shortcut-table" and r.shortcutsActive ~= true then
+      return nil, nil, { code = "unsupported", message = "logical key " .. r.key .. " routes through the shortcut table but shortcut enablement cannot be established (" .. tostring(r.shortcutsActiveError or "unreadable") .. "); refused rather than guessed", resolution = r }
     end
     if forPress then
       local ok, err = self:_backendKeyCheck(r.pcKey)
@@ -1234,8 +1279,14 @@ function Instance:_checkRoutes()
       if not r.supported then why = "no longer resolvable: " .. tostring(r.reason)
       elseif r.pcKey ~= h.pcKey or (r.shift or false) ~= h.shift or (r.ctrl or false) ~= h.ctrl or (r.alt or false) ~= h.alt then
         why = string.format("now maps to %s (was %s)", tupleKey({ pcKey = r.pcKey, shift = r.shift, ctrl = r.ctrl, alt = r.alt, numlock = h.numlock }), h.tupleKey)
-      elseif h.route.source == "shortcut-table" and r.shortcutsActive ~= nil and r.shortcutsActive ~= h.route.shortcutsActive then
+      elseif h.route.source == "shortcut-table" and r.shortcutsActive == nil then
+        -- Unreadable enablement is not "unchanged": the route's validity cannot be established, so the
+        -- hold stays unresolved rather than being reported released.
+        why = "keyboard shortcut enablement cannot be established (" .. tostring(r.shortcutsActiveError or "unreadable") .. ")"
+      elseif h.route.source == "shortcut-table" and r.shortcutsActive ~= h.route.shortcutsActive then
         why = "keyboard shortcuts are now " .. tostring(r.shortcutsActive and "active" or "inactive") .. " (were " .. tostring(h.route.shortcutsActive and "active" or "inactive") .. ")"
+      elseif h.route.source == "shortcut-table" and h.route.profile ~= nil and r.profile == nil then
+        why = "user profile identity cannot be established (" .. tostring(r.profileError or "unreadable") .. ")"
       elseif h.route.source == "shortcut-table" and r.profile ~= nil and h.route.profile ~= nil and r.profile ~= h.route.profile then
         -- Native and fixed routes do not depend on the profile's table; a shortcut-table route does.
         why = "user profile is now '" .. tostring(r.profile) .. "' (was '" .. tostring(h.route.profile) .. "')"

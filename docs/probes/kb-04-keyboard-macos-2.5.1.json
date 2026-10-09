@@ -1,6 +1,6 @@
 {
   "probe": "kb-04-run",
-  "date": "2026-10-09T12:34:09.921Z",
+  "date": "2026-10-09T13:11:33.112Z",
   "bridge": {
     "version": "0.6.0",
     "host": "127.0.0.1",
@@ -49,12 +49,12 @@
     {
       "name": "console shows 5 on the command line",
       "pass": true,
-      "detail": "cmdtext=\"5\" after 16 ms"
+      "detail": "cmdtext=\"5\" after 17 ms"
     },
     {
       "name": "the loop released the tap: outcome 'dispatched' (not confirmed: no per-key readback)",
       "pass": true,
-      "detail": "released/dispatched after 84 ms"
+      "detail": "released/dispatched after 67 ms"
     },
     {
       "name": "tap ESC clears the command line",
@@ -91,7 +91,7 @@
     {
       "name": "console shows Record (MA + Store) on the command line",
       "pass": true,
-      "detail": "cmdtext=\"Record \" after 15 ms"
+      "detail": "cmdtext=\"Record \" after 16 ms"
     },
     {
       "name": "MA released at the deadline, newest first (S before LeftShift)",
@@ -106,11 +106,11 @@
         "source": "MASTATE",
         "value": false,
         "note": "MASTATE false after the release: no Shift key is down (aggregate; consistent with the release, not a per-key confirmation)",
-        "since": 1791549245.8061,
+        "since": 1791551488.9423,
         "expect": false,
         "outcome": "observed",
-        "at": 1791549245.8735,
-        "until_": 1791549246.8061
+        "at": 1791551489.0274,
+        "until_": 1791551489.9423
       }
     },
     {
@@ -121,11 +121,11 @@
         "source": "MASTATE",
         "value": true,
         "note": "MASTATE true after the press (aggregate: another Shift source could also set it)",
-        "since": 1791549245.64,
+        "since": 1791551488.7919,
         "expect": true,
         "outcome": "observed",
-        "at": 1791549245.6888,
-        "until_": 1791549246.64
+        "at": 1791551488.8421,
+        "until_": 1791551489.7919
       }
     },
     {
@@ -146,22 +146,22 @@
     {
       "name": "B's press rejected during the long-press (exclusive-hold naming A)",
       "pass": true,
-      "detail": "[exclusive-hold] hold h8 (STORE, session 'conn-74') is an exclusive long-press; no new press is admitted until it is released"
+      "detail": "[exclusive-hold] hold h8 (STORE, session 'conn-80', state held) is an exclusive long-press; no new press is admitted until its release is resolved"
     },
     {
       "name": "A's duplicate STORE rejected during the long-press",
       "pass": true,
-      "detail": "[exclusive-hold] hold h8 (STORE, session 'conn-74') is an exclusive long-press; no new press is admitted until it is released"
+      "detail": "[exclusive-hold] hold h8 (STORE, session 'conn-80', state held) is an exclusive long-press; no new press is admitted until its release is resolved"
     },
     {
       "name": "a combo is rejected during the long-press",
       "pass": true,
-      "detail": "[exclusive-hold] key 1 of the combo: hold h8 (STORE, session 'conn-74') is an exclusive long-press; no new press is admitted until it is released (nothing was dispatched)"
+      "detail": "[exclusive-hold] key 1 of the combo: hold h8 (STORE, session 'conn-80', state held) is an exclusive long-press; no new press is admitted until its release is resolved (nothing was dispatched)"
     },
     {
       "name": "the long-press was released by the loop after about 1.2 s",
       "pass": true,
-      "detail": "1200 ms"
+      "detail": "1208 ms"
     },
     {
       "name": "Store Settings pop-up",
@@ -201,7 +201,7 @@
     {
       "name": "new input stops for every session: route-changed naming the original route and the mismatch",
       "pass": true,
-      "detail": "[route-changed] a held key's route changed since it was pressed: STORE now maps to T|s0c0a0n0 (was S|s0c0a0n0) (hold h12, session 'conn-74', original S|s0c0a0n0); release or recover before new input (the operator restores the route; nothing is toggled here)"
+      "detail": "[route-changed] a held key's route changed since it was pressed: STORE now maps to T|s0c0a0n0 (was S|s0c0a0n0) (hold h12, session 'conn-80', original S|s0c0a0n0); release or recover before new input (the operator restores the route; nothing is toggled here)"
     },
     {
       "name": "stored-tuple release (S) dispatched but unresolved while the route differs",
@@ -228,17 +228,17 @@
           {
             "state": "released",
             "reason": "recover",
-            "at": 1791549248.1282,
+            "at": 1791551491.3018,
             "hold": "h12",
             "outcome": "dispatched",
             "logical": "STORE",
-            "session": "conn-74",
+            "session": "conn-80",
             "verified": false,
             "ok": true,
             "tupleKey": "S|s0c0a0n0"
           }
         ],
-        "scope": "conn-74"
+        "scope": "conn-80"
       }
     },
     {
@@ -264,7 +264,7 @@
     {
       "name": "new input stops: route-changed 'inactive' for the STORE hold",
       "pass": true,
-      "detail": "[route-changed] a held key's route changed since it was pressed: STORE keyboard shortcuts are now inactive (were active) (hold h16, session 'conn-74', original S|s0c0a0n0); release or recover before new input (the operator restores the route; nothing is toggled here)"
+      "detail": "[route-changed] a held key's route changed since it was pressed: STORE keyboard shortcuts are now inactive (were active) (hold h16, session 'conn-80', original S|s0c0a0n0); release or recover before new input (the operator restores the route; nothing is toggled here)"
     },
     {
       "name": "release with shortcuts disabled is unresolved (unconfirmable), record kept",
@@ -274,7 +274,7 @@
     {
       "name": "an injected F10 to re-enable is refused while the route mismatch is pending (new input stops; the operator restores the route)",
       "pass": true,
-      "detail": "[route-changed] a held key's route changed since it was pressed: STORE keyboard shortcuts are now inactive (were active) (hold h16, session 'conn-74', original S|s0c0a0n0); release or recover before new input (the operator restores the route; nothing is toggled here)"
+      "detail": "[route-changed] a held key's route changed since it was pressed: STORE keyboard shortcuts are now inactive (were active) (hold h16, session 'conn-80', original S|s0c0a0n0); release or recover before new input (the operator restores the route; nothing is toggled here)"
     },
     {
       "name": "operator re-enables shortcuts (property set through Lua, standing in for the console's F10)",
@@ -291,17 +291,17 @@
           {
             "state": "released",
             "reason": "recover",
-            "at": 1791549248.979,
+            "at": 1791551492.1651,
             "hold": "h16",
             "outcome": "dispatched",
             "logical": "STORE",
-            "session": "conn-74",
+            "session": "conn-80",
             "verified": false,
             "ok": true,
             "tupleKey": "S|s0c0a0n0"
           }
         ],
-        "scope": "conn-74"
+        "scope": "conn-80"
       }
     },
     {
