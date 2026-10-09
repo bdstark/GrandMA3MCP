@@ -12,6 +12,8 @@ They are evidence for [KEYBOARD.md](../../KEYBOARD.md), not automated regression
 | [kb-04-keyboard-macos-2.5.1.md](kb-04-keyboard-macos-2.5.1.md), script reports for [run](kb-04-keyboard-macos-2.5.1.json) and [restart](kb-04-keyboard-macos-2.5.1-restart.json) (47/47, 12/12; real keys) | macOS, onPC 2.5.1.0 |
 | [kb-05-input-macos-2.5.1.md](kb-05-input-macos-2.5.1.md), [script report](kb-05-input-macos-2.5.1.json) (44/44; interactions, busy guard, sequences, command-line text) | macOS, onPC 2.5.1.0 |
 | [kb-06-feedback-macos-2.5.1.md](kb-06-feedback-macos-2.5.1.md), [script report](kb-06-feedback-macos-2.5.1.json) (47/47; feedback readers, displays, executors, bounds, reads while input is owned) | macOS, onPC 2.5.1.0 |
+| [kb-10-cmdtext-write-macos-2.5.1.md](kb-10-cmdtext-write-macos-2.5.1.md) (`CmdObj().CmdText` is not writable: writes are silently ignored; readback plus on-screen caret/selection/pop-up checks) | macOS, onPC 2.5.1.0 |
+| [kb-10-macro-append-macos-2.5.1.md](kb-10-macro-append-macos-2.5.1.md) (`AddToCmdline=Yes, Execute=No` macros insert at the caret on the next frame without executing; spaces stripped, digits contiguous, ShCuts on/off, pop-up) | macOS, onPC 2.5.1.0 |
 
 ## Running the KB-01 probe on another platform
 

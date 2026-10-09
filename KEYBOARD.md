@@ -967,6 +967,19 @@ console-derived LED state and local physical-key indications.
   establish that an added component becomes a standard `require` module.
 - [MA: CmdObj()](https://help.malighting.com/grandMA3/2.1/HTML/lua_objectfree_cmdobj.html) includes a
   `cmdtext` example. This supports the initial probe target, not a complete pending-keyword API.
+  Probed live on 2026-10-09 ([record](docs/probes/kb-10-cmdtext-write-macos-2.5.1.md)): on onPC 2.5.1.0 the
+  property is read-only. Assignment and `Set("CmdText", ...)` return without error and leave the buffer unchanged
+  (immediately, a frame later and after an unrelated value), so appending `Thru ` through `CmdText` is not a path
+  for KB-10; text reaches the command line only through key/character injection. On screen the write is inert: the
+  caret, an active selection and a focused Edit Command pop-up are untouched and typing continues where it was, with
+  ShCuts off and on (digit rows 124–133 = `NUM0`–`NUM9` on profile `Default`, no `Thru` row).
+- Macros with `AddToCmdline=Yes, Execute=No` probed live the same day
+  ([record](docs/probes/kb-10-macro-append-macos-2.5.1.md)): `Cmd("Go+ Macro N")` inserts the line's command into the
+  editable buffer on the next console frame without executing it, with ShCuts off and on and with no shortcut row
+  involved; digits are contiguous (`55`); the caret ends at the end and typing continues there; the Edit Command pop-up
+  (a view of the same buffer) keeps focus. Caveats: the console trims the macro command and the buffer's trailing
+  whitespace, so `Thru` lands as `Fixture 1Thru` (the parser still executes `OK: Fixture 1 Thru 5`); insertion is at
+  the caret and replaces a selection. A viable KB-10 insertion path alongside character injection.
 - [RBOSCKeys author's description](https://git.riksolo.com/RikSolo/eleventy-riksolo-com/commit/8ec798f93fc873ef7c9ac485f8b5423a33999d69)
   describes dynamic Quickey allocation and executor holds. It is evidence for the pattern, not proof
   of a non-OSC implementation or compatibility with every onPC version.
