@@ -11,7 +11,10 @@ with MA combinations, exclusive long-press, remap/disable/disconnect/restart rec
 **KB-05 implemented on macOS** (module 0.4.0, bridge 0.7.0, MCP tools): leased interactions, bridge-side admission across
 connections, the text path and bounded sequences are covered by harness tests and verified live (44/44 over two
 connections, real keys and command-line text); Windows not exercised.
-Windows module loading and transfer to a separate machine remain qualification gaps. KB-06–KB-08 remain implementation/qualification work.
+**KB-06 implemented on macOS** (feedback module 0.2.0, bridge 0.8.0, `gma3_feedback`): the KB-01 readers with a strict
+value contract, per-display and per-executor items, freshness epochs and bounded polling, exposed read-only through an
+unguarded bridge op; harness-tested and verified live (47/47, including reads while another connection owned input).
+Windows module loading and transfer to a separate machine remain qualification gaps. KB-07–KB-08 remain implementation/qualification work.
 Completion establishes the contracts and limitations below, not production keyboard support or universal
 platform coverage. No production keyboard operations exist yet; Quickeys remain deferred.
 
@@ -656,6 +659,59 @@ executor and fader queries where their semantics already fit; do not duplicate t
   snapshot against other console activity.
 - Before surface integration, review `mtpnxk-client-pico/docs/ma3-feedback.md` and document the mapping
   from reusable reader results to that schema. Keep device LED/message formatting in the consumer.
+
+### KB-06 results (feedback readers; macOS, onPC 2.5.1.0, 2026-10-09)
+
+Implementation: `plugin/gma3_mcp_feedback.lua` 0.2.0 (strict `toBool`, `previewBar` per validated display,
+`sequenceActive` with the `executorActive` alias, new `executor`, `fader` and `selectedSequence` readers, `readMany`,
+`itemsFor`, `watch`/`service`/`snapshot`, `invalidate`, identity-driven epochs), bridge 0.8.0 (`feedback.describe`,
+`feedback.read`, never guarded), `src/tools/feedback.ts` (`gma3_feedback`). Contract:
+[docs/modules.md](docs/modules.md#feedback-readers-gma3_mcp_feedback-020-kb-06); protocol:
+[docs/reference.md](docs/reference.md#console-feedback-plugin-v080-kb-06); tool and surface mapping:
+[docs/tools/feedback.md](docs/tools/feedback.md); evidence: [docs/probes/kb-06-feedback-macos-2.5.1.md](docs/probes/kb-06-feedback-macos-2.5.1.md).
+
+**Decisions.** *Response contract:* every observation carries `available`, `scope`, `source`, `observedAt` (consumer
+clock at that read) and `epoch`; `available=false` carries a `reason` (nil, an unrecognised value, a missing
+display/sequence/executor, an unimplemented reader) or an `error` (the reader raised) and no value, so `false` and
+"unknown" are distinct and one failed reader never invalidates the others. Multiple items are read one after another
+and the reply says `atomic=false`. *Readers tightened:* unrecognised property values are unavailable instead of passed
+through; `previewBar` takes a validated display (default 1) and identifies it in the result; the 0.1.0 `executorActive`
+is renamed `sequenceActive` (sequence playback activity, not a button) with the old name kept as a deprecated alias
+that says what it read. *Separation:* `executor` (assignment on the user's current page, via `GetExecutor`),
+`fader` (master level of the assigned object or a sequence, via `GetFader`/`GetFaderText`, the same calls as the
+`getfader`/`executors` ops), `sequenceActive` (`HasActivePlayback`), `selectedSequence` (`SelectedSequence()`) and
+button ownership (the hardkeys record, not console state) are separate readers that are never merged. Freeze stays
+unavailable. *Freshness:* the module observes the show file, user and profile identity (at most once per second) and
+bumps its epoch on a change (`show-changed`, `user-changed`, `profile-changed`), dropping cached observations; the consumer
+can `invalidate()` on disconnect or restart; the bridge starts a fresh instance per run. *Bounded polling:* `watch()` a
+requested subset, `service()` reads at most 8 due items per loop iteration (round robin, 100 ms interval), `snapshot()`
+reports `ageMs`/`stale` and lists items not observed since the current epoch instead of showing old values; `readMany`
+is capped at 64 items and 32 executors/sequences per request. *Read-only access:* the bridge op is not in the guarded
+set, needs neither Lua nor input, opens no session and touches no console state; `lastcommand` and `MASTATE` are
+documented as observations only. *Surface mapping:* written from the reader results in
+[docs/tools/feedback.md](docs/tools/feedback.md#mapping-to-the-mtpnxk-surface-feedback-schema); the external
+`mtpnxk-client-pico/docs/ma3-feedback.md` was not available in this workspace and the mapping must be reconciled
+against it before KB-07. LED colours, blinking and device messages stay in the consumer.
+
+**Verified by harness** (`npm test`: 132 module checks, 362 bridge checks, `feedback.test.ts`, `kb06-probe.test.ts`,
+registration): unrecognised/nil/malformed values (unavailable with reasons, never false or zero), per-display results
+including a missing display and a raising display, partial failures inside one request, request expansion and the
+executor bound, the alias, identity changes (show, user, profile) bumping the epoch with unreadable identity never
+counting as a change, stale cache reporting, bounded per-service work with round robin, invalidation dropping cached
+values, the bridge ops with Lua and input disabled and while another connection owns an interaction, `[no-items]` and
+`[no-feedback]`, and the TypeScript wrapper's null-filling, validation and error wording.
+
+**Verified live** (macOS, bridge 0.8.0, 47/47 over two real connections): all parameterless readers in 19 ms with
+display 9 unavailable (display 2 exists to the API on a one-monitor onPC), executors 191–196 with assignment and fader
+plus empty executor 190, 40 executors bounded to 32 in 52–60 ms, the command line and `ping.input` unchanged by reads,
+`feedback.read` answering while the other connection's interaction made `cmd` and `lua` `[busy]`, and the readers
+following real changes: `Blind Off`/`On`, a fader moved to 25 % and back (observed 150 ms later, while `setfader`'s own
+same-frame read-back still showed the old value), `Go+`/`Off` of sequence 5527.
+
+**Not exercised / limitations.** Show load, user switch or profile switch on the live console (harness only), a second
+physical display, Windows, cross-user scopes, the cached `watch()`/`snapshot()` path live (surface consumers). Reads
+are not display-routing evidence, not an atomic snapshot and never confirmation that a particular request or key
+source produced an observation.
 
 ## KB-07 — Integrate the independent mtpnxk surface consumer
 

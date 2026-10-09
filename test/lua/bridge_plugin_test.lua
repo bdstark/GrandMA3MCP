@@ -1011,13 +1011,13 @@ do
   start("")  -- bind fails in this harness, so serverMain returns and the instances are disposed again
   local hk, fb = state.modules.hardkeys, state.modules.feedback
   check("modules found through the plugin signal table", hk and hk.loaded and fb and fb.loaded, json.encode({ hk = hk and hk.error, fb = fb and fb.error }))
-  check("module versions recorded", hk.version == "0.4.0" and hk.apiVersion == 1 and fb.version == "0.1.0", json.encode({ hk.version, fb.version }))
+  check("module versions recorded", hk.version == "0.4.0" and hk.apiVersion == 1 and fb.version == "0.2.0", json.encode({ hk.version, fb.version }))
   check("modules start log line", lastLog():find("stopped") or true)
   local disposed = hk.instance and hk.instance:status().state == "disposed" and fb.instance:status().state == "disposed"
   check("instances disposed when the loop ends", disposed, hk.instance and hk.instance:status().state)
   check("modules did not publish via package.loaded or globals", package.loaded["gma3_mcp_hardkeys"] == nil and _G.gma3_mcp_hardkeys == nil and _G.gma3_mcp_feedback == nil)
   r = request("ping", {})
-  check("ping summarises modules", r.ok and r.result.modules.hardkeys.loaded == true and r.result.modules.feedback.version == "0.1.0", json.encode(r.result.modules))
+  check("ping summarises modules", r.ok and r.result.modules.hardkeys.loaded == true and r.result.modules.feedback.version == "0.2.0", json.encode(r.result.modules))
   r = request("modules", {})
   check("modules op reports status without Lua enabled", r.ok and state.lua.enabled == false and r.result.apiVersion == 1 and r.result.modules.hardkeys.status.inputEnabled == false and r.result.modules.feedback.status.module == "gma3_mcp_feedback", json.encode(r))
 
@@ -1353,6 +1353,8 @@ do
   check("cmd from another connection is [busy] while the sequence runs", r.ok == false and r.code == "busy" and r.detail.owner == "conn-31" and r.error:find("a command is refused"), r.error)
   r = request("cmd", { command = "Go+ Sequence 1" }, nil, A)
   check("cmd from the owning connection is [busy] too (end the interaction first)", r.ok == false and r.code == "busy", r.error)
+  r = request("feedback.read", { readers = { "commandText", "maState" } }, nil, B)
+  check("feedback.read is never guarded: it reads while another connection owns input", r.ok and r.result.count == 2 and r.result.items[1].name == "commandText" and r.result.items[1].available == true and r.result.items[2].value == false and state.lua.enabled == true, J(r))
   r = request("set", { ref = "Sequence 1", property = "Name", value = "x" }, nil, B)
   check("set is guarded", r.ok == false and r.code == "busy" and r.error:find("a property change"), r.error)
   r = request("setfader", { ref = "Sequence 1", value = 50 }, nil, B)
@@ -1488,6 +1490,79 @@ do
   check("tapper's reply carried the hold", tapper.sent[2] and tapper.sent[2]:find('"kind":"tap"'), tapper.sent[2])
   check("shutdown closed the remaining sessions and stopped cleanly", state.running == false and state.modules.hardkeys.instance:status().state == "disposed" and #state.input.unresolved == 0 and next(fake.down) == nil, J(state.input.unresolved))
   _G.FAKE_CLOCK_OFFSET = 0
+end
+
+-------------------------------------------------------------------------------
+-- KB-06: read-only feedback ops with Lua disabled, partial failures, displays, epochs
+-------------------------------------------------------------------------------
+do
+  start("")  -- Lua off, input off: the feedback ops must still work
+  state._loadModules(); state.running = true; state.stopRequested = false; state.ignoreNextCleanup = false
+  check("kb06 precondition: Lua and input are disabled", state.lua.enabled == false and state.input.enabled == false)
+  local fbConsole = { cmdtext = "Store ", blind = "true", pageNo = "3", showFile = "mcp-test-disposable", previewBar = { [1] = "false", [2] = "true" } }
+  local function H(props, extra) local h = { name = props.name }; function h:Get(k) return props[k] end; if extra then for k, v in pairs(extra) do h[k] = v end end; return h end
+  local seq5 = H({ name = "Main", No = "5" }, { HasActivePlayback = function() return false end, GetClass = function() return "Sequence" end, Addr = function() return "Sequence 5" end,
+    GetFader = function(_, t) if t.token == "FaderMaster" then return 100 end error("unknown token") end, GetFaderText = function() return "100" end })
+  local savedObjectList, savedRoot = ObjectList, Root
+  CmdObj = function() return { cmdtext = fbConsole.cmdtext, lastcommand = "Go+ Sequence 5 : OK" } end
+  ShowData = function() return { Masters = { Grand = { Blind = H({ FaderEnabled = fbConsole.blind }), Highlight = H({ FaderEnabled = "false" }), Solo = H({ FaderEnabled = "Unknown" }) } } } end
+  CurrentExecPage = function() return H({ name = "Page 3", No = fbConsole.pageNo }) end
+  GetExecutor = function(n) if n == 201 then return { Object = seq5 }, H({ name = "Page 3", No = "3" }) elseif n == 202 then return {}, H({ name = "Page 3", No = "3" }) end return nil, H({ name = "Page 3", No = "3" }) end
+  SelectedSequence = function() return nil end
+  ObjectList = function(ref) if ref == "Sequence 5" then return { seq5 } end return {} end
+  GetDisplayByIndex = function(n) local v = fbConsole.previewBar[n]; if v then return H({ PreviewBarActive = v }) end return nil end
+  Root = function() return { Get = function(_, k) if k == "MAState" then return fakeMaState end error("no console property " .. tostring(k)) end,
+                             VirtualKeys = { Count = function() return 0 end }, MANetSocket = { Get = function(_, k) if k == "ShowFile" then return fbConsole.showFile end end }, maNetSocket = {} } end
+  local C = { id = 61 }
+  r = request("feedback.describe", {}, nil, C)
+  check("feedback.describe lists readers with the module version, without Lua", r.ok and r.result.version == "0.2.0" and #r.result.readers == 16 and r.result.status.epoch == 1 and r.result.note:find("not an atomic snapshot"), J(r))
+  r = request("feedback.read", {}, nil, C)
+  check("feedback.read without items is refused with a code", r.ok == false and r.code == "no-items", r.error)
+  r = request("feedback.read", { readers = { "commandText", "lastCommand", "blind", "solo", "page", "freeze", "selectedSequence", "previewBar", "sequenceActive" }, displays = { 1, 2, 9 }, executors = { 201, 202 }, sequences = { 5, 6 } }, nil, C)
+  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.8.0" and r.result.module.version == "0.2.0" and r.result.identity.showFile == "mcp-test-disposable", J(r))
+  local by = {}
+  if r.ok then for _, it in ipairs(r.result.items) do by[it.key] = it end end
+  check("feedback.read: command text and last command are raw observations", by.commandText and by.commandText.value == "Store " and by.lastCommand.value == "Go+ Sequence 5 : OK" and by.lastCommand.note:find("not confirmation"), J(by.lastCommand))
+  check("feedback.read: strict booleans, unrecognised value unavailable", by.blind.value == true and by.solo.available == false and by.solo.reason:find("unrecognised") and by.solo.value == nil, J(by.solo))
+  check("feedback.read: page and no selected sequence", by.page.value.no == 3 and by.selectedSequence.available and by.selectedSequence.value.selected == false, J(by.selectedSequence))
+  check("feedback.read: freeze unavailable with reason", by.freeze.available == false and by.freeze.reason:find("KB%-01"))
+  check("feedback.read: one item per display, missing display unavailable", by["previewBar[display=1]"].value == false and by["previewBar[display=2]"].value == true and by["previewBar[display=9]"].available == false and by["previewBar[display=9]"].reason:find("display 9 does not exist"), J(by["previewBar[display=9]"]))
+  check("feedback.read: executors expand to assignment and fader", by["executor[executor=201]"].value.assigned.name == "Main" and by["fader[executor=201]"].value.value == 100 and by["executor[executor=202]"].value.empty == true and by["fader[executor=202]"].available == false, J(by["fader[executor=202]"]))
+  check("feedback.read: sequences expand to activity, unknown sequence unavailable", by["sequenceActive[sequence=5]"].value == false and by["sequenceActive[sequence=6]"].available == false and by["sequenceActive[sequence=6]"].reason:find("not found"), J(by["sequenceActive[sequence=6]"]))
+  check("feedback.read: a parameterised reader named without parameters is a limitation, not a guess", #r.result.limitations == 1 and r.result.limitations[1]:find("sequenceActive needs parameters"), J(r.result.limitations))
+  check("feedback.read: every item carries observedAt and epoch", (function() for _, it in ipairs(r.result.items) do if type(it.observedAt) ~= "number" or it.epoch ~= 1 then return false end end return true end)())
+  -- Partial failure: one reader raising does not affect the others.
+  CmdObj = function() error("CmdObj unavailable in this context") end
+  r = request("feedback.read", { readers = { "commandText", "blind" } }, nil, C)
+  check("feedback.read: a raising reader is reported per item, the rest succeed", r.ok and r.result.items[1].available == false and r.result.items[1].error:find("CmdObj unavailable") and r.result.items[2].value == true, J(r))
+  -- Show change: the next read after identityCheckMs reports the invalidation and a new epoch.
+  fbConsole.showFile = "other-show"
+  _G.FAKE_CLOCK_OFFSET = (_G.FAKE_CLOCK_OFFSET or 0) + 2
+  r = request("feedback.read", { readers = { "blind" } }, nil, C)
+  check("feedback.read: a show change bumps the epoch and is reported", r.ok and r.result.invalidated == "show-changed" and r.result.epoch == 2 and r.result.items[1].epoch == 2 and r.result.identity.showFile == "other-show", J(r))
+  -- Bounds: more executors than allowed are reported, not read.
+  local many = {}
+  for i = 1, 40 do many[i] = 100 + i end
+  r = request("feedback.read", { executors = many }, nil, C)
+  check("feedback.read: executors are bounded per request", r.ok and r.result.count == 64 and r.result.limitations[1]:find("executors truncated to 32 of 40"), J(r.result.limitations))
+  r = request("feedback.read", { items = { "blind", { name = "previewBar", params = { display = 2 } }, { name = "executorActive", params = { sequence = 5 } } } }, nil, C)
+  check("feedback.read: explicit items and the executorActive alias", r.ok and r.result.items[2].key == "previewBar[display=2]" and r.result.items[3].alias == "sequenceActive" and r.result.items[3].value == false, J(r))
+  r = request("ping", {}, nil, C)
+  check("feedback ops never touched input or the busy guard", r.ok and r.result.input.busy == nil and r.result.input.sessions == 0 and C.session == nil, J(r.result.input))
+  -- A service() of the loop keeps the feedback instance alive and does no work without a watch.
+  state._serviceModules(os.clock() + (_G.FAKE_CLOCK_OFFSET or 0))
+  check("feedback module serviced by the loop without reads", state.modules.feedback.instance:status().serviced >= 1 and state.modules.feedback.instance:status().watched == 0)
+  -- Module missing: the op reports it instead of failing obscurely.
+  local fbRec = state.modules.feedback
+  state.modules.feedback = { component = "gma3_mcp_feedback", loaded = false, error = "simulated" }
+  r = request("feedback.read", { readers = { "blind" } }, nil, C)
+  check("feedback.read without the module reports [no-feedback]", r.ok == false and r.code == "no-feedback" and r.error:find("simulated"), r.error)
+  state.modules.feedback = fbRec
+  ObjectList, Root = savedObjectList, savedRoot
+  CmdObj, ShowData, CurrentExecPage, GetExecutor, SelectedSequence = nil, nil, nil, nil, nil
+  GetDisplayByIndex = function(n) if n == 1 then return {} end return nil end
+  for _, rec in pairs(state.modules) do if rec.instance then rec.instance:dispose(0) end end
+  state.running = false
 end
 
 print(string.format("%d passed, %d failed", passes, failures))

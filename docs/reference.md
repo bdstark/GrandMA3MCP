@@ -69,6 +69,13 @@ real console keys are pressed; details in [`tools/input.md`](tools/input.md)):
 | `gma3_hardkeys_status` | Read-only: enablement, backend and limitations, ownership records, interactions, sequence, busy descriptor; works with input disabled |
 | `gma3_hardkeys_release_all` | Release this server's keys newest first with the stored tuples; `recover: true` re-attempts unresolved releases; works with input disabled |
 
+Console feedback (KB-06; needs plugin v0.8.0; read-only, works with Lua and input disabled and while another client
+owns input; details in [`tools/feedback.md`](tools/feedback.md)):
+
+| Tool | What it does |
+| --- | --- |
+| `gma3_feedback` | Observe command text, last command, Blind/Highlight/Solo, Preview mode, a display's Preview bar, shortcut enablement, aggregate MA state, page, selected sequence, executor assignment, fader level and sequence activity; every item has `available`, `value` (null when unavailable, with a reason), `scope`, `source`, `observedAt` and `epoch`; not an atomic snapshot |
+
 Resource `gma3://cheatsheet` holds a command syntax and object model reference.
 
 Object references accept command syntax (`Sequence 1 Cue 3`, `Page 1.201`), dotted paths from a root
@@ -153,7 +160,8 @@ Ops: `ping`, `cmd`, `lua`, `object`, `children`, `objects`, `dump`, `set`, `setf
 `input.renew`, `input.close`, `input.press`, `input.tap`, `input.release`, `input.releaseAll`, `input.recover`,
 `input.status` and the fake-backend test control `input.fake` (below), since v0.6.0 `input.combo` (below), and since
 v0.7.0 the interaction and sequence ops `input.begin`, `input.extend`, `input.end`, `input.sequence`,
-`input.sequence.status`, `input.sequence.abort` ([below](#interactions-admission-text-and-sequences-plugin-v070-kb-05)). See
+`input.sequence.status`, `input.sequence.abort` ([below](#interactions-admission-text-and-sequences-plugin-v070-kb-05)), and since
+v0.8.0 the read-only feedback ops `feedback.describe` and `feedback.read` ([below](#console-feedback-plugin-v080-kb-06)). See
 [`plugin/gma3_mcp_bridge.lua`](../plugin/gma3_mcp_bridge.lua).
 
 Error replies are `{"id", "ok": false, "error": "[code] message"}`; since v0.7.0 they also carry `code` (the bracketed
@@ -256,3 +264,18 @@ completes the step, an inconclusive readback leaves it `uncertain` (`text-unveri
 iteration, with the enablement, exclusive hold and held-key routes rechecked between chunks: a change stops typing
 (`uncertain` with `context-changed`/`exclusive-hold`/`route-changed`, `typed`/`remaining` reported); a `char` call
 that raises leaves the event `uncertain` at `uncertainChar`.
+
+### Console feedback (plugin v0.8.0, KB-06)
+
+`feedback.describe` lists the feedback module's readers (name, scope, source, parameters, notes, the `executorActive`
+alias) with the instance status. `feedback.read {items?, readers?, display?, displays?, executors?, sequences?,
+tokens?, all?}` expands the request in the module (`items` are reader names or `{name, params}`; `readers` names
+parameterless readers, `previewBar` once per display; `executors` become one `executor` and one `fader` item per token
+each, `sequences` one `sequenceActive` item each; `all` adds every parameterless reader) and reads the items one after
+another, at most 64 per request and 32 executors/sequences (the rest is a `limitations` entry, never read). The reply
+is `{observedAt, epoch, atomic:false, identity {showFile, user, profile}, invalidated?, items[], count, truncated,
+limitations[], bridgeVersion, module}`; each item `{name, key, scope, source, params?, available, value?, reason? |
+error?, observedAt, epoch, note?, alias?}`. The epoch starts at 1 at every bridge start and increments when the
+identity changed since the previous check (at most once per second; `invalidated` names the change on that reply).
+Neither op is guarded by the input admission, needs Lua, opens an input session or changes console state; an
+empty request is `[no-items]`, a bridge without the module `[no-feedback]`.

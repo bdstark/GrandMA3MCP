@@ -12,6 +12,7 @@ the live test procedure on a disposable show.
 | Executors (FR-06) | `gma3_assign_to_executor`, `gma3_label_executor` | [executors.md](executors.md) |
 | Structured inspection (FR-07 .. FR-10) | `gma3_fixture_attributes`, `gma3_programmer`, `gma3_fixture_output`, `gma3_dmx`, `gma3_cue_contents` | [inspection.md](inspection.md) |
 | Console input (KB-05, opt-in on the console) | `gma3_input_interaction`, `gma3_hardkey`, `gma3_keyboard`, `gma3_type`, `gma3_input_sequence`, `gma3_hardkeys_status`, `gma3_hardkeys_release_all` | [input.md](input.md) |
+| Console feedback (KB-06, read-only) | `gma3_feedback` | [feedback.md](feedback.md) |
 
 `AGENT-RULES.md` records the implementation rules every area follows (bridge-only, no retries, shared
 validation and result helpers, serialised mutations, documentation and test requirements).
@@ -28,4 +29,4 @@ result's `verification` field as the source of truth, not the lock.
 The console input tools add a bridge-side guard that does reach every client: while any client owns console input
 (an open interaction, a running sequence, a held key), the bridge refuses `cmd`, `set`, `setfader` and `lua` from every
 connection with `[busy]`, so a mutating tool can fail with that error while someone else types or holds a key. Reads are
-never refused. See [input.md](input.md#who-owns-an-interaction).
+never refused, `gma3_feedback` included. See [input.md](input.md#who-owns-an-interaction).

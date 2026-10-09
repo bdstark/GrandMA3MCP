@@ -13,7 +13,7 @@ Plugin "gma3_mcp_bridge"
 ```
 
 Look for `MCP Bridge: listening on 127.0.0.1:9800` in command history or System Monitor, preceded by
-`MCP Bridge: modules: hardkeys 0.2.0, feedback 0.1.0` (the [console interaction modules](../modules.md)
+`MCP Bridge: modules: hardkeys 0.4.0, feedback 0.2.0` (the [console interaction modules](../modules.md)
 shipped as extra components of the same XML; a `FAILED` entry there means the XML was imported without
 all of its components).
 The target slot is required. Save the show to retain the imported plugin, then start the plugin again

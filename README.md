@@ -56,7 +56,9 @@ keyboard backend (`input=keyboard`, real key presses through `Keyboard()`) or th
 events recorded only). The [structured input tools](docs/tools/input.md) (`gma3_hardkey`, `gma3_keyboard`,
 `gma3_type`, `gma3_input_sequence`, `gma3_input_interaction`, status and release) expose it; while input is
 owned by any client, the bridge refuses commands, property changes, playback, faders and Lua from every client
-with an explicit `[busy]` error instead of running them into a changed console state.
+with an explicit `[busy]` error instead of running them into a changed console state. The read-only
+[feedback tool](docs/tools/feedback.md) (`gma3_feedback`) observes command text, masters, Preview, page, selection,
+executor assignment, fader levels and sequence activity without Lua, input or a free bridge.
 
 `gma3_command` also supports write-only OSC when OSC input is configured in onPC. Automatic fallback
 happens only if the bridge cannot be reached before dispatch; a command with an uncertain result is
@@ -79,7 +81,8 @@ OSC is optional for the normal bridge setup and is not forwarded by an SSH tunne
 - [Bridge import, startup, updates and troubleshooting](docs/setup/bridge.md)
 - [Configuration, tools, workflow results and bridge protocol](docs/reference.md)
 - Workflow details: [fixtures](docs/tools/fixtures.md), [cues](docs/tools/cues.md),
-  [executors](docs/tools/executors.md), [inspection](docs/tools/inspection.md), [console input](docs/tools/input.md)
+  [executors](docs/tools/executors.md), [inspection](docs/tools/inspection.md), [console input](docs/tools/input.md),
+  [console feedback](docs/tools/feedback.md)
 - [Hardkey, keyboard and feedback feature requests and evidence](KEYBOARD.md), [console interaction modules](docs/modules.md)
 - [Optional Lua execution](docs/lua.md)
 - [Remote access over SSH](docs/remote-access.md) and [Docker](docs/docker.md)

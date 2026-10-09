@@ -8,9 +8,9 @@ The bridge plugin ships two reusable, instance-based Lua modules as extra compon
 | Component | File | Purpose |
 | --- | --- | --- |
 | `gma3_mcp_hardkeys` | [plugin/gma3_mcp_hardkeys.lua](../plugin/gma3_mcp_hardkeys.lua) | Owned input sessions, leases, deadline servicing and recovery over a backend adapter; read-only logical-key resolution |
-| `gma3_mcp_feedback` | [plugin/gma3_mcp_feedback.lua](../plugin/gma3_mcp_feedback.lua) | Read-only console state readers confirmed in KB-01 |
+| `gma3_mcp_feedback` | [plugin/gma3_mcp_feedback.lua](../plugin/gma3_mcp_feedback.lua) | Read-only console state readers confirmed in KB-01, with freshness and bounded polling (KB-06) |
 
-Module API version **1**; `gma3_mcp_hardkeys` **0.3.0** (KB-03 + KB-04), `gma3_mcp_feedback` **0.1.0** (KB-02).
+Module API version **1**; `gma3_mcp_hardkeys` **0.4.0** (KB-03 to KB-05), `gma3_mcp_feedback` **0.2.0** (KB-02 + KB-06).
 Two backend adapters dispatch: the **fake backend** (records events, simulates aggregate console key state,
 nothing reaches a console key) and the **keyboard backend** (`keyboardBackend(deps)`, KB-04: the console's
 `Keyboard()` PC-key emulation; console keys are really pressed).
@@ -248,10 +248,53 @@ the fake backend raise once (delivery unknown).
 blocks the plugin thread, a plugin crash or process termination prevents release; lease expiry is a
 cleanup *attempt*, not a guaranteed cancellation of a held key or of a blocked host call.
 
-`gma3_mcp_feedback` offers `read(name, params)` and `readAll()`. Readers: `commandText`, `lastCommand`,
-`blind`, `highlight`, `solo`, `previewMode`, `previewBar`, `shortcutsActive`, `maState`, `page`,
-`executorActive` (`params.sequence`) and `freeze` (always `available = false` with a reason). A reader
-that throws reports `available = false` and the error; no default value is ever substituted.
+## Feedback readers (`gma3_mcp_feedback` 0.2.0, KB-06)
+
+Every observation is `{ name, key, scope, source, params?, available, value?, reason? | error?, observedAt, epoch,
+note? }`. `available = false` carries `reason` (the console gave nothing usable: nil, an unrecognised value such as
+`"Maybe"` for a FADERENABLED property, a missing display/sequence/executor, an unimplemented reader) or `error` (the
+reader raised); `value` is then absent. A `false` value is always `available = true`. A reader never substitutes a
+default, and one failing reader never affects another. `observedAt` is the consumer's clock at that single read.
+
+| Reader | Scope | Source | Parameters / meaning |
+| --- | --- | --- | --- |
+| `commandText` | ui | `CmdObj().cmdtext` | raw text of the plugin user's command line; no keyword inferred |
+| `lastCommand` | ui | `CmdObj().lastcommand` | shared command history; an observation, not confirmation of a request |
+| `blind`, `highlight`, `solo` | show | `ShowData.Masters.Grand.<mode>.FADERENABLED` | strict boolean |
+| `previewMode` | profile | `CurrentProfile().Environments.ACTIVEENVIRONMENT` | environment name |
+| `previewBar` | display | `GetDisplayByIndex(display).PREVIEWBARACTIVE` | `params.display` (default `config.defaultDisplay` = 1, validated, identified in `params`/`key`); a missing display is unavailable; no routing promise |
+| `shortcutsActive` | profile | `KEYBOARDSHORTCUTSACTIVE` | strict boolean |
+| `maState` | console | `Root().MASTATE` | aggregate of every Shift source; not ownership |
+| `page` | user | `CurrentExecPage()` | `{name, no}` |
+| `selectedSequence` | user | `SelectedSequence()` | `{selected = false}` when none; otherwise `{selected = true, name, class, addr, no}` |
+| `sequenceActive` | show | `Sequence:HasActivePlayback()` | `params.sequence`; playback activity, not an executor button |
+| `executor` | page | `GetExecutor(n).Object` | `params.executor`; `{executor, empty, assigned?, page}` (assignment only) |
+| `fader` | show | `<object>:GetFader({token})` | `params.executor` or `params.sequence`, `params.token` (default `FaderMaster`); `{value, text, token, target}` |
+| `freeze` | show | — | always unavailable: KB-01 found no readable state |
+
+`executorActive` is kept as a compatibility alias of `sequenceActive` (the result says `alias` and carries a
+deprecation note). Assignment, level, activity, selection and button ownership are never merged: ownership is the
+hardkeys instance's record, not console state.
+
+| Method | Effect |
+| --- | --- |
+| `read(name, params?, now?)` | One observation; unknown readers are unavailable, never an error. |
+| `readMany(items, now)` | `items = { {name, params}, ... }` read one after another (`atomic = false`), at most `config.maxItems` (default 64; the rest is `truncated`). The reply carries `epoch`, `identity` and `invalidated` when the identity check (below) bumped the epoch. |
+| `readAll(now?)` | Every parameterless reader keyed by name, `previewBar` on the default display. |
+| `itemsFor(spec, config?)` (module function) | Expands `{ all?, items?, readers?, display?, displays?, executors?, sequences?, tokens? }` into items, `previewBar` once per display, each executor into `executor` + one `fader` per token, each sequence into `sequenceActive`; bounded by `config.maxExecutors` (default 32); returns the items and a limitations list (a parameterised reader named in `readers` is a limitation, never guessed). Shared by the bridge op and surface consumers. |
+| `watch(items, now)` / `unwatch()` | Subscribe a bounded item list (`maxItems`) for `service()`; replacing the list drops observations of items no longer watched. |
+| `service(now)` | Identity check at most every `config.identityCheckMs` (1000), then at most `config.maxReadsPerService` (8) watched items whose observation is older than `config.pollIntervalMs` (100), round robin from where the last call stopped, so feedback never delays the consumer's input deadlines by more than that. Returns `{ reads, due, watched, invalidated }`. |
+| `snapshot(now)` | The watched observations as last read with `ageMs` and `stale` (`ageMs > config.staleMs`, default 2000); items not observed since the current epoch are listed in `notObserved` with the reason. Reads nothing. |
+| `invalidate(reason, now)` | Drops every cached observation and starts a new epoch (the consumer calls it on disconnect, restart or anything after which old values must not be presented as current). |
+| `describe()` | Reader list with scope, source, parameters, notes and the alias. |
+
+**Identity and epochs.** The instance observes `deps.showFile()`, `deps.userName()` and `deps.profileName()`;
+a change of any readable one invalidates with `show-changed`, `user-changed` or `profile-changed`. An unreadable identity
+value is reported as nil and is never treated as a change by itself. `status()` reports `epoch`, `lastInvalidation`,
+`identity`, `watched`, `cached` and the config. The bridge creates a fresh instance (epoch 1) at every start and exposes
+`readMany` through `feedback.read` ([reference](reference.md#console-feedback-plugin-v080-kb-06)); the cached
+`watch()`/`snapshot()` path is for surface consumers that poll between input deadlines. Multiple reads are never an
+atomic snapshot against other console activity.
 
 ## Vendoring into another plugin (mtpnxk)
 
@@ -280,12 +323,16 @@ across a restart, `input=keyboard`, refused backend switches, `input.combo`, cle
 a flooding client that cannot starve deadline servicing; and since 0.7.0 the `[busy]` guard on `cmd`/`set`/
 `setfader`/`lua` across two connections, structured error replies with `code`/`detail`, `input.begin`/`extend`/`end`,
 shared-connection ownership, `input.sequence` serviced by the loop, a disconnect mid-sequence and cleanup while
-input is disabled). `node scripts/kb03-probe.mjs run` exercises the lifecycle against a live bridge
+input is disabled; and since 0.8.0 the `feedback.describe`/`feedback.read` ops with Lua and input disabled, partial
+failures, displays, executor and sequence expansion, bounds, the show-change epoch bump, `[no-feedback]` and a read
+answered while another connection owns an interaction). `node scripts/kb03-probe.mjs run` exercises the lifecycle against a live bridge
 started with `input=fake` over real TCP connections ([record](probes/kb-03-fake-macos-2.5.1.md));
 `node scripts/kb04-probe.mjs run|restart` presses real keys through a bridge started with `lua input=keyboard` on a
 disposable show ([record](probes/kb-04-keyboard-macos-2.5.1.md)); `node scripts/kb05-probe.mjs run` exercises the
 interactions, the busy guard over two connections, sequences, command-line text and a disconnect mid-sequence the same
 way ([record](probes/kb-05-input-macos-2.5.1.md)).
+`node scripts/kb06-probe.mjs verify|run` exercises the feedback readers, displays, executor expansion, bounds, side-effect
+freedom and reads while another connection owns input against a live bridge ([record](probes/kb-06-feedback-macos-2.5.1.md)).
 `node scripts/kb02-probe.mjs verify` checks a live bridge: `ping.modules`, the `modules` op, and that the
 readers and key resolution return successful values (Blind readable, PLEASE resolved, Freeze and MA1
 reported unavailable/unsupported). It lists loose module files in the local library folder for information
