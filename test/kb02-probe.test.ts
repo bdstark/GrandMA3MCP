@@ -41,9 +41,9 @@ function startFakeBridge(handler: Handler): Promise<{ port: number; close: () =>
 }
 
 // Asynchronous on purpose: the fake bridge runs in this process, so a blocking spawnSync would starve it.
-function run(args: string[], env: Record<string, string>): Promise<{ status: number | null; stdout: string; stderr: string }> {
+function run(args: string[], env: Record<string, string>, nodeArgs: string[] = []): Promise<{ status: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [script, ...args], { cwd: root, env: { ...process.env, ...env } });
+    const child = spawn(process.execPath, [...nodeArgs, script, ...args], { cwd: root, env: { ...process.env, ...env } });
     let stdout = "", stderr = "";
     child.stdout.setEncoding("utf8").on("data", (d) => { stdout += d; });
     child.stderr.setEncoding("utf8").on("data", (d) => { stderr += d; });
@@ -149,6 +149,29 @@ test("probe undoes a partial write and touches no console plugin", async () => {
     assert.ok(!luaCodes.some((c) => /Delete Plugin|Import Plugin/.test(c)), "no import or delete was sent to the console");
     // A second run must not be blocked by a leftover from the first.
     fs.unlinkSync(path.join(dir, "kb02_probe_mod.lua"));
+    const again = await run(["probe", "--slot", "7"], { GMA3_BRIDGE_PORT: String(bridge.port), GMA3_LIBRARY: lib });
+    assert.doesNotMatch(again.stderr, /refusing to overwrite/);
+  } finally { bridge.close(); fs.rmSync(lib, { recursive: true, force: true }); }
+});
+
+test("probe undoes a file whose write fails after creation (disk full)", async () => {
+  const lib = fs.mkdtempSync(path.join(os.tmpdir(), "kb02-lib-"));
+  const dir = path.join(lib, "datapools", "plugins");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "other_plugin.lua"), "keep me\n");
+  const luaCodes: string[] = [];
+  const bridge = await startFakeBridge((op, args) => {
+    if (op === "ping") return ping();
+    if (op === "lua") { luaCodes.push(String(args.code)); return { values: [false] }; }
+    throw new Error("unexpected op " + op);
+  });
+  try {
+    const preload = ["--import", path.join(root, "test", "helpers", "fail-write.mjs")];
+    const r = await run(["probe", "--slot", "7"], { GMA3_BRIDGE_PORT: String(bridge.port), GMA3_LIBRARY: lib, KB02_FAIL_WRITE_ON: "kb02_probe_mod.lua" }, preload);
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stderr, /could not write probe files.*ENOSPC/);
+    assert.deepEqual(fs.readdirSync(dir), ["other_plugin.lua"], "both the completed first file and the empty second file were removed");
+    assert.ok(!luaCodes.some((c) => /Delete Plugin|Import Plugin/.test(c)), "no import or delete was sent to the console");
     const again = await run(["probe", "--slot", "7"], { GMA3_BRIDGE_PORT: String(bridge.port), GMA3_LIBRARY: lib });
     assert.doesNotMatch(again.stderr, /refusing to overwrite/);
   } finally { bridge.close(); fs.rmSync(lib, { recursive: true, force: true }); }

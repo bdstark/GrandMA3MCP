@@ -139,8 +139,15 @@ async function probe() {
   // because it exists). Nothing has been imported yet, so only the files are undone here.
   try {
     for (const [name, text] of Object.entries(files)) {
-      fs.writeFileSync(path.join(dir, name), text, { flag: "wx" });
+      // Exclusive create first, ownership recorded before any byte is written: a write that fails
+      // after the file exists (disk full) must still be undone.
+      const fd = fs.openSync(path.join(dir, name), "wx");
       created.push(name);
+      try {
+        fs.writeSync(fd, text);
+      } finally {
+        fs.closeSync(fd);
+      }
     }
   } catch (e) {
     cleanup();
