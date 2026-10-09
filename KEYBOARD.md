@@ -839,6 +839,127 @@ row as a raw PC key, which bypasses route rechecks.
   save/load of the show keeps the rows and the record; harness plus a live disposable-show probe. Document
   that a profile is per user and that the rows are show data the operator owns.
 
+## KB-10 — Mode-aware digit and keyword text fallback for surfaces
+
+**Request:** As a surface user, I want digits and supported keyword keys to enter literal text when
+keyboard shortcuts are disabled, while retaining the existing hardkey behavior when shortcuts are enabled.
+The immediate use case is entering `1 Thru 5` from the NX-K without enabling keyboard shortcuts or
+creating a shortcut row. This is text entry, not a replacement for console hardkey hold/chord behavior.
+
+**Depends on:** KB-04 and KB-05 (keyboard/text dispatch and admission), KB-07 (surface events, duplicate
+suppression and recovery), KB-08 (operator guidance and qualification). KB-09 is complementary, not a
+prerequisite: neither shortcut caching nor automatic profile editing is required here. Preserve the open
+KB-07 benchmark and flood defects identified in KB-08; this feature does not close or bypass them.
+
+**Lua changes: Yes — shared hardkeys module and surface entry component.** Put mode selection, semantic
+text mapping and admission in `gma3_mcp_hardkeys`; the surface consumes that API and owns its event
+bookkeeping and configuration. Reuse the existing character dispatcher and bounded service loop; no
+surface-side copy of console semantics, `Cmd()` substitution, Quickey pool or shortcut-table writes.
+**MCP bridge/TypeScript changes: Not required for the initial surface feature.** Existing hardkey, raw-key
+and text tools retain their contracts and explicit text-context/focus acknowledgment. Do not silently
+make existing `press()` calls type text; expose the new policy explicitly to the surface consumer.
+
+### Motivation and evidence to retain
+
+The operator reports that Thru does not appear when using `T` on the physical keyboard or the NX-K.
+The [MA 2.5 Thru keyword reference](https://help.malighting.com/grandMA3/2.5/HTML/keyword_thru.html)
+lists `T` as an alternative typed form. Separately, the
+[keyboard-shortcut documentation](https://help.malighting.com/grandMA3/2.5/HTML/do_shortcuts_keyboard.html)
+describes user-profile mappings controlled by ShCuts/F10. A keyword abbreviation does not establish a
+physical `T` shortcut row or immediate expansion when a key is pressed. KB-07 found no default shortcut
+for `THRU` on the tested profile. Record the operator's observation as an **unconfirmed onPC issue** until
+focus, ShCuts state, active profile/mapping and typed-token behavior have been reproduced live.
+
+### Configuration and routing contract
+
+- The **surface enables text fallback by default**, with a documented per-start opt-out such as
+  `textfallback=off` (`on` explicitly restores it). This is enabled-by-default behavior with an opt-out,
+  not an opt-in. Startup/status and the surface's capability report expose the effective policy.
+- The reusable module defaults to its existing behavior unless the consumer explicitly selects this
+  policy. The surface's default must not change the bridge's input opt-in or any other consumer's behavior.
+  `input=off`, failed input admission and quarantine still prohibit all dispatch, including text fallback.
+- Read shortcut enablement for each new press. When positively **on**, use the existing logical route
+  with all mapping, collision, preference and ownership checks. A missing route stays unsupported:
+  do not type `T` or `Thru`, toggle F10 or create a mapping as a fallback while shortcuts are on.
+- When positively **off**, fallback is permitted only if the setting is on, the key has an explicit
+  text mapping, and the instance has no live held/releasing/unresolved key, active input operation or
+  other admission conflict. Retained records not yet adopted and quarantined instances also block it.
+  If the state cannot be read, dispatch nothing and explain why. A blocked press is never queued for later.
+- Native/control keys keep their existing routes and safeguards. Do not turn Please/Enter, MA, Clear,
+  Oops/Undo, Esc, executor actions or encoders into strings. Unsupported keys remain unsupported; they
+  are not synthesized by uppercasing/lowercasing their surface labels.
+
+### Literal text and event semantics
+
+- Cover all ten digits: surface `0`–`9` / logical `NUM0`–`NUM9` insert exactly their one literal digit,
+  once per physical press, without surrounding spaces or modifiers. They use a single character event
+  through the existing text backend, not a held numeric shortcut. No auto-repeat is promised initially.
+- Include `THRU` → the full token `Thru`, not its abbreviation `T`. Publish a finite, reviewed mapping
+  of other supported keyword keys (for example surface Record → logical STORE → `Store`). Enable each
+  mapping only after its literal-entry behavior is tested; a VirtualKeyCode name alone is not a text map.
+- Make separators explicit in the mapping. The initial Thru insertion is ` Thru `, so digit presses
+  `1`, Thru, `5` produce `1 Thru 5`. Keyword mappings must define leading/trailing spaces; do not infer
+  editing state, remove existing text or normalize a focused label. Document that those same spaces are
+  inserted into a text field. Punctuation and multi-function keys need separate mappings and tests.
+- Insert once on the press edge. Its matching release sends no character and no synthetic hardkey
+  release. Track the chosen handling until release: duplicate press packets, held-state heartbeats,
+  retries, reconnects and repeated down reports must not insert the token again. A blocked press stays
+  blocked for that press/release cycle, even if the mode changes before release.
+- A release belonging to a previously dispatched hardkey always follows the stored hold and tuple,
+  even if shortcuts or fallback settings changed. Preserve existing unresolved-release and recovery
+  rules; never drop a release merely because new presses would now take the text path.
+- Serialize each keyword insertion through the bounded text machinery. No new event may interleave a
+  different token into an unfinished insertion; report busy instead. Recheck shortcut state and admission
+  between chunks. If they change, stop and report partial/uncertain progress; do not erase, complete or
+  replay the token automatically. A backend exception must not trigger another dispatch path.
+- Never append Enter/Please, execute the command line, inject control characters, change focus, toggle
+  shortcuts or edit profile rows. The operator commits the line with a separate key action.
+
+### Focus, held-key limits and reporting
+
+The surface deliberately accepts a best-effort focus policy: characters go to the input currently
+focused in onPC, including a pop-up text field. It does not claim to detect that focus or to target the
+command line. Represent that consumer policy explicitly in the shared API; do not silently label an
+unknown focus as a verified command-line context. Existing MCP focus acknowledgment remains unchanged.
+
+Only this instance's ownership and pending operations can be checked reliably. There is no complete
+physical-console or cross-plugin held-key inventory. Do not describe the gate as proof that nobody is
+holding a key. Publish this operator notice at setup and when explaining the default:
+
+> This third-party surface uses best-effort keyboard emulation. With shortcuts disabled, supported keys
+> insert text into the focused input. Holding keys on the console, physical keyboard or another
+> controller while using the surface may produce unexpected results. Disable text fallback if you
+> require hardkey-only behavior.
+
+Results identify `hardkey` versus `text-fallback`, the inserted/requested text, shortcut state, and
+whether dispatch was refused, dispatched or partial/uncertain. A no-op because input is held is a
+reported refusal, not successful execution. Replayed acknowledgments retain the original outcome.
+Dispatch does not prove the focused element accepted the text. Preserve the distinction between
+console-derived LED state and local physical-key indications.
+
+### Acceptance criteria and qualification
+
+- Unit tests cover all digits, exact token spacing, enabled/disabled/unreadable ShCuts, fallback off,
+  input off, missing mappings, held/releasing/unresolved records, retained records, quarantine and busy
+  operations. Existing native routes and explicit MCP text behavior are unchanged.
+- Regression tests exercise press/release across mode changes, blocked-down then mode change, duplicate
+  and reordered packets, release-only events after reconnect, heartbeat reconciliation, interrupted
+  token insertion, backend exceptions and unchanged outcome replay. No token executes a command or
+  causes a hardkey release to disappear.
+- On a disposable show, record revision/module hashes, OS/onPC version, layout, profile, shortcut rows
+  and focus. With shortcuts off, digit taps build an exact number and `1`, Thru, `5` builds `1 Thru 5`
+  without executing it. Confirm subsequent explicit Please separately. With shortcuts on, verified
+  routes behave as before and an unmapped Thru is refused. Test the opt-out and a focused pop-up field.
+- Probe the reported physical `T` behavior separately, comparing literal `T`, full `Thru`, token
+  delimiters and NX-K events with ShCuts on/off. Record the displayed text and parser behavior rather
+  than assuming immediate keyword expansion. Do not mark an onPC defect confirmed from the documentation
+  alone or change the user's shortcut profile during the test.
+- Verify blocked fallback while this instance owns a hardkey and recovery after its proper release.
+  Document physical-key/other-plugin interference as a limitation; it is not a cross-instance lock.
+- Update surface startup examples, opt-out instructions, capabilities, key mapping and LED descriptions,
+  compatibility evidence and vendoring pins/hashes. Preserve module API compatibility or document any
+  deliberate change. No platform gains qualification merely because its code path is shared.
+
 ## Evidence and open questions
 
 - [MA: Plugins](https://help.malighting.com/grandMA3/2.4/HTML/plugins.html) describes `HelpLua`, multiple
