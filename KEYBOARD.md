@@ -1073,9 +1073,12 @@ No MCP/TypeScript changes should be needed unless its public options are deliber
   releasing and `Off` does not release. Effects are synchronous in the Lua chunk and ordered, except that with the Edit
   Command pop-up or another text field focused digits land one frame after keywords (`1 Thru 5` → `5 Thru 15`) and all
   text keys go to the focused field. Reassigning, clearing or deleting the executor or Quickey during a hold leaves the
-  key down; `Unpress Quickey <same code>` on any object releases it. `Oops` on an empty command line is Undo and reverted
+  key down; a direct `Unpress Quickey N` on an object with the MA1 code released MA1 but the same call on NUM5 inserted a
+  second `5`, so recovery is qualified for MA1 only. The 146 codes are discovered, not qualified: tested were NUM1, NUM5,
+  THRU, FIXTURE, PLEASE, CLEAR, STORE, MA1, OOPS and ESC. `Oops` on an empty command line is Undo and reverted
   show data during the run; `ESC` as a Quickey never touched the command line; no key or LED state is readable. This
-  qualifies tap, press, release and chords for KB-11/KB-13 through executors, and makes executor reservation part of KB-12.
+  qualifies tap, press, release and chords for the tested codes through executors (sequences with an immediate Please were
+  repeated as executor press/release pairs), and makes executor reservation and per-code qualification part of KB-12.
 - [RBOSCKeys author's description](https://git.riksolo.com/RikSolo/eleventy-riksolo-com/commit/8ec798f93fc873ef7c9ac485f8b5423a33999d69)
   describes dynamic Quickey allocation and executor holds. It is evidence for the pattern, not proof
   of a non-OSC implementation or compatibility with every onPC version.

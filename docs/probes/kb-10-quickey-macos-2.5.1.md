@@ -14,8 +14,10 @@ are **synchronous** in the same Lua chunk (no frame delay, unlike the macro path
 Command pop-up or any other text field has focus, digit Quickeys are delivered a frame late while keyword Quickeys
 land immediately, so `1 Thru 5` arrives as `5 Thru 15`. Text-producing Quickeys follow the **focused input** exactly
 like real keys (digits and `Thru` went into a Label pop-up's Name field). Release after interruption needs care:
-reassigning, clearing or deleting the executor or its Quickey during a hold leaves MA stuck, and the working recovery
-is `Unpress Quickey <code>` on an object carrying the same code (even a recreated one). `Oops` on an empty command line
+reassigning, clearing or deleting the executor or its Quickey during a hold leaves the key down. For **MA1** a direct
+`Unpress Quickey N` on an object carrying the MA1 code (a recreated one included) released it; for **NUM5** the same
+direct `Unpress` inserted a second `5`, so a direct `Unpress` is a tap that re-activates non-latching keys and recovery
+must be qualified per code. `Oops` on an empty command line
 is **Undo** and reverted an executor assignment and probe-object property writes; `ESC` as a Quickey never touched the
 command line; a 2 s executor hold of STORE did **not** open the Store Settings pop-up.
 
@@ -34,7 +36,7 @@ command line; a 2 s executor hold of STORE did **not** open the Store Settings p
 
 - `Enums.VirtualKeyCode` has **149** entries: values 1–146 are the 146 entries of `Root().VirtualKeys` (one object per
   code, names `VirtualKey N`, index = value), plus value 0 twice (`""` and `UNKNOWN`) and one alias, `UNDO = 86 = OOPS`.
-  So the qualified code set is **146 names**, not 110. Full list (value:name): 1 MA1, 2 MA2, 3 PREV, 4 NEXT, 5 SET,
+  So the **discovered** code set is **146 names**, not 110; discovery is not qualification (see "Tested codes" below). Full list (value:name): 1 MA1, 2 MA2, 3 PREV, 4 NEXT, 5 SET,
   6 UP, 7 SELFIX, 8 DOWN, 9 MENU, 10 HIGHLIGHT, 11 SOLO, 12 FREEZE, 13 PREVIEW, 14 BLIND, 15 XKEYS, 16 PAGE_UP,
   17 PAGE_DOWN, 18 LIST, 19–34 X1–X16, 35 EXEC, 36 FADER, 37 DEF_GO, 38 DEF_PAUSE, 39 DEF_GOBACK, 40 PAUSE,
   41 GOBACK, 42 GO, 43 LEARN, 44 GOBACKFAST, 45 GOFAST, 46 ON, 47 OFF, 48 MOVE, 49 COPY, 50 DELETE, 51 ALIGN,
@@ -46,6 +48,9 @@ command line; a 2 s executor hold of STORE did **not** open the Store Settings p
   117 PREV_Z, 118 PREV_STEP, 119 NEXT_X, 120 NEXT_Y, 121 NEXT_Z, 122 NEXT_STEP, 123 STEP, 124 TOGGLE_STEP,
   125 TOGGLE_MATRICKS, 126 RESET_MATRICKS, 127–132 ONPC_SCREEN2–7, 133 ASTERISK, 134 FIX, 135 CLONE, 136 GRID,
   137 LAYOUT, 138 TIMECODE, 139 VIEW, 140 DMX, 141 PHASER, 142 MACRO, 143 PAGE, 144 EXECUTOR, 145 FLIP, 146 LOCATE.
+- Tested codes: NUM1, NUM5, THRU, FIXTURE, PLEASE, CLEAR (taps and executor press/release); STORE and MA1 (executor holds);
+  OOPS and ESC (taps, with the behaviours noted below). Every other code is discovered only, and a provisioned bank must
+  not advertise it as functional until it has its own evidence.
 - Exclusions to decide at provisioning time (not tested here): the encoder codes (89–98), `ONPC_SCREEN2–7`, `XKEYS`,
   `X1–X16`, `EXEC`/`FADER`/`DEF_*` and the executor-button functions (101–114) are not command-area hardkeys. `UNDO` must
   be deduplicated against `OOPS`.
@@ -106,11 +111,23 @@ unless stated. `ma` = `Root().MASTATE`.
 | 24 | `Press Executor 190`, reassign `Quickey 903` to 190 during the hold, `Unpress Executor 190` | ma stays **true** (stuck); reassigning 904 back: still true; `Unpress Executor 190` with 904 reassigned: **false** (recovered) |
 | 25 | `Press Executor 190`, `Delete Quickey 904` during the hold | ma true; executor 190 became empty; `Unpress Executor 190` → `Object not found`, ma true; recreate Quickey 904 with code MA1, `Unpress Quickey 904` → **false** (release is keyed by code, not object identity) |
 | 26 | `Press Executor 190`, `Delete Executor 190` during the hold | ma true; `Unpress Executor 190` → `Object not found`; `Unpress Quickey 904` → **false** |
+| 26a | 199 = NUM5: `Press Executor 199` (`5`), `Delete Executor 199` during the hold, `Unpress Executor 199` → `Object not found`; `Unpress Quickey 900` directly | **`55`**: the direct Unpress re-activated the non-latching key instead of only releasing it |
 | 27 | 199 = NUM5 held for about one minute across requests | `5` only, no auto-repeat, nothing executed; `Unpress` → `5` stays |
 | 28 | `Press Executor 190` (MA1) then `Press Executor 199` (NUM5), both held across a request | **no text** (MA+5 is a different function), nothing executed; released in either order, ma false at the end |
 | 29 | `Go+ Executor 199` (NUM5), `Off Executor 199` | `5`, then `55`: Off is also a tap on a non-latching key |
 | 30 | 199 = ESC: `Press`/`Unpress Executor 199` with `5` on the line | `5` unchanged |
 | 31 | 199 = STORE: `Press Executor 199`, screenshot after ≥ 2 s, `Unpress` | `Store ` on the line, **no Store Settings pop-up**; executor property dump identical held vs released |
+
+### Executor press/release pairs for sequences
+
+Steps 11–15 and 32–36 use direct addressing (taps). The following repeats the ordering cases through executor press/release
+pairs, alternating executors 190 and 199 and reassigning the Quickey before each pair, which is the dispatch shape the
+proposed backend would use.
+
+| # | Step | Result |
+| --- | --- | --- |
+| 11a | No pop-up: `Assign` + `Press` + `Unpress Executor` for FIXTURE, NUM1, THRU, NUM5, PLEASE in one chunk | `SelectionCount()` 0 → **5** inside the chunk, command line empty: ordered and synchronous, immediate Please accepted |
+| 35a | Edit Command pop-up open, empty: same pairs for NUM1, THRU, NUM5 | imm. ` Thru `, next request and on screen **` Thru 15`**: the digit-after-keyword reordering applies to the executor path as well |
 
 ### Focus and pop-ups (desktop control, onPC frontmost)
 
@@ -133,24 +150,28 @@ name and code (set from Lua) had been reverted; 909 showed `Quickey 909` with an
 | Exact Lua invocation for tap / press / release | Tap: `Cmd('Press Quickey N')` (or `Unpress`/`Go+`/bare, all equivalent). Press and release: assign the Quickey to an executor, then `Cmd('Press Executor E')` / `Cmd('Unpress Executor E')`. `Go+ Executor E` presses without releasing. Executors are required for holds; the button function available is only `Go+` |
 | Digits / Thru with ShCuts on and off | identical, synchronous, no shortcut row involved |
 | Store hold/release, MA combos, simultaneous keys | Store hold works (`Store ` stays, no pop-up); MA1+STORE on two executors gives `Record `; MA1+NUM5 produces nothing (console's own MA+digit meaning); release order does not matter |
-| Release after interruption | reassign/clear/delete during a hold leaves the key down; `Unpress Executor` fails with `Object not found` once the executor is empty; `Unpress Quickey <same code>` on any object (recreated included) releases it. A backend must record the code, not only the handle |
+| Release after interruption | reassign/clear/delete during a hold leaves the key down; `Unpress Executor` fails with `Object not found` once the executor is empty. For MA1 a direct `Unpress Quickey N` on an object carrying that code (recreated included) released it; for NUM5 it inserted a second `5`. Recovery is qualified for MA1 only; every other code needs its own evidence, and an uncertain release must never be retried through a direct `Unpress` |
 | Clear / Oops / Esc / Please separately | CLEAR and PLEASE act synchronously; OOPS removes the last token and is **Undo** on an empty line (reverted show data in this run); ESC never affected the command line, directly or through an executor |
-| Rapid digits + Please without delay | works in one chunk (`1 Thru 5` + PLEASE → selection 5) outside a pop-up. Dispatch is synchronous and ordered; with a text pop-up focused digits are queued one frame behind keywords |
+| Rapid digits + Please without delay | works in one chunk outside a pop-up, both as direct taps and as executor press/release pairs (`1 Thru 5` + PLEASE → selection 5). Dispatch is synchronous and ordered; with a text pop-up focused digits are queued one frame behind keywords on both paths |
 | Command line, Edit Command, independent pop-up field | command line and pop-up show the same buffer; the independent Name field received both digits and `Thru`; caret at end in every case (no mid-line test was possible without typing) |
 | Held/latched state at the end | 0 holds, ma false, selection 0, command line empty, ShCuts off; probe objects removed; show not saved |
 
-Qualification: **tap, press, release and chord qualified through the executor path**; direct `Press Quickey` qualified
-as tap only. Not qualified: long-press pop-ups, any readback of key/LED state, Esc as a Quickey.
+Qualification: **tap, press, release and chord qualified through the executor path for the tested codes**; direct
+`Press Quickey` qualified as tap only. Not qualified: long-press pop-ups, any readback of key/LED state, Esc as a Quickey,
+recovery of stuck keys other than MA1, and every discovered code without a tested row above.
 
 ## Consequences for KB-11/12/13
 
 - The production backend needs **one executor per concurrently held key** (or per key, for simplicity) in addition to the
   Quickey bank; provisioning must reserve executors (KB-12 "if dispatch requires executors").
-- Release must be attempted first on the recorded executor and then by code (`Unpress Quickey <code>` on any owned object
-  with that code); a replacement object at the same index with a different code must not be unpressed.
+- Release must be attempted on the recorded executor. A direct `Unpress Quickey N` is a tap on this console: it released
+  a stuck MA1 but re-activated NUM5, so it is not a generic fallback. Recovery for any code other than MA1 has to be
+  qualified separately, and an uncertain release must be retained for the operator rather than retried this way. A
+  replacement object at the same index with a different code must never be unpressed.
 - Oops is Undo on an empty command line and can revert the module's own show-data changes; never use it as a "clear".
-- Text keys follow focus; a text pop-up reorders digits behind keywords within one chunk. A backend that promises order
-  must either dispatch one key per frame while a pop-up may be focused or document the limitation.
+- Text keys follow focus; a text pop-up reorders digits behind keywords within one chunk, on the direct and on the executor
+  path. Dispatching one key per console frame is an untested idea for avoiding this, not a demonstrated mitigation; until
+  it is probed, a backend must document the limitation.
 - No readback exists for a Quickey's pressed state; `MASTATE` remains the only aggregate observable.
 
 ## Limitations
@@ -158,5 +179,6 @@ as tap only. Not qualified: long-press pop-ups, any readback of key/LED state, E
 - One onPC, one user/profile, one show; no NX-K, no physical keys; the Store Settings pop-up was only checked by eye
   after ≥ 2 s. Screenshots were viewed during the run and not stored. Latching MA1/MA2 from the pool (hint in the manual)
   and X-keys/layout assignment were not exercised. Twice during the run a lone `5` on the command line executed as
-  `Fixture 5` while the operator was answering desktop-control approval dialogs; it did not reproduce during a 1-minute
-  hold or with MA stuck, so it is attributed to operator keyboard activity, not to Quickey dispatch.
+  `Fixture 5` between two bridge requests. The cause is **unexplained**: operator keyboard input is suspected because both
+  events coincided with desktop-control approval dialogs, but a 1-minute hold and a hold with MA stuck did not reproduce
+  it, and failure to reproduce does not establish the cause.
