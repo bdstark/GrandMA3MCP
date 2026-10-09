@@ -48,7 +48,9 @@ MCP client → stdio → Node.js MCP server → local TCP bridge → grandMA3 on
 
 The [Lua bridge plugin](plugin/gma3_mcp_bridge.lua) runs inside onPC and listens on `127.0.0.1:9800`.
 The [MCP server](src/index.ts) translates tool calls into bridge requests. Both parts are required for
-show inspection and workflow tools.
+show inspection and workflow tools. The plugin also carries two instance-based
+[console interaction modules](docs/modules.md) (input lifecycle, read-only feedback) as extra components
+of the same XML; they expose no input operation yet.
 
 `gma3_command` also supports write-only OSC when OSC input is configured in onPC. Automatic fallback
 happens only if the bridge cannot be reached before dispatch; a command with an uncertain result is

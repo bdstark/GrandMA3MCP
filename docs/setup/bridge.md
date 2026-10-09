@@ -12,7 +12,10 @@ Import Plugin Library "gma3_mcp_bridge.xml" At Plugin 1
 Plugin "gma3_mcp_bridge"
 ```
 
-Look for `MCP Bridge: listening on 127.0.0.1:9800` in command history or System Monitor.
+Look for `MCP Bridge: listening on 127.0.0.1:9800` in command history or System Monitor, preceded by
+`MCP Bridge: modules: hardkeys 0.1.0, feedback 0.1.0` (the [console interaction modules](../modules.md)
+shipped as extra components of the same XML; a `FAILED` entry there means the XML was imported without
+all of its components).
 The target slot is required. Save the show to retain the imported plugin, then start the plugin again
 each time you load the show. Arbitrary Lua stays disabled; normal tools work without enabling it.
 
@@ -34,7 +37,7 @@ The plugin logs to `gma3_<version>/onpc/temp/gma3_mcp_bridge.log` under the onPC
 
 ## Update an existing plugin
 
-1. Copy the updated `.lua` and `.xml` files using your platform setup guide.
+1. Copy the updated `.lua` files (bridge, hardkeys, feedback) and the `.xml` using your platform setup guide.
 2. Confirm the pool slot that contains **this bridge**. The example below uses slot 1; change both
    occurrences if your bridge is in another slot. Do not delete a slot containing another plugin.
 3. Run these commands in onPC:
@@ -48,7 +51,9 @@ Plugin "gma3_mcp_bridge"
 ```
 
 `ReloadAllPlugins` reloads all plugins, so choose a suitable time to run it. On onPC 2.5.1, deleting
-and re-importing alone can leave the cached Lua code running. Check the version in the new startup
+and re-importing alone can leave the cached Lua code running. The whole sequence can also be stored as
+a Macro (one command per line, a 1–2 s Wait after each) and run with `Go+ Macro <n>`; this restarts the
+bridge without typing while it is stopped, which is how the KB-02 update was verified. Check the version in the new startup
 message, then save the show if you want to retain the update. Reapply any custom port or Lua policy
 in your start command; those settings do not carry over from the previous run.
 
@@ -62,6 +67,8 @@ restart the MCP client to load the new server code.
 | Import reports `Failed` | Both files are in the library's `datapools/plugins/` folder; use an explicit free target slot and an Admin or Setup user. The web remote's `Remote` user cannot import. |
 | Bridge cannot be reached | Start the plugin, check its startup message, and match the MCP port to the plugin port. For remote use, check the SSH tunnel too. |
 | Old behavior after an update | Re-import and run `ReloadAllPlugins`; confirm the startup version. |
+| `modules: ... FAILED` at start | The XML was imported without its module components, or a component has a syntax error. Copy all plugin files, delete the slot and re-import. `node scripts/bridge-cli.mjs modules` shows the error. |
+| Bridge stops answering after `SaveShow` or another dialog | A confirmation pop-up on the plugin thread stalls the bridge until it is dismissed in onPC (`SaveShow /NoConfirmation` asks to rename the show to "NoConfirmation"). Save and load shows from the console, not through the bridge. |
 | Tools do not appear | Build `dist/index.js`, check its absolute path and the `node` executable in the client configuration, then restart the client. |
 | Manual pages unavailable | Point `GMA3_INSTALL_DIR` at the resource folder, or `GMA3_HELP_DIR` at the manual's exact HTML directory. See the [configuration reference](../reference.md#environment-variables). |
 | Lua tool is present but refuses execution | Lua is disabled on the console by default. See [Lua policy](../lua.md). |

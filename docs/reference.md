@@ -134,7 +134,9 @@ One JSON document per line over TCP.
 Ops: `ping`, `cmd`, `lua`, `object`, `children`, `objects`, `dump`, `set`, `setfader`, `getfader`,
 `executor`, `executors`, `api`, `stop`, and since plugin v0.3.0 the read-only inspection ops `fixtureAttributes`,
 `programmer`, `fixtureOutput`, `dmx`, `cueContents` (arguments and result shapes in
-[docs/tools/inspection.md](tools/inspection.md#bridge-protocol-additions)). See [`plugin/gma3_mcp_bridge.lua`](../plugin/gma3_mcp_bridge.lua).
+[docs/tools/inspection.md](tools/inspection.md#bridge-protocol-additions)), and since v0.4.0 the read-only
+`modules` op (loaded [console interaction modules](modules.md), their versions, errors and instance status;
+`ping` carries the same summary under `modules`). See [`plugin/gma3_mcp_bridge.lua`](../plugin/gma3_mcp_bridge.lua).
 
 `ping` reports the Lua execution policy as `lua: {enabled, maxMs, maxSteps, bounded}`. The `lua` op is
 refused with an error while `enabled` is false; its optional `maxMs` / `maxSteps` args can only tighten the

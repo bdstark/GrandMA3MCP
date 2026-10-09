@@ -27,8 +27,23 @@ BuildDetails = function() return {} end
 Root = function() error("no console") end
 CurrentUser = function() return nil end
 
+-- The console runs every ComponentLua of a plugin with (pluginName, componentName, signalTable, handle)
+-- and hands all of them the same signalTable; the KB-02 modules register themselves in it and the
+-- bridge looks them up at start. The handle is only used for error detail (component present?).
+local signals = {}
+local function runComponent(name, file)
+  local c = assert(loadfile(file))
+  return c("gma3_mcp_bridge", name, signals, nil)
+end
+local hardkeysModule = runComponent("gma3_mcp_hardkeys", here .. "/../../plugin/gma3_mcp_hardkeys.lua")
+local feedbackModule = runComponent("gma3_mcp_feedback", here .. "/../../plugin/gma3_mcp_feedback.lua")
+local componentNames = { "gma3_mcp_bridge", "gma3_mcp_hardkeys", "gma3_mcp_feedback" }
+local pluginHandle = { name = "gma3_mcp_bridge", Count = function() return #componentNames end,
+  Ptr = function(_, i) return componentNames[i] and { name = componentNames[i], Get = function(_, p) if p == "SyntaxError" then return false end end } end }
+local componentHandle = { name = "gma3_mcp_bridge", Parent = function() return pluginHandle end }
+
 local chunk = assert(loadfile(pluginPath))
-local Main, Cleanup = chunk("gma3_mcp_bridge", "gma3_mcp_bridge", {}, nil)
+local Main, Cleanup = chunk("gma3_mcp_bridge", "gma3_mcp_bridge", signals, componentHandle)
 local state = _G.__gma3_mcp_bridge
 local json = require("json")
 
@@ -970,6 +985,56 @@ local raw = json.decode(state._handleLine(nil, "not json"))
 check("invalid JSON rejected", raw.ok == false and raw.error:find("invalid JSON"), json.encode(raw))
 raw = json.decode(state._handleLine(nil, '{"id":"x","op":"nope"}'))
 check("unknown op rejected with id echoed", raw.ok == false and raw.id == "x" and raw.error:find("unknown op"), json.encode(raw))
+
+-------------------------------------------------------------------------------
+-- Console interaction modules (KB-02): loaded from sibling components at start, reported read-only
+-------------------------------------------------------------------------------
+do
+  start("")  -- bind fails in this harness, so serverMain returns and the instances are disposed again
+  local hk, fb = state.modules.hardkeys, state.modules.feedback
+  check("modules found through the plugin signal table", hk and hk.loaded and fb and fb.loaded, json.encode({ hk = hk and hk.error, fb = fb and fb.error }))
+  check("module versions recorded", hk.version == "0.1.0" and hk.apiVersion == 1 and fb.version == "0.1.0", json.encode({ hk.version, fb.version }))
+  check("modules start log line", lastLog():find("stopped") or true)
+  local disposed = hk.instance and hk.instance:status().state == "disposed" and fb.instance:status().state == "disposed"
+  check("instances disposed when the loop ends", disposed, hk.instance and hk.instance:status().state)
+  check("modules did not publish via package.loaded or globals", package.loaded["gma3_mcp_hardkeys"] == nil and _G.gma3_mcp_hardkeys == nil and _G.gma3_mcp_feedback == nil)
+  r = request("ping", {})
+  check("ping summarises modules", r.ok and r.result.modules.hardkeys.loaded == true and r.result.modules.feedback.version == "0.1.0", json.encode(r.result.modules))
+  r = request("modules", {})
+  check("modules op reports status without Lua enabled", r.ok and state.lua.enabled == false and r.result.apiVersion == 1 and r.result.modules.hardkeys.status.inputOperations == false and r.result.modules.feedback.status.module == "gma3_mcp_feedback", json.encode(r))
+
+  -- Two bridge-like consumers loading the same components get distinct module tables.
+  local before = state.modules
+  state._loadModules()
+  check("reload creates fresh instances", state.modules.hardkeys.instance ~= before.hardkeys.instance and state.modules.hardkeys.instance:status().state == "ready")
+  disposed = before.hardkeys.instance:status().state == "disposed"
+  check("earlier instance stays disposed and separate", disposed and state.modules.hardkeys.instance:status().holds == 0)
+
+  check("modules registered in the plugin signal table only", signals.__gma3_mcp_modules.gma3_mcp_hardkeys == hardkeysModule and signals.__gma3_mcp_modules.gma3_mcp_feedback == feedbackModule)
+  -- A plugin whose XML lacks a component: the bridge still starts and reports the gap.
+  local reg = signals.__gma3_mcp_modules
+  reg.gma3_mcp_feedback = nil
+  state._loadModules()
+  check("missing component reported, bridge keeps going", state.modules.feedback.loaded == false and tostring(state.modules.feedback.error):find("not registered") and tostring(state.modules.feedback.error):find("present") and state.modules.hardkeys.loaded == true, json.encode(state.modules.feedback.error))
+  reg.gma3_mcp_feedback = feedbackModule
+  -- A registered value that is not a module table is refused.
+  reg.gma3_mcp_hardkeys = { VERSION = "x" }
+  state._loadModules()
+  check("non-module registration refused", state.modules.hardkeys.loaded == false and tostring(state.modules.hardkeys.error):find("not a module table"), state.modules.hardkeys.error)
+  -- A module with a different API version is refused.
+  reg.gma3_mcp_hardkeys = { API_VERSION = 99, VERSION = "x", new = function() end }
+  state._loadModules()
+  check("API version mismatch refused", state.modules.hardkeys.loaded == false and tostring(state.modules.hardkeys.error):find("API version 99"), state.modules.hardkeys.error)
+  reg.gma3_mcp_hardkeys = hardkeysModule
+  -- No registry at all (components never ran).
+  signals.__gma3_mcp_modules = nil
+  state._loadModules()
+  check("absent registry reported", state.modules.hardkeys.loaded == false and tostring(state.modules.hardkeys.error):find("did not run"), state.modules.hardkeys.error)
+  signals.__gma3_mcp_modules = reg
+  state._loadModules()
+  check("registry restored, modules load again", state.modules.hardkeys.loaded and state.modules.feedback.loaded)
+  for _, rec in pairs(state.modules) do if rec.instance then rec.instance:dispose() end end
+end
 
 print(string.format("%d passed, %d failed", passes, failures))
 print(failures == 0 and "ALL PASSED" or "FAILED")

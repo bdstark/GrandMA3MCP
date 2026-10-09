@@ -28,7 +28,8 @@ npm run install-plugin
 
 The installer copies both plugin files into
 `~/MALightingTechnology/gma3_library/datapools/plugins/`. If you use a custom library location, copy
-`plugin/gma3_mcp_bridge.lua` and `plugin/gma3_mcp_bridge.xml` into its `datapools/plugins/` folder manually.
+`plugin/gma3_mcp_bridge.lua`, `plugin/gma3_mcp_hardkeys.lua`, `plugin/gma3_mcp_feedback.lua` and
+`plugin/gma3_mcp_bridge.xml` into its `datapools/plugins/` folder manually.
 
 ## 3. Import and start the bridge in onPC
 

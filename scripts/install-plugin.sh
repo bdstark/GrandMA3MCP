@@ -1,5 +1,6 @@
 #!/bin/sh
-# Copies the bridge plugin into the grandMA3 user library so it can be imported in onPC with:
+# Copies the bridge plugin (bridge, hardkeys and feedback components) into the grandMA3 user library
+# so it can be imported in onPC with:
 #   Import Plugin Library "gma3_mcp_bridge.xml" At Plugin <free slot>
 set -e
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
@@ -13,7 +14,7 @@ if [ ! -d "$LIB" ]; then
   exit 1
 fi
 mkdir -p "$DEST"
-cp "$HERE/plugin/gma3_mcp_bridge.lua" "$HERE/plugin/gma3_mcp_bridge.xml" "$DEST/"
+cp "$HERE"/plugin/gma3_mcp_*.lua "$HERE/plugin/gma3_mcp_bridge.xml" "$DEST/"
 echo "Installed to $DEST"
 echo "In grandMA3 onPC, type in the command line:"
 echo "  Import Plugin Library \"gma3_mcp_bridge.xml\" At Plugin <free slot number>"

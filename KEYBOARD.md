@@ -1,8 +1,9 @@
 # GrandMA3MCP hardkey, keyboard and feedback feature requests
 
-Updated: 2026-10-09 after review of commit `8a3782d` and its recorded live probe results.
-Status: macOS single-display input/feedback observations recorded; production implementation proposed.
-KB-01 still has qualification gaps listed below. No production keyboard operations were added by that commit.
+Updated: 2026-10-09 after review of commit `8a3782d` and its recorded live probe results, and after the KB-02
+module packaging work.
+Status: macOS single-display input/feedback observations recorded; KB-02 modules packaged and their loading
+verified live on macOS including save/reload without loose files. No production keyboard operations exist yet.
 
 This document expands the initial request from `mtpnxk-client-pico` into dependency-ordered features
 and acceptance criteria, following the format of [FEATURES.md](FEATURES.md). The originating project's
@@ -230,6 +231,37 @@ module for read-only state. Filenames and loader details are finalized by the pa
   every needed module is included. Preserve the existing bridge's import and startup behavior.
 - Define a module API/version and a reproducible way for mtpnxk to vendor the same source and license.
   Surface-specific changes must not create an undocumented fork of console semantics.
+
+### KB-02 results (macOS, onPC 2.5.1.0, 2026-10-09)
+
+Evidence: [docs/probes/kb-02-loading-macos-2.5.1.md](docs/probes/kb-02-loading-macos-2.5.1.md); contract and
+API: [docs/modules.md](docs/modules.md). Modules: `plugin/gma3_mcp_hardkeys.lua` (input lifecycle, backend
+registry, read-only key resolution) and `plugin/gma3_mcp_feedback.lua` (read-only readers), module API 1,
+version 0.1.0, shipped as extra `ComponentLua` entries of `gma3_mcp_bridge.xml` (bridge 0.4.0).
+
+**Loader decision.** The console runs every component chunk at import and show load with
+`(pluginName, componentName, signalTable, handle)` and hands all components of one plugin the same
+`signalTable`; a module chunk registers its read-only table there and the entry component looks it up in
+`Main`. Rejected after live probes: `require` (searches loose library files only, one stale cache for every
+plugin, fails without the loose file), reading a sibling component's `FileContent` (capped at ~1 KB) and
+`Export` (returns false). The source is stored in the show (`FullPath = <Showfile>`), so no loose file is
+needed after import.
+
+**Verified live:** initial import; update by delete/re-import/`ReloadAllPlugins`/start (run from a Macro so
+the stopped bridge restarts without typing); stop/start with fresh instances; `ping.modules` and the read-only
+`modules` op; every feedback reader (freeze reported unavailable); key resolution for the default profile
+(MA1/MA2 and unmapped EXEC reported unsupported); a separate consumer plugin vendoring the same two files got
+its own module tables and instances, and a hold recorded on its instance was invisible to the bridge's.
+Loading touched no socket, timer, show object or key: the chunks only build tables, and the harnesses load
+the modules with no console API present. `ReloadAllPlugins` did not re-run idle show-embedded chunks and
+preserved `_G`.
+
+**Save/reload:** the show was saved from the Backup window, the bridge stopped, all four plugin files deleted
+from the library folder, the show loaded and the bridge started: `node scripts/kb02-probe.mjs verify` passed,
+and a marker placed on the previous module copy was gone after a second load (fresh chunks from the show,
+nothing reused). `_G` survives `LoadShow` while chunks re-run. **Not exercised:** Windows and a physically
+separate machine; non-US layouts remain unverified (KB-01). `SaveShow`/`LoadShow` must not be sent through
+the bridge (`SaveShow` treats the next token as a file name and stalls the plugin thread on its dialog).
 
 ## KB-03 — Add owned input sessions and recovery
 
