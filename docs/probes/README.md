@@ -11,6 +11,7 @@ They are evidence for [KEYBOARD.md](../../KEYBOARD.md), not automated regression
 | [kb-03-fake-macos-2.5.1.md](kb-03-fake-macos-2.5.1.md), [script report](kb-03-fake-macos-2.5.1.json) (33/33; owned sessions on the fake backend) | macOS, onPC 2.5.1.0 |
 | [kb-04-keyboard-macos-2.5.1.md](kb-04-keyboard-macos-2.5.1.md), script reports for [run](kb-04-keyboard-macos-2.5.1.json) and [restart](kb-04-keyboard-macos-2.5.1-restart.json) (47/47, 12/12; real keys) | macOS, onPC 2.5.1.0 |
 | [kb-05-input-macos-2.5.1.md](kb-05-input-macos-2.5.1.md), [script report](kb-05-input-macos-2.5.1.json) (44/44; interactions, busy guard, sequences, command-line text) | macOS, onPC 2.5.1.0 |
+| [kb-06-feedback-macos-2.5.1.md](kb-06-feedback-macos-2.5.1.md), [script report](kb-06-feedback-macos-2.5.1.json) (47/47; feedback readers, displays, executors, bounds, reads while input is owned) | macOS, onPC 2.5.1.0 |
 
 ## Running the KB-01 probe on another platform
 
@@ -96,3 +97,16 @@ shortcuts re-enabled and Escape clearing the line; and a disconnect in the middl
 sequence aborted, bridge not busy). Because the bridge refuses `lua` while input is owned, the probe reads the console
 only after the interaction or sequence under test ended. Record: [kb-05-input-macos-2.5.1.md](kb-05-input-macos-2.5.1.md);
 record Windows separately.
+
+## Running the KB-06 feedback probe
+
+`node scripts/kb06-probe.mjs verify [--out ...]` is **read-only** and runs against any show on a bridge with plugin
+0.8.0 or newer: `feedback.describe`, every parameterless reader with three displays (a missing one must be unavailable,
+not false), assignment and fader level of the assigned executors on the current page plus an empty one, sequence
+activity, the 32-executor bound, the `executorActive` alias, that reads leave the command line and `ping.input`
+untouched, and, when input is enabled, that a second connection's `feedback.read` answers while the first owns an
+interaction (nothing is pressed). `node scripts/kb06-probe.mjs run [--out docs/probes/kb-06-feedback-<os>-<version>.json]`
+adds three state changes on a show whose name contains `disposable`, `mcp-test` or `scratch` with Lua enabled and
+nothing busy: Blind off/on, one fader of the first assigned executor to 25 or 75 and back, and `Go+`/`Off` of its
+sequence; each is read back through the feedback op and restored. Record:
+[kb-06-feedback-macos-2.5.1.md](kb-06-feedback-macos-2.5.1.md); record Windows separately.

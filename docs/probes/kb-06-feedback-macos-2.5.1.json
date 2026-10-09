@@ -1,0 +1,779 @@
+{
+  "mode": "run",
+  "host": "127.0.0.1",
+  "port": 9800,
+  "startedAt": "2026-10-09T15:25:47.028Z",
+  "ping": {
+    "bridgeVersion": "0.8.0",
+    "build": {
+      "version": "2.5.1.0",
+      "codeType": "Release",
+      "hostType": "onPC"
+    },
+    "hostname": "bdsmbpm401",
+    "showfile": "mcp-test-disposable",
+    "user": "Admin",
+    "modules": {
+      "hardkeys": {
+        "loaded": true,
+        "version": "0.4.0"
+      },
+      "feedback": {
+        "loaded": true,
+        "version": "0.2.0"
+      }
+    },
+    "input": {
+      "unresolvedFromPreviousRun": 0,
+      "holds": 0,
+      "enabled": true,
+      "sessions": 0,
+      "unresolved": 0,
+      "note": "ownership records, not physical key state; see input.status. busy: cmd/set/setfader/lua are refused for every connection while it is set",
+      "backend": "keyboard",
+      "moduleInputEnabled": true
+    },
+    "lua": {
+      "enabled": true
+    }
+  },
+  "steps": [
+    {
+      "name": "console",
+      "pass": null,
+      "detail": {
+        "bridgeVersion": "0.8.0",
+        "build": {
+          "version": "2.5.1.0",
+          "codeType": "Release",
+          "hostType": "onPC"
+        },
+        "hostname": "bdsmbpm401",
+        "showfile": "mcp-test-disposable",
+        "user": "Admin",
+        "modules": {
+          "hardkeys": {
+            "loaded": true,
+            "version": "0.4.0"
+          },
+          "feedback": {
+            "loaded": true,
+            "version": "0.2.0"
+          }
+        },
+        "input": {
+          "unresolvedFromPreviousRun": 0,
+          "holds": 0,
+          "enabled": true,
+          "sessions": 0,
+          "unresolved": 0,
+          "note": "ownership records, not physical key state; see input.status. busy: cmd/set/setfader/lua are refused for every connection while it is set",
+          "backend": "keyboard",
+          "moduleInputEnabled": true
+        },
+        "lua": {
+          "enabled": true
+        }
+      }
+    },
+    {
+      "name": "feedback.describe answers (module 0.2.0+)",
+      "pass": true,
+      "detail": {
+        "version": "0.2.0",
+        "readers": [
+          "blind",
+          "commandText",
+          "executor",
+          "fader",
+          "freeze",
+          "highlight",
+          "lastCommand",
+          "maState",
+          "page",
+          "previewBar",
+          "previewMode",
+          "selectedSequence",
+          "sequenceActive",
+          "shortcutsActive",
+          "solo",
+          "executorActive"
+        ]
+      }
+    },
+    {
+      "name": "feedback.read all + displays answers",
+      "pass": true,
+      "detail": {
+        "count": 14,
+        "ms": 37,
+        "epoch": 1,
+        "identity": {
+          "showFile": "mcp-test-disposable",
+          "user": "Admin",
+          "profile": "Default"
+        },
+        "limitations": []
+      }
+    },
+    {
+      "name": "every item carries observedAt, epoch, scope and available",
+      "pass": true,
+      "detail": []
+    },
+    {
+      "name": "unavailable items carry a reason or error and no value",
+      "pass": true,
+      "detail": [
+        [
+          "freeze",
+          "no readable Freeze state was found in KB-01; this is not a false value"
+        ],
+        [
+          "previewBar[display=9]",
+          "display 9 does not exist on this console"
+        ]
+      ]
+    },
+    {
+      "name": "blind is a readable boolean",
+      "pass": true,
+      "detail": {
+        "available": true,
+        "value": true,
+        "epoch": 1
+      }
+    },
+    {
+      "name": "highlight is a readable boolean",
+      "pass": true,
+      "detail": {
+        "available": true,
+        "value": false,
+        "epoch": 1
+      }
+    },
+    {
+      "name": "solo is a readable boolean",
+      "pass": true,
+      "detail": {
+        "available": true,
+        "value": false,
+        "epoch": 1
+      }
+    },
+    {
+      "name": "shortcutsActive is a readable boolean",
+      "pass": true,
+      "detail": {
+        "available": true,
+        "value": true,
+        "epoch": 1
+      }
+    },
+    {
+      "name": "maState is a readable boolean",
+      "pass": true,
+      "detail": {
+        "available": true,
+        "value": false,
+        "epoch": 1
+      }
+    },
+    {
+      "name": "commandText and lastCommand are strings (raw, no keywords inferred)",
+      "pass": true,
+      "detail": {
+        "commandText": "",
+        "lastCommand": "(Macro 100 'MCP bridge update 060')OK: Plugin \"gma3_mcp_bridge\" \"lua input=keyboard\""
+      }
+    },
+    {
+      "name": "previewMode is a string",
+      "pass": true,
+      "detail": {
+        "available": true,
+        "value": "Normal",
+        "epoch": 1
+      }
+    },
+    {
+      "name": "page has name and number",
+      "pass": true,
+      "detail": {
+        "available": true,
+        "value": {
+          "name": "Page 1",
+          "no": 1
+        },
+        "epoch": 1
+      }
+    },
+    {
+      "name": "selectedSequence is an observation (selected flag)",
+      "pass": true,
+      "detail": {
+        "available": true,
+        "value": {
+          "no": 1,
+          "name": "Default",
+          "selected": true,
+          "addr": "14.14.1.7.1",
+          "class": "Sequence"
+        },
+        "epoch": 1
+      }
+    },
+    {
+      "name": "freeze is unavailable with a reason, never false",
+      "pass": true,
+      "detail": {
+        "available": false,
+        "reason": "no readable Freeze state was found in KB-01; this is not a false value",
+        "epoch": 1
+      }
+    },
+    {
+      "name": "previewBar on display 1 is a boolean identified by display",
+      "pass": true,
+      "detail": {
+        "available": true,
+        "value": false,
+        "epoch": 1
+      }
+    },
+    {
+      "name": "previewBar on display 2",
+      "pass": null,
+      "detail": {
+        "available": true,
+        "value": false,
+        "epoch": 1
+      }
+    },
+    {
+      "name": "previewBar on display 9 is unavailable (not false) because the display does not exist",
+      "pass": true,
+      "detail": {
+        "available": false,
+        "reason": "display 9 does not exist on this console",
+        "epoch": 1
+      }
+    },
+    {
+      "name": "assigned executors on the current page (first 6)",
+      "pass": null,
+      "detail": [
+        "191: Sequence LOS2 All DelayA",
+        "192: Sequence LOS2 All DelayB",
+        "193: Sequence LOS2 Odd",
+        "194: Sequence LOS2 Even",
+        "195: Sequence LOS2 Chase",
+        "196: Sequence LOS2 1/3"
+      ]
+    },
+    {
+      "name": "feedback.read executors/sequences answers",
+      "pass": true,
+      "detail": {
+        "count": 16,
+        "limitations": []
+      }
+    },
+    {
+      "name": "executor 191: assignment read (not level, not activity)",
+      "pass": true,
+      "detail": {
+        "available": true,
+        "value": {
+          "executor": 191,
+          "page": {
+            "addr": "14.14.1.13.1",
+            "name": "Page 1",
+            "no": 1,
+            "class": "Page"
+          },
+          "empty": false,
+          "assigned": {
+            "addr": "14.14.1.7.5527",
+            "name": "LOS2 All DelayA",
+            "no": 5527,
+            "class": "Sequence"
+          }
+        },
+        "epoch": 1
+      }
+    },
+    {
+      "name": "executor 191: fader level is a number with text",
+      "pass": true,
+      "detail": {
+        "available": true,
+        "value": {
+          "text": "100%",
+          "token": "FaderMaster",
+          "target": {
+            "addr": "14.14.1.7.5527",
+            "name": "LOS2 All DelayA",
+            "no": 5527,
+            "class": "Sequence"
+          },
+          "value": 100
+        },
+        "epoch": 1
+      }
+    },
+    {
+      "name": "executor 192: assignment read (not level, not activity)",
+      "pass": true,
+      "detail": {
+        "available": true,
+        "value": {
+          "executor": 192,
+          "page": {
+            "addr": "14.14.1.13.1",
+            "name": "Page 1",
+            "no": 1,
+            "class": "Page"
+          },
+          "empty": false,
+          "assigned": {
+            "addr": "14.14.1.7.5528",
+            "name": "LOS2 All DelayB",
+            "no": 5528,
+            "class": "Sequence"
+          }
+        },
+        "epoch": 1
+      }
+    },
+    {
+      "name": "executor 192: fader level is a number with text",
+      "pass": true,
+      "detail": {
+        "available": true,
+        "value": {
+          "text": "100%",
+          "token": "FaderMaster",
+          "target": {
+            "addr": "14.14.1.7.5528",
+            "name": "LOS2 All DelayB",
+            "no": 5528,
+            "class": "Sequence"
+          },
+          "value": 100
+        },
+        "epoch": 1
+      }
+    },
+    {
+      "name": "executor 193: assignment read (not level, not activity)",
+      "pass": true,
+      "detail": {
+        "available": true,
+        "value": {
+          "executor": 193,
+          "page": {
+            "addr": "14.14.1.13.1",
+            "name": "Page 1",
+            "no": 1,
+            "class": "Page"
+          },
+          "empty": false,
+          "assigned": {
+            "addr": "14.14.1.7.5529",
+            "name": "LOS2 Odd",
+            "no": 5529,
+            "class": "Sequence"
+          }
+        },
+        "epoch": 1
+      }
+    },
+    {
+      "name": "executor 193: fader level is a number with text",
+      "pass": true,
+      "detail": {
+        "available": true,
+        "value": {
+          "text": "100%",
+          "token": "FaderMaster",
+          "target": {
+            "addr": "14.14.1.7.5529",
+            "name": "LOS2 Odd",
+            "no": 5529,
+            "class": "Sequence"
+          },
+          "value": 100
+        },
+        "epoch": 1
+      }
+    },
+    {
+      "name": "executor 194: assignment read (not level, not activity)",
+      "pass": true,
+      "detail": {
+        "available": true,
+        "value": {
+          "executor": 194,
+          "page": {
+            "addr": "14.14.1.13.1",
+            "name": "Page 1",
+            "no": 1,
+            "class": "Page"
+          },
+          "empty": false,
+          "assigned": {
+            "addr": "14.14.1.7.5530",
+            "name": "LOS2 Even",
+            "no": 5530,
+            "class": "Sequence"
+          }
+        },
+        "epoch": 1
+      }
+    },
+    {
+      "name": "executor 194: fader level is a number with text",
+      "pass": true,
+      "detail": {
+        "available": true,
+        "value": {
+          "text": "100%",
+          "token": "FaderMaster",
+          "target": {
+            "addr": "14.14.1.7.5530",
+            "name": "LOS2 Even",
+            "no": 5530,
+            "class": "Sequence"
+          },
+          "value": 100
+        },
+        "epoch": 1
+      }
+    },
+    {
+      "name": "executor 195: assignment read (not level, not activity)",
+      "pass": true,
+      "detail": {
+        "available": true,
+        "value": {
+          "executor": 195,
+          "page": {
+            "addr": "14.14.1.13.1",
+            "name": "Page 1",
+            "no": 1,
+            "class": "Page"
+          },
+          "empty": false,
+          "assigned": {
+            "addr": "14.14.1.7.5531",
+            "name": "LOS2 Chase",
+            "no": 5531,
+            "class": "Sequence"
+          }
+        },
+        "epoch": 1
+      }
+    },
+    {
+      "name": "executor 195: fader level is a number with text",
+      "pass": true,
+      "detail": {
+        "available": true,
+        "value": {
+          "text": "100%",
+          "token": "FaderMaster",
+          "target": {
+            "addr": "14.14.1.7.5531",
+            "name": "LOS2 Chase",
+            "no": 5531,
+            "class": "Sequence"
+          },
+          "value": 100
+        },
+        "epoch": 1
+      }
+    },
+    {
+      "name": "executor 196: assignment read (not level, not activity)",
+      "pass": true,
+      "detail": {
+        "available": true,
+        "value": {
+          "executor": 196,
+          "page": {
+            "addr": "14.14.1.13.1",
+            "name": "Page 1",
+            "no": 1,
+            "class": "Page"
+          },
+          "empty": false,
+          "assigned": {
+            "addr": "14.14.1.7.5532",
+            "name": "LOS2 1/3",
+            "no": 5532,
+            "class": "Sequence"
+          }
+        },
+        "epoch": 1
+      }
+    },
+    {
+      "name": "executor 196: fader level is a number with text",
+      "pass": true,
+      "detail": {
+        "available": true,
+        "value": {
+          "text": "100%",
+          "token": "FaderMaster",
+          "target": {
+            "addr": "14.14.1.7.5532",
+            "name": "LOS2 1/3",
+            "no": 5532,
+            "class": "Sequence"
+          },
+          "value": 100
+        },
+        "epoch": 1
+      }
+    },
+    {
+      "name": "executor 190 (unassigned here) reports empty, fader unavailable with a reason",
+      "pass": true,
+      "detail": {
+        "exec": {
+          "available": true,
+          "value": {
+            "empty": true,
+            "executor": 190
+          },
+          "epoch": 1
+        },
+        "fader": {
+          "available": false,
+          "reason": "executor 190 is empty on the current page",
+          "epoch": 1
+        }
+      }
+    },
+    {
+      "name": "sequence 1 activity is a boolean (playback activity, not a button)",
+      "pass": true,
+      "detail": {
+        "available": true,
+        "value": false,
+        "epoch": 1
+      }
+    },
+    {
+      "name": "sequence 999999 is unavailable with a reason",
+      "pass": true,
+      "detail": {
+        "available": false,
+        "reason": "sequence 999999 not found",
+        "epoch": 1
+      }
+    },
+    {
+      "name": "40 executors are bounded to 32 per request and reported",
+      "pass": true,
+      "detail": {
+        "count": 64,
+        "ms": 60,
+        "limitations": [
+          "executors truncated to 32 of 40"
+        ]
+      }
+    },
+    {
+      "name": "a parameterised reader named without parameters is refused as nothing to read",
+      "pass": true,
+      "detail": "[no-items] nothing to read: pass items, readers, display(s), executors or sequences (feedback.describe lists the readers)"
+    },
+    {
+      "name": "executorActive alias answers with alias=sequenceActive and a deprecation note",
+      "pass": true,
+      "detail": {
+        "available": true,
+        "value": false,
+        "epoch": 1
+      }
+    },
+    {
+      "name": "reads did not change the command line",
+      "pass": true,
+      "detail": {
+        "before": "",
+        "after": ""
+      }
+    },
+    {
+      "name": "reads opened no input session and left nothing busy",
+      "pass": true,
+      "detail": {
+        "unresolvedFromPreviousRun": 0,
+        "holds": 0,
+        "enabled": true,
+        "sessions": 0,
+        "unresolved": 0,
+        "note": "ownership records, not physical key state; see input.status. busy: cmd/set/setfader/lua are refused for every connection while it is set",
+        "backend": "keyboard",
+        "moduleInputEnabled": true
+      }
+    },
+    {
+      "name": "while B owns an interaction: A's cmd and lua are [busy] but A's feedback.read answers",
+      "pass": true,
+      "detail": {
+        "cmd": "busy",
+        "lua": "busy",
+        "feedback": [
+          {
+            "available": true,
+            "value": "",
+            "epoch": 1
+          },
+          {
+            "available": true,
+            "value": false,
+            "epoch": 1
+          },
+          {
+            "available": true,
+            "value": true,
+            "epoch": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "B ended its interaction (nothing was pressed)",
+      "pass": true,
+      "detail": {
+        "interaction": "i2",
+        "attempted": 0,
+        "state": "ended",
+        "released": [],
+        "reason": "client-end",
+        "unresolved": []
+      }
+    },
+    {
+      "name": "run: initial Blind read",
+      "pass": true,
+      "detail": {
+        "available": true,
+        "value": true,
+        "epoch": 1
+      }
+    },
+    {
+      "name": "run: Blind Off observed by the reader",
+      "pass": true,
+      "detail": {
+        "feedback": "OK",
+        "after": {
+          "available": true,
+          "value": false,
+          "epoch": 1
+        },
+        "lastCommand": "OK: Blind Off"
+      }
+    },
+    {
+      "name": "run: Blind restored and observed",
+      "pass": true,
+      "detail": {
+        "after": {
+          "available": true,
+          "value": true,
+          "epoch": 1
+        }
+      }
+    },
+    {
+      "name": "run: fader of executor 191 moved to 25 and observed",
+      "pass": true,
+      "detail": {
+        "before": 100,
+        "setfader": {
+          "token": "FaderMaster",
+          "ref": "Page 1.191",
+          "value": 100
+        },
+        "after": {
+          "available": true,
+          "value": {
+            "text": "25%",
+            "token": "FaderMaster",
+            "target": {
+              "addr": "14.14.1.7.5527",
+              "name": "LOS2 All DelayA",
+              "no": 5527,
+              "class": "Sequence"
+            },
+            "value": 25
+          },
+          "epoch": 1
+        }
+      }
+    },
+    {
+      "name": "run: fader of executor 191 restored",
+      "pass": true,
+      "detail": {
+        "after": {
+          "available": true,
+          "value": {
+            "text": "100%",
+            "token": "FaderMaster",
+            "target": {
+              "addr": "14.14.1.7.5527",
+              "name": "LOS2 All DelayA",
+              "no": 5527,
+              "class": "Sequence"
+            },
+            "value": 100
+          },
+          "epoch": 1
+        }
+      }
+    },
+    {
+      "name": "run: Go+ Sequence 5527 (LOS2 All DelayA) observed as sequence activity",
+      "pass": true,
+      "detail": {
+        "go": "OK",
+        "after": {
+          "available": true,
+          "value": true,
+          "epoch": 1
+        }
+      }
+    },
+    {
+      "name": "run: Off Sequence 5527 observed",
+      "pass": true,
+      "detail": {
+        "off": "OK",
+        "after": {
+          "available": true,
+          "value": false,
+          "epoch": 1
+        }
+      }
+    },
+    {
+      "name": "run: command line unchanged at the end",
+      "pass": true,
+      "detail": {
+        "before": "",
+        "after": ""
+      }
+    }
+  ],
+  "finishedAt": "2026-10-09T15:25:48.530Z",
+  "passed": 47,
+  "failed": 0
+}

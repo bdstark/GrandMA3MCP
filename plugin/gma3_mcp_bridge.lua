@@ -84,7 +84,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.7.0"
+local VERSION      = "0.8.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -1952,6 +1952,42 @@ ops.modules = function(args)
     out.modules[key] = { component = rec.component, loaded = rec.loaded, version = rec.version, apiVersion = rec.apiVersion, error = rec.error, status = status }
   end
   return out
+end
+
+-- Read-only console feedback (KB-06): the feedback module's readers through one structured op.
+-- Never guarded by the input admission, usable with Lua execution disabled, acquires no interaction
+-- and changes no console state. Items are read one after another (not an atomic snapshot); every
+-- observation carries observedAt (bridge clock, seconds) and the instance epoch (bumped when the
+-- show file, user or profile changed since the previous read, or at every bridge start).
+--   args: { all?, items?: [name | {name, params}], readers?: [name], display?, displays?, executors?, sequences?, tokens? }
+local function feedbackRec()
+  if not state.running then error("[not-running] the bridge is not running", 0) end
+  local rec = state.modules.feedback
+  if not rec or not rec.instance then error("[no-feedback] the feedback module is not loaded" .. (rec and rec.error and (": " .. tostring(rec.error)) or ""), 0) end
+  return rec
+end
+
+ops["feedback.describe"] = function(args)
+  local rec = feedbackRec()
+  local inst = rec.instance
+  return { module = rec.component, version = rec.version, apiVersion = rec.apiVersion, readers = inst:describe(), status = inst:status(),
+           note = "read-only observations; multiple items are not an atomic snapshot; lastCommand and maState are shared observations, not confirmation of a request or key owner" }
+end
+
+ops["feedback.read"] = function(args)
+  local rec = feedbackRec()
+  local inst, mod = rec.instance, rec.module
+  if type(mod.itemsFor) ~= "function" or type(inst.readMany) ~= "function" then error("[no-feedback] the loaded feedback module has no readMany() (module " .. tostring(rec.version) .. "; KB-06 needs 0.2.0 or newer)", 0) end
+  local items, limitations = mod.itemsFor(args or {}, inst:status().config)
+  if #items == 0 then error("[no-items] nothing to read: pass items, readers, display(s), executors or sequences (feedback.describe lists the readers)", 0) end
+  local res = inst:readMany(items, now())
+  if res.truncated and res.truncated > 0 then limitations[#limitations + 1] = string.format("%d item(s) beyond the per-request bound were not read", res.truncated) end
+  res.limitations = emptyArray(limitations)
+  res.items = emptyArray(res.items)
+  res.bridgeVersion = VERSION
+  res.module = { component = rec.component, version = rec.version }
+  res.note = "read-only observations; items are read one after another (not atomic); unavailable items carry reason or error and never a substituted value"
+  return res
 end
 
 ops.cmd = function(args)

@@ -70,6 +70,8 @@ const WORKFLOW_TOOLS = [
   "gma3_input_sequence",
   "gma3_hardkeys_status",
   "gma3_hardkeys_release_all",
+  // KB-06 read-only feedback
+  "gma3_feedback",
 ];
 
 test("all pre-existing tools are still registered under their original names", async () => {

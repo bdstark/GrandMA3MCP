@@ -30,7 +30,9 @@ The suite in `test/` has no extra dependencies:
   scripted fake bridge (`test/helpers/`).
 * `test/lua/modules_test.lua` loads `plugin/gma3_mcp_hardkeys.lua` and `plugin/gma3_mcp_feedback.lua` with no
   console API at all (any global read while loading fails the test), then checks lifecycle, instance isolation,
-  signal-table registration, key resolution against the KB-01 default profile and the feedback readers.
+  signal-table registration, key resolution against the KB-01 default profile and the feedback readers (KB-06: strict
+  values, per-display and per-executor items, partial failures, bounded request expansion, the watch/service/snapshot
+  cache with staleness, invalidation on consumer request and on show/user/profile change).
 * `test/lua/hardkeys_sessions_test.lua` runs the KB-03 owned input sessions of `plugin/gma3_mcp_hardkeys.lua`
   against the module's fake backend with a staged fake user profile: admission, leases, stored tuples and
   routes, duplicates/aliases/displays/capacity, release ordering, remap/disable/profile-switch during a hold,

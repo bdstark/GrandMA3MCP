@@ -38,7 +38,7 @@ end
 local HK = loadModule("gma3_mcp_hardkeys.lua")
 local FB = loadModule("gma3_mcp_feedback.lua")
 check("hardkeys loads without console API", type(HK) == "table" and HK.API_VERSION == 1 and HK.VERSION == "0.4.0" and type(HK.new) == "function")
-check("feedback loads without console API", type(FB) == "table" and FB.API_VERSION == 1 and FB.VERSION == "0.1.0" and type(FB.new) == "function")
+check("feedback loads without console API", type(FB) == "table" and FB.API_VERSION == 1 and FB.VERSION == "0.2.0" and type(FB.new) == "function")
 check("module tables are read-only", not pcall(function() HK.state = {} end) and not pcall(function() FB.cache = {} end) and HK.state == nil)
 check("modules publish nothing globally", package.loaded["gma3_mcp_hardkeys"] == nil and _G.gma3_mcp_hardkeys == nil and _G.gma3_mcp_feedback == nil)
 check("modules register in the plugin signal table under their NAME", signals.__gma3_mcp_modules.gma3_mcp_hardkeys == HK and signals.__gma3_mcp_modules.gma3_mcp_feedback == FB)
@@ -183,7 +183,7 @@ local cd = HK.consoleDeps(fakeEnv)
 check("hardkeys consoleDeps touches nothing but reads the Keyboard field", type(cd.shortcutRows) == "function" and type(cd.profileName) == "function" and type(cd.displayExists) == "function" and #touched == 1 and touched[1] == "Keyboard", json.encode(touched))
 
 -------------------------------------------------------------------------------
--- Feedback readers
+-- Feedback readers (KB-06: value meaning, partial failures, displays, freshness, bounded polling)
 -------------------------------------------------------------------------------
 local function fakeHandle(props, extra)
   local h = { name = props.name }
@@ -192,63 +192,260 @@ local function fakeHandle(props, extra)
   return h
 end
 local grand = { Blind = fakeHandle({ FaderEnabled = "true" }), Highlight = fakeHandle({ FaderEnabled = false }), Solo = fakeHandle({ FaderEnabled = "false" }) }
+local console = { showFile = "show-a", user = "Admin", profile = "Default", cmdtext = "Store Cue 1", maState = "false", pageNo = "1" }
+local seq10 = fakeHandle({ name = "Main", No = "10" }, { HasActivePlayback = function() return true end, GetClass = function() return "Sequence" end, Addr = function() return "Sequence 10" end,
+  GetFader = function(_, t) if t.token == "FaderMaster" then return 42.5 end error("no token " .. tostring(t.token)) end, GetFaderText = function() return "42.5" end })
+local seq11 = fakeHandle({ name = "Odd", No = "11" }, { HasActivePlayback = function() return "maybe" end, GetFader = function() return "n/a" end })
+local execs = { [101] = { Object = seq10 }, [102] = {}, [103] = { Object = seq11 } }
+local pageH = fakeHandle({ name = "Page 1", No = "1" })
 local fbDeps, fbCalls = countingDeps({
-  cmdObj = function() return { cmdtext = "Store Cue 1", lastcommand = "Please : OK" } end,
+  cmdObj = function() return { cmdtext = console.cmdtext, lastcommand = "Please : OK" } end,
   showData = function() return { Masters = { Grand = grand } } end,
-  currentProfile = function() return { Environments = fakeHandle({ ActiveEnvironment = "Preview" }), KeyboardShortCuts = fakeHandle({ KeyboardShortcutsActive = true }) } end,
-  root = function() return fakeHandle({ MAState = "false" }) end,
-  currentExecPage = function() return fakeHandle({ name = "Page 1", No = "1" }) end,
-  display = function() error("no display handle") end,
-  sequence = function(n) if n == 10 then return { HasActivePlayback = function() return true end } end end,
+  currentProfile = function() return { name = console.profile, Environments = fakeHandle({ ActiveEnvironment = "Preview" }), KeyboardShortCuts = fakeHandle({ KeyboardShortcutsActive = true }) } end,
+  root = function() return fakeHandle({ MAState = console.maState }) end,
+  currentExecPage = function() return fakeHandle({ name = "Page 1", No = console.pageNo }) end,
+  display = function(n) if n == 1 then return fakeHandle({ PreviewBarActive = "false" }) elseif n == 2 then return fakeHandle({ PreviewBarActive = "true" }) elseif n == 3 then error("display 3 exploded") end return nil end,
+  sequence = function(n) if n == 10 then return seq10 elseif n == 11 then return seq11 end end,
+  executor = function(n) local e = execs[n]; if e then return e, pageH end return nil, pageH end,
+  selectedSequence = function() return seq10 end,
+  showFile = function() return console.showFile end,
+  userName = function() return console.user end,
+  profileName = function() return console.profile end,
 })
 local f1 = FB.new({ owner = "f1", deps = fbDeps })
 local f2 = FB.new({ owner = "f2", deps = fbDeps })
 check("feedback new() requires owner", not pcall(FB.new, {}))
+check("feedback new() refuses unknown config keys", not pcall(FB.new, { owner = "x", config = { bogus = 1 } }) and not pcall(FB.new, { owner = "x", config = { maxItems = -1 } }))
 check("feedback read() before init() is an error", not pcall(f1.read, f1, "blind"))
 f1:init(); f2:init()
 check("nothing read before a read() call", next(fbCalls) == nil)
-r = f1:read("blind")
-check("blind read normalises 'true'", r.available and r.value == true and r.scope == "show", json.encode(r))
+r = f1:read("blind", nil, 10)
+check("blind read normalises 'true' and carries observedAt/epoch", r.available and r.value == true and r.scope == "show" and r.observedAt == 10 and r.epoch == 1 and r.key == "blind", json.encode(r))
 r = f1:read("solo")
 check("solo 'false' string is false and available", r.available and r.value == false, json.encode(r))
 r = f1:read("highlight")
 check("boolean false is kept", r.available and r.value == false)
+grand.Blind = fakeHandle({ FaderEnabled = "Maybe" })
+r = f1:read("blind")
+check("unrecognised value is unavailable with a reason, never false", r.available == false and r.value == nil and r.reason:find("unrecognised value Maybe") and r.reason:find("not as false"), json.encode(r))
+grand.Blind = fakeHandle({ FaderEnabled = 2 })
+r = f1:read("blind")
+check("numbers other than 0/1 are unavailable", r.available == false and r.reason:find("unrecognised"), json.encode(r))
+grand.Blind = fakeHandle({})
+r = f1:read("blind")
+check("nil property is unavailable with the nothing-returned reason", r.available == false and r.reason:find("returned nothing"), json.encode(r))
+grand.Blind = fakeHandle({ FaderEnabled = "true" })
+check("toBool exported: strict", FB.toBool("True") == true and FB.toBool(0) == false and FB.toBool("yes") == nil and select(2, FB.toBool("yes")):find("unrecognised"))
 r = f1:read("commandText")
-check("command text", r.value == "Store Cue 1" and r.scope == "ui")
+check("command text is raw text", r.value == "Store Cue 1" and r.scope == "ui" and r.note:find("not inferred"))
+r = f1:read("lastCommand")
+check("last command is an observation, not confirmation", r.value == "Please : OK" and r.note:find("not confirmation"))
 r = f1:read("previewMode")
 check("preview environment", r.value == "Preview" and r.scope == "profile")
 r = f1:read("maState")
-check("MA state read as observed state", r.value == false and r.source:find("not ownership"))
+check("MA state read as observed aggregate state", r.value == false and r.note:find("not ownership") and r.scope == "console")
 r = f1:read("page")
 check("page reader", r.value.name == "Page 1" and r.value.no == 1, json.encode(r))
+r = f1:read("selectedSequence")
+check("selected sequence identified", r.available and r.value.selected == true and r.value.name == "Main" and r.value.no == 10 and r.scope == "user", json.encode(r))
 r = f1:read("freeze")
 check("freeze is unavailable with a reason, never false", r.available == false and r.value == nil and r.reason:find("KB%-01"), json.encode(r))
+
+-- Displays: the default display is identified, other displays are validated, failures are per display.
 r = f1:read("previewBar")
-check("reader error reported, not substituted", r.available == false and r.error:find("no display handle") and r.value == nil, json.encode(r))
+check("previewBar defaults to display 1 and identifies it", r.available and r.value == false and r.params.display == 1 and r.key == "previewBar[display=1]" and r.scope == "display", json.encode(r))
+r = f1:read("previewBar", { display = 2 })
+check("previewBar on display 2", r.available and r.value == true and r.params.display == 2 and r.key == "previewBar[display=2]", json.encode(r))
+r = f1:read("previewBar", { display = 7 })
+check("missing display is unavailable with a reason", r.available == false and r.reason:find("display 7 does not exist") and r.params.display == 7, json.encode(r))
+r = f1:read("previewBar", { display = 3 })
+check("reader error reported per display, not substituted", r.available == false and r.error:find("display 3 exploded") and r.value == nil, json.encode(r))
+r = f1:read("previewBar", { display = 0 })
+check("display 0 refused", r.available == false and r.error:find("positive integer"), json.encode(r))
+r = f1:read("previewBar", { display = "2" })
+check("display as text refused (no coercion)", r.available == false and r.error:find("positive integer"), json.encode(r))
+r = f1:read("previewBar", 1)
+check("params that are not a table are reported per item, not raised", r.available == false and r.error:find("params must be a table") and r.key == "previewBar[invalid-params]", json.encode(r))
+
+-- Sequence activity, executor assignment and fader level stay separate readers.
+r = f1:read("sequenceActive", { sequence = 10 })
+check("sequenceActive with parameter", r.available and r.value == true and r.key == "sequenceActive[sequence=10]" and r.note:find("not proof"), json.encode(r))
+r = f1:read("sequenceActive", { sequence = 11 })
+check("sequenceActive with an unrecognised HasActivePlayback is unavailable", r.available == false and r.reason:find("unrecognised"), json.encode(r))
+r = f1:read("sequenceActive", { sequence = 12 })
+check("sequenceActive unknown sequence is unavailable with a reason", r.available == false and r.reason:find("not found"), json.encode(r))
+r = f1:read("sequenceActive")
+check("sequenceActive without parameter reported as an error", r.available == false and r.error:find("params.sequence"), json.encode(r))
 r = f1:read("executorActive", { sequence = 10 })
-check("executorActive with parameter", r.available and r.value == true, json.encode(r))
-r = f1:read("executorActive", { sequence = 11 })
-check("executorActive unknown sequence reported", r.available == false and r.error:find("not found"), json.encode(r))
-r = f1:read("executorActive")
-check("executorActive without parameter reported", r.available == false and r.error:find("params.sequence"), json.encode(r))
+check("executorActive is a compatibility alias of sequenceActive and says so", r.available and r.value == true and r.name == "executorActive" and r.alias == "sequenceActive" and r.note:find("deprecated") and r.note:find("not executor button state"), json.encode(r))
+r = f1:read("executor", { executor = 101 })
+check("executor assignment", r.available and r.value.assigned.name == "Main" and r.value.assigned.class == "Sequence" and r.value.empty == false and r.value.page.name == "Page 1" and r.scope == "page" and r.key == "executor[executor=101]", json.encode(r))
+r = f1:read("executor", { executor = 102 })
+check("empty executor is an available value", r.available and r.value.empty == true and r.value.assigned == nil, json.encode(r))
+r = f1:read("executor", { executor = 199 })
+check("unknown executor is an available empty value with the page", r.available and r.value.empty == true and r.value.page.name == "Page 1", json.encode(r))
+r = f1:read("executor")
+check("executor without parameter is an error", r.available == false and r.error:find("params.executor"), json.encode(r))
+execs[104] = setmetatable({}, { __index = function(_, k) if k == "Object" then error("Object read exploded") end end })
+r = f1:read("executor", { executor = 104 })
+check("a raising Object read is unavailable with the error, never an empty executor", r.available == false and r.error:find("Object read exploded") and r.value == nil, json.encode(r))
+r = f1:read("fader", { executor = 104 })
+check("fader of an executor whose Object read raises is an error, not 'no assigned object'", r.available == false and r.error:find("Object read exploded"), json.encode(r))
+execs[104] = nil
+r = f1:read("fader", { executor = 101 })
+check("fader level via executor", r.available and r.value.value == 42.5 and r.value.text == "42.5" and r.value.token == "FaderMaster" and r.value.target.name == "Main" and r.key == "fader[executor=101]", json.encode(r))
+r = f1:read("fader", { sequence = 10, token = "FaderMaster" })
+check("fader level via sequence", r.available and r.value.value == 42.5 and r.key == "fader[sequence=10]", json.encode(r))
+r = f1:read("fader", { executor = 101, token = "FaderX" })
+check("unknown token is an error, not zero", r.available == false and r.error:find("no token FaderX") and r.key == "fader[executor=101,token=FaderX]", json.encode(r))
+r = f1:read("fader", { executor = 102 })
+check("fader of an empty executor is unavailable", r.available == false and r.reason:find("no assigned object"), json.encode(r))
+r = f1:read("fader", { executor = 103 })
+check("non-numeric fader is unavailable, not zero", r.available == false and r.reason:find("not a level"), json.encode(r))
+r = f1:read("fader")
+check("fader without target is an error", r.available == false and r.error:find("params.executor or params.sequence"), json.encode(r))
 r = f1:read("nope")
-check("unknown reader reported", r.available == false and r.error:find("unknown reader"))
-local all = f1:readAll()
-check("readAll covers every parameterless reader", all.blind and all.freeze and all.previewBar and all.executorActive == nil and all.maState, json.encode(all))
+check("unknown reader reported", r.available == false and r.reason:find("unknown reader"))
+local all = f1:readAll(20)
+check("readAll covers every parameterless reader incl. previewBar on display 1", all.blind and all.freeze and all.previewBar and all.previewBar.params.display == 1 and all.selectedSequence and all.sequenceActive == nil and all.executor == nil and all.fader == nil and all.executorActive == nil and all.maState and all.maState.observedAt == 20, json.encode(all))
 check("read counts are per instance", f1:status().reads > 10 and f2:status().reads == 0)
+
+-- Partial failures: one failing reader never invalidates the others; items are read in order.
+local brokenDeps = {}
+for k, v in pairs(fbDeps) do brokenDeps[k] = v end
+brokenDeps.cmdObj = function() error("CmdObj is gone") end
+local fb = FB.new({ owner = "fb", deps = brokenDeps }):init()
+local many = fb:readMany({ { name = "commandText" }, { name = "blind" }, { name = "previewBar", params = { display = 2 } }, { name = "bogus" }, { name = "fader", params = { executor = 101 } } }, 30)
+check("readMany reports partial failures per item", many.count == 5 and many.items[1].available == false and many.items[1].error:find("CmdObj is gone") and many.items[2].available and many.items[2].value == true and many.items[3].value == true and many.items[4].available == false and many.items[5].value.value == 42.5, json.encode(many))
+check("readMany is not atomic and says so, with identity and epoch", many.atomic == false and many.observedAt == 30 and many.epoch == 1 and many.identity.showFile == "show-a" and many.identity.profile == "Default" and many.identity.user == "Admin", json.encode(many))
+many = fb:readMany({ { name = "previewBar", params = 1 }, { name = "sequenceActive", params = { sequence = "x" } }, { name = "commandText" }, { name = "blind" } }, 32)
+check("a malformed item does not abort the batch: the following items are still read", many.count == 4 and many.items[1].available == false and many.items[1].error:find("params must be a table") and many.items[2].available == false and many.items[2].error:find("params.sequence") and many.items[3].error:find("CmdObj is gone") and many.items[4].value == true, json.encode(many))
+local wb = FB.new({ owner = "wb", deps = fbDeps }):init()
+local wbs = wb:watch({ { name = "previewBar", params = 1 }, { name = "blind" }, "solo" }, 1)
+wb:service(1)
+snap = wb:snapshot(1)
+check("watch() tolerates a malformed item and a bare name; service reports the bad one unavailable and reads the rest", wbs.watched == 3 and #snap.items == 3 and snap.items[1].key == "previewBar[invalid-params]" and snap.items[1].available == false and snap.items[2].value == true and snap.items[3].value == false, json.encode(snap.items))
+local small = FB.new({ owner = "small", deps = fbDeps, config = { maxItems = 2 } }):init()
+many = small:readMany({ { name = "blind" }, { name = "solo" }, { name = "highlight" } }, 31)
+check("readMany is bounded by maxItems and reports the truncation", many.count == 2 and many.truncated == 1, json.encode(many))
+
+-- Request expansion (shared with the bridge op): subsets, displays, bounded executors.
+local items, lim = FB.itemsFor({ readers = { "blind", "previewBar", "sequenceActive" }, displays = { 1, 2 }, executors = { 101, 102 }, sequences = { 10 }, tokens = { "FaderMaster", "SpeedMaster" } })
+local keys = {}
+for _, it in ipairs(items) do keys[#keys + 1] = FB.keyOf(it.name, it.params) end
+check("itemsFor expands displays, executors with tokens and sequences", table.concat(keys, " ") == "blind previewBar[display=1] previewBar[display=2] executor[executor=101] fader[executor=101] fader[executor=101,token=SpeedMaster] executor[executor=102] fader[executor=102] fader[executor=102,token=SpeedMaster] sequenceActive[sequence=10]", table.concat(keys, " "))
+check("itemsFor refuses parameterised readers without parameters", #lim == 1 and lim[1]:find("sequenceActive needs parameters"), json.encode(lim))
+items, lim = FB.itemsFor({ executors = { 101, 102, 103 } }, { maxExecutors = 2 })
+check("itemsFor bounds executors", #items == 4 and lim[1]:find("executors truncated to 2 of 3"), json.encode(lim))
+items, lim = FB.itemsFor({ items = { "blind", { name = "previewBar", params = { display = 2 } }, 5 } })
+check("itemsFor accepts names and {name, params}", #items == 2 and items[2].params.display == 2 and lim[1]:find("ignored"), json.encode(lim))
+items = FB.itemsFor({ readers = { "previewBar" }, display = 2 })
+check("single display shorthand", #items == 1 and items[1].params.display == 2)
+items, lim = FB.itemsFor({ all = true, displays = { 1, 2 }, sequences = { 10 } })
+keys = {}
+for _, it in ipairs(items) do keys[#keys + 1] = FB.keyOf(it.name, it.params) end
+check("itemsFor all=true expands every parameterless reader once per display plus the explicit targets", table.concat(keys, " ") == "blind commandText freeze highlight lastCommand maState page previewBar[display=1] previewBar[display=2] previewMode selectedSequence shortcutsActive solo sequenceActive[sequence=10]" and #lim == 0, table.concat(keys, " "))
+check("describe lists readers with scope, source, params and the alias", (function()
+  local d = FB.describe(); local byName = {}
+  for _, e in ipairs(d) do byName[e.name] = e end
+  return byName.fader and byName.fader.params[1] == "executor" and byName.freeze.unavailable and byName.executorActive.alias == "sequenceActive" and byName.previewBar.paramless == true and byName.sequenceActive.paramless == false
+end)())
+
+-- Freshness: watch a subset, service() does bounded work, snapshot() reports age and staleness, an
+-- invalidation (consumer or observed show/profile change) drops cached observations.
+local w = FB.new({ owner = "w", deps = fbDeps, config = { maxReadsPerService = 2, pollIntervalMs = 100, staleMs = 500, identityCheckMs = 1000 } }):init()
+local ws = w:watch(FB.itemsFor({ readers = { "blind", "maState", "commandText", "previewBar" }, displays = { 1 }, executors = { 101 } }), 100)
+check("watch records the bounded subset", ws.watched == 6 and ws.truncated == 0 and w:status().watched == 6, json.encode(ws))
+local snap = w:snapshot(100)
+check("snapshot before any service lists everything as not observed", #snap.items == 0 and #snap.notObserved == 6 and snap.notObserved[1].reason == "not observed yet", json.encode(snap))
+local sv = w:service(100)
+check("service reads at most maxReadsPerService items", sv.reads == 2 and sv.due == 4 and sv.watched == 6, json.encode(sv))
+local readsBefore = w:status().reads
+sv = w:service(100.01); sv = w:service(100.02)
+check("round robin covers the rest over later calls", sv.reads == 2 and sv.due == 0 and w:status().reads == readsBefore + 4, json.encode(sv))
+sv = w:service(100.03)
+check("nothing is re-read before pollIntervalMs", sv.reads == 0 and sv.due == 0, json.encode(sv))
+snap = w:snapshot(100.05)
+check("snapshot carries the observations with ageMs and not stale", #snap.items == 6 and #snap.notObserved == 0 and snap.items[1].key == "blind" and snap.items[1].value == true and snap.items[1].ageMs == 50 and snap.items[1].stale == false and snap.atomic == false, json.encode(snap))
+console.cmdtext = "Changed"
+snap = w:snapshot(100.9)
+local ct
+for _, it in ipairs(snap.items) do if it.key == "commandText" then ct = it end end
+check("a cached observation older than staleMs is reported stale and keeps its old observedAt", ct.stale == true and ct.value == "Store Cue 1" and ct.observedAt == 100.01 and ct.ageMs == 890, json.encode(ct))
+sv = w:service(100.9)
+check("due items are re-read after the interval", sv.reads == 2 and sv.due == 4, json.encode(sv))
+w:service(100.91); w:service(100.92)
+snap = w:snapshot(100.93)
+for _, it in ipairs(snap.items) do if it.key == "commandText" then ct = it end end
+check("re-read observation is current", ct.value == "Changed" and ct.stale == false and ct.observedAt == 100.91, json.encode(ct))
+local e = w:invalidate("disconnect", 101)
+snap = w:snapshot(101)
+check("invalidate drops every cached observation and bumps the epoch", e == 2 and #snap.items == 0 and #snap.notObserved == 6 and snap.notObserved[1].reason:find("not observed since disconnect") and snap.epoch == 2 and w:status().lastInvalidation.reason == "disconnect", json.encode(snap))
+w:service(101); w:service(101.01); w:service(101.02)
+snap = w:snapshot(101.02)
+check("observations after the invalidation carry the new epoch", #snap.items == 6 and snap.items[1].epoch == 2, json.encode(snap.items[1]))
+console.showFile = "show-b"
+sv = w:service(101.5)
+check("show change is not noticed before identityCheckMs", sv.invalidated == nil and w:status().epoch == 2, json.encode(sv))
+sv = w:service(102.1)
+snap = w:snapshot(102.1)
+check("a changed show file invalidates the cache (epoch 3)", sv.invalidated == "show-changed" and snap.epoch == 3 and #snap.notObserved == 6 - sv.reads and snap.notObserved[1].reason:find("show%-changed") and w:status().identity.showFile == "show-b", json.encode({ sv, snap.notObserved }))
+console.profile = "Operator"
+sv = w:service(103.2)
+check("a profile change invalidates the cache", sv.invalidated == "profile-changed" and w:status().epoch == 4 and w:status().identity.profile == "Operator", json.encode(sv))
+console.user = "Guest"
+many = w:readMany({ { name = "blind" } }, 104.3)
+check("readMany also notices an identity change and reports it", many.invalidated == "user-changed" and many.epoch == 5 and many.items[1].epoch == 5, json.encode(many))
+local idDeps = {}
+for k, v in pairs(fbDeps) do idDeps[k] = v end
+idDeps.showFile = function() error("no socket") end
+local w2 = FB.new({ owner = "w2", deps = idDeps }):init()
+w2:service(1); w2:service(3)
+check("an identity that was never readable is reported nil and is never a change by itself", w2:status().identity.showFile == nil and w2:status().identity.user == "Guest" and w2:status().epoch == 1 and w2:status().identityUncertain == nil, json.encode(w2:status()))
+-- Review finding: A -> unreadable -> B must not hide the change nor serve A's values as current.
+local flaky = { showFile = "show-A", fail = false }
+local fDeps = {}
+for k, v in pairs(fbDeps) do fDeps[k] = v end
+fDeps.showFile = function() if flaky.fail then error("socket gone") end return flaky.showFile end
+local w3 = FB.new({ owner = "w3", deps = fDeps, config = { maxReadsPerService = 8, identityCheckMs = 1000, staleMs = 5000 } }):init()
+w3:watch(FB.itemsFor({ readers = { "blind" } }), 10); w3:service(10)
+check("identity A observed and cached value fresh", w3:status().identity.showFile == "show-A" and w3:snapshot(10.1).items[1].stale == false)
+flaky.fail = true
+sv = w3:service(11.5)
+snap = w3:snapshot(11.5)
+check("identity becoming unreadable keeps the last known value, invalidates once and marks the snapshot uncertain", sv.invalidated == "identity-unreadable" and w3:status().identity.showFile == "show-A" and w3:status().identityUncertain[1] == "showFile" and #snap.items == 1 and snap.items[1].epoch == 2 and snap.items[1].stale == true and snap.identityUncertain[1] == "showFile", json.encode({ sv, w3:status().identity, snap.items }))
+sv = w3:service(11.6); w3:service(13)
+snap = w3:snapshot(13)
+check("while uncertain, re-read observations are reported stale and no second invalidation happens", sv.invalidated == nil and #snap.items == 1 and snap.items[1].stale == true and snap.items[1].identityUncertain[1] == "showFile" and w3:status().epoch == 2, json.encode(snap.items[1]))
+many = w3:readMany({ { name = "blind" } }, 13.1)
+check("readMany reports the uncertain identity", many.identityUncertain[1] == "showFile" and many.identity.showFile == "show-A", json.encode(many))
+flaky.fail = false; flaky.showFile = "show-B"
+sv = w3:service(14.5)
+snap = w3:snapshot(14.5)
+check("A -> unreadable -> B invalidates as show-changed once readable again, nothing of A is served", sv.invalidated == "show-changed" and w3:status().epoch == 3 and w3:status().identity.showFile == "show-B" and w3:status().identityUncertain == nil and (#snap.items == 0 or snap.items[1].epoch == 3) and (#snap.items == 0 or snap.items[1].stale == false), json.encode({ sv, snap }))
+flaky.fail = true; w3:service(16)
+flaky.fail = false; sv = w3:service(17.5)
+check("unreadable then the same value again clears the uncertainty without a show-changed", sv.invalidated == nil and w3:status().identityUncertain == nil and w3:status().epoch == 4, json.encode({ sv, w3:status() }))
+w:watch(FB.itemsFor({ readers = { "blind" } }), 105)
+check("a new watch drops observations of items no longer watched", w:status().watched == 1 and w:status().cached == 0)
+w:service(105); w:unwatch()
+check("unwatch clears", w:status().watched == 0 and w:status().cached == 0 and #w:snapshot(105).items == 0)
+check("service() needs the clock", not pcall(w.service, w))
+check("watch/readMany need a list", not pcall(w.watch, w, "blind") and not pcall(w.readMany, w, "blind"))
+
 f1:dispose()
 check("disposed feedback instance refuses reads, other instance unaffected", not pcall(f1.read, f1, "blind") and f2:read("blind").value == true)
-check("feedback status lists readers", #f2:status().readers == #FB.READERS and f2:status().module == "gma3_mcp_feedback")
+check("feedback status lists readers", #f2:status().readers == #FB.READERS and f2:status().module == "gma3_mcp_feedback" and f2:status().config.maxItems == 64)
 -- Reader lists handed out are copies: editing one must not reach another instance.
 local f3 = FB.new({ owner = "f3", deps = fbDeps }):init()
 local list = f2:readers(); list[1] = "bogus"; table.remove(list, #list)
 local st = f2:status(); st.readers[2] = "bogus2"
 FB.READERS[1] = "bogus3"
 local okAll, allAfter = pcall(f3.readAll, f3)
-check("mutating a returned reader list does not affect other instances", okAll and allAfter.blind ~= nil and allAfter.bogus == nil and f3:readers()[1] == "blind" and #f3:readers() == 12, json.encode({ okAll, allAfter and allAfter.blind and allAfter.blind.value }))
+check("mutating a returned reader list does not affect other instances", okAll and allAfter.blind ~= nil and allAfter.bogus == nil and f3:readers()[1] == "blind" and #f3:readers() == 15, json.encode({ okAll, allAfter and allAfter.blind and allAfter.blind.value }))
 touched = {}
 local fcd = FB.consoleDeps(fakeEnv)
-check("feedback consoleDeps touches no console function at build time", type(fcd.cmdObj) == "function" and #touched == 0, json.encode(touched))
+check("feedback consoleDeps touches no console function at build time", type(fcd.cmdObj) == "function" and type(fcd.executor) == "function" and type(fcd.showFile) == "function" and #touched == 0, json.encode(touched))
 
 print(string.format("%d passed, %d failed", passes, failures))
 print(failures == 0 and "ALL PASSED" or "FAILED")
