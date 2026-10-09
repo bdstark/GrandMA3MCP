@@ -126,3 +126,30 @@ test("probe removes only the files it created, even when the console fails", asy
     assert.deepEqual(fs.readdirSync(dir), ["other_plugin.lua"], "probe files cleaned up, unrelated file kept");
   } finally { bridge.close(); fs.rmSync(lib, { recursive: true, force: true }); }
 });
+
+test("probe undoes a partial write and touches no console plugin", async () => {
+  const lib = fs.mkdtempSync(path.join(os.tmpdir(), "kb02-lib-"));
+  const dir = path.join(lib, "datapools", "plugins");
+  fs.mkdirSync(dir, { recursive: true });
+  // A dangling symlink passes the existence check (existsSync follows it) but makes the exclusive
+  // write of the second file fail with EEXIST, so the first file has already been written.
+  fs.symlinkSync(path.join(lib, "does-not-exist"), path.join(dir, "kb02_probe_mod.lua"));
+  const luaCodes: string[] = [];
+  const bridge = await startFakeBridge((op, args) => {
+    if (op === "ping") return ping();
+    if (op === "lua") { luaCodes.push(String(args.code)); return { values: [false] }; }
+    throw new Error("unexpected op " + op);
+  });
+  try {
+    const r = await run(["probe", "--slot", "7"], { GMA3_BRIDGE_PORT: String(bridge.port), GMA3_LIBRARY: lib });
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stderr, /could not write probe files/);
+    assert.deepEqual(fs.readdirSync(dir), ["kb02_probe_mod.lua"], "the first file was removed, the operator's symlink kept");
+    assert.ok(fs.lstatSync(path.join(dir, "kb02_probe_mod.lua")).isSymbolicLink());
+    assert.ok(!luaCodes.some((c) => /Delete Plugin|Import Plugin/.test(c)), "no import or delete was sent to the console");
+    // A second run must not be blocked by a leftover from the first.
+    fs.unlinkSync(path.join(dir, "kb02_probe_mod.lua"));
+    const again = await run(["probe", "--slot", "7"], { GMA3_BRIDGE_PORT: String(bridge.port), GMA3_LIBRARY: lib });
+    assert.doesNotMatch(again.stderr, /refusing to overwrite/);
+  } finally { bridge.close(); fs.rmSync(lib, { recursive: true, force: true }); }
+});

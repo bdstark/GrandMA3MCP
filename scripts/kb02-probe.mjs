@@ -135,13 +135,22 @@ async function probe() {
   if (existing.length) throw new Error(`refusing to overwrite existing file(s) in ${dir}: ${existing.join(", ")}; move them away first`);
   const created = [];
   const cleanup = () => { for (const name of created.splice(0)) fs.rmSync(path.join(dir, name), { force: true }); };
-  for (const [name, text] of Object.entries(files)) {
-    fs.writeFileSync(path.join(dir, name), text, { flag: "wx" });
-    created.push(name);
+  // A failed second or third write must not leave the first file behind (a later run would refuse
+  // because it exists). Nothing has been imported yet, so only the files are undone here.
+  try {
+    for (const [name, text] of Object.entries(files)) {
+      fs.writeFileSync(path.join(dir, name), text, { flag: "wx" });
+      created.push(name);
+    }
+  } catch (e) {
+    cleanup();
+    throw new Error(`could not write probe files to ${dir}: ${e.message}`);
   }
   console.log(`probe files written to ${dir}; importing into Plugin ${slot}`);
   const results = {};
+  let importAttempted = false;
   try {
+    importAttempted = true;
     results.withLooseFiles = await lua(`_G.__kb02 = { chunkRuns = {}, mainRuns = {} }
       local real = getmetatable(package) and getmetatable(package).__index or package; real.loaded["kb02_probe_mod"] = nil
       Cmd('Import Plugin Library "kb02_probe.xml" At Plugin ${slot}') for i = 1, 3 do coroutine.yield() end
@@ -153,8 +162,10 @@ async function probe() {
       Cmd('Plugin "kb02_probe"') for i = 1, 4 do coroutine.yield() end
       return _G.__kb02`);
   } finally {
-    await lua(`Cmd('Delete Plugin ${slot} /NoConfirmation') _G.__kb02 = nil
-      local real = getmetatable(package) and getmetatable(package).__index or package; real.loaded["kb02_probe_mod"] = nil return true`).catch(() => {});
+    if (importAttempted) {
+      await lua(`Cmd('Delete Plugin ${slot} /NoConfirmation') _G.__kb02 = nil
+        local real = getmetatable(package) and getmetatable(package).__index or package; real.loaded["kb02_probe_mod"] = nil return true`).catch(() => {});
+    }
     cleanup();
   }
   const a = results.withLooseFiles, b = results.withoutLooseFiles;
