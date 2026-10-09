@@ -1,6 +1,6 @@
 # Development
 
-[README](../README.md) · [macOS setup](setup/macos.md) · [Windows setup](setup/windows.md)
+[README](../README.md) · [Contributing](../CONTRIBUTING.md) · [macOS setup](setup/macos.md) · [Windows setup](setup/windows.md)
 
 
 

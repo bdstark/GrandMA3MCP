@@ -91,6 +91,11 @@ OSC is optional for the normal bridge setup and is not forwarded by an SSH tunne
 - [Tested platform/version matrix](docs/compatibility.md) and [pinned modules for independent consumers](docs/modules.md#vendoring-into-another-plugin-mtpnxk)
 - [Development and automated tests](docs/development.md), [live test procedure](test/live/README.md)
 
+## Contributing and security
+
+See [contribution guidance](CONTRIBUTING.md) for bug reports, development checks and pull requests.
+Report suspected vulnerabilities privately using the [security policy](SECURITY.md).
+
 ## License
 
 [MIT](LICENSE)
