@@ -1343,7 +1343,7 @@ local MODULE_COMPONENTS = {
   { key = "feedback", component = "gma3_mcp_feedback" },
 }
 
-local enableInputOn  -- defined with the input ops below; used by loadModules()
+local enableInputOn, adoptKeptRecords  -- defined with the input ops below; used by loadModules()
 
 -- Best-effort detail for an error message: is the component in the plugin, and did it fail to parse?
 local function componentInfo(name)
@@ -1395,11 +1395,17 @@ local function loadModules()
         return mod.new({ owner = "gma3_mcp_bridge", deps = deps }):init()
       end)
       if okI then rec.instance = inst else rec.loaded, rec.error = false, "instance: " .. tostring(inst) end
-      if okI and entry.key == "hardkeys" and state.input.enabled then
-        local okE, err = enableInputOn(rec)
-        if not okE then
-          state.input.enabled = false
-          logerr("input: %s; input stays disabled", tostring(err))
+      if okI and entry.key == "hardkeys" then
+        -- Records a previous run could not release are adopted now, before any input is admitted,
+        -- so their tuples are reserved (a new session gets [conflict]). Releasing them stays an
+        -- explicit operator action ("input recover"); adopt() dispatches nothing.
+        adoptKeptRecords(rec)
+        if state.input.enabled then
+          local okE, err = enableInputOn(rec)
+          if not okE then
+            state.input.enabled = false
+            logerr("input: %s; input stays disabled", tostring(err))
+          end
         end
       end
     else
@@ -1410,6 +1416,8 @@ local function loadModules()
   end
   log("modules: %s", table.concat(summary, ", "))
 end
+
+local detachHardkeys  -- defined below (needs logReleaseResult)
 
 local function describeAttempt(a)
   return string.format("%s %s(%s) %s%s", tostring(a.session), tostring(a.logical or "raw"), tostring(a.tupleKey), tostring(a.state),
@@ -1427,13 +1435,45 @@ local function serviceModules(now)
     if rec.instance then
       local ok, res = pcall(rec.instance.service, rec.instance, now)
       if not ok then
-        rec.error = "service: " .. tostring(res); rec.instance = nil
-        logerr("module %s failed in service() and was detached: %s", key, tostring(res))
+        rec.error = "service: " .. tostring(res)
+        logerr("module %s failed in service(): %s", key, tostring(res))
+        if key == "hardkeys" then detachHardkeys(rec, now, "service-error") end
+        rec.instance = nil
+        logerr("module %s detached; restart the bridge to load it again", key)
       elseif key == "hardkeys" and type(res) == "table" then
         for _, sid in ipairs(res.expired or {}) do log("input: lease of session %s expired", tostring(sid)) end
         logReleaseResult("input: deadline", res)
       end
     end
+  end
+end
+
+-- Takes the hardkeys instance out of service without losing anything it owns: no new input, a release
+-- attempt for every held key, and every record that stays unresolved kept in state.input.unresolved
+-- (for "input recover" after a restart). Used when service() raised and at every stop.
+detachHardkeys = function(rec, t, reason)
+  local inst = rec.instance
+  if not inst then return end
+  local okS, st = pcall(inst.status, inst)
+  if not okS or type(st) ~= "table" or st.state == "disposed" then return end
+  state.input.enabled = false
+  if st.state == "ready" then
+    local okD, dis = pcall(inst.disableInput, inst, t, reason)
+    if okD then logReleaseResult("input: " .. tostring(reason), dis) else logerr("input: disableInput on %s failed: %s", tostring(reason), tostring(dis)) end
+  end
+  local ok, res = pcall(inst.dispose, inst, t)
+  if ok and type(res) == "table" then
+    logReleaseResult("input: " .. tostring(reason), res)
+    for _, r in ipairs(res.records or {}) do
+      r.keptAt, r.keptReason = t, reason
+      state.input.unresolved[#state.input.unresolved + 1] = r
+      logerr("input: keeping unresolved record %s(%s) of session %s: %s", tostring(r.logical or "raw"), tostring(r.tupleKey), tostring(r.session), tostring(r.unresolved and r.unresolved.reason))
+    end
+    if #(res.records or {}) > 0 then
+      logerr("input: %d unresolved release record(s) kept; run  Plugin \"gma3_mcp_bridge\" \"input recover\"  once the bridge runs again", #res.records)
+    end
+  elseif not ok then
+    logerr("input: dispose failed: %s", tostring(res))
   end
 end
 
@@ -1444,21 +1484,12 @@ local function disposeModules(reason)
   local t = now()
   for key, rec in pairs(state.modules) do
     if rec.instance then
-      local ok, res = pcall(rec.instance.dispose, rec.instance, t)
       if key == "hardkeys" then
-        if ok and type(res) == "table" then
-          logReleaseResult("input: " .. tostring(reason or "dispose"), res)
-          for _, r in ipairs(res.records or {}) do
-            r.keptAt, r.keptReason = t, reason or "dispose"
-            state.input.unresolved[#state.input.unresolved + 1] = r
-            logerr("input: keeping unresolved record %s(%s) of session %s: %s", tostring(r.logical or "raw"), tostring(r.tupleKey), tostring(r.session), tostring(r.unresolved and r.unresolved.reason))
-          end
-          if #(res.records or {}) > 0 then
-            logerr("input: %d unresolved release record(s) kept; run  Plugin \"gma3_mcp_bridge\" \"input recover\"  once the bridge runs again", #res.records)
-          end
-        elseif not ok then
-          logerr("input: dispose failed: %s", tostring(res))
-        end
+        local enabled = state.input.enabled
+        detachHardkeys(rec, t, reason or "dispose")
+        state.input.enabled = enabled  -- the policy belongs to the next start, which resets it anyway
+      else
+        pcall(rec.instance.dispose, rec.instance, t)
       end
     end
   end
@@ -1473,6 +1504,7 @@ local function moduleSummary()
 end
 
 state._loadModules = loadModules  -- exposed for local testing
+state._serviceModules = serviceModules
 
 -------------------------------------------------------------------------------
 -- Owned input sessions (KB-03)
@@ -1522,21 +1554,29 @@ local function describeInput()
     s.enabled and (tostring(s.backend) .. " enabled") or "disabled", s.sessions, s.holds, s.unresolved, s.unresolvedFromPreviousRun)
 end
 
--- Operator-only recovery (plugin argument "input recover"): adopt the records kept from a previous
--- run, then re-attempt every unresolved release of every session. Nothing is retried automatically.
+-- Hands the records kept from a previous run to the instance as unresolved holds (session
+-- "previous-run"), which reserves their tuples. Records the instance cannot take stay kept.
+adoptKeptRecords = function(rec)
+  if #state.input.unresolved == 0 then return end
+  local ok, ad = pcall(rec.instance.adopt, rec.instance, state.input.unresolved, now())
+  if not ok then logerr("input: adopting %d kept record(s) failed: %s", #state.input.unresolved, tostring(ad)); return end
+  local kept = {}
+  for _, rj in ipairs(ad.rejected or {}) do kept[#kept + 1] = rj.record; logerr("input: kept record %s not adopted: %s", tostring(rj.record and rj.record.tupleKey), tostring(rj.reason)) end
+  state.input.unresolved = kept
+  if #(ad.adopted or {}) > 0 then
+    logerr("input: %d unresolved release record(s) from a previous run reserve their keys; run  Plugin \"gma3_mcp_bridge\" \"input recover\"  to release them", #ad.adopted)
+  end
+end
+
+-- Operator-only recovery (plugin argument "input recover"): adopt any records still kept from a
+-- previous run, then re-attempt every unresolved release of every session. Nothing is retried automatically.
 local function inputRecover()
   local rec, err = hardkeysRec()
   if not rec then
     log("input recover: %s; %d record(s) from a previous run are kept", tostring(err), #state.input.unresolved)
     return
   end
-  if #state.input.unresolved > 0 then
-    local ad = rec.instance:adopt(state.input.unresolved, now())
-    local kept = {}
-    for _, rj in ipairs(ad.rejected or {}) do kept[#kept + 1] = rj.record; logerr("input recover: record %s not adopted: %s", tostring(rj.record and rj.record.tupleKey), tostring(rj.reason)) end
-    state.input.unresolved = kept
-    log("input recover: adopted %d record(s) from a previous run", #(ad.adopted or {}))
-  end
+  adoptKeptRecords(rec)
   local r = rec.instance:recover(nil, now())
   logReleaseResult("input recover", r)
   log("input recover: %d released, %d still unresolved", #(r.released or {}), #(r.unresolved or {}))
@@ -2666,9 +2706,6 @@ local function MainImpl(display_handle, argument)
   state.stopRequested = false
   state.clients = {}
   loadModules()
-  if #state.input.unresolved > 0 then
-    logerr("input: %d unresolved release record(s) kept from a previous run; inspect with \"input status\" and run \"input recover\"", #state.input.unresolved)
-  end
   -- Run the server loop inside this plugin call. The loop yields every frame so the console stays
   -- responsive, and the plugin stays "running" until it is stopped (onPC calls Cleanup when the
   -- plugin call ends, so the loop must not be handed off to a Timer).

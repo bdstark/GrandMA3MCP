@@ -161,8 +161,12 @@ is disabled, because they are the recovery path. Errors carry a bracketed code: 
 (with the owning session), `[not-owner]`, `[lease-expired]`, `[route-changed]`, `[unsupported]`, `[capacity]`,
 `[input-disabled]`, `[stopping]`. A disconnect, lease expiry, `input=off`, `stop` and `Cleanup` attempt to
 release what a session holds; a release that fails or cannot be confirmed is kept as an unresolved record,
-survives a bridge restart (`unresolvedFromPreviousRun`) and is cleared only by the operator's console-side
-`Plugin "gma3_mcp_bridge" "input recover"` (or the owner's `input.recover`). `input.status` never releases
+survives a bridge restart and is cleared only by the operator's console-side
+`Plugin "gma3_mcp_bridge" "input recover"` (or the owner's `input.recover`). At the next start the kept
+records are adopted before any input is admitted, so their keys are reserved (`[conflict]` naming the
+`previous-run` session) until the operator recovers them; `ping.input.unresolvedFromPreviousRun` counts only
+records the instance could not take. A module that raises in `service()` is detached only after input is
+disabled, every held key got a release attempt and the unresolved records were kept. `input.status` never releases
 anything. `input.fake {action}` (fake backend only) stages `failRelease`/`failPress` (`pcKey`, `sticky`,
 `error`), `clearFailures`, `confirm` (`mode`), `physicalRelease`/`physicalPress` (`pcKey`) and returns the
 event log; see [docs/modules.md](modules.md) for the ownership and release semantics.

@@ -395,6 +395,9 @@ function Instance:renewSession(id, now, leaseMs)
   if not s or s.state == "closed" then return fail("no-session", "session '" .. tostring(id) .. "' is not open") end
   local ms, err = self:_leaseMs(leaseMs or s.leaseMs)
   if not ms then return nil, err end
+  -- A lease that ran out before service() noticed is expired now: its holds keep their cleanup
+  -- deadline even though the session continues with the new lease.
+  if s.state == "active" and now >= s.expiresAt then self:_expireSession(s, now) end
   s.leaseMs = ms
   s.expiresAt = now + ms / 1000
   s.renewals = s.renewals + 1
@@ -425,7 +428,7 @@ end
 function Instance:press(sessionId, now, spec)
   checkReady(self, "press")
   checkNow(now, "press")
-  local s, serr = self:_admit(sessionId)
+  local s, serr = self:_admit(sessionId, now)
   if not s then return nil, serr end
   local tuple, route, terr = self:_resolveSpec(spec)
   if not tuple then return nil, terr end
@@ -575,15 +578,9 @@ function Instance:service(now)
   local budget = self._config.maxWorkPerService
   -- Lease expiries: mark the session expired, queue its holds for release.
   for _, s in pairs(self._sessions) do
-    if s.state == "active" and now >= s.expiresAt then
-      s.state = "expired"
-      s.expiredAt = now
-      out.expired[#out.expired + 1] = s.id
-      for _, h in ipairs(self:_sessionHolds(s.id, true)) do
-        if h.state == "held" then self:_setDeadline(h, now, "lease-expired") end
-      end
-    end
+    if s.state == "active" and now >= s.expiresAt then self:_expireSession(s, now) end
   end
+  out.expired, self._pendingExpired = self._pendingExpired, {}
   -- Due hold deadlines, oldest deadline first.
   local due = {}
   for _, h in pairs(self._holds) do
@@ -727,13 +724,26 @@ function Instance:_leaseMs(ms)
   return ms
 end
 
-function Instance:_admit(sessionId)
+function Instance:_admit(sessionId, now)
   if not self._inputEnabled then return fail("input-disabled", "input is disabled on this instance; the operator enables it explicitly") end
   if not self._adapter then return fail("no-backend", "no dispatching backend is attached") end
   local s = self._sessions[sessionId]
   if not s or s.state == "closed" then return fail("no-session", "session '" .. tostring(sessionId) .. "' is not open") end
+  if s.state == "active" and now >= s.expiresAt then self:_expireSession(s, now) end
   if s.state == "expired" then return fail("lease-expired", "session '" .. sessionId .. "' lease expired; renew it before new input", { expiredAt = s.expiredAt }) end
   return s
+end
+
+-- Marks a session expired and gives every key it holds a due cleanup deadline. Called from
+-- service(), and from admission/renewal when the lease ran out between service() calls so that
+-- enforcement never depends on how recently the loop serviced the instance.
+function Instance:_expireSession(s, now)
+  s.state = "expired"
+  s.expiredAt = now
+  self._pendingExpired[#self._pendingExpired + 1] = s.id
+  for _, h in ipairs(self:_sessionHolds(s.id, true)) do
+    if h.state == "held" then self:_setDeadline(h, now, "lease-expired") end
+  end
 end
 
 -- Turns a press spec into a stored tuple plus the route it was resolved by. Nothing is dispatched.
@@ -1022,7 +1032,7 @@ local function new(opts)
   local self = setmetatable({
     _owner = opts.owner, _backend = backend, _deps = opts.deps or {}, _config = config,
     _adapter = nil, _inputEnabled = false,
-    _state = "created", _holds = {}, _byTuple = {}, _released = {}, _sessions = {},
+    _state = "created", _holds = {}, _byTuple = {}, _released = {}, _sessions = {}, _pendingExpired = {},
     _seq = 0, _pressCount = 0, _releaseAttempts = 0, _serviced = 0, _lastServiced = nil, _observed = nil,
   }, Instance)
   return self

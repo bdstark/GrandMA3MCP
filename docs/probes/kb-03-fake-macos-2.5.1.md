@@ -41,8 +41,8 @@ Date: 2026-10-09. Evidence for [KEYBOARD.md](../../KEYBOARD.md) "KB-03 results".
 | Step | Result |
 | --- | --- |
 | A holds raw `Z` with a sticky release fault; Macro 101 stops and restarts the bridge while A is connected | shutdown closed the client: `input: shutdown conn-5 UNRESOLVED ... release refused by the backend`; dispose kept the record: `1 unresolved release record(s) kept; run Plugin "gma3_mcp_bridge" "input recover" once the bridge runs again` |
-| Bridge back (0.5.0, new instances) | startup log `1 unresolved release record(s) kept from a previous run`; `ping.input.unresolvedFromPreviousRun = 1`; `input.status` lists the record with `keptReason = shutdown` |
-| Macro 102: `input recover` | `adopted 1 record(s) from a previous run`, `input recover released previous-run raw(Z) released`, `1 released, 0 still unresolved`; the new fake adapter's only event is `release:Z` (stored tuple, nothing re-resolved) |
+| Bridge back (0.5.0, new instances) | the record is adopted at start: `1 unresolved release record(s) from a previous run reserve their keys`; `ping.input.unresolved = 1`, `holds = 1`; `input.status` lists it as an unresolved hold of session `previous-run`; a **new session pressing `Z` before recovery gets `[conflict] ... owned by session 'previous-run' (state unresolved)`** (re-run after the review fix) |
+| Macro 102: `input recover` | `input recover released previous-run raw(Z) released`, `1 released, 0 still unresolved`; the new fake adapter's first event is `release:Z` (stored tuple, nothing re-resolved); `Z` can be pressed again afterwards |
 | New session holds `STORE`; Macro 103: `input status` | prints the session and `input hold h2: held STORE(S\|s0c0a0n0) ... held 47 ms`; holds still 1 afterwards (status releases nothing) |
 | Macro 104: `input=off` | `input: disable released conn-11 STORE(...)`, `input now disabled`; a new press returns `[input-disabled]` with the enable hint; `input.status`/`input.close` still answer |
 | Macro 105: `input=fake` | `input now enabled on the fake backend (nothing reaches the console)`; the fake down set is empty at the end |

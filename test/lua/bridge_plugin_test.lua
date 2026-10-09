@@ -1152,18 +1152,40 @@ do
   check("owning-call Cleanup attempts the release, keeps the unresolved record and stops", state.running == false and #state.input.unresolved == 1 and state.input.unresolved[1].pcKey == "Q" and state.input.unresolved[1].ctrl == true and state.input.unresolved[1].keptReason == "cleanup" and logFound("1 unresolved release record%(s%) kept"), J(state.input.unresolved))
   Main(nil, "input recover"); Cleanup()
   check("'input recover' while stopped keeps the record", lastLog():find("not running") and #state.input.unresolved == 1, lastLog())
+  before = #logs
   start("input=fake")
-  check("restart warns about the kept record", logFound("kept from a previous run", #logs - 6) ~= nil and state.input.unresolved[1].pcKey == "Q", lastLog())
+  check("restart adopts the kept record and says its key is reserved", logFound("1 unresolved release record%(s%) from a previous run reserve their keys", before) ~= nil, lastLog())
   state._loadModules(); state.running = true; state.stopRequested = false; state.ignoreNextCleanup = false
   hk = state.modules.hardkeys
   r = request("ping", {})
-  check("ping shows the record kept from the previous run", r.ok and r.result.input.unresolvedFromPreviousRun == 1 and r.result.input.unresolved == 0, J(r.result.input))
+  check("ping shows the adopted record as unresolved, nothing left un-adopted", r.ok and r.result.input.unresolved == 1 and r.result.input.unresolvedFromPreviousRun == 0 and r.result.input.holds == 1, J(r.result.input))
   r = request("input.status", {}, nil, A)
-  check("input.status lists the kept record", r.ok and #r.result.unresolvedFromPreviousRun == 1, J(r.result.unresolvedFromPreviousRun))
+  check("input.status lists the adopted hold under the previous-run session", r.ok and r.result.status.holds[1].session == "previous-run" and r.result.status.holds[1].state == "unresolved" and r.result.status.holds[1].tupleKey == "Q|s0c1a0n0", J(r.result.status.holds))
+  request("input.open", {}, nil, A)
+  r = request("input.press", { pcKey = "Q", ctrl = true }, nil, A)
+  check("the reserved tuple cannot be pressed by a new session before recovery", r.ok == false and r.error:find("conflict") and r.error:find("previous%-run"), r.error)
+  check("nothing was dispatched for the reserved tuple", #hk.fakeAdapter.events == 0)
   before = #logs
   Main(nil, "input recover"); Cleanup()
-  check("'input recover' adopts the kept record and releases it with the stored tuple", #state.input.unresolved == 0 and hk.instance:status().unresolved == 0 and hk.fakeAdapter.events[#hk.fakeAdapter.events].kind == "release" and hk.fakeAdapter.events[#hk.fakeAdapter.events].ctrl == true and logFound("input recover: adopted 1", before) and logFound("input recover: 1 released, 0 still unresolved", before), lastLog())
+  check("'input recover' releases the adopted record with the stored tuple", #state.input.unresolved == 0 and hk.instance:status().unresolved == 0 and hk.fakeAdapter.events[#hk.fakeAdapter.events].kind == "release" and hk.fakeAdapter.events[#hk.fakeAdapter.events].ctrl == true and logFound("input recover: 1 released, 0 still unresolved", before), lastLog())
   check("bridge still running after operator recovery", state.running == true)
+  check("the tuple is free again", request("input.press", { pcKey = "Q", ctrl = true }, nil, A).ok)
+  request("input.releaseAll", {}, nil, A)
+  -- A module that raises in service() must not take its holds with it: input is disabled, every
+  -- held key gets a release attempt and whatever stays unresolved is kept for "input recover".
+  request("input.press", { key = "STORE" }, nil, A)
+  request("input.press", { pcKey = "W" }, nil, A)
+  request("input.fake", { action = "failRelease", pcKey = "W", sticky = true, error = "wedged" }, nil, A)
+  fake = hk.fakeAdapter
+  hk.instance.service = function() error("service exploded") end
+  state._serviceModules(require("socket").gettime())
+  check("service failure detaches the instance and disables input", hk.instance == nil and state.input.enabled == false and tostring(hk.error):find("service exploded"), hk.error)
+  local ev = fake.events
+  check("service failure released what it could (newest first; the wedged key stays down)", not fake:isDown({ pcKey = "S" }) and fake:isDown({ pcKey = "W" }) and ev[#ev].kind == "release" and ev[#ev].pcKey == "S" and ev[#ev - 1].pcKey == "W" and ev[#ev - 1].failed == "wedged", J(ev))
+  check("service failure kept the unresolved record", #state.input.unresolved == 1 and state.input.unresolved[1].pcKey == "W" and state.input.unresolved[1].keptReason == "service-error", J(state.input.unresolved))
+  r = request("input.press", { key = "STORE" }, nil, A)
+  check("input refused after the failure", r.ok == false, r.error)
+  state.input.unresolved = {}
   for _, rec in pairs(state.modules) do if rec.instance then rec.instance:dispose(0) end end
   state.running = false
 end

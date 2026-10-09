@@ -112,7 +112,7 @@ end
 -------------------------------------------------------------------------------
 do
   local inst, backend = fresh({ maxHolds = 3 })
-  inst:openSession({ id = "a" }, 0); inst:openSession({ id = "b" }, 0)
+  inst:openSession({ id = "a", leaseMs = 120000 }, 0); inst:openSession({ id = "b", leaseMs = 120000 }, 0)
   local h = inst:press("a", 1, { key = "please", display = 1 })
   check("logical press stores the resolved tuple and route", h.logical == "PLEASE" and h.pcKey == "Enter" and h.shift == false and h.display == 1
     and h.route.source == "shortcut-table" and h.route.shortcut == "Enter" and h.route.profile == "Default" and h.route.shortcutsActive == true and h.tupleKey == "Enter|s0c0a0n0", J(h))
@@ -181,7 +181,7 @@ end
 -------------------------------------------------------------------------------
 do
   local inst, backend = fresh()
-  inst:openSession({ id = "a" }, 0); inst:openSession({ id = "b" }, 0)
+  inst:openSession({ id = "a", leaseMs = 120000 }, 0); inst:openSession({ id = "b", leaseMs = 120000 }, 0)
   local ma = inst:press("a", 1, { key = "MA" })
   local st = inst:press("a", 2, { key = "STORE" })
   local r, err = inst:release("b", 3, { hold = ma.id })
@@ -215,7 +215,7 @@ end
 -------------------------------------------------------------------------------
 do
   local inst, backend = fresh()
-  inst:openSession({ id = "a" }, 0); inst:openSession({ id = "b" }, 0)
+  inst:openSession({ id = "a", leaseMs = 120000 }, 0); inst:openSession({ id = "b", leaseMs = 120000 }, 0)
   local h = inst:press("a", 1, { key = "PLEASE" })
   -- Operator remaps PLEASE from Enter to Space while it is held.
   profile.rows = { { shortcut = "Space", keyCode = 84 }, { shortcut = "S", keyCode = 66 } }
@@ -328,12 +328,39 @@ do
   check("counters are reported", inst:status().counters.presses >= 15 and inst:status().counters.releaseAttempts >= 15 and inst:status().counters.serviced >= 9)
 end
 
+
+-------------------------------------------------------------------------------
+-- Lease enforcement by time, independent of servicing
+-------------------------------------------------------------------------------
+do
+  local inst, backend = fresh()
+  inst:openSession({ id = "a", leaseMs = 100 }, 0)
+  local h = inst:press("a", 0.05, { key = "STORE" })
+  check("press inside the lease admitted", h and h.state == "held")
+  -- No service() ran, the lease is long gone: admission must notice on its own.
+  local c, err = inst:press("a", 1, { key = "MA" })
+  check("press after the lease ran out is refused even though service() never ran", c == nil and err.code == "lease-expired" and err.expiredAt == 1, J(err))
+  check("the expired session's hold got its cleanup deadline", inst:status(1).holds[1].deadlineReason == "lease-expired" and inst:status(1).sessions.a.state == "expired")
+  -- Renewing before any service() call must not erase the cleanup obligation of the expired lease.
+  local inst2, backend2 = fresh()
+  inst2:openSession({ id = "a", leaseMs = 100 }, 0)
+  inst2:press("a", 0.05, { key = "STORE" })
+  local s = inst2:renewSession("a", 1, 5000)
+  check("renewal after a missed expiry reactivates the session", s.state == "active" and s.expiresAt == 6, J(s))
+  check("...but the hold of the expired lease keeps a due deadline", inst2:status(1).holds[1].deadlineReason == "lease-expired")
+  local sv = inst2:service(1.1)
+  check("next service releases it and reports the expiry", sv.expired[1] == "a" and #sv.released == 1 and sv.released[1].reason == "lease-expired" and backend2.counters.release == 1, J(sv))
+  check("a press under the renewed lease is admitted", inst2:press("a", 1.2, { key = "STORE" }) ~= nil)
+  sv = inst2:service(1.3)
+  check("the expiry is reported once", #sv.expired == 0 and #sv.released == 0)
+end
+
 -------------------------------------------------------------------------------
 -- Shared console state: physical release observed, never compensated
 -------------------------------------------------------------------------------
 do
   local inst, backend = fresh()
-  inst:openSession({ id = "a" }, 0)
+  inst:openSession({ id = "a", leaseMs = 120000 }, 0)
   local h = inst:press("a", 1, { key = "MA" })
   inst:service(1.1)
   check("observed state shows the tuple down after service", inst:status().observed.down[1] == "LeftShift|s0c0a0n0" and inst:status().holds[1].observed.down == true)
@@ -357,13 +384,13 @@ end
 -------------------------------------------------------------------------------
 do
   local inst, backend = fresh()
-  inst:openSession({ id = "a", binding = "conn-1" }, 0); inst:openSession({ id = "b" }, 0)
+  inst:openSession({ id = "a", binding = "conn-1" }, 0); inst:openSession({ id = "b", leaseMs = 120000 }, 0)
   inst:press("a", 1, { key = "MA" }); inst:press("a", 2, { key = "STORE" }); inst:press("b", 3, { key = "PLEASE" })
   local n = #backend.events
   local r = inst:closeSession("a", 4, "disconnect")
   check("disconnect releases the session's holds newest first and reports them", #r.released == 2 and backend.events[n + 1].pcKey == "S" and backend.events[n + 2].pcKey == "LeftShift" and r.session == "a", J(r))
   check("closed session with nothing unresolved is forgotten; other session untouched", inst:status().sessions.a == nil and inst:status().sessions.b.holds == 1 and backend:isDown({ pcKey = "Enter" }))
-  local s, err = inst:openSession({ id = "a" }, 5)
+  local s, err = inst:openSession({ id = "a", leaseMs = 120000 }, 5)
   check("the id can be reused once nothing is unresolved", s and s.state == "active")
   -- A disconnect whose cleanup fails keeps the session and its record visible.
   inst:press("a", 6, { pcKey = "Z" })
@@ -372,7 +399,7 @@ do
   check("failed cleanup on disconnect is reported", #r.unresolved == 1 and r.unresolved[1].error:find("host blocked"), J(r))
   local st = inst:status(7)
   check("closed session with an unresolved hold stays in status", st.sessions.a and st.sessions.a.state == "closed" and st.sessions.a.closeReason == "disconnect" and st.sessions.a.holds == 1 and st.unresolved == 1, J(st.sessions.a))
-  s, err = inst:openSession({ id = "a" }, 8)
+  s, err = inst:openSession({ id = "a", leaseMs = 120000 }, 8)
   check("reusing the id of a session with unresolved holds is refused", s == nil and err.code == "session-unresolved", J(err))
   local c; c, err = inst:press("b", 8, { pcKey = "Z" })
   check("the unresolved tuple is still blocked for others", c == nil and err.code == "conflict" and err.owner == "a")
@@ -410,7 +437,7 @@ do
   local ad = inst2:adopt(r.records, 18)
   check("adopt imports the records as unresolved holds of a closed synthetic session", #ad.adopted == 1 and ad.adopted[1].state == "unresolved" and ad.adopted[1].adopted == true and ad.adopted[1].session == "previous-run" and inst2:status().sessions["previous-run"].state == "closed", J(ad))
   check("adopt dispatches nothing", #backend2.events == 0)
-  inst2:openSession({ id = "x" }, 18)
+  inst2:openSession({ id = "x", leaseMs = 120000 }, 18)
   c, err = inst2:press("x", 18, { key = "STORE" })
   check("an adopted record blocks the tuple", c == nil and err.code == "conflict" and err.owner == "previous-run", J(err))
   ad = inst2:adopt({ "garbage", { pcKey = "" }, { pcKey = "S" } }, 18)
@@ -429,7 +456,7 @@ end
 -------------------------------------------------------------------------------
 do
   local inst, backend = fresh()
-  inst:openSession({ id = "a" }, 0)
+  inst:openSession({ id = "a", leaseMs = 120000 }, 0)
   backend:failNext("press", { pcKey = "S" }, "refused")
   local h, err = inst:press("a", 1, { key = "STORE" })
   check("a refused press owns nothing", h == nil and err.code == "press-failed" and inst:status().capacity.used == 0, J(err))

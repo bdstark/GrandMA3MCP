@@ -1,6 +1,6 @@
 {
   "probe": "kb-03",
-  "date": "2026-10-09T11:41:51.260Z",
+  "date": "2026-10-09T11:56:21.441Z",
   "bridge": {
     "version": "0.5.0",
     "host": "127.0.0.1",
@@ -34,17 +34,17 @@
     {
       "name": "A opens a 3 s session bound to its connection",
       "pass": true,
-      "detail": "conn-33"
+      "detail": "conn-42"
     },
     {
       "name": "B opens its own session",
       "pass": true,
-      "detail": "conn-34"
+      "detail": "conn-43"
     },
     {
       "name": "a session id in args is ignored (B cannot renew A's session)",
       "pass": true,
-      "detail": "conn-34"
+      "detail": "conn-43"
     },
     {
       "name": "A presses PLEASE: stored tuple and route",
@@ -59,17 +59,17 @@
     {
       "name": "B cannot own PLEASE while A holds it",
       "pass": true,
-      "detail": "[conflict] tuple Enter|s0c0a0n0 is already owned by session 'conn-33' (state held) as PLEASE"
+      "detail": "[conflict] tuple Enter|s0c0a0n0 is already owned by session 'conn-42' (state held) as PLEASE"
     },
     {
       "name": "B's raw alias of the held key (other display) is rejected",
       "pass": true,
-      "detail": "[conflict] tuple Enter|s0c0a0n0 is already owned by session 'conn-33' (state held) as PLEASE"
+      "detail": "[conflict] tuple Enter|s0c0a0n0 is already owned by session 'conn-42' (state held) as PLEASE"
     },
     {
       "name": "B cannot release A's hold",
       "pass": true,
-      "detail": "[not-owner] tuple Enter|s0c0a0n0 is owned by session 'conn-33'"
+      "detail": "[not-owner] tuple Enter|s0c0a0n0 is owned by session 'conn-42'"
     },
     {
       "name": "status from B shows A as owner with remaining lease, releases nothing",
@@ -93,7 +93,7 @@
     {
       "name": "the loop released the tap at its deadline",
       "pass": true,
-      "detail": "released after 214 ms (tap)"
+      "detail": "released after 216 ms (tap)"
     },
     {
       "name": "fake backend set to fail the PLEASE release",
@@ -108,7 +108,7 @@
     {
       "name": "the unresolved tuple is still blocked for B",
       "pass": true,
-      "detail": "[conflict] tuple Enter|s0c0a0n0 is already owned by session 'conn-33' (state unresolved) as PLEASE"
+      "detail": "[conflict] tuple Enter|s0c0a0n0 is already owned by session 'conn-42' (state unresolved) as PLEASE"
     },
     {
       "name": "B's recover is owner-scoped (nothing of B's to recover)",
@@ -117,7 +117,7 @@
         "unresolved": [],
         "attempted": 0,
         "released": [],
-        "scope": "conn-34"
+        "scope": "conn-43"
       }
     },
     {
@@ -162,7 +162,7 @@
     {
       "name": "press after expiry refused until renewal",
       "pass": true,
-      "detail": "[lease-expired] session 'conn-33' lease expired; renew it before new input"
+      "detail": "[lease-expired] session 'conn-42' lease expired; renew it before new input"
     },
     {
       "name": "renewal reactivates the session without a press",
@@ -181,7 +181,7 @@
         "state": "held",
         "observed": {
           "down": false,
-          "at": 1791546111.0764
+          "at": 1791546981.2304
         }
       }
     },
@@ -189,8 +189,8 @@
       "name": "no automatic re-press to compensate",
       "pass": true,
       "detail": {
-        "before": 4,
-        "after": 4
+        "before": 5,
+        "after": 5
       }
     },
     {
@@ -237,6 +237,30 @@
     }
   ],
   "fakeEvents": [
+    {
+      "shift": false,
+      "kind": "release",
+      "numlock": false,
+      "alt": false,
+      "ctrl": false,
+      "pcKey": "Z"
+    },
+    {
+      "shift": false,
+      "kind": "press",
+      "numlock": false,
+      "alt": false,
+      "ctrl": false,
+      "pcKey": "Z"
+    },
+    {
+      "shift": false,
+      "kind": "release",
+      "numlock": false,
+      "alt": false,
+      "ctrl": false,
+      "pcKey": "Z"
+    },
     {
       "kind": "press",
       "shift": false,

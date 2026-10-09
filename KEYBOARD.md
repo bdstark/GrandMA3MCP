@@ -348,13 +348,17 @@ Release always uses the stored tuple; the route is rechecked before every releas
 press, and a remap, disabled shortcut table or profile switch during a hold stops new events for every
 session and turns an unconfirmable release into an **unresolved** record. Unresolved records keep their
 tuple blocked, are never retried by `service()`, are handed back by `dispose()`, survive a bridge restart
-and are cleared only by `recover()` (owner scope over the network, all scopes from the console command
-line). `status` calls perform no cleanup. A physically released key is observed and annotated, never
+(the next start adopts them before admitting input, so their keys stay reserved) and are cleared only by
+`recover()` (owner scope over the network, all scopes from the console command line). Lease admission and
+renewal compare the current time with the expiry themselves, so enforcement does not depend on how recently
+the loop serviced the instance, and a lease missed by `service()` still gets its cleanup. A module that
+raises in `service()` is detached only after input is disabled, held keys got a release attempt and the
+unresolved records were kept. `status` calls perform no cleanup. A physically released key is observed and annotated, never
 re-pressed. Deadline servicing is bounded per loop iteration (`maxWorkPerService`) and runs before client
 I/O, so a flooding client cannot starve it. The `keyboard` adapter has no dispatch yet: `input=keyboard` is
 refused with a KB-04 pointer, and `enableInput()` refuses any adapter without dispatch.
 
-**Verified by harness** (`npm test`, 457 Lua checks across the three harnesses): everything above, plus
+**Verified by harness** (`npm test`, 472 Lua checks across the three harnesses): everything above, plus
 capacity, unsupported codes (MA1/MA2, unmapped EXEC, inactive shortcuts, backend key set), release
 ordering (newest first), disconnect/stop/disable/dispose paths with failing releases, adopt/recover across
 instances, and a server-loop run with a flooding client while a tap deadline is serviced.
