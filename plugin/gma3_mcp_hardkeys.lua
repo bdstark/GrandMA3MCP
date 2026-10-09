@@ -1323,6 +1323,12 @@ function Instance:_textContext(st)
   end
   local active, aerr = self:_readShortcutsActive()
   if st.context == "command-line" then
+    -- Command-line text is admitted only while it can be verified: the command line must be readable
+    -- now (and before every chunk), otherwise a later commit could execute text nobody saw.
+    local text, terr = self:_readCommandText()
+    if text == nil then
+      return nil, { code = "unsupported", message = "command-line text needs a readable command line (CmdObj().cmdtext) so it can be verified before anything commits it; it is not readable: " .. tostring(terr) }
+    end
     if active == true then
       return nil, { code = "unsupported", message = "command-line text needs keyboard shortcuts disabled by the operator (F10): with shortcuts enabled, character events do not reach the command line and are not substituted with key presses; nothing is toggled here" }
     elseif active == nil then
@@ -1539,8 +1545,12 @@ function Instance:_startStep(job, st, ev, now)
     ev.contextAtStart = ctxT
     if st.context == "command-line" then
       local before, berr = self:_readCommandText()
-      if before then ev.before, ev.expected = before, before .. st.text
-      else ev.readback = { outcome = "unavailable", reason = "command line not readable: " .. tostring(berr) } end
+      if before == nil then
+        ev.state, ev.code = "failed", "unsupported"
+        ev.error = "command line not readable before typing (" .. tostring(berr) .. "); command-line text cannot be verified, nothing typed"
+        return
+      end
+      ev.before, ev.expected = before, before .. st.text
     else
       ev.readback = { outcome = "unavailable", reason = "a focused text field's content is not observable from Lua; UI verification unavailable" }
     end
@@ -1609,6 +1619,11 @@ function Instance:_typeStep(job, st, ev, now)
         -- The first readback happens right away: the text may already be on the command line.
         ev.state = "readback"
         ev.readbackUntil = now + self._config.readbackMs / 1000
+      elseif st.context == "command-line" then
+        -- Defensive: command-line text without an expectation can never be verified.
+        ev.state, ev.code = "uncertain", "text-unverified"
+        ev.error = string.format("%d characters were dispatched but no command-line expectation exists; the sequence stops here so nothing commits unverified text", ev.typed)
+        return
       else
         ev.state = "completed"
         return

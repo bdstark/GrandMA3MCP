@@ -119,8 +119,8 @@ The context is explicit and validated:
 
 - `command-line`: admitted only while the operator has **disabled keyboard shortcuts** (F10; readable as
   `KEYBOARDSHORTCUTSACTIVE = false`). With shortcuts enabled, character events never reach the command line
-  (KB-01); the tool refuses instead of substituting key presses or toggling shortcuts. The command line is read
-  before typing and read back afterwards (bounded window, polled across frames): `matched` when it shows the
+  (KB-01); the tool refuses instead of substituting key presses or toggling shortcuts. The command line must be
+  readable (otherwise the text is refused: it could not be verified); it is read before typing and read back afterwards (bounded window, polled across frames): `matched` when it shows the
   previous content plus the text. When it does not within the window, the step is **`unknown`** (typed but not
   verified) and the sequence stops, so a later PLEASE can never commit text that was not seen.
 - `text-field`: a text field (Edit Command dialog, an editor) is focused. It cannot be read back, so verification is

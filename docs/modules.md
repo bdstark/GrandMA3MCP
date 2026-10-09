@@ -232,8 +232,8 @@ them whole.
 more than `maxTextChars`, and newline, carriage return, tab, other C0/C1 controls, DEL and U+2028/U+2029 are refused
 (character index); nothing is normalised. Every text step needs `acknowledgeFocus = true` (the receiving element is
 not observable) and is refused while an exclusive hold or a route mismatch exists; both are rechecked before every
-chunk. Context `command-line` needs `deps.shortcutsActive()` to read `false` (positively) at validation and before
-every chunk, and reads `deps.commandText()` (`CmdObj().cmdtext`) before typing and back afterwards within
+chunk. Context `command-line` needs `deps.shortcutsActive()` to read `false` (positively) and `deps.commandText()` to be
+readable at validation and before every chunk (unreadable: refused up front, `uncertain` mid-text), and reads `deps.commandText()` (`CmdObj().cmdtext`) before typing and back afterwards within
 `readbackMs`: `observed` completes the step, `inconclusive` leaves it `uncertain` and stops the sequence (no later
 commit of unverified text); `text-field` has readback `unavailable` and may not be followed by a PLEASE/Enter step
 in the same sequence. A text step stopped after characters went out is `uncertain`, not `failed`.

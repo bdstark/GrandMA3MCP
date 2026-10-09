@@ -1187,6 +1187,19 @@ do
   inst:service(6.2)
   rep = inst:sequenceStatus(q.id, 6.2)
   check("after the window the readback is inconclusive: the step is uncertain and the sequence stops, never retried", rep.state == "failed" and rep.events[1].state == "uncertain" and rep.events[1].code == "text-unverified" and rep.events[1].readback.outcome == "inconclusive" and rep.events[1].readback.actual == "zz89" and backend.counters.char == 9 + 8 + 9 + 5 + 10, J(rep.events[1]))
+  -- An unreadable command line refuses command-line text up front, and stops it (uncertain) between chunks.
+  local savedCmd = deps.commandText
+  deps.commandText = function() error("no CmdObj") end
+  q, err = inst:startSequence("a", 6.3, { { kind = "text", text = "ab", context = "command-line", acknowledgeFocus = true }, { kind = "tap", key = "PLEASE" } })
+  check("command-line text is refused when the command line is not readable (cannot be verified)", q == nil and err.code == "unsupported" and err.message:find("not readable") and backend.counters.char == 9 + 8 + 9 + 5 + 10, J(err))
+  deps.commandText = savedCmd
+  backend:setTypedText("")
+  q = inst:startSequence("a", 6.35, { { kind = "text", text = "0123456789", context = "command-line", acknowledgeFocus = true }, { kind = "tap", key = "PLEASE" } })
+  deps.commandText = function() return nil end
+  inst:service(6.4)
+  rep = inst:sequenceStatus(q.id, 6.4)
+  check("the command line becoming unreadable between chunks stops typing as uncertain; PLEASE unattempted", rep.state == "failed" and rep.events[1].state == "uncertain" and rep.events[1].typed == 8 and rep.events[2].state == "unattempted" and backend.typed == "01234567", J(rep.events))
+  deps.commandText = savedCmd
   -- Unverified text never reaches a commit: a PLEASE after it is unattempted.
   backend:setTypedText("")
   q = inst:startSequence("a", 6.5, { { kind = "text", text = "0123456789", context = "command-line", acknowledgeFocus = true }, { kind = "tap", key = "PLEASE", holdMs = 50 } })

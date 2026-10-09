@@ -248,7 +248,8 @@ remaining lease must cover the estimate (`[lease-too-short]`).
 tab, other C0/C1 controls, DEL and the line/paragraph separators refused (`[bad-argument]`); nothing is normalised
 and nothing ever presses Enter. Every text step needs `acknowledgeFocus: true` (`[focus-unverified]`: the receiving
 element is not observable). `command-line` additionally needs `KEYBOARDSHORTCUTSACTIVE` read as `false`
-(`[unsupported]` otherwise, never toggled) and is read back from `CmdObj().cmdtext` within `readbackMs`: `observed`
+(`[unsupported]` otherwise, never toggled) and a readable `CmdObj().cmdtext` (`[unsupported]` otherwise, rechecked
+before every chunk), and is read back from `CmdObj().cmdtext` within `readbackMs`: `observed`
 completes the step, an inconclusive readback leaves it `uncertain` (`text-unverified`) and stops the sequence;
 `text-field` has readback `unavailable`. Text is refused while an exclusive hold or a route mismatch exists
 (`[exclusive-hold]`, `[route-changed]`). Characters go out as `Keyboard(display, 'char', <character>)`, 8 per loop
