@@ -104,6 +104,9 @@ that throws reports `available = false` and the error; no default value is ever 
 
 `npm test` runs [test/lua/modules_test.lua](../test/lua/modules_test.lua) (modules alone, no console
 API) and the bridge harness (registry lookup, failure reporting, dispose on stop and on bind failure).
-`node scripts/kb02-probe.mjs verify` checks a live bridge: `ping.modules`, the `modules` op and
-whether loose module files exist in the library folder. `node scripts/kb02-probe.mjs probe` reproduces
+`node scripts/kb02-probe.mjs verify` checks a live bridge: `ping.modules`, the `modules` op, and that the
+readers and key resolution return successful values (Blind readable, PLEASE resolved, Freeze and MA1
+reported unavailable/unsupported). It lists loose module files in the local library folder for information
+only; that proves nothing about a remote console. Portability is shown by loading the show on a console that
+never had the loose files and running `verify` there. `node scripts/kb02-probe.mjs probe` reproduces
 the loader experiments with a throwaway plugin.

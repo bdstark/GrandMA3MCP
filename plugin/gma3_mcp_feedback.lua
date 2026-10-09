@@ -52,6 +52,15 @@ local READER_NAMES = {}
 for k in pairs(READERS) do READER_NAMES[#READER_NAMES + 1] = k end
 table.sort(READER_NAMES)
 
+-- Every caller gets its own copy: the internal list is never exposed, so a consumer that edits the
+-- table it received cannot change what another instance reads (the outer read-only wrapper only
+-- protects the module table itself, not nested tables).
+local function readerNames()
+  local out = {}
+  for i, n in ipairs(READER_NAMES) do out[i] = n end
+  return out
+end
+
 local function consoleDeps(env)
   env = env or _G
   return {
@@ -80,7 +89,7 @@ end
 
 function Instance:status()
   return { module = NAME, version = VERSION, apiVersion = API_VERSION, owner = self._owner, state = self._state,
-           reads = self._reads, serviced = self._serviced, readers = READER_NAMES }
+           reads = self._reads, serviced = self._serviced, readers = readerNames() }
 end
 
 function Instance:service(now)
@@ -96,7 +105,7 @@ function Instance:dispose()
   return {}
 end
 
-function Instance:readers() return READER_NAMES end
+function Instance:readers() return readerNames() end
 
 -- Returns { name, scope, source, available, value | error }. A reader that throws reports the error
 -- and available=false; it never substitutes a default value.
@@ -130,7 +139,7 @@ local function new(opts)
   return setmetatable({ _owner = opts.owner, _deps = opts.deps or {}, _state = "created", _reads = 0, _serviced = 0 }, Instance)
 end
 
-local M = { NAME = NAME, VERSION = VERSION, API_VERSION = API_VERSION, READERS = READER_NAMES, new = new, consoleDeps = consoleDeps }
+local M = { NAME = NAME, VERSION = VERSION, API_VERSION = API_VERSION, READERS = readerNames(), new = new, consoleDeps = consoleDeps }
 
 -- Registration (the KB-02 loading contract). The console runs this chunk once per import or show
 -- load with (pluginName, componentName, signalTable, handle). signalTable is one table per plugin

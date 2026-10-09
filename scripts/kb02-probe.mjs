@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // KB-02 module-loading probe and verifier (see docs/modules.md, docs/probes/kb-02-loading-macos-2.5.1.md).
 //
-//   node scripts/kb02-probe.mjs verify              check a running bridge: modules loaded, no loose module files
+//   node scripts/kb02-probe.mjs verify              check a running bridge: modules loaded and working; reports loose files
 //   node scripts/kb02-probe.mjs probe [--slot N]    import a throwaway two-component plugin into Plugin slot N
 //                                                   (default 2, must be free), record how the console loads it,
 //                                                   then delete the slot and its files
@@ -61,15 +61,23 @@ async function verify() {
     ok &&= pass;
     console.log(`${pass ? "PASS" : "FAIL"}  module ${key}: ${m ? `loaded=${m.loaded} version=${m.version ?? "-"} state=${m.status?.state ?? "-"}${m.error ? ` error=${m.error}` : ""}` : "not reported"}`);
   }
+  // Informational only: this looks at the library folder of the machine running this script. It says
+  // something about portability only when that machine is the console (same hostname) and the files
+  // were absent before the show was loaded; it is never a pass/fail criterion.
   const pluginsDir = path.join(libraryDir(), "datapools", "plugins");
   const loose = ["gma3_mcp_hardkeys.lua", "gma3_mcp_feedback.lua", "gma3_mcp_bridge.lua"].filter((f) => fs.existsSync(path.join(pluginsDir, f)));
-  console.log(`${loose.length ? "INFO" : "PASS"}  loose plugin files in ${pluginsDir}: ${loose.length ? loose.join(", ") : "none (modules came from the show file)"}`);
+  const sameHost = typeof ping.hostname === "string" && ping.hostname.toLowerCase() === os.hostname().toLowerCase().split(".")[0];
+  console.log(`INFO  loose plugin files in ${pluginsDir}: ${loose.length ? loose.join(", ") : "none"}${sameHost ? "" : ` (this is the client's folder, not the console \"${ping.hostname ?? "?"}\"; it says nothing about the console)`}`);
   if (ping.lua?.enabled) {
     const inst = await lua(`local st = _G.__gma3_mcp_bridge; local fb = st.modules.feedback.instance; local hk = st.modules.hardkeys.instance
       return { blind = fb:read('blind'), freeze = fb:read('freeze'), please = hk:describeKey('PLEASE'), ma1 = hk:describeKey('MA1') }`);
-    const pass = inst?.blind?.available !== undefined && inst?.freeze?.available === false && inst?.ma1?.supported === false;
+    const blindOk = inst?.blind?.available === true && typeof inst.blind.value === "boolean";
+    const freezeOk = inst?.freeze?.available === false && inst.freeze.value === undefined;
+    const pleaseOk = inst?.please?.supported === true && typeof inst.please.pcKey === "string" && inst.please.pcKey.length > 0;
+    const ma1Ok = inst?.ma1?.supported === false;
+    const pass = blindOk && freezeOk && pleaseOk && ma1Ok;
     ok &&= pass;
-    console.log(`${pass ? "PASS" : "FAIL"}  live readers: blind=${JSON.stringify(inst?.blind?.value)} freeze=unavailable PLEASE->${inst?.please?.pcKey ?? inst?.please?.reason} MA1=${inst?.ma1?.supported ? "supported?!" : "unsupported"}`);
+    console.log(`${pass ? "PASS" : "FAIL"}  live readers: blind=${blindOk ? JSON.stringify(inst.blind.value) : `UNAVAILABLE (${inst?.blind?.error ?? inst?.blind?.reason ?? "no result"})`} freeze=${freezeOk ? "unavailable as expected" : "UNEXPECTED"} PLEASE=${pleaseOk ? `-> ${inst.please.pcKey}` : `UNSUPPORTED (${inst?.please?.reason ?? "no result"})`} MA1=${ma1Ok ? "unsupported as expected" : "UNEXPECTED"}`);
   } else {
     console.log("SKIP  live reader check (enable Lua on the bridge to run it)");
   }
@@ -122,7 +130,15 @@ async function probe() {
   if (occupied) throw new Error(`Plugin slot ${slot} holds "${occupied}"; pick a free slot with --slot`);
   const dir = path.join(libraryDir(), "datapools", "plugins");
   const files = { "kb02_probe.lua": ENTRY, "kb02_probe_mod.lua": MOD, "kb02_probe.xml": XML };
-  for (const [name, text] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), text);
+  // Never touch files this run did not create: refuse if any target exists, and remove only what was written.
+  const existing = Object.keys(files).filter((name) => fs.existsSync(path.join(dir, name)));
+  if (existing.length) throw new Error(`refusing to overwrite existing file(s) in ${dir}: ${existing.join(", ")}; move them away first`);
+  const created = [];
+  const cleanup = () => { for (const name of created.splice(0)) fs.rmSync(path.join(dir, name), { force: true }); };
+  for (const [name, text] of Object.entries(files)) {
+    fs.writeFileSync(path.join(dir, name), text, { flag: "wx" });
+    created.push(name);
+  }
   console.log(`probe files written to ${dir}; importing into Plugin ${slot}`);
   const results = {};
   try {
@@ -131,7 +147,7 @@ async function probe() {
       Cmd('Import Plugin Library "kb02_probe.xml" At Plugin ${slot}') for i = 1, 3 do coroutine.yield() end
       Cmd('Plugin "kb02_probe"') for i = 1, 4 do coroutine.yield() end
       return _G.__kb02`);
-    for (const name of Object.keys(files)) fs.rmSync(path.join(dir, name), { force: true });
+    cleanup();
     results.withoutLooseFiles = await lua(`_G.__kb02 = { chunkRuns = {}, mainRuns = {} }
       local real = getmetatable(package) and getmetatable(package).__index or package; real.loaded["kb02_probe_mod"] = nil
       Cmd('Plugin "kb02_probe"') for i = 1, 4 do coroutine.yield() end
@@ -139,7 +155,7 @@ async function probe() {
   } finally {
     await lua(`Cmd('Delete Plugin ${slot} /NoConfirmation') _G.__kb02 = nil
       local real = getmetatable(package) and getmetatable(package).__index or package; real.loaded["kb02_probe_mod"] = nil return true`).catch(() => {});
-    for (const name of Object.keys(files)) fs.rmSync(path.join(dir, name), { force: true });
+    cleanup();
   }
   const a = results.withLooseFiles, b = results.withoutLooseFiles;
   const chunk = a.chunkRuns ?? [];

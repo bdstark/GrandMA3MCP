@@ -212,6 +212,13 @@ check("read counts are per instance", f1:status().reads > 10 and f2:status().rea
 f1:dispose()
 check("disposed feedback instance refuses reads, other instance unaffected", not pcall(f1.read, f1, "blind") and f2:read("blind").value == true)
 check("feedback status lists readers", #f2:status().readers == #FB.READERS and f2:status().module == "gma3_mcp_feedback")
+-- Reader lists handed out are copies: editing one must not reach another instance.
+local f3 = FB.new({ owner = "f3", deps = fbDeps }):init()
+local list = f2:readers(); list[1] = "bogus"; table.remove(list, #list)
+local st = f2:status(); st.readers[2] = "bogus2"
+FB.READERS[1] = "bogus3"
+local okAll, allAfter = pcall(f3.readAll, f3)
+check("mutating a returned reader list does not affect other instances", okAll and allAfter.blind ~= nil and allAfter.bogus == nil and f3:readers()[1] == "blind" and #f3:readers() == 12, json.encode({ okAll, allAfter and allAfter.blind and allAfter.blind.value }))
 touched = {}
 local fcd = FB.consoleDeps(fakeEnv)
 check("feedback consoleDeps touches no console function at build time", type(fcd.cmdObj) == "function" and #touched == 0, json.encode(touched))
