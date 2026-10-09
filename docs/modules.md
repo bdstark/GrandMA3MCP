@@ -195,6 +195,55 @@ the instance.
   physical keyboard, remap/disable preventing the stored-tuple release, silent acceptance of invalid arguments,
   no double-press.
 
+## Interactions, text and sequences (`gma3_mcp_hardkeys` 0.4.0, KB-05)
+
+| Method | Effect |
+| --- | --- |
+| `beginInteraction(session, now, { leaseMs, label })` | A leased ownership token of the session (`i1`, `i2`, ...). Refused `busy` while another interaction is open, a sequence runs or any key is held (of any session), and while input is disabled. The session lease is extended to cover it. |
+| `renewInteraction(session, id, now, leaseMs)` | Moves the deadline; an interaction whose lease lapsed is ended first and reported `no-interaction` (never resumed). |
+| `endInteraction(session, id, now, reason)` | Aborts its sequence, releases its holds newest first, reports `released`/`unresolved`; harmless twice (`alreadyEnded`). Another session's id is `not-owner`. |
+| `admission(now)` | Read-only busy descriptor or nil: `{ reason = "interaction" \| "sequence" \| "hold" \| "unresolved", owner, interaction, sequence, hold, remainingMs, count, description }`. The consumer refuses conflicting mutations with it; an unresolved record counts (the key may still be down) until `recover()` resolves it. |
+| `startSequence(session, now, steps, { interaction \| leaseMs, label })` | Validates every step (`tap`, `press`, `release`, `combo`, `text`, `wait`; limits `maxSequenceSteps`, `maxSequenceMs`, `maxWaitMs`, `maxTextChars`) before the first event, begins an interaction for the sequence unless one is given (whose remaining lease must cover the estimate), starts the first step and returns the report. One sequence per instance. |
+| `sequenceStatus(id, now)` | Read-only report of the running sequence or one of the last `sequenceHistory` finished ones: `state`, `index`, `counts`, `events` (flat, one per step), `cleanup`. |
+| `abortSequence(session, id, now, reason)` | Owner abort: the in-flight step is `aborted`, the rest `unattempted`, the sequence's holds are released, an interaction begun for it is ended. |
+| `service(now)` | Additionally expires interactions (`interactionsExpired`, their holds released) and advances the running sequence after the deadlines (`sequence` summary). |
+
+**Admission** (`config.requireInteraction = true`, the bridge's policy): a standalone hold (`press`, `combo`
+without `holdMs`) needs `spec.interaction` / `opts.interaction` naming an open interaction of its session
+(`interaction-required`); while an interaction is open, every call of its session must carry its id (`busy`,
+"pass its id") and every other session is `busy`; a running sequence refuses every other input; a key held by
+another session, or an unresolved record of another session, is `busy` for everyone else. Exclusive-hold and route-changed refusals come first. With
+`requireInteraction = false` (a single-caller consumer such as a surface plugin) the KB-03 per-session rules apply
+unchanged; interactions and sequences still work and still lock the instance. Holds record their `interaction` and
+`sequence`. `closeSession`, `_expireSession` and `disableInput` end the session's interactions and abort its
+sequence first and release the holds themselves (so the outcomes are reported through that path); `dispose()`
+aborts the sequence.
+
+**Sequences** run inside `service()`: a step starts when the previous one is settled, a `tap`/chord waits until
+its release is resolved (`completed` with the release outcome, or `uncertain` when it stayed unresolved), a `press`
+is `completed` at once (its hold is released at the end of the sequence or by a `release` step), a `wait` elapses,
+`text` goes out in chunks of `textCharsPerService`. Events end `completed`, `failed` (nothing of the step
+dispatched, or a dispatch refused), `uncertain` (a press or char raised, a release unresolved; the console may have
+received it), `unattempted` or `aborted`. A failure stops the sequence and releases what it pressed newest first
+(`cleanup`); nothing is ever retried. Reports are flat (one level per event) so the bridge's JSON depth cap keeps
+them whole.
+
+**Text** (`validateText(text, maxChars)`, exported): UTF-8 by code point; empty text, invalid UTF-8 (byte position),
+more than `maxTextChars`, and newline, carriage return, tab, other C0/C1 controls, DEL and U+2028/U+2029 are refused
+(character index); nothing is normalised. Every text step needs `acknowledgeFocus = true` (the receiving element is
+not observable) and is refused while an exclusive hold or a route mismatch exists; both are rechecked before every
+chunk. Context `command-line` needs `deps.shortcutsActive()` to read `false` (positively) and `deps.commandText()` to be
+readable at validation and before every chunk (unreadable: refused up front, `uncertain` mid-text), and reads `deps.commandText()` (`CmdObj().cmdtext`) before typing and back afterwards within
+`readbackMs`: `observed` completes the step, `inconclusive` leaves it `uncertain` and stops the sequence (no later
+commit of unverified text); `text-field` has readback `unavailable` and may not be followed by a PLEASE/Enter step
+in the same sequence. A text step stopped after characters went out is `uncertain`, not `failed`.
+A character whose `char()` call refuses is `failed`, one that raises is `uncertain` at that character. The adapter
+contract gains `char(codepoint, display) -> ok, confirmed, err` (same outcome rules as `press`): the fake backend
+appends to `typed` (`typedText()`, `setTypedText()`, `failNext("char", { codepoint })`, `raiseNext("char")`), the
+keyboard backend sends `Keyboard(display, 'char', <one code point as UTF-8>)` (KB-01: one Unicode character per
+call reaches the focused editor or, with shortcuts disabled, the command line). `raiseNext("press"|"release")` makes
+the fake backend raise once (delivery unknown).
+
 **Limits of recovery.** Deadlines are serviced only while the plugin loop runs. A host call that
 blocks the plugin thread, a plugin crash or process termination prevents release; lease expiry is a
 cleanup *attempt*, not a guaranteed cancellation of a held key or of a blocked host call.
@@ -219,15 +268,24 @@ that throws reports `available = false` and the error; no default value is ever 
 `npm test` runs [test/lua/modules_test.lua](../test/lua/modules_test.lua) (modules alone, no console
 API, route resolution including the native/ambiguous cases), [test/lua/hardkeys_sessions_test.lua](../test/lua/hardkeys_sessions_test.lua)
 (the KB-03 session lifecycle on the fake backend: ownership, aliases, leases, taps, bounded deadline servicing, route
-changes, failed releases, disconnect, disable, dispose/adopt; and the KB-04 keyboard adapter over stubbed console
+changes, failed releases, disconnect, disable, dispose/adopt; the KB-04 keyboard adapter over stubbed console
 deps: argument passing, pre-dispatch refusals, raising `Keyboard()`, MASTATE readback, exclusive holds, combos,
-backend-origin records, `attachBackend`) and the bridge harness (registry lookup, failure reporting, connection-bound
-`input.*` ops, control invocations that never release, cleanup on disconnect/stop, kept records across a restart,
-`input=keyboard`, refused backend switches, `input.combo`, cleanup-only attach in `input recover`, a flooding client
-that cannot starve deadline servicing). `node scripts/kb03-probe.mjs run` exercises the lifecycle against a live bridge
+backend-origin records, `attachBackend`; and the KB-05 interactions, admission, text policy and sequences under the
+strict policy: busy/not-owner/no-interaction/interaction-required, expiry and lazy expiry, session close and disable
+ending interactions, sequences stepping through taps/waits/presses/releases, whole-request validation, failure and
+uncertainty mid-sequence, owner abort, disconnect mid-sequence, chunked text with context recheck, Unicode, raised
+chars, inconclusive readback, text-field acknowledgment) and the bridge harness (registry lookup, failure reporting,
+connection-bound `input.*` ops, control invocations that never release, cleanup on disconnect/stop, kept records
+across a restart, `input=keyboard`, refused backend switches, `input.combo`, cleanup-only attach in `input recover`,
+a flooding client that cannot starve deadline servicing; and since 0.7.0 the `[busy]` guard on `cmd`/`set`/
+`setfader`/`lua` across two connections, structured error replies with `code`/`detail`, `input.begin`/`extend`/`end`,
+shared-connection ownership, `input.sequence` serviced by the loop, a disconnect mid-sequence and cleanup while
+input is disabled). `node scripts/kb03-probe.mjs run` exercises the lifecycle against a live bridge
 started with `input=fake` over real TCP connections ([record](probes/kb-03-fake-macos-2.5.1.md));
 `node scripts/kb04-probe.mjs run|restart` presses real keys through a bridge started with `lua input=keyboard` on a
-disposable show ([record](probes/kb-04-keyboard-macos-2.5.1.md)).
+disposable show ([record](probes/kb-04-keyboard-macos-2.5.1.md)); `node scripts/kb05-probe.mjs run` exercises the
+interactions, the busy guard over two connections, sequences, command-line text and a disconnect mid-sequence the same
+way ([record](probes/kb-05-input-macos-2.5.1.md)).
 `node scripts/kb02-probe.mjs verify` checks a live bridge: `ping.modules`, the `modules` op, and that the
 readers and key resolution return successful values (Blind readable, PLEASE resolved, Freeze and MA1
 reported unavailable/unsupported). It lists loose module files in the local library folder for information

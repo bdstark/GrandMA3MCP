@@ -12,6 +12,7 @@ import { registerFixtureTools } from "./tools/fixtures.js";
 import { registerCueTools } from "./tools/cues.js";
 import { registerExecutorTools } from "./tools/executors.js";
 import { registerInspectionTools } from "./tools/inspection.js";
+import { registerInputTools } from "./tools/input.js";
 
 const env = process.env;
 const bridge = new Gma3Bridge({
@@ -572,6 +573,9 @@ registerFixtureTools(server, toolContext);
 registerCueTools(server, toolContext);
 registerExecutorTools(server, toolContext);
 registerInspectionTools(server, toolContext);
+// KB-05: gated structured input (console keys, text, sequences). Everything dispatches in the Lua
+// bridge; these tools wrap its input.* ops and never depend on gma3_lua.
+registerInputTools(server, toolContext);
 
 server.registerResource(
   "cheatsheet",

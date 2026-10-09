@@ -56,6 +56,12 @@ first, then run `input recover`: the bridge never changes mappings or toggles F1
 is pending it refuses every new press, including an injected F10. See
 [docs/reference.md](../reference.md#owned-input-sessions-plugin-v050-kb-03).
 
+Since v0.7.0 (KB-05) the MCP server exposes input through the [structured input tools](../tools/input.md). While
+any client owns console input (an interaction, a running sequence or a held key), the bridge refuses commands,
+property changes, faders and Lua from **every** client with `[busy]`; `input status` prints the open interactions,
+the running sequence and the busy owner. `input=off` ends every interaction and aborts a running sequence before
+releasing the held keys.
+
 The plugin logs to `gma3_<version>/onpc/temp/gma3_mcp_bridge.log` under the onPC resource folder.
 
 ## Update an existing plugin

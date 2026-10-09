@@ -29,11 +29,28 @@ export class BridgeError extends Error {
    * (timeout, or the connection dropped while waiting for the reply). The
    * command may or may not have executed inside onPC; callers must not retry
    * non-idempotent commands on another transport.
+   *
+   * `code` is the bridge's bracketed error code ("busy", "conflict", "press-failed", ...) when the
+   * reply carried one, and `detail` the structured error the plugin reported (since bridge 0.7.0:
+   * partial progress of a combo, the owner of a busy lock, the remaining lease). Both are preserved
+   * so a caller can tell a refusal before dispatch from a failure after input went out.
    */
-  constructor(message: string, public readonly op?: string, public readonly dispatched = false) {
+  constructor(
+    message: string,
+    public readonly op?: string,
+    public readonly dispatched = false,
+    public readonly code?: string,
+    public readonly detail?: Record<string, unknown>,
+  ) {
     super(message);
     this.name = "BridgeError";
   }
+}
+
+/** The bracketed code at the start of a bridge error message ("[busy] ..."), if any. */
+export function bridgeErrorCode(message: string): string | undefined {
+  const m = /^\[([\w.-]+)\]/.exec(message);
+  return m ? m[1] : undefined;
 }
 
 /** The bridge could not be reached at all; nothing was sent. Safe to fall back to another transport. */
@@ -142,7 +159,12 @@ export class Gma3Bridge {
       this.pending.delete(id);
       clearTimeout(p.timer);
       if (msg.ok) p.resolve(msg.result);
-      else p.reject(new BridgeError(String(msg.error ?? "unknown bridge error")));
+      else {
+        const message = String(msg.error ?? "unknown bridge error");
+        const code = typeof msg.code === "string" ? msg.code : bridgeErrorCode(message);
+        const detail = msg.detail && typeof msg.detail === "object" ? (msg.detail as Record<string, unknown>) : undefined;
+        p.reject(new BridgeError(message, p.op, false, code, detail));
+      }
     }
   }
 

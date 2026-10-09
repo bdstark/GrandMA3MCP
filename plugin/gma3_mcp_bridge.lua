@@ -37,6 +37,18 @@
 -- release what that session still holds. A release that fails or cannot be confirmed is kept as an
 -- unresolved record (visible in input.status / ping.input) until "input recover" succeeds. Records
 -- remember the backend that pressed them; a fake record is never released through Keyboard().
+-- Structured input (KB-05, bridge 0.7.0 / hardkeys 0.4.0): a connection begins a leased INTERACTION
+-- ("input.begin", renewed with "input.extend", ended with "input.end") before it may hold a key
+-- ("input.press", "input.combo" without holdMs carry its id); bounded taps and "input.sequence"
+-- (taps, presses, releases, combos, text, waits serviced by the loop; "input.sequence.status" polls
+-- it) may run without one and own an interaction for their duration. While an interaction is open,
+-- a sequence runs or any key is held, the mutating ops "cmd", "set", "setfader" and "lua" from EVERY
+-- connection are refused with [busy] instead of being delayed into a changed context; reads,
+-- "input.status" and the owner's releases/recovery stay available. Text ("text" steps) is UTF-8
+-- iterated by code point, refuses control characters and needs an explicit context (command line
+-- with shortcuts disabled by the operator, or an acknowledged text field); it never presses Enter.
+-- Errors carry "[code] message" in "error", plus "code" and a structured "detail" (partial progress,
+-- owner, remaining lease) when the module reported one.
 -- Arguments are whitespace separated tokens; "luatime" is milliseconds of wall-clock time and
 -- "luasteps" a count of Lua VM instructions (0 = unlimited). A request that exceeds its budget is
 -- aborted with an error so the bridge loop (and the console) regain control. The budget is
@@ -72,7 +84,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.6.0"
+local VERSION      = "0.7.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -1447,6 +1459,11 @@ local function serviceModules(now)
         logerr("module %s detached; restart the bridge to load it again", key)
       elseif key == "hardkeys" and type(res) == "table" then
         for _, sid in ipairs(res.expired or {}) do log("input: lease of session %s expired", tostring(sid)) end
+        for _, iid in ipairs(res.interactionsExpired or {}) do log("input: interaction %s expired (its holds were released, nothing is resumed)", tostring(iid)) end
+        if type(res.sequence) == "table" and res.sequence.state ~= "running" then
+          log("input: sequence %s %s (%d of %d steps completed%s)", tostring(res.sequence.id), tostring(res.sequence.state), res.sequence.counts and res.sequence.counts.completed or 0, res.sequence.steps or 0,
+            res.sequence.error and ("; " .. tostring(res.sequence.error)) or "")
+        end
         logReleaseResult("input: deadline", res)
       end
     end
@@ -1563,8 +1580,24 @@ local function inputSummary()
     holds = st and st.capacity.used or 0,
     unresolved = st and st.unresolved or 0,
     unresolvedFromPreviousRun = #state.input.unresolved,
-    note = "ownership records, not physical key state; see input.status",
+    interaction = st and st.activeInteraction or nil,
+    sequence = st and st.sequence and st.sequence.state == "running" and st.sequence.id or nil,
+    busy = st and st.busy or nil,
+    note = "ownership records, not physical key state; see input.status. busy: cmd/set/setfader/lua are refused for every connection while it is set",
   }
+end
+
+-- Interaction admission across connections (KB-05): the mutating ops are refused while the hardkeys
+-- instance reports itself busy (an open interaction, a running sequence or a held key, of any
+-- connection). Returns the module's busy descriptor or nil. Reads and the input recovery ops are
+-- never guarded; a bridge without the module (or with it disabled) is never busy.
+local GUARDED_OPS = { cmd = "a command", set = "a property change", setfader = "a fader change", lua = "arbitrary Lua" }
+local function inputBusy()
+  local rec = hardkeysRec()
+  if not rec or type(rec.instance.admission) ~= "function" then return nil end
+  local ok, busy = pcall(rec.instance.admission, rec.instance, now())
+  if ok and type(busy) == "table" then return busy end
+  return nil
 end
 
 local function describeInput()
@@ -1628,12 +1661,10 @@ local function inputRecover()
   log("input recover: %d released, %d still unresolved", #(r.released or {}), #(r.unresolved or {}))
 end
 
+-- Module errors are tables { code, message, ... }; they travel to handleLine unchanged so the reply can
+-- carry the code and the structured detail (partial progress of a combo, the owner of a busy lock, ...).
 local function raise(err)
-  if type(err) == "table" then
-    local msg = tostring(err.message or err.code)
-    if err.code then msg = "[" .. tostring(err.code) .. "] " .. msg end
-    error(msg, 0)
-  end
+  if type(err) == "table" then error(err, 0) end
   error(tostring(err), 0)
 end
 
@@ -1653,7 +1684,7 @@ end
 local function requireInputEnabled()
   if not state.input.enabled then
     error('[input-disabled] input is disabled on the console. The console operator can enable it with:  Plugin "gma3_mcp_bridge" "input=keyboard"  (real console keys) ' ..
-          'or  "input=fake"  (lifecycle only), or start the bridge with that argument. input.status, input.release, input.releaseAll, input.recover and input.close remain available.', 0)
+          'or  "input=fake"  (lifecycle only), or start the bridge with that argument. input.status, input.sequence.status, input.release, input.releaseAll, input.recover, input.end and input.close remain available.', 0)
   end
   if state.stopRequested then error("[stopping] the bridge is stopping; new input is refused while it releases held keys", 0) end
 end
@@ -1699,7 +1730,81 @@ end
 
 local function pressSpec(args)
   return { key = args.key, pcKey = args.pcKey, shift = args.shift, ctrl = args.ctrl, alt = args.alt, numlock = args.numlock,
-           display = args.display, executor = args.executor, maxHoldMs = args.maxHoldMs, exclusive = args.exclusive }
+           display = args.display, executor = args.executor, maxHoldMs = args.maxHoldMs, exclusive = args.exclusive, interaction = args.interaction }
+end
+
+-- Opens the connection's session on demand (the KB-05 entry points do this so one call suffices).
+local function ensureSession(client, rec, args)
+  if client.session ~= nil then
+    local st = rec.instance:status(now()).sessions[client.session]
+    if st and st.state ~= "closed" then return client.session end
+  end
+  local id = "conn-" .. tostring(client.id)
+  local s, err = rec.instance:openSession({ id = id, leaseMs = args.leaseMs, label = args.label, binding = "client " .. tostring(client.id) }, now())
+  if not s then raise(err) end
+  client.session = id
+  return id
+end
+
+-- KB-05: a leased interaction for standalone holds across calls. The session is opened on demand.
+ops["input.begin"] = function(args, ctx)
+  requireInputEnabled()
+  local client = wantClient(ctx)
+  local rec = inputInstance()
+  if type(rec.instance.beginInteraction) ~= "function" then error("[no-module] the loaded hardkeys module has no interactions (KB-05 needs 0.4.0 or newer)", 0) end
+  local sid = ensureSession(client, rec, args)
+  local ia, err = rec.instance:beginInteraction(sid, now(), { leaseMs = args.leaseMs, label = args.label })
+  if not ia then raise(err) end
+  log("input: interaction %s begun by %s (%d ms)", ia.id, sid, ia.leaseMs)
+  return { interaction = ia, session = sid, inputEnabled = state.input.enabled and true or false, backend = state.input.backend }
+end
+
+ops["input.extend"] = function(args, ctx)
+  local _, sid = ownSession(ctx, true)
+  local ia, err = inputInstance().instance:renewInteraction(sid, args.interaction, now(), args.leaseMs)
+  if not ia then raise(err) end
+  return { interaction = ia }
+end
+
+-- Allowed while input is disabled: ending releases what the interaction holds (recovery path).
+ops["input.end"] = function(args, ctx)
+  local _, sid = ownSession(ctx, true)
+  local r, err = inputInstance().instance:endInteraction(sid, args.interaction, now(), "client-end")
+  if not r then raise(err) end
+  logReleaseResult("input: end " .. tostring(args.interaction), r)
+  return r
+end
+
+-- KB-05: a bounded sequence (steps: tap, press, release, combo, text, wait) validated as a whole and then
+-- serviced by the loop; the reply reports the sequence running (or already finished when every step was
+-- immediate). args.interaction uses an open interaction, otherwise one is begun for the sequence.
+ops["input.sequence"] = function(args, ctx)
+  requireInputEnabled()
+  local client = wantClient(ctx)
+  local rec = inputInstance()
+  if type(rec.instance.startSequence) ~= "function" then error("[no-module] the loaded hardkeys module has no sequences (KB-05 needs 0.4.0 or newer)", 0) end
+  if type(args.steps) ~= "table" then error("[bad-argument] args.steps (list of step tables) is required", 0) end
+  local sid = ensureSession(client, rec, args)
+  local r, err = rec.instance:startSequence(sid, now(), args.steps, { interaction = args.interaction, leaseMs = args.leaseMs, label = args.label })
+  if not r then raise(err) end
+  log("input: sequence %s started by %s (%d step(s), ~%d ms)", r.id, sid, r.steps, r.estimateMs or 0)
+  return r
+end
+
+-- Read-only, readable by anyone: the running sequence or a recently finished one.
+ops["input.sequence.status"] = function(args, ctx)
+  local inst = inputInstance().instance
+  if type(inst.sequenceStatus) ~= "function" then error("[no-module] the loaded hardkeys module has no sequences (KB-05 needs 0.4.0 or newer)", 0) end
+  local r, err = inst:sequenceStatus(args.sequence, now())
+  if not r then raise(err) end
+  return r
+end
+
+ops["input.sequence.abort"] = function(args, ctx)
+  local _, sid = ownSession(ctx, true)
+  local r, err = inputInstance().instance:abortSequence(sid, args.sequence, now(), "client-abort")
+  if not r then raise(err) end
+  return r
 end
 
 ops["input.press"] = function(args, ctx)
@@ -1732,7 +1837,7 @@ ops["input.combo"] = function(args, ctx)
     if type(k) ~= "table" then error("[bad-argument] args.keys[" .. i .. "] must be a key spec table", 0) end
     specs[i] = pressSpec(k)
   end
-  local r, err = inst:combo(sid, now(), specs, { holdMs = args.holdMs })
+  local r, err = inst:combo(sid, now(), specs, { holdMs = args.holdMs, interaction = args.interaction })
   if not r then raise(err) end
   return r
 end
@@ -2473,6 +2578,25 @@ local function sendAll(sock, data)
   return true
 end
 
+-- Error replies: "error" is always "[code] message" (first line only), "code" the bracketed code when
+-- there is one, and "detail" the module's structured error table (partial progress, owner, lease) when
+-- the op raised one. A string error keeps its text; a "[code]" prefix in it is reported as the code.
+local function errorReply(id, opName, err)
+  local msg, code, detail
+  if type(err) == "table" then
+    code = err.code
+    msg = tostring(err.message or code or "error")
+    if code then msg = "[" .. tostring(code) .. "] " .. msg end
+    detail = toJsonSafe(err)
+  else
+    msg = tostring(err)
+    code = msg:match("^%[([%w%-%.]+)%]")
+  end
+  local firstLine = msg:match("^([^\n]*)") or msg
+  appendLog(string.format("request %s failed: %s", tostring(opName), firstLine))
+  return encode({ id = id, ok = false, error = firstLine, code = code, detail = detail })
+end
+
 local function handleLine(client, line)
   state.requests = state.requests + 1
   local okD, req = pcall(json.decode, line)
@@ -2486,14 +2610,21 @@ local function handleLine(client, line)
   end
   local args = req.args or {}
   local ctx = { client = client, now = now() }
+  -- Interaction admission (KB-05): a mutating op is refused while input ownership is active anywhere.
+  local guard = GUARDED_OPS[req.op]
+  if guard then
+    local busy = inputBusy()
+    if busy then
+      local e = { code = "busy", message = string.format("%s is refused while input ownership is active: %s. Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first",
+                                                         guard, tostring(busy.description)), reason = busy.reason, owner = busy.owner, interaction = busy.interaction, sequence = busy.sequence, hold = busy.hold, remainingMs = busy.remainingMs }
+      return errorReply(id, req.op, e)
+    end
+  end
   local okR, result = xpcall(function() return op(args, ctx) end, debug.traceback)
   if okR then
     return encode({ id = id, ok = true, result = toJsonSafe(result) })
   end
-  local msg = tostring(result)
-  local firstLine = msg:match("^([^\n]*)") or msg
-  appendLog(string.format("request %s failed: %s", tostring(req.op), firstLine))
-  return encode({ id = id, ok = false, error = firstLine })
+  return errorReply(id, req.op, result)
 end
 
 state._handleLine = handleLine  -- exposed for local testing
@@ -2728,6 +2859,9 @@ local function MainImpl(display_handle, argument)
     if rec then
       local st = rec.instance:status(now())
       for id, sess in pairs(st.sessions) do log("input session %s: %s lease %s ms remaining=%s holds=%d (%s)", id, sess.state, tostring(sess.leaseMs), tostring(sess.remainingMs), sess.holds, tostring(sess.binding)) end
+      for id, ia in pairs(st.interactions or {}) do if ia.state == "open" then log("input interaction %s: session %s, %s ms left, holds=%d%s", id, ia.session, tostring(ia.remainingMs), ia.holds, ia.sequence and (" sequence " .. ia.sequence) or "") end end
+      if st.sequence and st.sequence.state == "running" then log("input sequence %s: session %s step %d of %d", st.sequence.id, st.sequence.session, st.sequence.index, st.sequence.steps) end
+      if st.busy then log("input busy: %s (%s); cmd/set/setfader/lua are refused for every connection", tostring(st.busy.reason), tostring(st.busy.owner)) end
       for _, h in ipairs(st.holds) do
         if h.state ~= "released" then
           log("input hold %s: %s %s(%s) session %s held %s ms%s%s", h.id, h.state, tostring(h.logical or "raw"), h.tupleKey, h.session, tostring(h.heldMs),

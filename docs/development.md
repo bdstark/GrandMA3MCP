@@ -36,17 +36,25 @@ The suite in `test/` has no extra dependencies:
   routes, duplicates/aliases/displays/capacity, release ordering, remap/disable/profile-switch during a hold,
   taps and bounded deadline servicing, observed physical releases, disconnect, disable, dispose and adopt; and the
   KB-04 keyboard adapter over stubbed console deps (`Keyboard()` argument passing, pre-dispatch refusals, raising
-  calls kept as unresolved, bounded MASTATE readback, exclusive long-press, combos, backend-origin records).
+  calls kept as unresolved, bounded MASTATE readback, exclusive long-press, combos, backend-origin records); and the
+  KB-05 interactions, admission, text policy and sequences (busy/ownership refusals, expiry, sequences serviced step by
+  step, failure and uncertainty mid-sequence, disconnect mid-sequence, chunked text with context recheck, Unicode).
 * `test/lua/bridge_plugin_test.lua` exercises the console plugin under a stock Lua 5.4+ interpreter with the
   grandMA3 API and LuaSocket stubbed: Lua execution off by default, budget behavior and execution-environment restrictions (hook removal,
   child coroutines, deadlines across yields), argument parsing, loopback-only binding and rejection of a
   non-loopback peer, and the connection-bound `input.*` ops (control invocations that never release, cleanup
   on disconnect/stop, records kept across a restart, `input=keyboard` through a stubbed `Keyboard()`, refused backend
-  switches, `input.combo`, cleanup-only attach in `input recover`, a flooding client that cannot starve deadline servicing).
+  switches, `input.combo`, cleanup-only attach in `input recover`, a flooding client that cannot starve deadline servicing,
+  and the KB-05 `[busy]` guard on mutating ops across two connections, structured error replies, interactions,
+  sequences serviced by the loop, a disconnect mid-sequence and cleanup while input is disabled).
   `npm test` runs them when `lua` is on PATH and skips them otherwise (`brew install lua`).
-* `kb02-probe.test.ts`, `kb03-probe.test.ts` and `kb04-probe.test.ts` run the live probe scripts against fake bridges to
-  make sure their checks fail when a bridge misbehaves and that they refuse unsafe preconditions (the KB-04 probe presses
-  real keys, so its gate — keyboard backend, Lua on, disposable show, idle console — is what the test guards).
+* `input.test.ts` runs the KB-05 input tools against a scripted fake bridge: the ops and arguments sent, waiting for a
+  sequence without resending it, structured errors and partial progress kept, the outcome model, the text policy and the
+  mutation lock.
+* `kb02-probe.test.ts`, `kb03-probe.test.ts`, `kb04-probe.test.ts` and `kb05-probe.test.ts` run the live probe scripts
+  against fake bridges to make sure their checks fail when a bridge misbehaves and that they refuse unsafe preconditions
+  (the KB-04 and KB-05 probes press real keys, so their gate — keyboard backend, Lua on, disposable show, idle and not
+  busy — is what the tests guard).
 
 Live tests live in `test/live/*.live.ts`, are never picked up by `npm test`, and refuse to run unless
 `GMA3_LIVE=1` is set and the loaded show file name matches `GMA3_LIVE_SHOW` (default: a name containing

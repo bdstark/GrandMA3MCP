@@ -10,7 +10,7 @@
 --   the module in the plugin's signal table, the entry component looks it up and calls new(). The
 --   source travels inside the show file; no loose file is needed on the console.
 --
--- What this version provides (MODULE API 1, module version 0.3.0, KB-03 + KB-04):
+-- What this version provides (MODULE API 1, module version 0.4.0, KB-03 + KB-04 + KB-05):
 --   * explicit instance lifecycle: new() -> init() -> service(now) ... -> dispose(now)
 --   * owned input sessions with leases: openSession / renewSession / closeSession. Every held key
 --     belongs to a session; the consumer binds sessions to whatever identifies its clients (the bridge
@@ -41,6 +41,29 @@
 --     for cleanup without admitting new presses.
 --   * status(now): read-only. It performs no cleanup and calls nothing on the backend; the observed
 --     console state it reports is the snapshot taken by the last service().
+--   * interactions (KB-05): beginInteraction / renewInteraction / endInteraction give a session an
+--     explicit, leased ownership token for a complete interaction. While an interaction is open, while
+--     a sequence runs and while any key is held, admission(now) reports the instance as BUSY; the
+--     consumer refuses conflicting mutations (commands, property changes, playback, faders, arbitrary
+--     Lua) from every connection with that descriptor instead of delaying them into a changed context.
+--     A standalone hold (press, combo without holdMs) needs an open interaction and its id on every
+--     call, so callers sharing one connection cannot accidentally act on each other's holds; bounded
+--     taps and sequences may run without one. Interactions are never resumed: an id from a closed,
+--     expired or disconnected session is refused.
+--   * text (KB-05): the adapter's char(codepoint, display) event. Text is validated as UTF-8 and
+--     iterated by code point; control characters (tab, newline, C0/C1, DEL, line separators) are
+--     refused, so text can never execute, change focus or toggle shortcuts. It needs an explicit
+--     context: "command-line" (admitted only while the operator has disabled keyboard shortcuts,
+--     with a bounded CmdObj().cmdtext readback) or "text-field" (focus is not observable; the caller
+--     acknowledges it and UI verification is reported unavailable). Text is typed in chunks by
+--     service(), the context is rechecked between chunks and typing stops with its progress when it
+--     changes. Committing text (PLEASE/Enter) is always a separate, explicit key event.
+--   * sequences (KB-05): startSequence() validates every step (taps, presses, releases, combos, text,
+--     waits) before the first event, then service() runs the steps one after another so tap releases,
+--     leases and deadlines keep being serviced meanwhile. Each step ends completed, failed, uncertain
+--     (a dispatch raised or a release stayed unresolved) or unattempted; a failure stops the sequence,
+--     releases what it pressed and never replays anything. A sequence owns an interaction (given or
+--     begun for it) and at most one runs per instance.
 --
 -- Ownership semantics (KB-01/KB-03 findings): the console's key state is shared. A physical release
 -- can end a synthetic hold and MASTATE is aggregate, so an ownership record here means "this session is
@@ -64,7 +87,7 @@
 --   * Input is disabled on a new instance. enableInput(adapter) is the operator's explicit decision.
 
 local NAME        = "gma3_mcp_hardkeys"
-local VERSION     = "0.3.0"
+local VERSION     = "0.4.0"
 local API_VERSION = 1
 
 -- Logical keys accepted by describeKey() and press(). Each resolves through the UserProfile
@@ -97,6 +120,7 @@ local KEYBOARD_LIMITATIONS = {
   "a remapped or disabled shortcut during a hold prevents the stored-tuple release until the operator restores the route; the module never changes mappings or toggles F10",
   "invalid arguments are accepted silently by onPC; validation happens here before dispatch and a no-error return is not evidence of effect",
   "double-press is unsupported; a long-press is promised only as an exclusive hold with no other key down",
+  "text goes to whatever the console has focused: a text field with shortcuts enabled, or the command line only while shortcuts are disabled; focus is not observable from Lua and only the command line can be read back",
 }
 
 local BACKENDS = {
@@ -125,9 +149,47 @@ local DEFAULT_CONFIG = {
   maxTapMs           = 5000,    -- longest hold a tap() or combo() may ask for
   maxWorkPerService  = 4,       -- release attempts one service() call may make
   eventLog           = 64,      -- fake backend event history length
-  readbackMs         = 1000,    -- how long service() waits for an aggregate readback (MASTATE) before calling it inconclusive
+  readbackMs         = 1000,    -- how long service() waits for an aggregate readback (MASTATE, cmdtext) before calling it inconclusive
   maxComboKeys       = 4,       -- keys one combo() may press
+  maxTextChars       = 256,     -- code points one text step may type
+  textCharsPerService= 8,       -- characters typed per service() call (the context is rechecked between chunks)
+  maxSequenceSteps   = 16,      -- steps one sequence may contain
+  maxSequenceMs      = 30000,   -- longest estimated hold/wait/typing time one sequence may ask for
+  maxWaitMs          = 2000,    -- longest single wait step
+  sequenceHistory    = 8,       -- finished sequence reports kept for sequenceStatus()
+  -- Interaction admission (KB-05). true (the bridge): a standalone hold needs an open interaction of its
+  -- session and a key held by another session makes the instance busy for everyone else. false: a
+  -- consumer that is itself the only caller (a surface plugin pressing keys as they arrive) keeps the
+  -- KB-03 per-session ownership rules; interactions and sequences still work and still lock the instance.
+  requireInteraction = true,
 }
+
+-- Text policy (KB-05). Input is UTF-8 and is iterated by code point, never by byte. Control characters
+-- are refused outright: C0 (tab, newline, carriage return included), DEL, C1 and the Unicode line and
+-- paragraph separators. Nothing is normalised or substituted; a refused text sends nothing, so text can
+-- never execute a line, close a dialog or move focus as a side effect. Returns the list of code points,
+-- or nil, reason, position (byte for invalid UTF-8, character index for a refused character).
+local function validateText(text, maxChars)
+  if type(text) ~= "string" then return nil, "text must be a string" end
+  if text == "" then return nil, "text is empty" end
+  local n, badPos = utf8.len(text)
+  if not n then return nil, "text is not valid UTF-8 (byte " .. tostring(badPos) .. ")", badPos end
+  if maxChars and n > maxChars then return nil, string.format("text has %d characters; at most %d are accepted per step", n, maxChars) end
+  local cps, i = {}, 0
+  for _, cp in utf8.codes(text) do
+    i = i + 1
+    local why
+    if cp == 10 or cp == 13 then why = "newline"
+    elseif cp == 9 then why = "tab"
+    elseif cp < 0x20 or cp == 0x7F or (cp >= 0x80 and cp <= 0x9F) then why = "control character"
+    elseif cp == 0x2028 or cp == 0x2029 then why = "line/paragraph separator" end
+    if why then
+      return nil, string.format("character %d is a %s (U+%04X); execution and control characters are refused: commit text with an explicit PLEASE key event, never through the text", i, why, cp), i
+    end
+    cps[#cps + 1] = cp
+  end
+  return cps
+end
 
 -- Pure helpers ---------------------------------------------------------------
 
@@ -339,6 +401,8 @@ local function consoleDeps(env)
       if v == false or v == "false" or v == "False" or v == 0 then return false end
       return nil
     end,
+    -- The plugin user's command line text (KB-01: CmdObj().cmdtext), the one observable for typed text.
+    commandText = function() return env.CmdObj().cmdtext end,
     -- System VirtualKey redirects (Root().VirtualKeys: CODE -> KEYCODE), e.g. PLEASE -> "Enter".
     virtualKeyRedirects = function()
       local vks = env.Root().VirtualKeys
@@ -379,8 +443,15 @@ local function fakeBackend(opts)
     confirmMode = true,        -- what release()/press() report as "confirmed": true | false | nil
     failures = {},             -- "press:<tupleKey>" / "release:<tupleKey>" -> error text (one-shot or sticky)
     validKeys = opts.validKeys, -- optional set of accepted PC key names
-    counters = { press = 0, release = 0 },
+    typed = "",                -- simulated focused text (what char() events appended)
+    raises = {},               -- "press" / "release" / "char" -> error text raised by the next call (delivery unknown)
+    counters = { press = 0, release = 0, char = 0 },
   }, FakeBackend)
+end
+
+function FakeBackend:_raise(op)
+  local e = self.raises[op]
+  if e ~= nil then self.raises[op] = nil; error(e, 0) end
 end
 
 function FakeBackend:_log(kind, tuple, extra)
@@ -399,8 +470,27 @@ function FakeBackend:_failure(op, tuple)
   return f.err
 end
 
+-- A character event (KB-05): appended to the simulated focused text. failNext("char", { codepoint = n })
+-- refuses it before anything happens; raiseNext("char") makes delivery unknown.
+function FakeBackend:char(cp, display)
+  self.counters.char = self.counters.char + 1
+  self:_raise("char")
+  local key = "char:" .. tostring(cp)
+  local f = self.failures[key]
+  if f ~= nil then
+    if not f.sticky then self.failures[key] = nil end
+    self:_log("char", { pcKey = "", display = display }, { codepoint = cp, failed = f.err })
+    return false, nil, f.err
+  end
+  local ch = utf8.char(cp)
+  self.typed = self.typed .. ch
+  self:_log("char", { pcKey = ch, display = display }, { codepoint = cp })
+  return true, self.confirmMode
+end
+
 function FakeBackend:press(tuple)
   self.counters.press = self.counters.press + 1
+  self:_raise("press")
   local err = self:_failure("press", tuple)
   if err then self:_log("press", tuple, { failed = err }); return false, nil, err end
   self.down[tupleKey(tuple)] = true
@@ -410,6 +500,7 @@ end
 
 function FakeBackend:release(tuple)
   self.counters.release = self.counters.release + 1
+  self:_raise("release")
   local err = self:_failure("release", tuple)
   if err then self:_log("release", tuple, { failed = err }); return false, nil, err end
   self.down[tupleKey(tuple)] = nil
@@ -437,10 +528,23 @@ end
 -- Test controls -------------------------------------------------------------
 -- Make the next (or every, with sticky=true) press/release of a tuple fail with err.
 function FakeBackend:failNext(op, tuple, err, sticky)
-  if op ~= "press" and op ~= "release" then error("fakeBackend:failNext: op must be 'press' or 'release'", 2) end
+  if op == "char" then
+    if type(tuple) ~= "table" or type(tuple.codepoint) ~= "number" then error("fakeBackend:failNext('char') needs { codepoint = n }", 2) end
+    self.failures["char:" .. tostring(tuple.codepoint)] = { err = err or "char failed (fake)", sticky = sticky and true or false }
+    return
+  end
+  if op ~= "press" and op ~= "release" then error("fakeBackend:failNext: op must be 'press', 'release' or 'char'", 2) end
   self.failures[op .. ":" .. tupleKey(copyTuple(tuple))] = { err = err or (op .. " failed (fake)"), sticky = sticky and true or false }
 end
-function FakeBackend:clearFailures() self.failures = {} end
+-- Make the next press/release/char call raise (the console blocked or threw): delivery unknown.
+function FakeBackend:raiseNext(op, err)
+  if op ~= "press" and op ~= "release" and op ~= "char" then error("fakeBackend:raiseNext: op must be 'press', 'release' or 'char'", 2) end
+  self.raises[op] = err or (op .. " raised (fake)")
+end
+function FakeBackend:clearFailures() self.failures = {}; self.raises = {} end
+-- The simulated focused text / command line (what char() appended); tests read it as commandText.
+function FakeBackend:typedText() return self.typed end
+function FakeBackend:setTypedText(s) self.typed = s or "" end
 -- true: releases/presses report confirmed; false: report not confirmed; nil: not observable.
 function FakeBackend:setConfirmMode(mode) self.confirmMode = mode end
 -- A physical operator (or another plugin) changes the shared console state behind our back.
@@ -475,9 +579,33 @@ local function keyboardBackend(deps, opts)
   return setmetatable({
     name = "keyboard", dispatches = true, description = BACKENDS.keyboard.description, limitations = KEYBOARD_LIMITATIONS,
     deps = deps, defaultDisplay = tonumber(opts.defaultDisplay) or 1,
-    counters = { press = 0, release = 0, refused = 0, raised = 0, observe = 0 },
+    counters = { press = 0, release = 0, char = 0, refused = 0, raised = 0, observe = 0 },
     lastEvent = nil,
   }, KeyboardBackend)
+end
+
+-- A character event: Keyboard(display, 'char', <one code point as UTF-8>). KB-01 established that one
+-- Unicode character per call reaches the focused editor (shortcuts enabled) or the command line
+-- (shortcuts disabled); nothing about the effect is observable here. Same outcome contract as press().
+function KeyboardBackend:char(cp, display)
+  self.counters.char = self.counters.char + 1
+  if type(self.deps.Keyboard) ~= "function" then
+    self.counters.refused = self.counters.refused + 1
+    return false, nil, "Keyboard() is not available in this Lua environment"
+  end
+  if type(cp) ~= "number" or cp < 0 or cp > 0x10FFFF or cp ~= math.floor(cp) then
+    self.counters.refused = self.counters.refused + 1
+    return false, nil, "codepoint must be an integer in 0..0x10FFFF"
+  end
+  display = display or self.defaultDisplay
+  local ch = utf8.char(cp)
+  self.lastEvent = { kind = "char", args = { display, "char", ch } }
+  local ok, err = pcall(self.deps.Keyboard, display, "char", ch)
+  if not ok then
+    self.counters.raised = self.counters.raised + 1
+    error(string.format("Keyboard(%d, 'char', U+%04X) raised: %s (whether the character was delivered is unknown)", display, cp, tostring(err)), 0)
+  end
+  return true, nil
 end
 
 function KeyboardBackend:supportsKey(pcKey)
@@ -618,6 +746,12 @@ function Instance:disableInput(now, reason)
   checkReady(self, "disableInput")
   checkNow(now, "disableInput")
   self._inputEnabled = false
+  -- Interactions are input: every open one ends and a running sequence is aborted (never resumed);
+  -- their holds are released below with everything else.
+  if self._sequence and self._sequence.state == "running" then self:_abortSequence(self._sequence, now, reason or "input-disabled", true) end
+  for _, ia in pairs(self._interactions) do
+    if ia.state == "open" then self:_endInteraction(ia, now, reason or "input-disabled", "ended", true) end
+  end
   local result = self:_releaseHolds(self:_heldHolds(), now, reason or "input-disabled")
   result.enabled = false
   return result
@@ -671,6 +805,8 @@ function Instance:closeSession(id, now, reason)
   checkNow(now, "closeSession")
   local s = self._sessions[id]
   if not s then return fail("no-session", "session '" .. tostring(id) .. "' does not exist") end
+  -- Interactions and a running sequence of the session end first (nothing is resumed or replayed).
+  self:_endSessionInteractions(id, now, reason or "session-closed", "ended")
   local result = self:_releaseHolds(self:_sessionHolds(id, true), now, reason or "session-closed")
   s.state = "closed"
   s.closedAt = now
@@ -680,19 +816,188 @@ function Instance:closeSession(id, now, reason)
   return result
 end
 
+-- Interactions (KB-05) ----------------------------------------------------------
+-- An interaction is a leased ownership token of one session: standalone holds need one, sequences own
+-- one, and while one is open the instance is busy for every other caller (admission()). The consumer
+-- never accepts an id from an untrusted caller; the bridge checks the connection's session first.
+
+-- opts: { leaseMs, label }. Refused while the instance is busy (another interaction, a running
+-- sequence, or a key held by anyone), so an interaction always starts from a quiet instance. The
+-- session's lease is extended to cover the interaction, never shortened.
+function Instance:beginInteraction(sessionId, now, opts)
+  checkReady(self, "beginInteraction")
+  checkNow(now, "beginInteraction")
+  opts = opts or {}
+  local s, serr = self:_admit(sessionId, now)
+  if not s then return nil, serr end
+  local busy = self:_admission(now)
+  if busy then
+    return fail("busy", "cannot begin an interaction: " .. busy.description, busy)
+  end
+  local leaseMs, err = self:_leaseMs(opts.leaseMs)
+  if not leaseMs then return nil, err end
+  self._interactionSeq = self._interactionSeq + 1
+  local ia = { id = string.format("i%d", self._interactionSeq), session = sessionId, label = opts.label, leaseMs = leaseMs,
+               openedAt = now, expiresAt = now + leaseMs / 1000, state = "open", renewals = 0 }
+  self._interactions[ia.id] = ia
+  if s.expiresAt < ia.expiresAt then s.expiresAt = ia.expiresAt end
+  return self:_interactionReport(ia, now)
+end
+
+-- Moves the lease deadline; injects nothing. An interaction whose lease ran out before service()
+-- noticed is ended now (its holds released) and reported as not open: it is never resumed.
+function Instance:renewInteraction(sessionId, id, now, leaseMs)
+  checkReady(self, "renewInteraction")
+  checkNow(now, "renewInteraction")
+  local ia, ierr = self:_ownInteraction(sessionId, id, now)
+  if not ia then return nil, ierr end
+  local ms, err = self:_leaseMs(leaseMs or ia.leaseMs)
+  if not ms then return nil, err end
+  ia.leaseMs = ms
+  ia.expiresAt = now + ms / 1000
+  ia.renewals = ia.renewals + 1
+  local s = self._sessions[sessionId]
+  if s and s.state == "active" and s.expiresAt < ia.expiresAt then s.expiresAt = ia.expiresAt end
+  return self:_interactionReport(ia, now)
+end
+
+-- Ends the interaction: its running sequence is aborted (never replayed), every key it still holds
+-- gets a release attempt (newest first) and the report says what stayed unresolved.
+function Instance:endInteraction(sessionId, id, now, reason)
+  checkReady(self, "endInteraction")
+  checkNow(now, "endInteraction")
+  local ia = type(id) == "string" and self._interactions[id] or nil
+  if not ia then return fail("no-interaction", "interaction '" .. tostring(id) .. "' does not exist", { interaction = id }) end
+  if ia.session ~= sessionId then return fail("not-owner", "interaction '" .. ia.id .. "' belongs to session '" .. ia.session .. "'", { owner = ia.session, interaction = ia.id }) end
+  if ia.state ~= "open" then
+    local r = { interaction = ia.id, state = ia.state, alreadyEnded = true, released = {}, unresolved = {}, attempted = 0 }
+    return r
+  end
+  return self:_endInteraction(ia, now, reason or "client-end", "ended")
+end
+
+-- Read-only: why a conflicting mutation would be refused right now, or nil when the instance is quiet.
+-- Reasons, in order: an open interaction, a running sequence, a key that is held or being released, and
+-- an UNRESOLVED record (a release that failed or could not be confirmed: the key may still be down, so the
+-- console is in an uncertain keyboard state until recover() resolves it).
+function Instance:admission(now)
+  checkLive(self, "admission")
+  if self._state ~= "ready" then return nil end
+  return self:_admission(now)
+end
+
+function Instance:_admission(now)
+  for _, ia in pairs(self._interactions) do
+    if ia.state == "open" then
+      if now and now >= ia.expiresAt then
+        self:_endInteraction(ia, now, "interaction-expired", "expired")
+      else
+        local remaining = now and math.max(0, math.floor((ia.expiresAt - now) * 1000 + 0.5)) or nil
+        return { code = "busy", reason = "interaction", owner = ia.session, interaction = ia.id, label = ia.label, remainingMs = remaining,
+                 sequence = (self._sequence and self._sequence.state == "running" and self._sequence.interaction == ia.id) and self._sequence.id or nil,
+                 description = string.format("interaction %s of session '%s' is open%s", ia.id, ia.session, remaining and (" (" .. remaining .. " ms left)") or "") }
+      end
+    end
+  end
+  local q = self._sequence
+  if q and q.state == "running" then
+    return { code = "busy", reason = "sequence", owner = q.session, sequence = q.id, interaction = q.interaction,
+             description = string.format("sequence %s of session '%s' is running (step %d of %d)", q.id, q.session, q.index, #q.steps) }
+  end
+  local newest
+  for _, h in pairs(self._holds) do
+    if (h.state == "held" or h.state == "releasing") and (newest == nil or h.seq > newest.seq) then newest = h end
+  end
+  if newest then
+    return { code = "busy", reason = "hold", owner = newest.session, hold = newest.id, logical = newest.logical, tupleKey = newest.tupleKey, state = newest.state,
+             description = string.format("session '%s' holds %s (hold %s, %s)", newest.session, tostring(newest.logical or newest.tupleKey), newest.id, newest.state) }
+  end
+  local unresolved, count = nil, 0
+  for _, h in pairs(self._holds) do
+    if h.state == "unresolved" then
+      count = count + 1
+      if unresolved == nil or h.seq > unresolved.seq then unresolved = h end
+    end
+  end
+  if unresolved then
+    return { code = "busy", reason = "unresolved", owner = unresolved.session, hold = unresolved.id, logical = unresolved.logical, tupleKey = unresolved.tupleKey, state = "unresolved", count = count,
+             description = string.format("%d unresolved release record(s): %s (hold %s, session '%s') may still be down (%s); recover it (owner recover, or the operator's \"input recover\") before anything else runs",
+               count, tostring(unresolved.logical or unresolved.tupleKey), unresolved.id, unresolved.session, tostring(unresolved.unresolved and unresolved.unresolved.reason)) }
+  end
+  return nil
+end
+
+function Instance:_ownInteraction(sessionId, id, now)
+  local ia = type(id) == "string" and self._interactions[id] or nil
+  if ia and ia.state == "open" and now >= ia.expiresAt then self:_endInteraction(ia, now, "interaction-expired", "expired") end
+  if not ia or ia.state ~= "open" then
+    return fail("no-interaction", "interaction '" .. tostring(id) .. "' is not open" .. (ia and (" (" .. ia.state .. ")") or "") .. "; it is never resumed: begin a new one", { interaction = id, state = ia and ia.state or nil })
+  end
+  if ia.session ~= sessionId then return fail("not-owner", "interaction '" .. ia.id .. "' belongs to session '" .. ia.session .. "'", { owner = ia.session, interaction = ia.id }) end
+  return ia
+end
+
+-- keepHolds: the caller releases the interaction's holds itself (session close, lease expiry,
+-- disableInput), so their outcomes are reported and logged through that path.
+function Instance:_endInteraction(ia, now, reason, finalState, keepHolds)
+  ia.state = finalState or "ended"
+  ia.endedAt = now
+  ia.endReason = reason
+  local result = { interaction = ia.id, state = ia.state, reason = reason, released = {}, unresolved = {}, attempted = 0 }
+  local q = self._sequence
+  if q and q.state == "running" and q.interaction == ia.id then
+    result.sequence = self:_abortSequence(q, now, reason, keepHolds)
+  end
+  if not keepHolds then
+    local list = {}
+    for _, h in pairs(self._holds) do
+      if h.interaction == ia.id and h.state == "held" then list[#list + 1] = h end
+    end
+    local rel = self:_releaseHolds(list, now, reason)
+    result.released, result.unresolved, result.attempted = rel.released, rel.unresolved, rel.attempted
+  end
+  -- Finished interactions are kept briefly for status(); the ids are never reused.
+  self._endedInteractions[#self._endedInteractions + 1] = ia.id
+  while #self._endedInteractions > 8 do
+    local old = table.remove(self._endedInteractions, 1)
+    if self._interactions[old] and self._interactions[old].state ~= "open" then self._interactions[old] = nil end
+  end
+  return result
+end
+
+-- Used by closeSession/_expireSession/disableInput, which release the holds themselves afterwards.
+function Instance:_endSessionInteractions(sessionId, now, reason, finalState)
+  for _, ia in pairs(self._interactions) do
+    if ia.session == sessionId and ia.state == "open" then self:_endInteraction(ia, now, reason, finalState, true) end
+  end
+  local q = self._sequence
+  if q and q.state == "running" and q.session == sessionId then self:_abortSequence(q, now, reason, true) end
+end
+
+function Instance:_interactionReport(ia, now)
+  local remaining
+  if now and ia.state == "open" then remaining = math.max(0, math.floor((ia.expiresAt - now) * 1000 + 0.5)) end
+  local holds = 0
+  for _, h in pairs(self._holds) do if h.interaction == ia.id and h.state ~= "released" then holds = holds + 1 end end
+  return { id = ia.id, session = ia.session, label = ia.label, state = ia.state, leaseMs = ia.leaseMs, expiresAt = ia.expiresAt,
+           remainingMs = remaining, renewals = ia.renewals, openedAt = ia.openedAt, endedAt = ia.endedAt, endReason = ia.endReason, holds = holds,
+           sequence = (self._sequence and self._sequence.interaction == ia.id) and self._sequence.id or nil }
+end
+
 -- Holds -------------------------------------------------------------------------
 
 -- spec: { key = "PLEASE" | pcKey = "Enter", shift, ctrl, alt, numlock, display, executor, maxHoldMs,
---         exclusive }. exclusive=true is the intended long-press: while it is held no new press from any
--- session is admitted (a second key or a duplicate press cancels the console's long-press, KB-01), and
--- it is refused while any other ownership record exists.
+--         exclusive, interaction }. exclusive=true is the intended long-press: while it is held no new press
+-- from any session is admitted (a second key or a duplicate press cancels the console's long-press, KB-01),
+-- and it is refused while any other ownership record exists. A standalone hold needs an open interaction
+-- of this session (spec.interaction, KB-05); a tap does not.
 -- Returns the hold report, or nil, { code, message, ... }. Nothing is dispatched when an error is returned.
-function Instance:press(sessionId, now, spec)
+function Instance:press(sessionId, now, spec, ctx)
   checkReady(self, "press")
   checkNow(now, "press")
   local s, serr = self:_admit(sessionId, now)
   if not s then return nil, serr end
-  local plan, perr = self:_planPress(sessionId, now, spec)
+  local plan, perr = self:_planPress(sessionId, now, spec, { kind = "hold", fromSequence = ctx and ctx.fromSequence })
   if not plan then return nil, perr end
   if plan.duplicate then return self:_holdReport(plan.duplicate, now, { duplicate = true }) end
   local hold, derr = self:_dispatchPress(s, plan, now)
@@ -703,7 +1008,7 @@ end
 -- holdMs bounded by config.maxTapMs; the release is serviced by service(now) at the deadline. The
 -- response means: press dispatched, release SCHEDULED (releaseOutcome = "scheduled"); completion is
 -- visible later through status() / the service() result, never claimed here.
-function Instance:tap(sessionId, now, spec, holdMs)
+function Instance:tap(sessionId, now, spec, holdMs, ctx)
   checkReady(self, "tap")
   checkNow(now, "tap")
   holdMs = holdMs or 50
@@ -712,7 +1017,7 @@ function Instance:tap(sessionId, now, spec, holdMs)
   end
   local s, serr = self:_admit(sessionId, now)
   if not s then return nil, serr end
-  local plan, perr = self:_planPress(sessionId, now, spec)
+  local plan, perr = self:_planPress(sessionId, now, spec, { kind = "tap", fromSequence = ctx and ctx.fromSequence })
   if not plan then return nil, perr end
   if plan.duplicate then return fail("conflict", "tuple is already held by this session; a tap cannot be layered on a hold", { hold = plan.duplicate.id }) end
   local hold, derr = self:_dispatchPress(s, plan, now)
@@ -727,6 +1032,7 @@ end
 -- means nothing is dispatched. A press that fails midway releases what was already pressed (newest
 -- first) and reports the partial outcome. opts.holdMs schedules the release of every key at the same
 -- deadline, newest first (a chord tap). A combo is never exclusive: adding a key is not a long-press.
+-- opts.interaction names the session's open interaction; a combo without holdMs is a hold and needs one.
 function Instance:combo(sessionId, now, specs, opts)
   checkReady(self, "combo")
   checkNow(now, "combo")
@@ -743,7 +1049,8 @@ function Instance:combo(sessionId, now, specs, opts)
   local plans, seen = {}, {}
   for i, spec in ipairs(specs) do
     if type(spec) == "table" and spec.exclusive then return fail("bad-argument", "key " .. i .. ": a combo cannot be exclusive; a long-press is a single exclusive press/tap") end
-    local plan, perr = self:_planPress(sessionId, now, spec, { comboIndex = i, reserved = seen, extra = #plans })
+    local plan, perr = self:_planPress(sessionId, now, spec, { comboIndex = i, reserved = seen, extra = #plans,
+      kind = holdMs and "tap" or "hold", interaction = opts.interaction, fromSequence = opts.fromSequence })
     if not plan then
       perr.key = i
       perr.message = "key " .. i .. " of the combo: " .. tostring(perr.message) .. " (nothing was dispatched)"
@@ -862,6 +1169,585 @@ function Instance:adopt(records, now, sessionId)
   return { adopted = adopted, rejected = rejected }
 end
 
+-- Sequences (KB-05) ---------------------------------------------------------------
+-- A sequence is validated as a whole before its first event and then run by service(): one step is
+-- started per iteration at most, a tap waits for its release to be resolved, text goes out in chunks
+-- with the context rechecked in between, and every step ends in exactly one of: completed, failed
+-- (nothing of it dispatched, or a dispatch refused), uncertain (a dispatch raised or a release stayed
+-- unresolved: the console may have received it), unattempted, aborted. A failure or an abort stops the
+-- sequence, releases what it pressed and never replays anything. At most one sequence runs per instance.
+
+local STEP_KINDS = { tap = true, press = true, release = true, combo = true, text = true, wait = true }
+local TEXT_CONTEXTS = { ["command-line"] = true, ["text-field"] = true }
+
+local function stepSpec(step)
+  return { key = step.key, pcKey = step.pcKey, shift = step.shift, ctrl = step.ctrl, alt = step.alt, numlock = step.numlock,
+           display = step.display, executor = step.executor, maxHoldMs = step.maxHoldMs, exclusive = step.exclusive }
+end
+
+local function codeMessage(err)
+  if type(err) ~= "table" then return tostring(err) end
+  return (err.code and ("[" .. tostring(err.code) .. "] ") or "") .. tostring(err.message)
+end
+
+-- steps: list of { kind = "tap"|"press"|"release"|"combo"|"text"|"wait", ... }
+-- opts: { interaction = <open interaction id of this session> | leaseMs (an interaction is begun for the
+--         sequence and ended with it), label }
+function Instance:startSequence(sessionId, now, steps, opts)
+  checkReady(self, "startSequence")
+  checkNow(now, "startSequence")
+  opts = opts or {}
+  local s, serr = self:_admit(sessionId, now)
+  if not s then return nil, serr end
+  if self._sequence and self._sequence.state == "running" then
+    local q = self._sequence
+    return fail("busy", string.format("sequence %s of session '%s' is still running (step %d of %d)", q.id, q.session, q.index, #q.steps), { reason = "sequence", owner = q.session, sequence = q.id })
+  end
+  local plan, perr = self:_validateSequence(sessionId, steps)
+  if not plan then return nil, perr end
+  local ia, auto
+  if opts.interaction ~= nil then
+    local ierr
+    ia, ierr = self:_ownInteraction(sessionId, opts.interaction, now)
+    if not ia then return nil, ierr end
+    local remaining = math.floor((ia.expiresAt - now) * 1000 + 0.5)
+    if remaining < plan.estimateMs then
+      return fail("lease-too-short", string.format("interaction %s has %d ms left but the sequence needs about %d ms of holds, waits and typing; renew it first", ia.id, remaining, plan.estimateMs), { interaction = ia.id, remainingMs = remaining, estimateMs = plan.estimateMs })
+    end
+  else
+    local busy = self:_admission(now)
+    if busy then return fail("busy", "cannot start a sequence: " .. busy.description, busy) end
+    local leaseMs = opts.leaseMs
+    if leaseMs == nil then leaseMs = math.min(self._config.maxLeaseMs, math.max(self._config.defaultLeaseMs, plan.estimateMs * 2 + 2000)) end
+    local rep, berr = self:beginInteraction(sessionId, now, { leaseMs = leaseMs, label = opts.label and ("sequence: " .. tostring(opts.label)) or "sequence" })
+    if not rep then return nil, berr end
+    ia, auto = self._interactions[rep.id], true
+    local remaining = math.floor((ia.expiresAt - now) * 1000 + 0.5)
+    if remaining < plan.estimateMs then
+      self:_endInteraction(ia, now, "lease-too-short", "ended")
+      return fail("lease-too-short", string.format("leaseMs %d is shorter than the sequence's estimated %d ms", leaseMs, plan.estimateMs), { estimateMs = plan.estimateMs })
+    end
+  end
+  self._sequenceSeq = self._sequenceSeq + 1
+  local job = { id = string.format("q%d", self._sequenceSeq), session = sessionId, interaction = ia.id, autoInteraction = auto and true or false,
+                label = opts.label, steps = plan.steps, index = 1, state = "running", events = {}, holds = {}, startedAt = now,
+                estimateMs = plan.estimateMs, deadline = now + (plan.estimateMs + 10000) / 1000 }
+  for i, st in ipairs(plan.steps) do
+    job.events[i] = { index = i, kind = st.kind, state = "pending", key = st.logical, pcKey = st.pcKey, keys = st.keyNames,
+                      holdMs = st.holdMs, ms = st.ms, chars = st.codepoints and #st.codepoints or nil, context = st.context }
+  end
+  self._sequence = job
+  -- The first step starts now; a one-step sequence does not wait for the next iteration.
+  self:_serviceSequence(job, now)
+  return self:_sequenceReport(job, now)
+end
+
+-- Read-only report of the running sequence or one of the last config.sequenceHistory finished ones.
+function Instance:sequenceStatus(id, now)
+  checkLive(self, "sequenceStatus")
+  local job = self:_findSequence(id)
+  if not job then return fail("no-sequence", "sequence '" .. tostring(id) .. "' is unknown (finished reports are kept for the last " .. self._config.sequenceHistory .. ")", { sequence = id }) end
+  return self:_sequenceReport(job, now)
+end
+
+-- Owner-requested abort: the current step is left where it is (its progress reported), the rest is
+-- unattempted, what the sequence pressed is released, and an interaction begun for it is ended.
+function Instance:abortSequence(sessionId, id, now, reason)
+  checkReady(self, "abortSequence")
+  checkNow(now, "abortSequence")
+  local job = self:_findSequence(id)
+  if not job then return fail("no-sequence", "sequence '" .. tostring(id) .. "' is unknown", { sequence = id }) end
+  if job.session ~= sessionId then return fail("not-owner", "sequence '" .. job.id .. "' belongs to session '" .. job.session .. "'", { owner = job.session }) end
+  if job.state == "running" then
+    self:_abortSequence(job, now, reason or "client-abort")
+    if job.autoInteraction then
+      local ia = self._interactions[job.interaction]
+      if ia and ia.state == "open" then self:_endInteraction(ia, now, reason or "client-abort", "ended") end
+    end
+  end
+  return self:_sequenceReport(job, now)
+end
+
+function Instance:_findSequence(id)
+  if type(id) ~= "string" then return nil end
+  if self._sequence and self._sequence.id == id then return self._sequence end
+  for _, j in ipairs(self._sequences) do if j.id == id then return j end end
+  return nil
+end
+
+function Instance:_checkDisplay(display)
+  if display == nil then return true end
+  if type(display) ~= "number" then return nil, { code = "bad-argument", message = "display must be a number" } end
+  if type(self._deps.displayExists) ~= "function" then return nil, { code = "unsupported", message = "a display was given but the console display list cannot be checked (deps.displayExists missing)" } end
+  local ok, exists = pcall(self._deps.displayExists, display)
+  if not ok or not exists then return nil, { code = "bad-argument", message = "display " .. display .. " does not exist" } end
+  return true
+end
+
+function Instance:_readShortcutsActive()
+  local d = self._deps
+  if type(d.shortcutsActive) ~= "function" then return nil, "deps.shortcutsActive missing" end
+  local ok, v = pcall(d.shortcutsActive)
+  if not ok then return nil, tostring(v) end
+  if type(v) ~= "boolean" then return nil, "value " .. tostring(v) end
+  return v
+end
+
+function Instance:_readCommandText()
+  local d = self._deps
+  if type(d.commandText) ~= "function" then return nil, "deps.commandText missing (CmdObj().cmdtext not readable)" end
+  local ok, v = pcall(d.commandText)
+  if not ok then return nil, tostring(v) end
+  if v == nil then return nil, "the console returned nothing for cmdtext" end
+  return tostring(v)
+end
+
+-- The context a text step needs, read now. "command-line": keyboard shortcuts must read as disabled
+-- (positively false), because with shortcuts enabled char events never reach the command line and no
+-- key press is substituted. "text-field": focus is not observable from Lua, so the caller must have
+-- acknowledged it; the enablement is still recorded so a change during typing is noticed.
+function Instance:_textContext(st)
+  -- Text is input like any key: an exclusive long-press admits nothing, and a held key whose route changed
+  -- stops every new event until it is resolved (checked here before typing and before every chunk).
+  local ex = self:_exclusiveHold()
+  if ex then
+    return nil, { code = "exclusive-hold", message = string.format("hold %s (%s, session '%s', state %s) is an exclusive long-press; no text is typed until its release is resolved", ex.id, tostring(ex.logical or ex.tupleKey), ex.session, ex.state), owner = ex.session, hold = ex.id }
+  end
+  local mismatch = self:_checkRoutes()
+  if mismatch then
+    local m = mismatch[1]
+    return nil, { code = "route-changed", message = string.format("a held key's route changed since it was pressed: %s %s (hold %s); no text is typed until it is released or recovered", tostring(m.logical), tostring(m.mismatch), tostring(m.hold)), mismatches = mismatch }
+  end
+  if st.acknowledgeFocus ~= true then
+    return nil, { code = "focus-unverified", message = "text needs acknowledgeFocus = true: which element receives characters (the command line or a text field) cannot be observed from Lua, so the caller states it; only the command line can be read back afterwards" }
+  end
+  local active, aerr = self:_readShortcutsActive()
+  if st.context == "command-line" then
+    -- Command-line text is admitted only while it can be verified: the command line must be readable
+    -- now (and before every chunk), otherwise a later commit could execute text nobody saw.
+    local text, terr = self:_readCommandText()
+    if text == nil then
+      return nil, { code = "unsupported", message = "command-line text needs a readable command line (CmdObj().cmdtext) so it can be verified before anything commits it; it is not readable: " .. tostring(terr) }
+    end
+    if active == true then
+      return nil, { code = "unsupported", message = "command-line text needs keyboard shortcuts disabled by the operator (F10): with shortcuts enabled, character events do not reach the command line and are not substituted with key presses; nothing is toggled here" }
+    elseif active == nil then
+      return nil, { code = "unsupported", message = "command-line text needs keyboard shortcuts disabled, but their enablement cannot be established (" .. tostring(aerr) .. "); refused rather than guessed" }
+    end
+  end
+  return { shortcutsActive = active, shortcutsError = aerr }
+end
+
+function Instance:_validateSequence(sessionId, steps)
+  if type(steps) ~= "table" or #steps == 0 then return fail("bad-argument", "steps must be a non-empty list") end
+  if #steps > self._config.maxSequenceSteps then return fail("bad-argument", "a sequence accepts at most " .. self._config.maxSequenceSteps .. " steps") end
+  local out, estimate = {}, 0
+  local pressed = {}
+  local unverifiableText = nil  -- index of a text-field text step: a later PLEASE/Enter must not commit it
+  local function stepFail(i, code, message, extra)
+    local _, e = fail(code, "step " .. i .. ": " .. tostring(message) .. " (nothing was dispatched)", extra)
+    e.step = i
+    return nil, e
+  end
+  for i, step in ipairs(steps) do
+    if type(step) ~= "table" then return stepFail(i, "bad-argument", "a step must be a table") end
+    local kind = step.kind
+    if not STEP_KINDS[kind] then return stepFail(i, "bad-argument", "unknown kind '" .. tostring(kind) .. "' (tap, press, release, combo, text, wait)") end
+    local s = { kind = kind, index = i }
+    local function checkHoldSpec(spec, what)
+      if spec.maxHoldMs ~= nil and (type(spec.maxHoldMs) ~= "number" or spec.maxHoldMs <= 0 or spec.maxHoldMs > self._config.maxHoldMs) then
+        return what .. "maxHoldMs must be a number in (0, " .. self._config.maxHoldMs .. "]"
+      end
+      if spec.exclusive ~= nil and type(spec.exclusive) ~= "boolean" then return what .. "exclusive must be a boolean" end
+      return nil
+    end
+    local function commitsText(tuple, route)
+      return (route and route.logical == "PLEASE") or (tuple and tuple.pcKey == "Enter")
+    end
+    if kind == "tap" or kind == "press" then
+      local spec = stepSpec(step)
+      local tuple, route, terr = self:_resolveSpec(spec, true)
+      if not tuple then return stepFail(i, terr.code, terr.message, { resolution = terr.resolution }) end
+      local herr = checkHoldSpec(spec, "")
+      if herr then return stepFail(i, "bad-argument", herr) end
+      if unverifiableText and commitsText(tuple, route) then
+        return stepFail(i, "bad-argument", string.format("PLEASE/Enter after the text-field text of step %d would commit text that cannot be verified; check the field and commit it with a separate explicit call", unverifiableText))
+      end
+      if kind == "tap" then
+        local holdMs = step.holdMs or 50
+        if type(holdMs) ~= "number" or holdMs <= 0 or holdMs > self._config.maxTapMs then return stepFail(i, "bad-argument", "holdMs must be a number in (0, " .. self._config.maxTapMs .. "]") end
+        s.holdMs = holdMs
+        estimate = estimate + holdMs
+      else
+        if step.holdMs ~= nil then return stepFail(i, "bad-argument", "a press has no holdMs; use a tap, or a later release step") end
+        estimate = estimate + 20
+      end
+      s.spec, s.tupleKey, s.logical, s.pcKey = spec, tupleKey(tuple), route.logical, tuple.pcKey
+      pressed[s.tupleKey] = i
+      if route.logical then pressed[route.logical] = i end
+    elseif kind == "combo" then
+      if type(step.keys) ~= "table" or #step.keys < 2 then return stepFail(i, "bad-argument", "combo needs keys (a list of at least two key specs)") end
+      if #step.keys > self._config.maxComboKeys then return stepFail(i, "bad-argument", "combo accepts at most " .. self._config.maxComboKeys .. " keys") end
+      if step.holdMs ~= nil and (type(step.holdMs) ~= "number" or step.holdMs <= 0 or step.holdMs > self._config.maxTapMs) then return stepFail(i, "bad-argument", "holdMs must be a number in (0, " .. self._config.maxTapMs .. "]") end
+      s.specs, s.keyNames = {}, {}
+      local seen = {}
+      for k, ks in ipairs(step.keys) do
+        if type(ks) ~= "table" then return stepFail(i, "bad-argument", "keys[" .. k .. "] must be a key spec table") end
+        if ks.exclusive then return stepFail(i, "bad-argument", "key " .. k .. ": a combo cannot be exclusive") end
+        local spec = stepSpec(ks)
+        local tuple, route, terr = self:_resolveSpec(spec, true)
+        if not tuple then return stepFail(i, terr.code, "key " .. k .. ": " .. tostring(terr.message), { key = k, resolution = terr.resolution }) end
+        local herr = checkHoldSpec(spec, "key " .. k .. ": ")
+        if herr then return stepFail(i, "bad-argument", herr) end
+        if unverifiableText and commitsText(tuple, route) then
+          return stepFail(i, "bad-argument", string.format("key %d: PLEASE/Enter after the text-field text of step %d would commit text that cannot be verified; commit it with a separate explicit call", k, unverifiableText))
+        end
+        local tk = tupleKey(tuple)
+        if seen[tk] then return stepFail(i, "bad-argument", "key " .. k .. " repeats tuple " .. tk) end
+        seen[tk] = true
+        s.specs[k] = spec
+        s.keyNames[k] = route.logical or tuple.pcKey
+        pressed[tk] = i
+        if route.logical then pressed[route.logical] = i end
+      end
+      s.holdMs = step.holdMs
+      estimate = estimate + (step.holdMs or 20)
+    elseif kind == "release" then
+      local spec = stepSpec(step)
+      spec.maxHoldMs, spec.exclusive = nil, nil
+      local tuple, route, terr = self:_resolveSpec(spec, false)
+      local known = false
+      if tuple then
+        local tk = tupleKey(tuple)
+        local existing = self._byTuple[tk]
+        known = pressed[tk] ~= nil or (existing ~= nil and existing.session == sessionId and existing.state == "held")
+        s.tupleKey, s.logical, s.pcKey = tk, route.logical, tuple.pcKey
+      elseif type(spec.key) == "string" then
+        known = pressed[spec.key:upper()] ~= nil
+        s.logical = spec.key:upper()
+      else
+        return stepFail(i, terr.code, terr.message)
+      end
+      if not known then return stepFail(i, "bad-argument", "release of a key that no earlier step of this sequence presses and this session does not hold") end
+      s.spec = spec
+      estimate = estimate + 20
+    elseif kind == "text" then
+      local cps, reason = validateText(step.text, self._config.maxTextChars)
+      if not cps then return stepFail(i, "bad-argument", reason) end
+      if not TEXT_CONTEXTS[step.context] then return stepFail(i, "bad-argument", "text needs context 'command-line' (shortcuts disabled by the operator) or 'text-field' (focused field acknowledged)") end
+      if step.acknowledgeFocus ~= nil and type(step.acknowledgeFocus) ~= "boolean" then return stepFail(i, "bad-argument", "acknowledgeFocus must be a boolean") end
+      local okD, derr = self:_checkDisplay(step.display)
+      if not okD then return stepFail(i, derr.code, derr.message) end
+      if not (self._adapter and type(self._adapter.char) == "function") then return stepFail(i, "unsupported", "the attached backend has no character events") end
+      s.text, s.codepoints, s.context, s.acknowledgeFocus, s.display = step.text, cps, step.context, step.acknowledgeFocus, step.display
+      local ctx, cerr = self:_textContext(s)
+      if not ctx then return stepFail(i, cerr.code, cerr.message, { mismatches = cerr.mismatches, owner = cerr.owner, hold = cerr.hold }) end
+      if step.context == "text-field" then unverifiableText = i end
+      estimate = estimate + math.ceil(#cps / self._config.textCharsPerService) * 40
+    elseif kind == "wait" then
+      if type(step.ms) ~= "number" or step.ms <= 0 or step.ms > self._config.maxWaitMs then return stepFail(i, "bad-argument", "wait needs ms in (0, " .. self._config.maxWaitMs .. "]") end
+      s.ms = step.ms
+      estimate = estimate + step.ms
+    end
+    out[i] = s
+  end
+  if estimate > self._config.maxSequenceMs then
+    return fail("bad-argument", string.format("the sequence would hold, wait and type for about %d ms; at most %d ms are accepted (nothing was dispatched)", estimate, self._config.maxSequenceMs), { estimateMs = estimate })
+  end
+  return { steps = out, estimateMs = estimate }
+end
+
+function Instance:_serviceSequence(job, now)
+  if job.state ~= "running" then return self:_sequenceSummary(job, now) end
+  if now >= job.deadline then
+    local ev = job.events[job.index]
+    if ev and ev.state ~= "pending" then ev.state = (ev.state == "typing" or ev.state == "readback") and "uncertain" or "failed"; ev.error = "sequence deadline elapsed while this step was in progress" end
+    self:_failSequence(job, now, string.format("sequence deadline elapsed after %d ms", math.floor((now - job.startedAt) * 1000 + 0.5)))
+    return self:_sequenceSummary(job, now)
+  end
+  local guard = 0
+  while job.state == "running" and job.index <= #job.steps and guard <= #job.steps do
+    guard = guard + 1
+    local st, ev = job.steps[job.index], job.events[job.index]
+    if ev.state == "pending" then self:_startStep(job, st, ev, now) end
+    if job.state ~= "running" then break end
+    if ev.state == "waiting" then self:_pollStep(job, st, ev, now) end
+    if ev.state == "typing" or ev.state == "readback" then
+      self:_typeStep(job, st, ev, now)
+      if job.state ~= "running" then break end
+      if ev.state == "typing" or ev.state == "readback" then break end  -- one chunk per iteration
+    end
+    if ev.state == "completed" then
+      ev.finishedAt = now
+      job.index = job.index + 1
+    elseif ev.state == "failed" or ev.state == "uncertain" then
+      ev.finishedAt = now
+      self:_failSequence(job, now, "step " .. job.index .. " (" .. st.kind .. ") " .. ev.state .. ": " .. tostring(ev.error))
+      break
+    else
+      break  -- waiting for a release deadline or a wait step
+    end
+  end
+  if job.state == "running" and job.index > #job.steps then self:_completeSequence(job, now) end
+  return self:_sequenceSummary(job, now)
+end
+
+local function stepError(ev, err)
+  ev.code = type(err) == "table" and err.code or nil
+  ev.error = codeMessage(err)
+  if type(err) == "table" and err.unresolved then ev.state = "uncertain"; ev.hold = err.hold else ev.state = "failed" end
+  if type(err) == "table" and err.pressed then
+    ev.pressed = #err.pressed
+    ev.rollback = err.rollback and { released = #(err.rollback.released or {}), unresolved = #(err.rollback.unresolved or {}) } or nil
+    if err.rollback and #(err.rollback.unresolved or {}) > 0 then ev.state = "uncertain" end
+  end
+end
+
+function Instance:_trackHold(job, id)
+  local h = self._holds[id]
+  if h then h.sequence = job.id end
+  job.holds[#job.holds + 1] = id
+end
+
+function Instance:_startStep(job, st, ev, now)
+  ev.startedAt = now
+  local ctx = { fromSequence = true }
+  if st.kind == "tap" or st.kind == "press" then
+    local spec = shallowCopy(st.spec)
+    spec.interaction = job.interaction
+    local h, err
+    if st.kind == "tap" then h, err = self:tap(job.session, now, spec, st.holdMs, ctx) else h, err = self:press(job.session, now, spec, ctx) end
+    if job.state ~= "running" then return end
+    if not h then stepError(ev, err); return end
+    ev.hold, ev.pressOutcome, ev.tupleKey = h.id, h.pressOutcome, h.tupleKey
+    self:_trackHold(job, h.id)
+    if st.kind == "tap" then ev.state = "waiting" else ev.state = "completed"; ev.releaseOutcome = "pending" end
+  elseif st.kind == "combo" then
+    local r, err = self:combo(job.session, now, st.specs, { holdMs = st.holdMs, interaction = job.interaction, fromSequence = true })
+    if job.state ~= "running" then return end
+    if not r then stepError(ev, err); return end
+    ev.holds, ev.group = {}, r.group
+    for _, h in ipairs(r.holds) do ev.holds[#ev.holds + 1] = h.id; self:_trackHold(job, h.id) end
+    ev.pressOutcome = "dispatched"
+    if st.holdMs then ev.state = "waiting" else ev.state = "completed"; ev.releaseOutcome = "pending" end
+  elseif st.kind == "release" then
+    local h, err = self:release(job.session, now, st.spec)
+    if job.state ~= "running" then return end
+    if not h then stepError(ev, err); return end
+    ev.hold, ev.releaseOutcome = h.id, h.releaseOutcome
+    if h.alreadyReleased then ev.state, ev.note = "completed", "already released"
+    elseif h.state == "released" then ev.state = "completed"
+    else ev.state = "uncertain"; ev.error = "release unresolved: " .. tostring(h.unresolved and h.unresolved.reason) end
+  elseif st.kind == "text" then
+    local ctxT, cerr = self:_textContext(st)
+    if not ctxT then stepError(ev, cerr); return end
+    ev.typed, ev.chars = 0, #st.codepoints
+    ev.contextAtStart = ctxT
+    if st.context == "command-line" then
+      local before, berr = self:_readCommandText()
+      if before == nil then
+        ev.state, ev.code = "failed", "unsupported"
+        ev.error = "command line not readable before typing (" .. tostring(berr) .. "); command-line text cannot be verified, nothing typed"
+        return
+      end
+      ev.before, ev.expected = before, before .. st.text
+    else
+      ev.readback = { outcome = "unavailable", reason = "a focused text field's content is not observable from Lua; UI verification unavailable" }
+    end
+    ev.state = "typing"
+  elseif st.kind == "wait" then
+    ev.until_ = now + st.ms / 1000
+    ev.state = "waiting"
+  end
+end
+
+function Instance:_pollStep(job, st, ev, now)
+  if st.kind == "wait" then
+    if now >= ev.until_ then ev.state = "completed" end
+    return
+  end
+  local ids = ev.holds or { ev.hold }
+  local outcomes, allReleased = {}, true
+  for _, id in ipairs(ids) do
+    local h = self._holds[id]
+    if not h then outcomes[#outcomes + 1] = "forgotten"
+    elseif h.state == "released" then outcomes[#outcomes + 1] = h.dispatch.release and h.dispatch.release.outcome or "dispatched"
+    elseif h.state == "unresolved" then
+      ev.state, ev.error = "uncertain", "release of hold " .. id .. " unresolved: " .. tostring(h.unresolved and h.unresolved.reason)
+      ev.releaseOutcome = "unresolved"
+      return
+    else allReleased = false end
+  end
+  if allReleased then
+    ev.state = "completed"
+    ev.releaseOutcome = #outcomes == 1 and outcomes[1] or table.concat(outcomes, ",")
+    local h = self._holds[ids[1]]
+    if h and h.readback then ev.readback = shallowCopy(h.readback); ev.readback.until_ = nil end
+  end
+end
+
+function Instance:_typeStep(job, st, ev, now)
+  if ev.state == "typing" then
+    local ctxT, cerr = self:_textContext(st)
+    if not ctxT or ctxT.shortcutsActive ~= ev.contextAtStart.shortcutsActive then
+      -- Nothing is typed once the context changed; what went out before is reported as progress.
+      ev.state = ev.typed > 0 and "uncertain" or "failed"
+      ev.error = string.format("context changed after %d of %d characters: %s", ev.typed, ev.chars,
+        ctxT and string.format("keyboard shortcuts are now %s (were %s)", tostring(ctxT.shortcutsActive), tostring(ev.contextAtStart.shortcutsActive)) or cerr.message)
+      ev.code = (cerr and (cerr.code == "exclusive-hold" or cerr.code == "route-changed")) and cerr.code or "context-changed"
+      return
+    end
+    for _ = 1, self._config.textCharsPerService do
+      if ev.typed >= ev.chars then break end
+      local cp = st.codepoints[ev.typed + 1]
+      local ok, aOk, _, err = pcall(self._adapter.char, self._adapter, cp, st.display)
+      if not ok then
+        ev.state, ev.code = "uncertain", "char-raised"
+        ev.error = string.format("character %d of %d (U+%04X) raised: %s; whether it was delivered is unknown, typing stopped", ev.typed + 1, ev.chars, cp, tostring(aOk))
+        ev.uncertainChar = ev.typed + 1
+        return
+      end
+      if aOk == false then
+        ev.state, ev.code = "failed", "char-refused"
+        ev.error = string.format("character %d of %d (U+%04X) refused before dispatch: %s; typing stopped", ev.typed + 1, ev.chars, cp, tostring(err))
+        return
+      end
+      ev.typed = ev.typed + 1
+    end
+    if ev.typed >= ev.chars then
+      if ev.expected ~= nil then
+        -- The first readback happens right away: the text may already be on the command line.
+        ev.state = "readback"
+        ev.readbackUntil = now + self._config.readbackMs / 1000
+      elseif st.context == "command-line" then
+        -- Defensive: command-line text without an expectation can never be verified.
+        ev.state, ev.code = "uncertain", "text-unverified"
+        ev.error = string.format("%d characters were dispatched but no command-line expectation exists; the sequence stops here so nothing commits unverified text", ev.typed)
+        return
+      else
+        ev.state = "completed"
+        return
+      end
+    else
+      return
+    end
+  end
+  -- Bounded readback of the command line: the text may appear on this or a later frame; neither one
+  -- read nor the elapsed window establishes failure, so the result is observed or inconclusive.
+  local actual, rerr = self:_readCommandText()
+  if actual ~= nil and actual == ev.expected then
+    ev.readback = { outcome = "observed", source = "CmdObj().cmdtext", expected = ev.expected, actual = actual, note = "the command line shows the typed text; not executed" }
+    ev.state = "completed"
+  elseif now >= ev.readbackUntil then
+    -- Typed but not verified: the step is UNCERTAIN and the sequence stops, so a later commit (PLEASE)
+    -- never executes text that was not seen on the command line.
+    ev.readback = { outcome = "inconclusive", source = "CmdObj().cmdtext", expected = ev.expected, actual = actual,
+                    reason = actual == nil and ("command line not readable: " .. tostring(rerr)) or string.format("the command line did not show the expected text within %d ms (it may have been edited meanwhile, or the characters went elsewhere; neither success nor failure is established)", self._config.readbackMs) }
+    ev.state, ev.code = "uncertain", "text-unverified"
+    ev.error = string.format("%d characters were dispatched but the command line does not show them (%s); the sequence stops here so nothing commits unverified text", ev.typed, tostring(ev.readback.reason))
+  end
+end
+
+-- Stops a running sequence after a failure: later steps are unattempted, what it pressed is released
+-- (newest first) and an interaction begun for it is ended. Nothing is retried.
+function Instance:_failSequence(job, now, why)
+  job.state = "failed"
+  job.error = why
+  job.failedStep = job.index
+  self:_finishSequence(job, now, "sequence-failed")
+end
+
+function Instance:_abortSequence(job, now, reason, keepHolds)
+  if job.state ~= "running" then return self:_sequenceSummary(job, now) end
+  local ev = job.events[job.index]
+  if ev and ev.state ~= "pending" and ev.state ~= "completed" then
+    ev.state = (ev.state == "typing" or ev.state == "readback") and "aborted" or "aborted"
+    ev.error = "aborted (" .. tostring(reason) .. ")"
+    ev.finishedAt = now
+  end
+  job.state = "aborted"
+  job.error = "aborted: " .. tostring(reason)
+  job.failedStep = job.index
+  self:_finishSequence(job, now, reason, keepHolds)
+  return self:_sequenceSummary(job, now)
+end
+
+function Instance:_completeSequence(job, now)
+  job.state = "completed"
+  self:_finishSequence(job, now, "sequence-completed")
+end
+
+function Instance:_finishSequence(job, now, reason, keepHolds)
+  for i = (job.failedStep or #job.steps) + 1, #job.steps do
+    local ev = job.events[i]
+    if ev.state == "pending" then ev.state = "unattempted"; ev.error = "not attempted: the sequence " .. job.state .. " earlier" end
+  end
+  if job.state == "failed" or job.state == "aborted" then
+    local ev = job.events[job.failedStep]
+    if ev and ev.state == "pending" then ev.state = "unattempted" end
+  end
+  -- Keys this sequence pressed and still holds (press/combo without a release) are released newest first.
+  local list = {}
+  for _, id in ipairs(job.holds) do
+    local h = self._holds[id]
+    if h and h.state == "held" then list[#list + 1] = h end
+  end
+  if keepHolds then
+    job.cleanup = { attempted = 0, released = 0, unresolved = 0, deferred = #list, note = "the holds are released by the caller (session close, lease expiry or input disabled)" }
+  else
+    local rel = self:_releaseHolds(list, now, reason)
+    job.cleanup = { attempted = rel.attempted, released = #rel.released, unresolved = #rel.unresolved,
+                    unresolvedHolds = (#rel.unresolved > 0) and (function() local t = {} for _, a in ipairs(rel.unresolved) do t[#t + 1] = a.hold end return t end)() or nil }
+  end
+  job.finishedAt = now
+  if job.autoInteraction then
+    local ia = self._interactions[job.interaction]
+    if ia and ia.state == "open" then self:_endInteraction(ia, now, reason, "ended") end
+  end
+  self._sequences[#self._sequences + 1] = job
+  while #self._sequences > self._config.sequenceHistory do table.remove(self._sequences, 1) end
+  if self._sequence == job then self._sequence = nil end
+end
+
+function Instance:_eventReport(ev, now)
+  local r = { index = ev.index, kind = ev.kind, state = ev.state, key = ev.key, pcKey = ev.pcKey, keys = ev.keys, tupleKey = ev.tupleKey,
+              hold = ev.hold, holds = ev.holds, group = ev.group, holdMs = ev.holdMs, ms = ev.ms, context = ev.context,
+              pressOutcome = ev.pressOutcome, releaseOutcome = ev.releaseOutcome, code = ev.code, error = ev.error, note = ev.note,
+              chars = ev.chars, typed = ev.typed, uncertainChar = ev.uncertainChar, pressed = ev.pressed, rollback = ev.rollback,
+              readback = ev.readback, startedAt = ev.startedAt, finishedAt = ev.finishedAt }
+  if ev.chars then r.remaining = ev.chars - (ev.typed or 0) end
+  if ev.state == "readback" then r.readback = { outcome = "pending", source = "CmdObj().cmdtext", expected = ev.expected } end
+  -- A hold's aggregate readback (MASTATE) may conclude after the sequence finished: report the live one.
+  local hid = ev.hold or (ev.holds and ev.holds[1])
+  local h = hid and self._holds[hid]
+  if h and h.readback and ev.kind ~= "text" then
+    r.readback = shallowCopy(h.readback)
+    r.readback.until_ = nil
+  end
+  return r
+end
+
+function Instance:_sequenceSummary(job, now)
+  local counts = { completed = 0, failed = 0, uncertain = 0, unattempted = 0, aborted = 0, inProgress = 0 }
+  for _, ev in ipairs(job.events) do
+    if counts[ev.state] ~= nil then counts[ev.state] = counts[ev.state] + 1 else counts.inProgress = counts.inProgress + 1 end
+  end
+  local r = { id = job.id, session = job.session, interaction = job.interaction, autoInteraction = job.autoInteraction, label = job.label,
+              state = job.state, steps = #job.steps, index = math.min(job.index, #job.steps), failedStep = job.failedStep, counts = counts, error = job.error,
+              startedAt = job.startedAt, finishedAt = job.finishedAt, estimateMs = job.estimateMs }
+  if now then r.elapsedMs = math.floor(((job.finishedAt or now) - job.startedAt) * 1000 + 0.5) end
+  return r
+end
+
+function Instance:_sequenceReport(job, now)
+  local r = self:_sequenceSummary(job, now)
+  r.events = {}
+  for i, ev in ipairs(job.events) do r.events[i] = self:_eventReport(ev, now) end
+  r.cleanup = job.cleanup
+  r.note = "state 'running' means steps are still being serviced; 'completed' means every event was dispatched and every tap release resolved, not that a UI effect was verified (see each event's readback)"
+  return r
+end
+
 -- Servicing -------------------------------------------------------------------
 
 -- Called once per plugin loop iteration by the consumer. Processes due deadlines (tap releases,
@@ -879,6 +1765,16 @@ function Instance:service(now)
     if s.state == "active" and now >= s.expiresAt then self:_expireSession(s, now) end
   end
   out.expired, self._pendingExpired = self._pendingExpired, {}
+  -- Interaction leases: an expired interaction ends (sequence aborted, its holds released).
+  for _, ia in pairs(self._interactions) do
+    if ia.state == "open" and now >= ia.expiresAt then
+      local r = self:_endInteraction(ia, now, "interaction-expired", "expired")
+      out.interactionsExpired = out.interactionsExpired or {}
+      out.interactionsExpired[#out.interactionsExpired + 1] = ia.id
+      for _, a in ipairs(r.released or {}) do out.released[#out.released + 1] = a end
+      for _, a in ipairs(r.unresolved or {}) do out.unresolved[#out.unresolved + 1] = a end
+    end
+  end
   -- Due hold deadlines, oldest deadline first.
   local due = {}
   for _, h in pairs(self._holds) do
@@ -892,6 +1788,10 @@ function Instance:service(now)
     if h.state == "released" then out.released[#out.released + 1] = r else out.unresolved[#out.unresolved + 1] = r end
   end
   out.pending = math.max(0, #due - out.work)
+  -- The running sequence advances after the deadlines, so a waiting tap sees its release first.
+  if self._sequence and self._sequence.state == "running" then
+    out.sequence = self:_serviceSequence(self._sequence, now)
+  end
   -- Console state (observed, never ownership). A hold whose tuple the console no longer reports down
   -- is annotated, never re-pressed. Per-key state exists only on the fake backend; the aggregate
   -- MASTATE (any Shift source) is reported for MA holds: false rules out every Shift key, so the key is
@@ -964,6 +1864,29 @@ function Instance:status(now)
   if self._state ~= "disposed" then avail, missing = self:backendAvailable() end
   local bdef = BACKENDS[self._backend] or self._adapter or {}
   local ex = self._state ~= "disposed" and self:_exclusiveHold() or nil
+  local interactions, active = {}, nil
+  for id, ia in pairs(self._interactions) do
+    interactions[id] = self:_interactionReport(ia, now)
+    if ia.state == "open" and (now == nil or now < ia.expiresAt) then active = id end
+  end
+  local busy = nil
+  if self._state == "ready" then
+    -- Read-only: a lapsed interaction is reported as open until service() ends it; nothing is ended here.
+    for _, ia in pairs(self._interactions) do
+      if ia.state == "open" then busy = { reason = "interaction", owner = ia.session, interaction = ia.id }; break end
+    end
+    if not busy and self._sequence and self._sequence.state == "running" then busy = { reason = "sequence", owner = self._sequence.session, sequence = self._sequence.id } end
+    if not busy then
+      for _, h in pairs(self._holds) do
+        if h.state == "held" or h.state == "releasing" then busy = { reason = "hold", owner = h.session, hold = h.id }; break end
+      end
+    end
+    if not busy then
+      for _, h in pairs(self._holds) do
+        if h.state == "unresolved" then busy = { reason = "unresolved", owner = h.session, hold = h.id }; break end
+      end
+    end
+  end
   return {
     module = NAME, version = VERSION, apiVersion = API_VERSION,
     owner = self._owner, state = self._state,
@@ -977,6 +1900,8 @@ function Instance:status(now)
     sessions = sessions, sessionCount = count(sessions),
     holds = holds, holdCount = #holds, unresolved = unresolved,
     exclusiveHold = ex and ex.id or nil,
+    interactions = interactions, activeInteraction = active, busy = busy,
+    sequence = self._sequence and self:_sequenceSummary(self._sequence, now) or nil,
     observed = { available = self._observed and self._observed.available or false, down = observedDown, at = self._observed and self._observed.at,
                  error = self._observed and self._observed.error, reason = self._observed and self._observed.reason,
                  aggregate = self._observed and self._observed.aggregate or nil,
@@ -994,6 +1919,10 @@ end
 function Instance:dispose(now)
   if self._state == "disposed" then return { holds = 0, released = {}, unresolved = {}, records = {} } end
   local result = { released = {}, unresolved = {}, attempted = 0 }
+  if self._state == "ready" and type(now) == "number" then
+    if self._sequence and self._sequence.state == "running" then self:_abortSequence(self._sequence, now, "dispose") end
+    for _, ia in pairs(self._interactions) do if ia.state == "open" then ia.state, ia.endedAt, ia.endReason = "ended", now, "dispose" end end
+  end
   if self._state == "ready" and self._adapter and type(now) == "number" then
     result = self:_releaseHolds(self:_heldHolds(), now, "dispose")
   end
@@ -1096,6 +2025,7 @@ function Instance:_expireSession(s, now)
   s.state = "expired"
   s.expiredAt = now
   self._pendingExpired[#self._pendingExpired + 1] = s.id
+  self:_endSessionInteractions(s.id, now, "lease-expired", "expired")
   for _, h in ipairs(self:_sessionHolds(s.id, true)) do
     if h.state == "held" then self:_setDeadline(h, now, "lease-expired") end
   end
@@ -1116,10 +2046,6 @@ function Instance:_planPress(sessionId, now, spec, ctx)
     return fail("route-changed", string.format("a held key's route changed since it was pressed: %s %s (hold %s, session '%s', original %s); release or recover before new input (the operator restores the route; nothing is toggled here)",
       tostring(m.logical), tostring(m.mismatch), tostring(m.hold), tostring(self._holds[m.hold] and self._holds[m.hold].session), tostring(m.original.tupleKey)), { mismatches = mismatch })
   end
-  local tk = tupleKey(tuple)
-  if ctx.reserved and ctx.reserved[tk] then
-    return fail("bad-argument", "tuple " .. tk .. " appears twice in the combo (key " .. ctx.reserved[tk] .. ")")
-  end
   -- An exclusive hold (intended long-press) admits no new press from anyone, the owner included: a
   -- second key or a duplicate press cancels the console's long-press (KB-01).
   local ex = self:_exclusiveHold()
@@ -1127,6 +2053,44 @@ function Instance:_planPress(sessionId, now, spec, ctx)
     return fail("exclusive-hold", string.format("hold %s (%s, session '%s', state %s) is an exclusive long-press; no new press is admitted until its release is resolved%s", ex.id, tostring(ex.logical or ex.tupleKey), ex.session, ex.state,
         ex.state == "unresolved" and (" (release unresolved: " .. tostring(ex.unresolved and ex.unresolved.reason) .. "; recover it)") or ""),
       { owner = ex.session, hold = ex.id, logical = ex.logical, tupleKey = ex.tupleKey, state = ex.state, deadlineInMs = ex.deadline and math.max(0, math.floor((ex.deadline - now) * 1000 + 0.5)) or nil })
+  end
+  -- Interaction admission (KB-05). A running sequence owns the instance; an open interaction admits
+  -- only calls that carry its id from its own session (so callers sharing one connection cannot act on
+  -- each other's holds by accident); otherwise a key held by another session makes the instance busy.
+  -- A standalone hold always needs an interaction; bounded taps may run without one.
+  local interactionId = ctx.interaction
+  if interactionId == nil then interactionId = spec.interaction end
+  local ia
+  if interactionId ~= nil then
+    ia = type(interactionId) == "string" and self._interactions[interactionId] or nil
+    if ia and ia.state == "open" and now >= ia.expiresAt then self:_endInteraction(ia, now, "interaction-expired", "expired") end
+    if not ia or ia.state ~= "open" then
+      return fail("no-interaction", "interaction '" .. tostring(interactionId) .. "' is not open" .. (ia and (" (" .. ia.state .. ")") or "") .. "; an interaction is never resumed after it ended, expired or its connection closed: begin a new one",
+        { interaction = interactionId, state = ia and ia.state or nil })
+    end
+    if ia.session ~= sessionId then return fail("not-owner", "interaction '" .. ia.id .. "' belongs to session '" .. ia.session .. "'", { owner = ia.session, interaction = ia.id }) end
+  end
+  if self._sequence and self._sequence.state == "running" and not ctx.fromSequence then
+    local q = self._sequence
+    return fail("busy", string.format("sequence %s of session '%s' is running (step %d of %d); no other input is admitted until it finishes", q.id, q.session, q.index, #q.steps),
+      { reason = "sequence", owner = q.session, sequence = q.id, interaction = q.interaction })
+  end
+  local busy = self:_admission(now)
+  if busy and busy.reason == "interaction" and (not ia or ia.id ~= busy.interaction) then
+    return fail("busy", string.format("interaction %s of session '%s' is open (%d ms left); pass its id to act within it, or wait until it ends", busy.interaction, busy.owner, busy.remainingMs or 0), busy)
+  end
+  if busy and busy.reason == "hold" and busy.owner ~= sessionId and self._config.requireInteraction then
+    return fail("busy", string.format("session '%s' holds %s (hold %s); conflicting input is refused until it is released", busy.owner, tostring(busy.logical or busy.tupleKey), busy.hold), busy)
+  end
+  if busy and busy.reason == "unresolved" and busy.owner ~= sessionId and self._config.requireInteraction then
+    return fail("busy", busy.description, busy)
+  end
+  if ctx.kind == "hold" and not ia and self._config.requireInteraction then
+    return fail("interaction-required", "a standalone hold needs an explicit interaction: begin one (leased) and pass its id, or use a bounded tap, chord tap or sequence", { kind = ctx.kind })
+  end
+  local tk = tupleKey(tuple)
+  if ctx.reserved and ctx.reserved[tk] then
+    return fail("bad-argument", "tuple " .. tk .. " appears twice in the combo (key " .. ctx.reserved[tk] .. ")")
   end
   local existing = self._byTuple[tk]
   if existing then
@@ -1159,7 +2123,7 @@ function Instance:_planPress(sessionId, now, spec, ctx)
     if not ok then return fail("unsupported", "backend preflight failed: " .. tostring(accepted)) end
     if not accepted then return fail("unsupported", "backend refuses " .. tk .. ": " .. tostring(reason)) end
   end
-  return { tuple = tuple, route = route, tupleKey = tk, maxHoldMs = maxHoldMs, exclusive = spec.exclusive and true or false }
+  return { tuple = tuple, route = route, tupleKey = tk, maxHoldMs = maxHoldMs, exclusive = spec.exclusive and true or false, interaction = ia and ia.id or nil }
 end
 
 -- Creates the record and sends the press. The adapter contract decides the record's fate:
@@ -1169,6 +2133,7 @@ end
 function Instance:_dispatchPress(s, plan, now)
   local hold = self:_newHold(s, plan.tuple, plan.route, now, now + plan.maxHoldMs / 1000, "max-hold")
   hold.exclusive = plan.exclusive
+  hold.interaction = plan.interaction
   local ok, aOk, confirmed, err = pcall(self._adapter.press, self._adapter, copyTuple(plan.tuple))
   if not ok then
     hold.dispatch.press = { ok = false, at = now, error = tostring(aOk) }
@@ -1520,7 +2485,7 @@ function Instance:_holdReport(h, now, extra)
     logical = h.logical, pcKey = h.pcKey, shift = h.shift, ctrl = h.ctrl, alt = h.alt, numlock = h.numlock, display = h.display,
     tupleKey = h.tupleKey, route = h.route, backend = h.backend, pressedAt = h.pressedAt, releasedAt = h.releasedAt,
     deadline = h.deadline, deadlineReason = h.deadlineReason,
-    exclusive = h.exclusive or nil, group = h.group, groupIndex = h.groupIndex,
+    exclusive = h.exclusive or nil, group = h.group, groupIndex = h.groupIndex, interaction = h.interaction, sequence = h.sequence,
     dispatch = h.dispatch, unresolved = h.unresolved, routeMismatch = h.routeMismatch, observed = h.observed,
     observedReleasedAt = h.observedReleasedAt, adopted = h.adopted, routeRestored = h.routeRestored,
     readback = h.readback,
@@ -1554,13 +2519,17 @@ local function new(opts)
   local config = shallowCopy(DEFAULT_CONFIG)
   for k, v in pairs(opts.config or {}) do
     if DEFAULT_CONFIG[k] == nil then error(NAME .. ".new: unknown config key '" .. tostring(k) .. "'", 2) end
-    if type(v) ~= "number" or v <= 0 then error(NAME .. ".new: config." .. k .. " must be a positive number", 2) end
+    if type(DEFAULT_CONFIG[k]) == "boolean" then
+      if type(v) ~= "boolean" then error(NAME .. ".new: config." .. k .. " must be a boolean", 2) end
+    elseif type(v) ~= "number" or v <= 0 then error(NAME .. ".new: config." .. k .. " must be a positive number", 2) end
     config[k] = v
   end
   local self = setmetatable({
     _owner = opts.owner, _backend = backend, _deps = opts.deps or {}, _config = config,
     _adapter = nil, _inputEnabled = false,
     _state = "created", _holds = {}, _byTuple = {}, _released = {}, _sessions = {}, _pendingExpired = {},
+    _interactions = {}, _endedInteractions = {}, _interactionSeq = 0,
+    _sequence = nil, _sequences = {}, _sequenceSeq = 0,
     _seq = 0, _pressCount = 0, _releaseAttempts = 0, _serviced = 0, _lastServiced = nil, _observed = nil,
   }, Instance)
   return self
@@ -1570,8 +2539,10 @@ local M = {
   NAME = NAME, VERSION = VERSION, API_VERSION = API_VERSION,
   LOGICAL_KEYS = { "PLEASE", "STORE", "ESC", "CLEAR", "OOPS", "NUM0", "NUM1", "NUM2", "NUM3", "NUM4", "NUM5", "NUM6", "NUM7", "NUM8", "NUM9", "EXEC", "MA" },
   UNSUPPORTED_KEYS = { "MA1", "MA2" },
-  new = new, consoleDeps = consoleDeps, resolve = resolve, parseShortcut = parseShortcut, tupleKey = tupleKey,
+  new = new, consoleDeps = consoleDeps, resolve = resolve, parseShortcut = parseShortcut, tupleKey = tupleKey, validateText = validateText,
   fakeBackend = fakeBackend, keyboardBackend = keyboardBackend,
+  SEQUENCE_STEP_KINDS = { "tap", "press", "release", "combo", "text", "wait" },
+  TEXT_CONTEXTS = { "command-line", "text-field" },
   backends = { keyboard = BACKENDS.keyboard.name, fake = BACKENDS.fake.name },
   KEYBOARD_LIMITATIONS = KEYBOARD_LIMITATIONS,
   DEFAULT_CONFIG = shallowCopy(DEFAULT_CONFIG),
