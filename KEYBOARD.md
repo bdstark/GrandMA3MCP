@@ -717,6 +717,16 @@ physical display, Windows, cross-user scopes, the cached `watch()`/`snapshot()` 
 are not display-routing evidence, not an atomic snapshot and never confirmation that a particular request or key
 source produced an observation.
 
+### Module change for KB-07 (hardkeys 0.5.0, 2026-10-09)
+
+The surface consumer's keys (Edit, Copy, Highlight, …) go beyond the fixed logical-key list. Rather than a
+surface-side fork of key resolution, `resolve()`/`describeKey()` now accept **any `Enums.VirtualKeyCode` name
+the console knows** and resolve it through the shortcut table under the same rules as `STORE` (fewest
+modifiers, duplicate rows are one route, ties and collisions refused, `KEYBOARDSHORTCUTSACTIVE` required). The
+fixed `MA` and native `PLEASE` routes are unchanged; `MA1`/`MA2` stay unsupported; a name the enum does not
+know is unsupported with a reason. Regressions in `test/lua/modules_test.lua`. No bridge op changed (the
+bridge's `hardkey` tool still validates its own key list in TypeScript). Vendored into mtpnxk as 0.5.0.
+
 ## KB-07 — Integrate the independent mtpnxk surface consumer
 
 **Request:** As a surface user, I want responsive keypad input and trustworthy LED state across network interruptions.

@@ -10,7 +10,8 @@
 --   the module in the plugin's signal table, the entry component looks it up and calls new(). The
 --   source travels inside the show file; no loose file is needed on the console.
 --
--- What this version provides (MODULE API 1, module version 0.4.0, KB-03 + KB-04 + KB-05):
+-- What this version provides (MODULE API 1, module version 0.5.0, KB-03 + KB-04 + KB-05; 0.5.0 adds
+-- shortcut-table resolution of any Enums.VirtualKeyCode name for surface consumers, KB-07):
 --   * explicit instance lifecycle: new() -> init() -> service(now) ... -> dispose(now)
 --   * owned input sessions with leases: openSession / renewSession / closeSession. Every held key
 --     belongs to a session; the consumer binds sessions to whatever identifies its clients (the bridge
@@ -87,11 +88,13 @@
 --   * Input is disabled on a new instance. enableInput(adapter) is the operator's explicit decision.
 
 local NAME        = "gma3_mcp_hardkeys"
-local VERSION     = "0.4.0"
+local VERSION     = "0.5.0"
 local API_VERSION = 1
 
--- Logical keys accepted by describeKey() and press(). Each resolves through the UserProfile
--- KeyboardShortcut table to the row whose KeyCode equals the named Enums.VirtualKeyCode, except:
+-- Logical keys with special handling in describeKey() and press(). Since 0.5.0 every other
+-- Enums.VirtualKeyCode name of the console resolves through the UserProfile KeyboardShortcut table
+-- exactly like STORE (the row whose KeyCode equals the named VirtualKeyCode); the entries below are
+-- the ones that need more than that:
 --   * MA, which is the PC LeftShift key itself (KB-01 follow-up F2-F4; verified through Root().MASTATE);
 --   * PLEASE, which has a NATIVE route: the system VirtualKey PLEASE redirects the PC key Enter
 --     (Root().VirtualKeys, KEYCODE = Enter) and executes with keyboard shortcuts disabled too (KB-01
@@ -250,7 +253,13 @@ local function resolve(rows, vkCodes, name, opts)
   if not key then return { key = tostring(name), supported = false, reason = "key name must be a string" } end
   if UNSUPPORTED_KEYS[key] then return { key = key, supported = false, reason = UNSUPPORTED_KEYS[key] } end
   local def = LOGICAL_KEYS[key]
-  if not def then return { key = key, supported = false, reason = "not a logical key of this module" } end
+  -- Any other Enums.VirtualKeyCode name (EDIT, COPY, HIGHLIGHT, ...) resolves through the shortcut table
+  -- like STORE does (0.5.0, for surface consumers whose keys go beyond the fixed list). The fixed (MA) and
+  -- native (PLEASE) routes stay special; a name the console's enum does not know is unsupported, never guessed.
+  if not def then
+    if type(vkCodes) == "table" and vkCodes[key] ~= nil then def = { vk = key }
+    else return { key = key, supported = false, reason = "not a logical key of this module" .. ((type(vkCodes) == "table") and (" and not an Enums.VirtualKeyCode name on this console") or "") } end
+  end
   local codes = opts and opts.keyboardCodes
   local function checkPcKey(r)
     if type(codes) == "table" then
@@ -2538,6 +2547,8 @@ end
 local M = {
   NAME = NAME, VERSION = VERSION, API_VERSION = API_VERSION,
   LOGICAL_KEYS = { "PLEASE", "STORE", "ESC", "CLEAR", "OOPS", "NUM0", "NUM1", "NUM2", "NUM3", "NUM4", "NUM5", "NUM6", "NUM7", "NUM8", "NUM9", "EXEC", "MA" },
+  -- Plus, since 0.5.0, any other Enums.VirtualKeyCode name of the console (shortcut-table route).
+  GENERIC_VIRTUAL_KEYS = true,
   UNSUPPORTED_KEYS = { "MA1", "MA2" },
   new = new, consoleDeps = consoleDeps, resolve = resolve, parseShortcut = parseShortcut, tupleKey = tupleKey, validateText = validateText,
   fakeBackend = fakeBackend, keyboardBackend = keyboardBackend,

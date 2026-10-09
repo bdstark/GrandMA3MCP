@@ -10,7 +10,7 @@ The bridge plugin ships two reusable, instance-based Lua modules as extra compon
 | `gma3_mcp_hardkeys` | [plugin/gma3_mcp_hardkeys.lua](../plugin/gma3_mcp_hardkeys.lua) | Owned input sessions, leases, deadline servicing and recovery over a backend adapter; read-only logical-key resolution |
 | `gma3_mcp_feedback` | [plugin/gma3_mcp_feedback.lua](../plugin/gma3_mcp_feedback.lua) | Read-only console state readers confirmed in KB-01, with freshness and bounded polling (KB-06) |
 
-Module API version **1**; `gma3_mcp_hardkeys` **0.4.0** (KB-03 to KB-05), `gma3_mcp_feedback` **0.2.0** (KB-02 + KB-06).
+Module API version **1**; `gma3_mcp_hardkeys` **0.5.0** (KB-03 to KB-05; 0.5.0 resolves any `Enums.VirtualKeyCode` name, KB-07), `gma3_mcp_feedback` **0.2.0** (KB-02 + KB-06).
 Two backend adapters dispatch: the **fake backend** (records events, simulates aggregate console key state,
 nothing reaches a console key) and the **keyboard backend** (`keyboardBackend(deps)`, KB-04: the console's
 `Keyboard()` PC-key emulation; console keys are really pressed).
@@ -112,7 +112,10 @@ it validates `API_VERSION`, reports a missing or broken component through the `m
 | `dispose(now?)` | `→ disposed`, idempotent; later calls other than `status()`/`dispose()` raise. |
 
 `gma3_mcp_hardkeys` additionally offers `describeKey(name, opts)` (resolves `PLEASE`, `STORE`, `ESC`,
-`CLEAR`, `OOPS`, `NUM0`–`NUM9`, `EXEC` with `opts.executor`, and `MA`; `MA1`/`MA2` are reported
+`CLEAR`, `OOPS`, `NUM0`–`NUM9`, `EXEC` with `opts.executor`, `MA` and, since 0.5.0, **any other
+`Enums.VirtualKeyCode` name the console knows** (`EDIT`, `COPY`, `HIGHLIGHT`, …) through the shortcut table
+under the same rules as `STORE`, for surface consumers whose keys go beyond the fixed list (KB-07); a name that
+is neither is unsupported; `MA1`/`MA2` are reported
 unsupported; the result carries `source` (`shortcut-table`, `fixed` for MA, `native` for PLEASE),
 `shortcutsActive`, the current `profile` name, `pcKeyValidated` against `Enums.KeyboardCodes` and, for the
 native route, `redirectChecked`) and `backendAvailable()`. The pure functions `resolve(rows, vkCodes, name,
