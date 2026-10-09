@@ -9,7 +9,7 @@ Date: 2026-10-09. Status: **complete for macOS / single display**. Windows, mult
 | onPC | 2.5.1.0 Release, hostType onPC |
 | OS | macOS (Darwin 25.5.0), single monitor; onPC window partly off-screen left |
 | User / profile | Admin (User 2) / UserProfile 1 "Default" |
-| Display | `Keyboard()` display_index 1 = "Display 1" (only display present) |
+| Display | runs 1–2: Display 1 only (built-in screen). Run 3: Display 1 on LG HDR 4K (1), Display 2 on LG HDR 4K (2), built-in screen also attached |
 | Show | `mcp-test-disposable` |
 | Bridge | gma3_mcp_bridge 0.3.4, Lua enabled, luahook=preserve |
 | Probe channel | `gma3_lua` (diagnostic only; no production change) + screenshots |
@@ -59,7 +59,7 @@ not reachable by default; "Please"/"MA" are not accepted identifiers — keycode
 | 11 | open Edit Command dialog (keyboard icon), `char a,b,ü` | text | `abü` — Unicode char per call works | — |
 | 12 | in dialog: press `'5'`; press `'Backspace'` | — | `5` keycode typed nothing; Backspace deleted `ü` (text edit, not OOPS) | — |
 | 13 | Escape in dialog | close | dialog closed; text `ab` left in cmdline, **not executed** | Escape |
-| 14 | display 0/2/7/99, type `'bogus'`, code `'NotAKey'` | error | **all accepted silently**, no visible effect on Display 1 | — |
+| 14 | display 0/2/7/99 with `Q`, type `'bogus'`, code `'NotAKey'` | error | **all accepted silently**. *Correction (run 3, M1):* `Q` maps to SET, which adds no command-line text, so this test could not show an effect; other indexes do deliver keys | — |
 | 15 | `555`, plain `Z` (unmapped) | nothing | nothing (checked after a frame) | — |
 | 16 | `Z` with ctrl arg (`Keyboard(1,'press','Z',false,true,false,false)`) | OOPS | `555`→`55`, one frame late — **modifier args work** | — |
 | 17 | press `LeftCtrl`, tap `Z`, release `LeftCtrl` | OOPS? | nothing — held modifier keys are **not** combined; pass modifiers per event | — |
@@ -174,3 +174,34 @@ Consequences:
 Cleanup after follow-up: executor 1.101 deleted; KeyboardShortcut 33 ExecutorIndex 101; shortcuts active;
 environment Normal; Blind on (initial state); Highlight/Solo off; selection empty; MASTATE false;
 PRESERVEGRIDPOSITIONS false.
+
+## Run 3 — multiple displays and hardware keys (same day)
+
+Three monitors (built-in Retina, LG HDR 4K ×2); onPC shows Display 1 and Display 2 (`GetDisplayByIndex(1..2)`;
+`MonitorCollect` lists all three monitors).
+
+| # | Action | Observed |
+| --- | --- | --- |
+| M1 | `Keyboard(d,'press'/'release','5')` for d = 2, 3, 4, 7, 15, 16, 99, 0, -1 | `5` in the command line for **every** index, including indexes with no display |
+| M2 | Edit Command dialog opened on Display 2; `char` via index 1, 2, 9 | `a`, `b`, `c` all typed into the Display 2 dialog |
+| M3 | Escape via index 1 with the dialog open on Display 2 | dialog on Display 2 closed |
+| M4 | Store long-press (`S` held 110 frames) via index 2 | Store Settings pop-up opened on **Display 1** |
+| H1 | Operator held the physical Left Shift (onPC focused); injected `LeftShift` release 1.5 s into the hold | MASTATE true→false at the injected release and stayed false for the rest of the ~6 s physical hold (no auto-repeat re-press) |
+| H2 | Injected `LeftShift` press (MASTATE true); operator tapped the physical Left Shift | MASTATE dropped at the physical tap; cleanup release harmless |
+
+Consequences:
+
+- On onPC 2.5.1 `display_index` had **no observed effect** on key routing, text focus, Escape, or pop-up placement.
+  Input is not display-specific; the index cannot target a display. Validation can only require an existing
+  display (or index 1) and must report that routing is not display-scoped.
+- Same-key release across sources is confirmed with a **hardware key** in both directions (H1, H2): a physical
+  release ends an injected hold and an injected release ends a physical hold.
+
+Cleanup: command line empty, pop-ups closed, MASTATE false.
+
+## Reproducible script
+
+`scripts/kb01-probe.mjs auto` re-runs the automated subset (26 checks: mapping data, basic keys, modifiers,
+overlap, silent acceptance, display index, MA via Shift, Blind/Highlight/Solo/Preview readers, shortcuts
+disabled, double-press). Run on this host with two displays: 26/26 passed, state restored
+([kb-01-macos-2.5.1.json](kb-01-macos-2.5.1.json)). `longpress`, `type`, `hw-a` and `hw-b` cover the manual checks.

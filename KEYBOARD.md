@@ -94,7 +94,7 @@ The surface integration is a separate consumer, not a new network listener insid
 
 Evidence: [docs/probes/kb-01-macos-2.5.1.md](docs/probes/kb-01-macos-2.5.1.md), reviewed as a written
 live-run record, not independently rerun here. The push adds that record and this design, not an automated
-keyboard regression harness. Windows, multiple displays and non-US layouts are **unverified**.
+keyboard regression harness. Windows and non-US layouts are **unverified**; two displays were tested in run 3.
 The evidence page's “complete” status applies to its recorded run, not every KB-01 acceptance criterion.
 
 **Input backend (`Keyboard()`):**
@@ -111,6 +111,8 @@ The evidence page's “complete” status applies to its recorded run, not every
 - Modifiers apply only as per-event arguments; a held `LeftCtrl` key is not combined. **A release must repeat the
   press's modifier arguments**, otherwise it targets a different shortcut and the hold persists.
 - Invalid display index, event type and keycode are **accepted silently**. All validation is the bridge's job.
+- `display_index` had **no observed effect** (run 3, two displays): keys, `char`, Escape and pop-up placement
+  behaved identically for every index, including nonexistent ones. Input is not display-specific.
 - Effects land in the same call or one frame later, non-deterministically. The return value proves nothing;
   verification polls bounded across frames (`MAINLOOPCOUNT`).
 - Holds and long-press work (Store held → Store Settings pop-up) while onPC is in the OS background. A second key
@@ -118,8 +120,8 @@ The evidence page's “complete” status applies to its recorded run, not every
 - In the tested cases, duplicate presses collapsed and stray releases had no visible effect. Duplicate
   presses still suppressed long-press behavior, so they must not be forwarded as lease renewals.
 - Injected and OS-delivered input interacted in one syntax and key state. Internal ownership cannot isolate that
-  interaction. A release from either source ends a Shift (MA) hold made by the other (follow-up F14–F15,
-  synthetic OS events); a hardware-key hold was not performed.
+  interaction. A release from either source ends a Shift (MA) hold made by the other — confirmed with a
+  hardware key in both directions (run 3, H1–H2).
 - Executor down/up via an executor shortcut (Ctrl+F1 → exec 101) is a working **non-OSC** hold mechanism for
   executors mapped in the profile table.
 
@@ -170,13 +172,14 @@ as a last-resort operator action. A restart is not evidence that an uncertain re
   - *Remap or disable during a hold:* the stored tuple **does not release** the hold after the shortcut is
     remapped or shortcuts are disabled; it releases once the mapping/enablement is restored. Admission must
     observe `KEYBOARDSHORTCUTSACTIVE` and the mapping; a change during a hold is an unresolved-release state.
-  - *Same-key cross-source release:* OS-delivered and injected events share one key state in both
-    directions (injected Shift hold ended by an OS Shift tap; OS Shift hold ended by an injected release).
-    OS events were synthetic; a hardware-key hold was not performed.
+  - *Same-key cross-source release:* physical and injected events share one key state in both directions,
+    confirmed with synthetic OS events (F14–F15) and a hardware Shift key (H1–H2).
+  - *Multiple displays (run 3):* `display_index` does not route input; a pop-up triggered via index 2 opened
+    on Display 1. The bridge must not claim display targeting.
   - *Double-press:* not produced through keyboard shortcuts at 0–16 frame gaps, injected or OS-delivered.
     Keep it unsupported.
-- **Open probes:** module loading/show portability (KB-02), a hardware-key hold, broader
-  platform/display/layout coverage. Do not infer these from basic shortcut success.
+- **Open probes:** module loading/show portability (KB-02), Windows, non-US keyboard layouts.
+  Do not infer these from basic shortcut success.
 - **Side effect resolved:** `PRESERVEGRIDPOSITIONS` false→true was reproduced as a result of the cleanup
   command `Unassign Page 1.101` (parsed as `Fixture "Unassign" Page 1.101`), not keyboard input; restored.
 - **Freeze:** unavailable after empty-selection, with-selection and `Freeze On` probes plus a deep property
@@ -280,7 +283,8 @@ not required to ship this backend and must not become an automatic fallback.
 - Pass PC modifiers explicitly on every press and release. Pressing `LeftCtrl` and then a plain key
   is not an implementation of Ctrl+key. The shift flag is a PC modifier, not MA.
 - Validate configured display and key codes. Invalid arguments can be silently ignored by onPC, so
-  a no-error return is not validation. Do not use an input event as a capability-detection side effect.
+  a no-error return is not validation. Because `display_index` does not route input on 2.5.1, accept only an
+  existing display, report input as not display-scoped, and never promise per-display focus or pop-up placement. Do not use an input event as a capability-detection side effect.
 - Timed taps schedule their release through periodic servicing. Define whether the response means
   scheduled, dispatched or completed; do not report completion before the release is attempted.
 - An intended long-press is uninterrupted: reject conflicting events during it and do not forward
