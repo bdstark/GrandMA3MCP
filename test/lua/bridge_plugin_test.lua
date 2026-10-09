@@ -1185,6 +1185,23 @@ do
   check("service failure kept the unresolved record", #state.input.unresolved == 1 and state.input.unresolved[1].pcKey == "W" and state.input.unresolved[1].keptReason == "service-error", J(state.input.unresolved))
   r = request("input.press", { key = "STORE" }, nil, A)
   check("input refused after the failure", r.ok == false, r.error)
+  -- Restart with the default (input disabled), then "input recover": no backend can dispatch, so
+  -- the record must stay reserved and unresolved, and recover after enabling must release it.
+  start("")
+  state._loadModules(); state.running = true; state.stopRequested = false; state.ignoreNextCleanup = false
+  hk = state.modules.hardkeys
+  check("kept record adopted at a start with input disabled", state.input.enabled == false and hk.instance:status().unresolved == 1 and hk.instance:status().holds[1].tupleKey == "W|s0c0a0n0")
+  before = #logs
+  Main(nil, "input recover"); Cleanup()
+  check("'input recover' without a backend explains itself and keeps the record unresolved", logFound("input is disabled, so no backend", before) and hk.instance:status().holds[1].state == "unresolved" and hk.instance:status().holds[1].unresolved.reason:find("no backend"), J(hk.instance:status().holds[1]))
+  Main(nil, "input=fake"); Cleanup()
+  request("input.open", {}, nil, B)
+  r = request("input.press", { pcKey = "W" }, nil, B)
+  check("the record still reserves its key after enabling input", r.ok == false and r.error:find("previous%-run"), r.error)
+  before = #logs
+  Main(nil, "input recover"); Cleanup()
+  check("'input recover' with a backend releases the record", hk.instance:status().unresolved == 0 and logFound("input recover: 1 released, 0 still unresolved", before) and hk.fakeAdapter.events[#hk.fakeAdapter.events].pcKey == "W", lastLog())
+  request("input.close", {}, nil, B)
   state.input.unresolved = {}
   for _, rec in pairs(state.modules) do if rec.instance then rec.instance:dispose(0) end end
   state.running = false

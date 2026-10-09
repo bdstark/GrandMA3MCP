@@ -1577,6 +1577,9 @@ local function inputRecover()
     return
   end
   adoptKeptRecords(rec)
+  if not state.input.enabled then
+    logerr('input recover: input is disabled, so no backend can dispatch a release; the records stay reserved. Enable it first:  Plugin "gma3_mcp_bridge" "input=fake"')
+  end
   local r = rec.instance:recover(nil, now())
   logReleaseResult("input recover", r)
   log("input recover: %d released, %d still unresolved", #(r.released or {}), #(r.unresolved or {}))

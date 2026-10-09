@@ -166,7 +166,9 @@ survives a bridge restart and is cleared only by the operator's console-side
 records are adopted before any input is admitted, so their keys are reserved (`[conflict]` naming the
 `previous-run` session) until the operator recovers them; `ping.input.unresolvedFromPreviousRun` counts only
 records the instance could not take. A module that raises in `service()` is detached only after input is
-disabled, every held key got a release attempt and the unresolved records were kept. `input.status` never releases
+disabled, every held key got a release attempt and the unresolved records were kept. `input recover` while
+input is disabled cannot dispatch anything: it says so, the records stay reserved and unresolved, and a later
+`input recover` after `input=fake` releases them. `input.status` never releases
 anything. `input.fake {action}` (fake backend only) stages `failRelease`/`failPress` (`pcKey`, `sticky`,
 `error`), `clearFailures`, `confirm` (`mode`), `physicalRelease`/`physicalPress` (`pcKey`) and returns the
 event log; see [docs/modules.md](modules.md) for the ownership and release semantics.

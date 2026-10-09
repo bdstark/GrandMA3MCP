@@ -103,7 +103,7 @@ dispatched when an error is returned. Programming errors (wrong state, missing c
 | `tap(session, now, spec, holdMs)` | `press()` plus a release deadline (≤ `maxTapMs`) that `service()` honours. Cannot be layered on a hold. |
 | `release(session, now, { hold = id } \| spec)` | Release with the **stored** tuple. Releasing an already released hold is harmless; another session's hold is `not-owner`. |
 | `releaseAll(session, now)` | Owner-scoped, newest first. |
-| `recover(session \| nil, now)` | Re-attempt the release of unresolved holds; `nil` covers every session (the consumer decides who may call it that way). |
+| `recover(session \| nil, now)` | Re-attempt the release of unresolved holds (and any left in `releasing`); `nil` covers every session (the consumer decides who may call it that way). Without a backend attached the attempt is recorded as unresolved ("no backend attached") and the record stays reserved for a later recover. |
 | `adopt(records, now)` | Import the records a previous instance's `dispose()` returned, as unresolved holds of a closed `previous-run` session. Their tuples are reserved from then on (`conflict` for anyone else); releasing them is a separate `recover()`. Dispatches nothing. |
 | `service(now)` | Expire leases, release due taps/max-hold/expired-lease holds (at most `maxWorkPerService` attempts per call, the rest next call), snapshot the backend's aggregate key state. Returns `{ released, unresolved, expired, work, pending }`. |
 

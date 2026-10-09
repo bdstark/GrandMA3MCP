@@ -521,7 +521,7 @@ function Instance:recover(sessionId, now)
   checkNow(now, "recover")
   local list = {}
   for _, h in ipairs(self:_orderedHolds()) do
-    if h.state == "unresolved" and (sessionId == nil or h.session == sessionId) then list[#list + 1] = h end
+    if (h.state == "unresolved" or h.state == "releasing") and (sessionId == nil or h.session == sessionId) then list[#list + 1] = h end
   end
   local result = self:_releaseHolds(list, now, "recover")
   result.scope = sessionId or "all"
@@ -863,8 +863,17 @@ function Instance:_attemptRelease(hold, now, reason)
   self._releaseAttempts = self._releaseAttempts + 1
   hold.dispatch.attempts = hold.dispatch.attempts + 1
   if hold.logical then self:_checkRoutes() end  -- recheck the route right before using the stored tuple
-  hold.state = "releasing"
   local attempt = { hold = hold.id, session = hold.session, tupleKey = hold.tupleKey, logical = hold.logical, reason = reason, at = now }
+  if not self._adapter or type(self._adapter.release) ~= "function" then
+    -- No backend to dispatch through (input never enabled on this instance): the record stays
+    -- unresolved and a later recover() with a backend attached picks it up.
+    attempt.ok, attempt.error = false, "no backend attached; enable input and recover again"
+    hold.dispatch.release = { ok = false, at = now, error = attempt.error, reason = reason }
+    self:_markUnresolved(hold, now, attempt.error)
+    attempt.state = "unresolved"
+    return attempt
+  end
+  hold.state = "releasing"
   local ok, aOk, confirmed, err = pcall(self._adapter.release, self._adapter, copyTuple(hold))
   if not ok then
     attempt.ok, attempt.error = false, "release raised an error: " .. tostring(aOk)
@@ -913,7 +922,7 @@ function Instance:_releaseHolds(list, now, reason)
   table.sort(list, function(a, b) return a.seq > b.seq end)
   local out = { released = {}, unresolved = {}, attempted = 0 }
   for _, h in ipairs(list) do
-    if h.state == "held" or h.state == "unresolved" then
+    if h.state == "held" or h.state == "unresolved" or h.state == "releasing" then
       out.attempted = out.attempted + 1
       local r = self:_attemptRelease(h, now, reason)
       if h.state == "released" then out.released[#out.released + 1] = r else out.unresolved[#out.unresolved + 1] = r end

@@ -445,6 +445,27 @@ do
   r = inst2:recover(nil, 19)
   check("operator recover releases the adopted record with its stored tuple", #r.released == 1 and lastEvent(backend2).kind == "release" and lastEvent(backend2).pcKey == "S" and inst2:status().sessions["previous-run"] == nil, J(r))
   check("tuple free again", inst2:press("x", 20, { key = "STORE" }) ~= nil)
+  -- Recovery on an instance whose input was never enabled (the default after a restart) has no
+  -- backend: the record must stay unresolved, not get stuck in "releasing", and a later recover
+  -- with a backend must still find it.
+  local inst4, backend4 = fresh(); inst4:openSession({ id = "s", leaseMs = 120000 }, 0); inst4:press("s", 0, { pcKey = "N" })
+  backend4:failNext("release", { pcKey = "N" }, "wedged", true)
+  local kept = inst4:dispose(1).records
+  local cold = HK.new({ owner = "bridge", deps = deps }):init()
+  check("adopt works with input disabled", #cold:adopt(kept, 2).adopted == 1)
+  r = cold:recover(nil, 3)
+  local h4 = cold:status(3).holds[1]
+  check("recover without a backend leaves the record unresolved with a clear reason", #r.unresolved == 1 and r.unresolved[1].error:find("no backend") and h4.state == "unresolved" and h4.unresolved.reason:find("no backend"), J(h4))
+  check("the tuple stays reserved", cold:openSession({ id = "t", leaseMs = 120000 }, 3) and select(2, cold:press("t", 3, { pcKey = "N" })).code == "input-disabled")
+  cold:enableInput(HK.fakeBackend())
+  check("the reserved tuple still conflicts once input is enabled", select(2, cold:press("t", 4, { pcKey = "N" })).code == "conflict")
+  r = cold:recover(nil, 5)
+  check("recover with a backend attached releases it", #r.released == 1 and cold:status().unresolved == 0, J(r))
+  -- A record left in "releasing" (e.g. by a backend that raised mid-call in an older build) is picked up too.
+  cold:press("t", 6, { pcKey = "M" })
+  cold._holds[cold:status().holds[#cold:status().holds].id].state = "releasing"
+  r = cold:recover("t", 7)
+  check("recover also covers records stuck in releasing", #r.released == 1 and cold:status().capacity.used == 0, J(r))
   -- Dispose without a clock cannot release: records come back marked so.
   local inst3, backend3 = fresh(); inst3:openSession({ id = "s" }, 0); inst3:press("s", 0, { pcKey = "V" })
   r = inst3:dispose()
