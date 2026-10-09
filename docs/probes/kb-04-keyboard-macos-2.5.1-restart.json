@@ -1,0 +1,174 @@
+{
+  "probe": "kb-04-restart",
+  "date": "2026-10-09T12:34:56.719Z",
+  "bridge": {
+    "version": "0.6.0",
+    "host": "127.0.0.1",
+    "port": 9800,
+    "build": {
+      "version": "2.5.1.0",
+      "codeType": "Release",
+      "hostType": "onPC"
+    },
+    "hostname": "bdsmbpm401",
+    "showfile": "mcp-test-disposable",
+    "input": {
+      "unresolved": 0,
+      "holds": 0,
+      "enabled": true,
+      "sessions": 0,
+      "unresolvedFromPreviousRun": 0,
+      "backend": "keyboard",
+      "note": "ownership records, not physical key state; see input.status",
+      "moduleInputEnabled": true
+    }
+  },
+  "passed": 12,
+  "failed": 0,
+  "steps": [
+    {
+      "name": "session opened",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "STORE held",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "S row remapped to T while held",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "Macro 106 fired (stop + restart with lua only)",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "bridge back after the restart",
+      "pass": true
+    },
+    {
+      "name": "input disabled after the restart; the kept STORE record is adopted and reserved",
+      "pass": true,
+      "detail": {
+        "unresolved": 1,
+        "holds": 1,
+        "enabled": false,
+        "sessions": 1,
+        "unresolvedFromPreviousRun": 0,
+        "note": "ownership records, not physical key state; see input.status",
+        "moduleInputEnabled": false
+      }
+    },
+    {
+      "name": "the kept record is a keyboard record of the previous run with the stored S tuple",
+      "pass": true,
+      "detail": {
+        "backend": "keyboard",
+        "kind": "hold",
+        "unresolved": {
+          "since": 1791549289.4646,
+          "reason": "release was dispatched with the stored tuple, but the route changed during the hold (now maps to T|s0c0a0n0 (was S|s0c0a0n0)) and the effect cannot be confirmed",
+          "lastAttempt": 1791549289.4646
+        },
+        "heldMs": 6096,
+        "logical": "STORE",
+        "numlock": false,
+        "shift": false,
+        "route": {
+          "rowIndex": 123,
+          "source": "shortcut-table",
+          "pcKeyValidated": true,
+          "shortcutsActive": true,
+          "profile": "Default",
+          "shortcut": "S",
+          "logical": "STORE"
+        },
+        "state": "unresolved",
+        "releaseOutcome": "unresolved",
+        "id": "h1",
+        "alt": false,
+        "dispatch": {
+          "attempts": 1,
+          "press": {
+            "at": 1791549287.4115,
+            "outcome": "dispatched",
+            "ok": true
+          },
+          "release": {
+            "reason": "disconnect",
+            "ok": true,
+            "at": 1791549287.4776,
+            "outcome": "unresolved"
+          }
+        },
+        "tupleKey": "S|s0c0a0n0",
+        "adopted": true,
+        "pressOutcome": "dispatched",
+        "session": "previous-run",
+        "pressedAt": 1791549287.4115,
+        "ctrl": false,
+        "pcKey": "S"
+      }
+    },
+    {
+      "name": "input recover with the route still remapped: keyboard backend attached for cleanup, input still disabled, record still unresolved",
+      "pass": true,
+      "detail": {
+        "backend": "keyboard",
+        "enabled": false,
+        "state": "unresolved",
+        "reason": "release was dispatched with the stored tuple, but the route changed during the hold (now maps to T|s0c0a0n0 (was S|s0c0a0n0)) and the effect cannot be confirmed"
+      }
+    },
+    {
+      "name": "new input is still refused (input disabled) although a backend is attached for cleanup",
+      "pass": true,
+      "detail": "[input-disabled] input is disabled on the console. The console operator can enable it with:  Plugin \"gma3_mcp_bridge\" \"input=keyboard\"  (real console keys) or  \"input=fake\"  (lifecycle only), or start the bridge with that argument. input.status, input.release, input.releaseAll, input.recover and input.close remain available."
+    },
+    {
+      "name": "S row restored",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "input recover after the restore releases the kept record through Keyboard()",
+      "pass": true,
+      "detail": {
+        "unresolved": 0,
+        "holds": 0,
+        "enabled": false,
+        "sessions": 1,
+        "unresolvedFromPreviousRun": 0,
+        "note": "ownership records, not physical key state; see input.status",
+        "moduleInputEnabled": false
+      }
+    },
+    {
+      "name": "command line after recovery",
+      "pass": null,
+      "detail": "\"Store \""
+    },
+    {
+      "name": "console idle: MASTATE false, shortcuts active",
+      "pass": true
+    },
+    {
+      "name": "operator follow-up",
+      "pass": null,
+      "detail": "the bridge is running with input disabled; re-enable with  Plugin \"gma3_mcp_bridge\" \"input=keyboard\"  (Macro 105 if updated) and clear the command line with Escape if needed"
+    }
+  ],
+  "finalInput": {
+    "unresolved": 0,
+    "holds": 0,
+    "enabled": false,
+    "sessions": 1,
+    "unresolvedFromPreviousRun": 0,
+    "note": "ownership records, not physical key state; see input.status",
+    "moduleInputEnabled": false
+  }
+}

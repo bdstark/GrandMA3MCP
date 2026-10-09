@@ -35,18 +35,26 @@ Other control arguments configure [optional Lua execution](../lua.md) and, since
 sessions (off by default and reset at every start):
 
 ```text
+Plugin "gma3_mcp_bridge" "input=keyboard"
 Plugin "gma3_mcp_bridge" "input=fake"
 Plugin "gma3_mcp_bridge" "input=off"
 Plugin "gma3_mcp_bridge" "input status"
 Plugin "gma3_mcp_bridge" "input recover"
 ```
 
-`input=fake` admits the `input.*` bridge ops on the fake backend (events are recorded, nothing reaches a
-console key; the console keyboard backend is KB-04). `input=off` stops admitting input and attempts to
-release every held key. `input status` prints sessions, holds and unresolved releases; `input recover` is
-the operator's recovery action: it re-attempts every unresolved release, including records kept from a
-previous run. `status`, `input status` and other control arguments never release keys of the running
-bridge. See [docs/reference.md](../reference.md#owned-input-sessions-plugin-v050-kb-03).
+`input=keyboard` (v0.6.0, KB-04) admits the `input.*` bridge ops on the console keyboard backend: **console
+keys are really pressed** through `Keyboard()`, routed through the current user profile's keyboard shortcuts
+(or the native MA/PLEASE routes), so use it on a show you are prepared to have operated. `input=fake` admits
+them on the fake backend (events are recorded, nothing reaches a console key). `input=off` stops admitting
+input and attempts to release every held key. `input status` prints sessions, holds and unresolved releases;
+`input recover` is the operator's recovery action: it re-attempts every unresolved release, including records
+kept from a previous run, attaching the records' own backend for cleanup only when none is attached (input
+stays disabled). A switch between backends is refused while held or unresolved records exist. `status`,
+`input status` and other control arguments never release keys of the running bridge. If a held shortcut was
+remapped or shortcuts were disabled (F10) during the hold, restore the mapping or enablement on the console
+first, then run `input recover`: the bridge never changes mappings or toggles F10, and while such a mismatch
+is pending it refuses every new press, including an injected F10. See
+[docs/reference.md](../reference.md#owned-input-sessions-plugin-v050-kb-03).
 
 The plugin logs to `gma3_<version>/onpc/temp/gma3_mcp_bridge.log` under the onPC resource folder.
 

@@ -1,12 +1,14 @@
 # GrandMA3MCP hardkey, keyboard and feedback feature requests
 
 Updated: 2026-10-09 after review of the KB-01 follow-up evidence and documentation through `e99f23c` (merged in `1069f1d`),
-after the KB-02 module packaging work, and after the KB-03 owned-session implementation on the fake backend.
-Status: **KB-01 complete for the initial onPC 2.5.1.0 / US-layout feasibility scope**: macOS and Windows 11, each with one and two
+after the KB-02 module packaging work, the KB-03 owned-session implementation on the fake backend, and the KB-04 keyboard
+backend. Status: **KB-01 complete for the initial onPC 2.5.1.0 / US-layout feasibility scope**: macOS and Windows 11, each with one and two
 onPC displays. **KB-02 complete on macOS**: modules packaged and their loading verified live, including save/reload without
 loose files; Windows not exercised. **KB-03 implemented on the fake backend** (module 0.2.0, bridge 0.5.0): ownership, leases,
-deadline servicing and recovery are covered by harness tests and verified live on macOS; actual key dispatch remains KB-04.
-Windows module loading and transfer to a separate machine remain qualification gaps. KB-04–KB-08 remain implementation/qualification work.
+deadline servicing and recovery are covered by harness tests and verified live on macOS. **KB-04 implemented on macOS**
+(module 0.3.0, bridge 0.6.0): the `Keyboard()` adapter presses real console keys through validated shortcut and native routes,
+with MA combinations, exclusive long-press, remap/disable/disconnect/restart recovery verified live; Windows not exercised.
+Windows module loading and transfer to a separate machine remain qualification gaps. KB-05–KB-08 remain implementation/qualification work.
 Completion establishes the contracts and limitations below, not production keyboard support or universal
 platform coverage. No production keyboard operations exist yet; Quickeys remain deferred.
 
@@ -421,6 +423,53 @@ not required to ship this backend and must not become an automatic fallback.
   handler are not established as a double-press. Make any later timing policy bounded and explicit.
 - Validate the initial backend's same-key repetition, MA combinations, raw/logical alias conflicts,
   cross-display ownership, disabled shortcuts and cleanup failures with automated and live tests.
+
+### KB-04 results (keyboard backend; macOS, onPC 2.5.1.0, 2026-10-09)
+
+Implementation: `plugin/gma3_mcp_hardkeys.lua` 0.3.0 (`keyboardBackend(deps)`, native PLEASE route, backend-origin
+records, `attachBackend()`, bounded MASTATE readback, exclusive holds, `combo()`), bridge 0.6.0 (`input=keyboard`,
+`input.combo`, `exclusive` on `input.press`/`input.tap`, cleanup-only attach in `input recover`). Contract:
+[docs/modules.md](docs/modules.md#keyboard-backend-gma3_mcp_hardkeys-030-kb-04); protocol:
+[docs/reference.md](docs/reference.md#owned-input-sessions-plugin-v050-kb-03); evidence:
+[docs/probes/kb-04-keyboard-macos-2.5.1.md](docs/probes/kb-04-keyboard-macos-2.5.1.md).
+
+**Decisions.** The adapter stays small: it validates what onPC would accept silently (the `Keyboard` function,
+the `Enums.KeyboardCodes` name, the display, MASTATE readability for MA), passes every modifier explicitly on every
+press and release, and observes aggregate state; ownership, leases, deadlines and recovery remain in the KB-03
+lifecycle. **Release results** are `confirmed` (backend observed the key up; fake only), `dispatched` (call returned,
+no per-key observation; every `Keyboard()` release) or `unresolved`. Aggregate `MASTATE` is never turned into a per-key
+state: after an MA press/release the module performs a bounded readback (`readbackMs`, default 1 s) and reports
+`observed` / `inconclusive` next to the dispatch, never changing the hold's state; MASTATE false during a hold is the
+one sound inference (no Shift key is down) and is annotated, never re-pressed. **Routes**: shortcut-backed keys need
+`KEYBOARDSHORTCUTSACTIVE` and their validated row; `MA` is the fixed `LeftShift` route; `PLEASE` is a native route
+(`Enter`, the system VirtualKey redirect, admitted with shortcuts disabled too) that is rejected as ambiguous when a
+shortcut row claims plain `Enter` for another key or the readable redirect no longer names `Enter`. Several rows with the
+same shortcut text are one route; different shortcuts with equal modifier count are ambiguous and rejected. Shortcut
+names outside `Enums.KeyboardCodes` are unsupported. A profile switch is a route change for shortcut-table routes only.
+**Combinations** (`combo`) preflight every key (resolution, routes, ownership, capacity, exclusivity, backend) before the
+first event; a press failing midway releases what was pressed and reports it. **Exclusive** holds (the intended
+long-press) refuse every new press from every session, including the owner's duplicate and an injected `F10`, until
+released; they are refused while any other record exists; releases stay allowed. Double-press stays unsupported.
+**Records carry their backend**; a record is only released through the backend that pressed it, so a fake record can
+never become a real `Keyboard()` event. `input recover` on an instance without a backend attaches the records' own backend
+for cleanup only (`attachBackend`); admitting new presses remains the separate `input=keyboard` decision. A refused
+backend switch leaves the previous input policy intact.
+
+**Verified by harness** (`npm test`: 72 + 218 + 296 Lua checks plus the probe guard tests): the adapter's argument passing,
+pre-dispatch refusals, raising `Keyboard()` kept as unresolved, missing `Keyboard`/unreadable MASTATE, native PLEASE with
+shortcuts off and its ambiguity cases, readback outcomes on both backends, exclusive rejection matrix, combo preflight and
+rollback, backend-origin refusals, cleanup-only attach, and the bridge paths (`input=keyboard`, refused switches, `input.combo`,
+operator recover attaching keyboard/fake for cleanup).
+
+**Verified live** (macOS, 47/47 + 12/12): tap `NUM5` → `5` on the command line; native PLEASE; `MA+STORE` combo → `Record`
+with MASTATE readback true/false; 1.2 s exclusive STORE long-press rejecting the owner's duplicate, another session and a
+combo; remap `S→T` and `F10` during a hold → `route-changed`, unresolved stored-tuple release, recovery after the operator
+restored the route; disconnect releasing MA; a remapped hold kept across a restart with input disabled, keyboard backend
+attached for cleanup only, released by `input recover` after the restore. Effects landed 18–73 ms after the call.
+
+**Not exercised / limitations.** Windows, a separate machine, non-US layouts, a second display. The Store Settings pop-up
+cannot be read back (only `cmdtext = "Store "`). A `Keyboard()` call that raises or blocks on the real console was only
+stubbed. Injected and physical input still share one key state; expiry remains an attempt, not a cancellation.
 
 ### Deferred Quickey research — not an initial-release requirement
 

@@ -50,8 +50,9 @@ The [Lua bridge plugin](plugin/gma3_mcp_bridge.lua) runs inside onPC and listens
 The [MCP server](src/index.ts) translates tool calls into bridge requests. Both parts are required for
 show inspection and workflow tools. The plugin also carries two instance-based
 [console interaction modules](docs/modules.md) (owned input sessions, read-only feedback) as extra
-components of the same XML. Input is off by default and, in this version, dispatches only to a fake
-backend that records events; no console key is pressed until the keyboard backend lands (KB-04).
+components of the same XML. Input is off by default; the operator enables it per start on the console
+keyboard backend (`input=keyboard`, real key presses through `Keyboard()`) or the fake backend (`input=fake`,
+events recorded only). No MCP tool exposes it yet (KB-05).
 
 `gma3_command` also supports write-only OSC when OSC input is configured in onPC. Automatic fallback
 happens only if the bridge cannot be reached before dispatch; a command with an uncertain result is

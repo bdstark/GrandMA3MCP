@@ -1,0 +1,381 @@
+{
+  "probe": "kb-04-run",
+  "date": "2026-10-09T12:34:09.921Z",
+  "bridge": {
+    "version": "0.6.0",
+    "host": "127.0.0.1",
+    "port": 9800,
+    "build": {
+      "version": "2.5.1.0",
+      "codeType": "Release",
+      "hostType": "onPC"
+    },
+    "hostname": "bdsmbpm401",
+    "showfile": "mcp-test-disposable",
+    "input": {
+      "unresolved": 0,
+      "holds": 0,
+      "enabled": true,
+      "sessions": 0,
+      "unresolvedFromPreviousRun": 0,
+      "backend": "keyboard",
+      "note": "ownership records, not physical key state; see input.status",
+      "moduleInputEnabled": true
+    }
+  },
+  "passed": 47,
+  "failed": 0,
+  "steps": [
+    {
+      "name": "A opens a session",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "B opens a session",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "status names the keyboard backend, dispatching, not display-scoped, with limitations",
+      "pass": true,
+      "detail": "keyboard"
+    },
+    {
+      "name": "tap NUM5 accepted: press dispatched, release scheduled",
+      "pass": true,
+      "detail": "5|s0c0a0n0 via shortcut-table \"5\""
+    },
+    {
+      "name": "console shows 5 on the command line",
+      "pass": true,
+      "detail": "cmdtext=\"5\" after 16 ms"
+    },
+    {
+      "name": "the loop released the tap: outcome 'dispatched' (not confirmed: no per-key readback)",
+      "pass": true,
+      "detail": "released/dispatched after 84 ms"
+    },
+    {
+      "name": "tap ESC clears the command line",
+      "pass": true,
+      "detail": "cmdtext=\"\""
+    },
+    {
+      "name": "PLEASE admitted through the native Enter route with the redirect checked",
+      "pass": true,
+      "detail": {
+        "source": "native",
+        "logical": "PLEASE",
+        "shortcutsActive": true,
+        "profile": "Default",
+        "redirectChecked": true,
+        "pcKeyValidated": true
+      }
+    },
+    {
+      "name": "PLEASE released with the stored Enter tuple",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "empty command line unchanged by PLEASE",
+      "pass": true,
+      "detail": "\"\""
+    },
+    {
+      "name": "combo MA+STORE accepted: LeftShift then S in one group",
+      "pass": true,
+      "detail": "newest first at the deadline in 150 ms"
+    },
+    {
+      "name": "console shows Record (MA + Store) on the command line",
+      "pass": true,
+      "detail": "cmdtext=\"Record \" after 15 ms"
+    },
+    {
+      "name": "MA released at the deadline, newest first (S before LeftShift)",
+      "pass": true,
+      "detail": "released (combo)"
+    },
+    {
+      "name": "MASTATE readback after the MA release: observed false (aggregate), reported separately from the dispatch",
+      "pass": true,
+      "detail": {
+        "phase": "release",
+        "source": "MASTATE",
+        "value": false,
+        "note": "MASTATE false after the release: no Shift key is down (aggregate; consistent with the release, not a per-key confirmation)",
+        "since": 1791549245.8061,
+        "expect": false,
+        "outcome": "observed",
+        "at": 1791549245.8735,
+        "until_": 1791549246.8061
+      }
+    },
+    {
+      "name": "MASTATE readback after the MA press was observed true",
+      "pass": true,
+      "detail": {
+        "phase": "press",
+        "source": "MASTATE",
+        "value": true,
+        "note": "MASTATE true after the press (aggregate: another Shift source could also set it)",
+        "since": 1791549245.64,
+        "expect": true,
+        "outcome": "observed",
+        "at": 1791549245.6888,
+        "until_": 1791549246.64
+      }
+    },
+    {
+      "name": "console MASTATE is false again",
+      "pass": true,
+      "detail": false
+    },
+    {
+      "name": "ESC clears Record",
+      "pass": true,
+      "detail": "\"\""
+    },
+    {
+      "name": "exclusive STORE long-press accepted",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "B's press rejected during the long-press (exclusive-hold naming A)",
+      "pass": true,
+      "detail": "[exclusive-hold] hold h8 (STORE, session 'conn-74') is an exclusive long-press; no new press is admitted until it is released"
+    },
+    {
+      "name": "A's duplicate STORE rejected during the long-press",
+      "pass": true,
+      "detail": "[exclusive-hold] hold h8 (STORE, session 'conn-74') is an exclusive long-press; no new press is admitted until it is released"
+    },
+    {
+      "name": "a combo is rejected during the long-press",
+      "pass": true,
+      "detail": "[exclusive-hold] key 1 of the combo: hold h8 (STORE, session 'conn-74') is an exclusive long-press; no new press is admitted until it is released (nothing was dispatched)"
+    },
+    {
+      "name": "the long-press was released by the loop after about 1.2 s",
+      "pass": true,
+      "detail": "1200 ms"
+    },
+    {
+      "name": "Store Settings pop-up",
+      "pass": null,
+      "detail": "expected to have opened on Display 1 during the long-press (KB-01); not readable from Lua, operator verifies by eye; Escape closes it next"
+    },
+    {
+      "name": "command line after the long-press",
+      "pass": null,
+      "detail": "\"Store \""
+    },
+    {
+      "name": "ESC x2 closes the pop-up and clears the command line",
+      "pass": true,
+      "detail": "\"\""
+    },
+    {
+      "name": "B can press again after the long-press ended",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "STORE held (S down)",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "command line while S is held",
+      "pass": null,
+      "detail": "\"Store \""
+    },
+    {
+      "name": "operator remaps KeyboardShortcut 123 S -> T while held (via cmd)",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "new input stops for every session: route-changed naming the original route and the mismatch",
+      "pass": true,
+      "detail": "[route-changed] a held key's route changed since it was pressed: STORE now maps to T|s0c0a0n0 (was S|s0c0a0n0) (hold h12, session 'conn-74', original S|s0c0a0n0); release or recover before new input (the operator restores the route; nothing is toggled here)"
+    },
+    {
+      "name": "stored-tuple release (S) dispatched but unresolved while the route differs",
+      "pass": true,
+      "detail": "release was dispatched with the stored tuple, but the route changed during the hold (now maps to T|s0c0a0n0 (was S|s0c0a0n0)) and the effect cannot be confirmed"
+    },
+    {
+      "name": "command line after the unconfirmable release (KB-01: the console does not lift a remapped hold)",
+      "pass": null,
+      "detail": "\"Store \""
+    },
+    {
+      "name": "operator restores KeyboardShortcut 123 to S",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "owner recover after the restore releases with the stored tuple",
+      "pass": true,
+      "detail": {
+        "unresolved": [],
+        "attempted": 1,
+        "released": [
+          {
+            "state": "released",
+            "reason": "recover",
+            "at": 1791549248.1282,
+            "hold": "h12",
+            "outcome": "dispatched",
+            "logical": "STORE",
+            "session": "conn-74",
+            "verified": false,
+            "ok": true,
+            "tupleKey": "S|s0c0a0n0"
+          }
+        ],
+        "scope": "conn-74"
+      }
+    },
+    {
+      "name": "command line clear after the remap test",
+      "pass": true,
+      "detail": "\"\""
+    },
+    {
+      "name": "input admitted again after recovery",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "STORE held before F10",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "raw F10 tap disables keyboard shortcuts (operator action simulated; never done implicitly)",
+      "pass": true,
+      "detail": "shortcutsActive=false"
+    },
+    {
+      "name": "new input stops: route-changed 'inactive' for the STORE hold",
+      "pass": true,
+      "detail": "[route-changed] a held key's route changed since it was pressed: STORE keyboard shortcuts are now inactive (were active) (hold h16, session 'conn-74', original S|s0c0a0n0); release or recover before new input (the operator restores the route; nothing is toggled here)"
+    },
+    {
+      "name": "release with shortcuts disabled is unresolved (unconfirmable), record kept",
+      "pass": true,
+      "detail": "release was dispatched with the stored tuple, but the route changed during the hold (keyboard shortcuts are now inactive (were active)) and the effect cannot be confirmed"
+    },
+    {
+      "name": "an injected F10 to re-enable is refused while the route mismatch is pending (new input stops; the operator restores the route)",
+      "pass": true,
+      "detail": "[route-changed] a held key's route changed since it was pressed: STORE keyboard shortcuts are now inactive (were active) (hold h16, session 'conn-74', original S|s0c0a0n0); release or recover before new input (the operator restores the route; nothing is toggled here)"
+    },
+    {
+      "name": "operator re-enables shortcuts (property set through Lua, standing in for the console's F10)",
+      "pass": true,
+      "detail": "shortcutsActive=true"
+    },
+    {
+      "name": "recover after re-enabling releases the STORE record",
+      "pass": true,
+      "detail": {
+        "unresolved": [],
+        "attempted": 1,
+        "released": [
+          {
+            "state": "released",
+            "reason": "recover",
+            "at": 1791549248.979,
+            "hold": "h16",
+            "outcome": "dispatched",
+            "logical": "STORE",
+            "session": "conn-74",
+            "verified": false,
+            "ok": true,
+            "tupleKey": "S|s0c0a0n0"
+          }
+        ],
+        "scope": "conn-74"
+      }
+    },
+    {
+      "name": "command line clear after the F10 test",
+      "pass": true,
+      "detail": "\"\""
+    },
+    {
+      "name": "native PLEASE while shortcuts active",
+      "pass": null,
+      "detail": "admitted (native)"
+    },
+    {
+      "name": "shortcuts still active",
+      "pass": true,
+      "detail": true
+    },
+    {
+      "name": "B holds MA",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "console MASTATE true while B holds MA",
+      "pass": true,
+      "detail": true
+    },
+    {
+      "name": "B's disconnect released MA: no holds, one more Keyboard() release, MASTATE false",
+      "pass": true,
+      "detail": {
+        "before": 21,
+        "after": 22,
+        "ma": false
+      }
+    },
+    {
+      "name": "A releaseAll (nothing left)",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "A closes its session",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "console and bridge left clean: no holds, nothing unresolved, empty command line, MASTATE false, shortcuts active",
+      "pass": true,
+      "detail": {
+        "input": {
+          "unresolved": 0,
+          "holds": 0,
+          "enabled": true,
+          "sessions": 0,
+          "unresolvedFromPreviousRun": 0,
+          "backend": "keyboard",
+          "note": "ownership records, not physical key state; see input.status",
+          "moduleInputEnabled": true
+        },
+        "cmd": "",
+        "ma": false,
+        "shortcuts": true
+      }
+    }
+  ],
+  "finalInput": {
+    "unresolved": 0,
+    "holds": 0,
+    "enabled": true,
+    "sessions": 0,
+    "unresolvedFromPreviousRun": 0,
+    "backend": "keyboard",
+    "note": "ownership records, not physical key state; see input.status",
+    "moduleInputEnabled": true
+  }
+}
