@@ -88,6 +88,40 @@ do
 end
 
 -------------------------------------------------------------------------------
+-- spec.prefer: a same-target tie resolved through the normal route keeps enablement and route rechecks
+-------------------------------------------------------------------------------
+do
+  VK.PLUS = 77
+  profile.rows = defaultRows()
+  profile.rows[#profile.rows + 1] = { shortcut = "Equal", keyCode = 77 }
+  profile.rows[#profile.rows + 1] = { shortcut = "kpAdd", keyCode = 77 }
+  local inst, backend = fresh()
+  backend:setConfirmMode(nil)  -- like Keyboard(): a release is dispatched, never observed per key
+  inst:openSession({ id = "c1" }, 0)
+  local h, err = inst:press("c1", 1, { key = "PLUS" })
+  check("ambiguous PLUS refused without a preference", h == nil and err.code == "unsupported" and err.message:find("ambiguous"), J(err))
+  h, err = inst:press("c1", 1, { key = "PLUS", prefer = 5 })
+  check("prefer must be a string", h == nil and err.code == "bad-argument", J(err))
+  h = inst:press("c1", 1, { key = "PLUS", prefer = "kpAdd" })
+  check("preferred row pressed through the shortcut-table route with the preference stored", h and h.pcKey == "kpAdd" and h.route.source == "shortcut-table" and h.route.prefer == "kpAdd", J(h))
+  profile.shortcutsActive = false
+  local r = inst:release("c1", 2, { hold = h.id })
+  check("disabling shortcuts during the preferred hold makes the release unresolved, like any shortcut route", r.state == "unresolved" and r.routeMismatch and r.routeMismatch.reason:find("inactive"), J(r))
+  profile.shortcutsActive = true
+  r = inst:recover("c1", 3)
+  check("restored route recovers the preferred hold", #r.released == 1, J(r))
+  profile.shortcutsActive = false
+  h, err = inst:press("c1", 9, { key = "PLUS", prefer = "kpAdd" })
+  check("preferred press refused while shortcuts are inactive (no raw bypass)", h == nil and err.code == "unsupported" and err.message:find("inactive"), J(err))
+  profile.shortcutsActive = true
+  profile.rows[#profile.rows + 1] = { shortcut = "kpAdd", keyCode = 66 }
+  h, err = inst:press("c1", 10, { key = "PLUS", prefer = "kpAdd" })
+  check("preferred press refused when the row collides with another target", h == nil and err.message:find("collision"), J(err))
+  profile.rows = defaultRows()
+  VK.PLUS = nil
+end
+
+-------------------------------------------------------------------------------
 -- Sessions and leases
 -------------------------------------------------------------------------------
 do

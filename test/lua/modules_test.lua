@@ -167,6 +167,21 @@ check("generic names obey the collision rule", r.supported == false and r.reason
 r = HK.resolve({ { shortcut = "E", keyCode = 40 } }, VK2, "MA1")
 check("MA1/MA2 stay unsupported even though they are VirtualKeyCode names", r.supported == false and r.reason:find("one MA state"), json.encode(r))
 check("module advertises the generic route", HK.GENERIC_VIRTUAL_KEYS == true)
+-- Same-target ties (default profile: Equal and kpAdd both map PLUS) can be resolved by naming the row.
+local VK3 = { PLUS = 77, STORE = 66 }
+local tieRows = { { shortcut = "Equal", keyCode = 77 }, { shortcut = "kpAdd", keyCode = 77 } }
+r = HK.resolve(tieRows, VK3, "PLUS")
+check("same-target tie without a preference stays ambiguous", r.supported == false and r.reason:find("ambiguous") and #r.candidates == 2, json.encode(r))
+r = HK.resolve(tieRows, VK3, "PLUS", { prefer = "kpAdd" })
+check("prefer picks the named tied row through the normal route", r.supported and r.pcKey == "kpAdd" and r.source == "shortcut-table" and r.prefer == "kpAdd" and r.rowIndex == 2, json.encode(r))
+r = HK.resolve(tieRows, VK3, "PLUS", { prefer = "F13" })
+check("a preference that is not a tied candidate does not resolve", r.supported == false and r.reason:find("ambiguous"), json.encode(r))
+r = HK.resolve({ { shortcut = "Equal", keyCode = 77 }, { shortcut = "kpAdd", keyCode = 77 }, { shortcut = "kpAdd", keyCode = 66 } }, VK3, "PLUS", { prefer = "kpAdd" })
+check("the preferred row still obeys the collision rule", r.supported == false and r.reason:find("collision"), json.encode(r))
+r = HK.resolve({ { shortcut = "Equal", keyCode = 77 }, { shortcut = "Ctrl+kpAdd", keyCode = 77 } }, VK3, "PLUS", { prefer = "kpAdd" })
+check("prefer never picks a row with more modifiers than the best one (no tie there)", r.supported and r.pcKey == "Equal" and r.prefer == nil, json.encode(r))
+r = HK.resolve({ { shortcut = "S", keyCode = 66 } }, VK3, "STORE", { prefer = "S" })
+check("prefer is harmless without a tie", r.supported and r.pcKey == "S" and r.prefer == nil, json.encode(r))
 r = HK.resolve({ { shortcut = "Enter", keyCode = 84 } }, VK, "CLEAR")
 check("remapped-away key is unsupported, never substituted", r.supported == false and r.reason:find("no keyboard shortcut maps to CLEAR"), json.encode(r))
 r = HK.resolve(nil, VK, "CLEAR")

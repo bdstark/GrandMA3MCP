@@ -115,7 +115,10 @@ it validates `API_VERSION`, reports a missing or broken component through the `m
 `CLEAR`, `OOPS`, `NUM0`–`NUM9`, `EXEC` with `opts.executor`, `MA` and, since 0.5.0, **any other
 `Enums.VirtualKeyCode` name the console knows** (`EDIT`, `COPY`, `HIGHLIGHT`, …) through the shortcut table
 under the same rules as `STORE`, for surface consumers whose keys go beyond the fixed list (KB-07); a name that
-is neither is unsupported; `MA1`/`MA2` are reported
+is neither is unsupported; a tie between rows of equal modifier count (they always target the same key, e.g. `Equal`
+and `kpAdd` for `PLUS`) is refused unless the caller names the row with `opts.prefer` / `spec.prefer` (a PC key name),
+in which case the chosen row passes the collision check and every later route recheck like any shortcut route;
+`MA1`/`MA2` are reported
 unsupported; the result carries `source` (`shortcut-table`, `fixed` for MA, `native` for PLEASE),
 `shortcutsActive`, the current `profile` name, `pcKeyValidated` against `Enums.KeyboardCodes` and, for the
 native route, `redirectChecked`) and `backendAvailable()`. The pure functions `resolve(rows, vkCodes, name,
