@@ -13,7 +13,7 @@ Plugin "gma3_mcp_bridge"
 ```
 
 Look for `MCP Bridge: listening on 127.0.0.1:9800` in command history or System Monitor, preceded by
-`MCP Bridge: modules: hardkeys 0.1.0, feedback 0.1.0` (the [console interaction modules](../modules.md)
+`MCP Bridge: modules: hardkeys 0.2.0, feedback 0.1.0` (the [console interaction modules](../modules.md)
 shipped as extra components of the same XML; a `FAILED` entry there means the XML was imported without
 all of its components).
 The target slot is required. Save the show to retain the imported plugin, then start the plugin again
@@ -31,7 +31,22 @@ Plugin "gma3_mcp_bridge" "9801"
 
 The last command starts a stopped bridge on port 9801. Set `GMA3_BRIDGE_PORT` in the MCP configuration
 to match. The bridge always binds to `127.0.0.1`; a host address is not an accepted argument.
-Other control arguments configure [optional Lua execution](../lua.md).
+Other control arguments configure [optional Lua execution](../lua.md) and, since v0.5.0, owned input
+sessions (off by default and reset at every start):
+
+```text
+Plugin "gma3_mcp_bridge" "input=fake"
+Plugin "gma3_mcp_bridge" "input=off"
+Plugin "gma3_mcp_bridge" "input status"
+Plugin "gma3_mcp_bridge" "input recover"
+```
+
+`input=fake` admits the `input.*` bridge ops on the fake backend (events are recorded, nothing reaches a
+console key; the console keyboard backend is KB-04). `input=off` stops admitting input and attempts to
+release every held key. `input status` prints sessions, holds and unresolved releases; `input recover` is
+the operator's recovery action: it re-attempts every unresolved release, including records kept from a
+previous run. `status`, `input status` and other control arguments never release keys of the running
+bridge. See [docs/reference.md](../reference.md#owned-input-sessions-plugin-v050-kb-03).
 
 The plugin logs to `gma3_<version>/onpc/temp/gma3_mcp_bridge.log` under the onPC resource folder.
 
@@ -54,8 +69,9 @@ Plugin "gma3_mcp_bridge"
 and re-importing alone can leave the cached Lua code running. The whole sequence can also be stored as
 a Macro (one command per line, a 1–2 s Wait after each) and run with `Go+ Macro <n>`; this restarts the
 bridge without typing while it is stopped, which is how the KB-02 update was verified. Check the version in the new startup
-message, then save the show if you want to retain the update. Reapply any custom port or Lua policy
-in your start command; those settings do not carry over from the previous run.
+message, then save the show if you want to retain the update. Reapply any custom port, Lua or input policy
+in your start command; those settings do not carry over from the previous run (only unresolved input
+release records do, so `input recover` can act on them).
 
 After updating server source, also run `npm ci` and `npm run build` (`npm.cmd` in PowerShell), then
 restart the MCP client to load the new server code.

@@ -1,0 +1,375 @@
+{
+  "probe": "kb-03",
+  "date": "2026-10-09T11:56:21.441Z",
+  "bridge": {
+    "version": "0.5.0",
+    "host": "127.0.0.1",
+    "port": 9800,
+    "build": {
+      "version": "2.5.1.0",
+      "codeType": "Release",
+      "hostType": "onPC"
+    },
+    "hostname": "bdsmbpm401",
+    "showfile": "mcp-test-disposable",
+    "input": {
+      "unresolved": 0,
+      "holds": 0,
+      "enabled": true,
+      "sessions": 0,
+      "unresolvedFromPreviousRun": 0,
+      "backend": "fake",
+      "note": "ownership records, not physical key state; see input.status",
+      "moduleInputEnabled": true
+    }
+  },
+  "passed": 33,
+  "failed": 0,
+  "steps": [
+    {
+      "name": "press without a session is refused",
+      "pass": true,
+      "detail": "[no-session] this connection has no input session; call input.open first"
+    },
+    {
+      "name": "A opens a 3 s session bound to its connection",
+      "pass": true,
+      "detail": "conn-42"
+    },
+    {
+      "name": "B opens its own session",
+      "pass": true,
+      "detail": "conn-43"
+    },
+    {
+      "name": "a session id in args is ignored (B cannot renew A's session)",
+      "pass": true,
+      "detail": "conn-43"
+    },
+    {
+      "name": "A presses PLEASE: stored tuple and route",
+      "pass": true,
+      "detail": "PLEASE -> Enter|s0c0a0n0 via shortcut-table \"Enter\" profile Default"
+    },
+    {
+      "name": "A's second PLEASE is a harmless duplicate",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "B cannot own PLEASE while A holds it",
+      "pass": true,
+      "detail": "[conflict] tuple Enter|s0c0a0n0 is already owned by session 'conn-42' (state held) as PLEASE"
+    },
+    {
+      "name": "B's raw alias of the held key (other display) is rejected",
+      "pass": true,
+      "detail": "[conflict] tuple Enter|s0c0a0n0 is already owned by session 'conn-42' (state held) as PLEASE"
+    },
+    {
+      "name": "B cannot release A's hold",
+      "pass": true,
+      "detail": "[not-owner] tuple Enter|s0c0a0n0 is owned by session 'conn-42'"
+    },
+    {
+      "name": "status from B shows A as owner with remaining lease, releases nothing",
+      "pass": true,
+      "detail": {
+        "unresolved": 0,
+        "holds": 1,
+        "enabled": true,
+        "sessions": 2,
+        "unresolvedFromPreviousRun": 0,
+        "backend": "fake",
+        "note": "ownership records, not physical key state; see input.status",
+        "moduleInputEnabled": true
+      }
+    },
+    {
+      "name": "A taps STORE for 200 ms",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the loop released the tap at its deadline",
+      "pass": true,
+      "detail": "released after 216 ms (tap)"
+    },
+    {
+      "name": "fake backend set to fail the PLEASE release",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a failed release is reported as unresolved and the record kept",
+      "pass": true,
+      "detail": "release refused by the backend: probe: host blocked"
+    },
+    {
+      "name": "the unresolved tuple is still blocked for B",
+      "pass": true,
+      "detail": "[conflict] tuple Enter|s0c0a0n0 is already owned by session 'conn-42' (state unresolved) as PLEASE"
+    },
+    {
+      "name": "B's recover is owner-scoped (nothing of B's to recover)",
+      "pass": true,
+      "detail": {
+        "unresolved": [],
+        "attempted": 0,
+        "released": [],
+        "scope": "conn-43"
+      }
+    },
+    {
+      "name": "A's recover while the fault persists stays unresolved",
+      "pass": true,
+      "detail": "0 released, 1 unresolved"
+    },
+    {
+      "name": "A's recover after the fault clears releases with the stored tuple",
+      "pass": true,
+      "detail": "Enter|s0c0a0n0"
+    },
+    {
+      "name": "no unresolved record remains",
+      "pass": true,
+      "detail": {
+        "unresolved": 0,
+        "holds": 0,
+        "enabled": true,
+        "sessions": 2,
+        "unresolvedFromPreviousRun": 0,
+        "backend": "fake",
+        "note": "ownership records, not physical key state; see input.status",
+        "moduleInputEnabled": true
+      }
+    },
+    {
+      "name": "A presses MA (LeftShift fixed route)",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "A's 3 s lease expired on the loop",
+      "pass": true,
+      "detail": "expired"
+    },
+    {
+      "name": "lease expiry released the MA hold (reason lease-expired)",
+      "pass": true,
+      "detail": "released (lease-expired)"
+    },
+    {
+      "name": "press after expiry refused until renewal",
+      "pass": true,
+      "detail": "[lease-expired] session 'conn-42' lease expired; renew it before new input"
+    },
+    {
+      "name": "renewal reactivates the session without a press",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "fake backend simulates a physical LeftShift release",
+      "pass": true,
+      "detail": []
+    },
+    {
+      "name": "ownership record stays held while the console no longer reports the key down",
+      "pass": true,
+      "detail": {
+        "state": "held",
+        "observed": {
+          "down": false,
+          "at": 1791546981.2304
+        }
+      }
+    },
+    {
+      "name": "no automatic re-press to compensate",
+      "pass": true,
+      "detail": {
+        "before": 5,
+        "after": 5
+      }
+    },
+    {
+      "name": "A's own release resolves the record",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "B holds Ctrl+Q",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "B's disconnect released its hold and dropped its session",
+      "pass": true,
+      "detail": {
+        "session": "gone",
+        "lastQEvent": "release"
+      }
+    },
+    {
+      "name": "A releaseAll (nothing left)",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "A closes its session",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "bridge left clean: no holds, nothing down on the fake backend, nothing unresolved",
+      "pass": true,
+      "detail": {
+        "unresolved": 0,
+        "holds": 0,
+        "enabled": true,
+        "sessions": 0,
+        "unresolvedFromPreviousRun": 0,
+        "backend": "fake",
+        "note": "ownership records, not physical key state; see input.status",
+        "moduleInputEnabled": true
+      }
+    }
+  ],
+  "fakeEvents": [
+    {
+      "shift": false,
+      "kind": "release",
+      "numlock": false,
+      "alt": false,
+      "ctrl": false,
+      "pcKey": "Z"
+    },
+    {
+      "shift": false,
+      "kind": "press",
+      "numlock": false,
+      "alt": false,
+      "ctrl": false,
+      "pcKey": "Z"
+    },
+    {
+      "shift": false,
+      "kind": "release",
+      "numlock": false,
+      "alt": false,
+      "ctrl": false,
+      "pcKey": "Z"
+    },
+    {
+      "kind": "press",
+      "shift": false,
+      "display": 1,
+      "numlock": false,
+      "pcKey": "Enter",
+      "ctrl": false,
+      "alt": false
+    },
+    {
+      "shift": false,
+      "kind": "press",
+      "numlock": false,
+      "alt": false,
+      "ctrl": false,
+      "pcKey": "S"
+    },
+    {
+      "shift": false,
+      "kind": "release",
+      "numlock": false,
+      "alt": false,
+      "ctrl": false,
+      "pcKey": "S"
+    },
+    {
+      "kind": "release",
+      "failed": "probe: host blocked",
+      "shift": false,
+      "pcKey": "Enter",
+      "numlock": false,
+      "display": 1,
+      "ctrl": false,
+      "alt": false
+    },
+    {
+      "kind": "release",
+      "failed": "probe: host blocked",
+      "shift": false,
+      "pcKey": "Enter",
+      "numlock": false,
+      "display": 1,
+      "ctrl": false,
+      "alt": false
+    },
+    {
+      "kind": "release",
+      "shift": false,
+      "display": 1,
+      "numlock": false,
+      "pcKey": "Enter",
+      "ctrl": false,
+      "alt": false
+    },
+    {
+      "shift": false,
+      "kind": "press",
+      "numlock": false,
+      "alt": false,
+      "ctrl": false,
+      "pcKey": "LeftShift"
+    },
+    {
+      "shift": false,
+      "kind": "release",
+      "numlock": false,
+      "alt": false,
+      "ctrl": false,
+      "pcKey": "LeftShift"
+    },
+    {
+      "shift": false,
+      "kind": "press",
+      "numlock": false,
+      "alt": false,
+      "ctrl": false,
+      "pcKey": "LeftShift"
+    },
+    {
+      "shift": false,
+      "kind": "physical-release",
+      "numlock": false,
+      "alt": false,
+      "ctrl": false,
+      "pcKey": "LeftShift"
+    },
+    {
+      "shift": false,
+      "kind": "release",
+      "numlock": false,
+      "alt": false,
+      "ctrl": false,
+      "pcKey": "LeftShift"
+    },
+    {
+      "shift": false,
+      "kind": "press",
+      "numlock": false,
+      "alt": false,
+      "ctrl": true,
+      "pcKey": "Q"
+    },
+    {
+      "shift": false,
+      "kind": "release",
+      "numlock": false,
+      "alt": false,
+      "ctrl": true,
+      "pcKey": "Q"
+    }
+  ]
+}

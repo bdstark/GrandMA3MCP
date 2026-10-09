@@ -1,10 +1,12 @@
 # GrandMA3MCP hardkey, keyboard and feedback feature requests
 
 Updated: 2026-10-09 after review of the KB-01 follow-up evidence and documentation through `e99f23c` (merged in `1069f1d`),
-and after the KB-02 module packaging work.
+after the KB-02 module packaging work, and after the KB-03 owned-session implementation on the fake backend.
 Status: **KB-01 complete for the initial onPC 2.5.1.0 / US-layout feasibility scope**: macOS and Windows 11, each with one and two
 onPC displays. **KB-02 complete on macOS**: modules packaged and their loading verified live, including save/reload without
-loose files; Windows not exercised. KB-03–KB-08 remain implementation/qualification work.
+loose files; Windows not exercised. **KB-03 implemented on the fake backend** (module 0.2.0, bridge 0.5.0): ownership, leases,
+deadline servicing and recovery are covered by harness tests and verified live on macOS; actual key dispatch remains KB-04.
+Windows module loading and transfer to a separate machine remain qualification gaps. KB-04–KB-08 remain implementation/qualification work.
 Completion establishes the contracts and limitations below, not production keyboard support or universal
 platform coverage. No production keyboard operations exist yet; Quickeys remain deferred.
 
@@ -258,7 +260,7 @@ module for read-only state. Filenames and loader details are finalized by the pa
 Evidence: [docs/probes/kb-02-loading-macos-2.5.1.md](docs/probes/kb-02-loading-macos-2.5.1.md); contract and
 API: [docs/modules.md](docs/modules.md). Modules: `plugin/gma3_mcp_hardkeys.lua` (input lifecycle, backend
 registry, read-only key resolution) and `plugin/gma3_mcp_feedback.lua` (read-only readers), module API 1,
-version 0.1.0, shipped as extra `ComponentLua` entries of `gma3_mcp_bridge.xml` (bridge 0.4.0).
+version 0.1.0, shipped as extra `ComponentLua` entries of `gma3_mcp_bridge.xml` (bridge 0.4.0; hardkeys is 0.2.0 in bridge 0.5.0, KB-03).
 
 **Loader decision.** The console runs every component chunk at import and show load with
 `(pluginName, componentName, signalTable, handle)` and hands all components of one plugin the same
@@ -329,6 +331,47 @@ for automated tests until KB-04 supplies a proven console implementation.
   owner, remaining lease, backend and unresolved cleanup failures without claiming physical key state.
 - Document recovery limitations when onPC or a host API blocks; do not describe expiry as guaranteed
   cancellation of a host call.
+
+### KB-03 results (fake backend; macOS, onPC 2.5.1.0, 2026-10-09)
+
+Implementation: `plugin/gma3_mcp_hardkeys.lua` 0.2.0 (sessions, leases, stored tuples/routes, deadline
+servicing, recovery, `fakeBackend()`), bridge 0.5.0 (`input=fake|off` per start, connection-bound `input.*`
+ops, `input status` / `input recover` operator actions, records kept across runs). Contract:
+[docs/modules.md](docs/modules.md#owned-input-sessions-gma3_mcp_hardkeys-020-kb-03); protocol:
+[docs/reference.md](docs/reference.md#owned-input-sessions-plugin-v050-kb-03); evidence:
+[docs/probes/kb-03-fake-macos-2.5.1.md](docs/probes/kb-03-fake-macos-2.5.1.md).
+
+**Decisions.** The ownership identity is the PC key plus modifier tuple; display and logical name are not
+part of it, so `MA`/`LeftShift` and cross-display presses conflict as one key. A duplicate press by the owner
+injects nothing; a conflicting owner is rejected before dispatch. Lease renewal only moves the deadline.
+Release always uses the stored tuple; the route is rechecked before every release and before every new
+press, and a remap, disabled shortcut table or profile switch during a hold stops new events for every
+session and turns an unconfirmable release into an **unresolved** record. Unresolved records keep their
+tuple blocked, are never retried by `service()`, are handed back by `dispose()`, survive a bridge restart
+(the next start adopts them before admitting input, so their keys stay reserved) and are cleared only by
+`recover()` (owner scope over the network, all scopes from the console command line). Lease admission and
+renewal compare the current time with the expiry themselves, so enforcement does not depend on how recently
+the loop serviced the instance, and a lease missed by `service()` still gets its cleanup. A module that
+raises in `service()` is detached only after input is disabled, held keys got a release attempt and the
+unresolved records were kept. `status` calls perform no cleanup. A physically released key is observed and annotated, never
+re-pressed. Deadline servicing is bounded per loop iteration (`maxWorkPerService`) and runs before client
+I/O, so a flooding client cannot starve it. The `keyboard` adapter has no dispatch yet: `input=keyboard` is
+refused with a KB-04 pointer, and `enableInput()` refuses any adapter without dispatch.
+
+**Verified by harness** (`npm test`, 484 Lua checks across the three harnesses): everything above, plus
+capacity, unsupported codes (MA1/MA2, unmapped EXEC, inactive shortcuts, backend key set), release
+ordering (newest first), disconnect/stop/disable/dispose paths with failing releases, adopt/recover across
+instances, and a server-loop run with a flooding client while a tap deadline is serviced.
+
+**Verified live** (bridge 0.5.0 on the fake backend, 33/33 probe steps over two real connections): session
+binding, conflicts and aliases, a 200 ms tap released by the loop after 201 ms, failed release → unresolved →
+owner recover, a 3 s lease expiring on the loop, physical release observed without re-press, disconnect
+cleanup; and from macros, `input=off`/`input=fake` at runtime, `input status` releasing nothing, and a hold
+whose release failed at `stop` kept as a record across the restart and released by `input recover`.
+
+**Not exercised / limitations.** No console key was pressed (fake backend). Windows and a separate machine
+remain KB-02 qualification gaps. A blocked host call or a dead plugin thread still prevents any release;
+expiry is an attempt, not a cancellation.
 
 ## KB-04 — Implement shortcut input; investigate Quickeys separately
 

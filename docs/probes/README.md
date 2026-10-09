@@ -8,6 +8,7 @@ They are evidence for [KEYBOARD.md](../../KEYBOARD.md), not automated regression
 | [kb-01-macos-2.5.1.md](kb-01-macos-2.5.1.md), [script report](kb-01-macos-2.5.1.json) (26/26) | macOS, onPC 2.5.1.0, one and two displays |
 | [kb-01-windows-2.5.1.md](kb-01-windows-2.5.1.md), script reports for [one](kb-01-windows-2.5.1.json) and [two displays](kb-01-windows-2.5.1-2displays.json) (26/26 each) | Windows 11, onPC 2.5.1.0, one and two displays |
 | [kb-02-loading-macos-2.5.1.md](kb-02-loading-macos-2.5.1.md) (module loading, save/reload without loose files) | macOS, onPC 2.5.1.0 |
+| [kb-03-fake-macos-2.5.1.md](kb-03-fake-macos-2.5.1.md), [script report](kb-03-fake-macos-2.5.1.json) (33/33; owned sessions on the fake backend) | macOS, onPC 2.5.1.0 |
 
 ## Running the KB-01 probe on another platform
 
@@ -51,3 +52,14 @@ Set `GMA3_BRIDGE_HOST`/`GMA3_BRIDGE_PORT` if the bridge is not on `127.0.0.1:980
 signal table behave, then deletes the slot and its files. `node scripts/kb02-probe.mjs verify` checks a
 running bridge for loaded modules and loose module files. Both need Lua enabled on the bridge and a
 disposable show.
+
+## Running the KB-03 session lifecycle probe
+
+`node scripts/kb03-probe.mjs run [--out docs/probes/kb-03-<os>-<version>.json]` drives the owned input
+sessions of a running bridge over two real TCP connections: binding, conflicts and aliases, a tap deadline
+serviced by the plugin loop, a failed release kept as unresolved and recovered, lease expiry, an observed
+"physical" release that is never compensated, and cleanup on an abrupt disconnect. It needs the bridge
+started or toggled with `Plugin "gma3_mcp_bridge" "input=fake"` and no existing holds; Lua execution is
+not required. Nothing reaches a console key on the fake backend. Operator-side paths (`input=off`,
+`input status`, a restart with an unresolved record and `input recover`) are console commands; the record
+describes how they were driven from macros.

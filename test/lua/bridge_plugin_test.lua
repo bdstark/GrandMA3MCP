@@ -22,7 +22,16 @@ local logs = {}
 Echo = function(m) logs[#logs + 1] = m end
 ErrEcho = Echo; Printf = Echo; ErrPrintf = Echo
 GetPath = function() return nil end
-Enums = { PathType = { Temp = 1 } }
+Enums = { PathType = { Temp = 1 }, VirtualKeyCode = { PLEASE = 84, STORE = 66 } }
+-- Fake user profile for the KB-03 tests: shortcut rows as the hardkeys consoleDeps read them.
+local fakeProfile = { name = "Default", shortcutsActive = "true", rows = { { Shortcut = "Enter", KeyCode = 84 }, { Shortcut = "S", KeyCode = 66 } } }
+CurrentProfile = function()
+  return { name = fakeProfile.name, KeyboardShortCuts = {
+    Get = function(_, k) if k == "KeyboardShortcutsActive" then return fakeProfile.shortcutsActive end end,
+    Count = function() return #fakeProfile.rows end,
+    Ptr = function(_, i) local row = fakeProfile.rows[i]; return row and { Get = function(_, k) return row[k] end } end } }
+end
+GetDisplayByIndex = function(n) if n == 1 then return {} end return nil end
 BuildDetails = function() return {} end
 Root = function() error("no console") end
 CurrentUser = function() return nil end
@@ -61,9 +70,9 @@ local function lastLog() return logs[#logs] or "" end
 
 -- Run a request inside a coroutine (the plugin loop is itself a coroutine), resuming on yields.
 -- secondsPerFrame advances the fake clock on every resume, simulating slow console frames.
-local function request(op, args, secondsPerFrame)
+local function request(op, args, secondsPerFrame, client)
   local line = json.encode({ id = "t", op = op, args = args })
-  local co = coroutine.create(function() return state._handleLine(nil, line) end)
+  local co = coroutine.create(function() return state._handleLine(client, line) end)
   local ok, res = coroutine.resume(co)
   local frames = 0
   while ok and coroutine.status(co) == "suspended" do
@@ -993,7 +1002,7 @@ do
   start("")  -- bind fails in this harness, so serverMain returns and the instances are disposed again
   local hk, fb = state.modules.hardkeys, state.modules.feedback
   check("modules found through the plugin signal table", hk and hk.loaded and fb and fb.loaded, json.encode({ hk = hk and hk.error, fb = fb and fb.error }))
-  check("module versions recorded", hk.version == "0.1.0" and hk.apiVersion == 1 and fb.version == "0.1.0", json.encode({ hk.version, fb.version }))
+  check("module versions recorded", hk.version == "0.2.0" and hk.apiVersion == 1 and fb.version == "0.1.0", json.encode({ hk.version, fb.version }))
   check("modules start log line", lastLog():find("stopped") or true)
   local disposed = hk.instance and hk.instance:status().state == "disposed" and fb.instance:status().state == "disposed"
   check("instances disposed when the loop ends", disposed, hk.instance and hk.instance:status().state)
@@ -1001,14 +1010,14 @@ do
   r = request("ping", {})
   check("ping summarises modules", r.ok and r.result.modules.hardkeys.loaded == true and r.result.modules.feedback.version == "0.1.0", json.encode(r.result.modules))
   r = request("modules", {})
-  check("modules op reports status without Lua enabled", r.ok and state.lua.enabled == false and r.result.apiVersion == 1 and r.result.modules.hardkeys.status.inputOperations == false and r.result.modules.feedback.status.module == "gma3_mcp_feedback", json.encode(r))
+  check("modules op reports status without Lua enabled", r.ok and state.lua.enabled == false and r.result.apiVersion == 1 and r.result.modules.hardkeys.status.inputEnabled == false and r.result.modules.feedback.status.module == "gma3_mcp_feedback", json.encode(r))
 
   -- Two bridge-like consumers loading the same components get distinct module tables.
   local before = state.modules
   state._loadModules()
   check("reload creates fresh instances", state.modules.hardkeys.instance ~= before.hardkeys.instance and state.modules.hardkeys.instance:status().state == "ready")
   disposed = before.hardkeys.instance:status().state == "disposed"
-  check("earlier instance stays disposed and separate", disposed and state.modules.hardkeys.instance:status().holds == 0)
+  check("earlier instance stays disposed and separate", disposed and state.modules.hardkeys.instance:status().holdCount == 0)
 
   check("modules registered in the plugin signal table only", signals.__gma3_mcp_modules.gma3_mcp_hardkeys == hardkeysModule and signals.__gma3_mcp_modules.gma3_mcp_feedback == feedbackModule)
   -- A plugin whose XML lacks a component: the bridge still starts and reports the gap.
@@ -1034,6 +1043,227 @@ do
   state._loadModules()
   check("registry restored, modules load again", state.modules.hardkeys.loaded and state.modules.feedback.loaded)
   for _, rec in pairs(state.modules) do if rec.instance then rec.instance:dispose() end end
+end
+
+
+-------------------------------------------------------------------------------
+-- Owned input sessions (KB-03): connection-bound sessions over the fake backend
+-------------------------------------------------------------------------------
+local function J(v) return json.encode(v) end
+local function logFound(pattern, from)
+  for i = from or 1, #logs do if logs[i]:find(pattern) then return logs[i] end end
+  return nil
+end
+do
+  start("input=fake")  -- parses and loads the modules with input enabled; bind fails here, so re-create live instances
+  check("input=fake parsed at start", state.input.enabled == true and state.input.backend == "fake", J(state.input))
+  check("default start keeps input disabled", (function() start(""); return state.input.enabled == false and state.input.backend == nil end)())
+  start("9800 input=fake lua")
+  state._loadModules(); state.running = true; state.stopRequested = false; state.ignoreNextCleanup = false
+  local A, B = { id = 1 }, { id = 2 }
+  local hk = state.modules.hardkeys
+  local fake = hk.fakeAdapter
+  check("hardkeys instance runs with the fake adapter attached", hk.instance:status().inputEnabled == true and hk.instance:status().backend.name == "fake" and fake ~= nil and fake.name == "fake")
+  r = request("ping", {})
+  check("ping reports the input policy", r.ok and r.result.input.enabled == true and r.result.input.backend == "fake" and r.result.input.holds == 0, J(r.result.input))
+  r = request("input.press", { key = "PLEASE" })
+  check("input ops need a connection context", r.ok == false and r.error:find("no%-connection"), r.error)
+  r = request("input.press", { key = "PLEASE" }, nil, A)
+  check("press without a session is refused", r.ok == false and r.error:find("no%-session"), r.error)
+  r = request("input.open", { leaseMs = 2000, label = "mcp" }, nil, A)
+  check("session opened and bound to the connection", r.ok and r.result.session.id == "conn-1" and A.session == "conn-1" and r.result.session.binding == "client 1" and r.result.session.leaseMs == 2000, J(r))
+  r = request("input.open", {}, nil, A)
+  check("a second open on the same connection is refused", r.ok == false and r.error:find("session%-exists"), r.error)
+  r = request("input.press", { key = "PLEASE", display = 1 }, nil, A)
+  check("press through the bridge stores tuple and route", r.ok and r.result.hold.pcKey == "Enter" and r.result.hold.route.shortcut == "Enter" and r.result.hold.route.profile == "Default" and r.result.hold.session == "conn-1" and #fake.events == 1, J(r))
+  r = request("input.press", { key = "PLEASE", display = 7 }, nil, A)
+  check("display validated against the console display list", r.ok == false and r.error:find("display 7"), r.error)
+  request("input.open", {}, nil, B)
+  r = request("input.press", { key = "PLEASE" }, nil, B)
+  check("another connection cannot own the held key", r.ok == false and r.error:find("conflict") and r.error:find("conn%-1"), r.error)
+  r = request("input.release", { key = "PLEASE" }, nil, B)
+  check("another connection cannot release it", r.ok == false and r.error:find("not%-owner") and fake.counters.release == 0, r.error)
+  r = request("input.renew", { leaseMs = 5000, session = "conn-1" }, nil, B)
+  check("a session id in args is ignored: renew acts on the caller's own session", r.ok and r.result.session.id == "conn-2" and r.result.session.leaseMs == 5000, J(r))
+  r = request("input.status", {}, nil, B)
+  check("status is readable by anyone, shows owner and remaining lease, releases nothing", r.ok and r.result.session == "conn-2" and r.result.status.holds[1].session == "conn-1" and r.result.status.sessions["conn-1"].remainingMs ~= nil and r.result.policy.holds == 1 and fake.counters.release == 0, J(r.result.policy))
+  -- Control invocations never release keys of the running bridge.
+  Main(nil, "status"); Cleanup()
+  check("'status' + Cleanup leave the hold and the bridge alone", state.running == true and fake.counters.release == 0 and hk.instance:status().capacity.used == 1 and lastLog():find("holds=1"), lastLog())
+  local before = #logs
+  Main(nil, "input status"); Cleanup()
+  check("'input status' prints sessions and holds and releases nothing", state.running == true and fake.counters.release == 0 and logFound("input hold h1: held PLEASE", before) and logFound("input session conn%-1: active", before), lastLog())
+  Main(nil, "input"); Cleanup()
+  check("'input' alone is refused (no default backend)", lastLog():find("no default input backend") and state.running == true, lastLog())
+  Main(nil, "input=keyboard"); Cleanup()
+  check("input=keyboard refused until KB-04", lastLog():find("KB%-04") and state.input.backend == "fake" and state.running == true, lastLog())
+  Main(nil, "input=maybe"); Cleanup()
+  check("input=maybe refused", lastLog():find("expected input=fake or input=off"), lastLog())
+  -- Fake controls and owner-scoped recovery.
+  r = request("input.fake", { action = "failRelease", pcKey = "Enter", sticky = true, error = "host blocked" }, nil, A)
+  check("fake controls reachable", r.ok and r.result.backend == "fake" and r.result.down[1] == "Enter|s0c0a0n0", J(r))
+  r = request("input.release", { key = "PLEASE" }, nil, A)
+  check("a failed release is reported as unresolved, record kept", r.ok and r.result.hold.state == "unresolved" and r.result.hold.unresolved.reason:find("host blocked") and logFound("UNRESOLVED conn%-1 PLEASE"), J(r))
+  r = request("input.press", { pcKey = "Enter" }, nil, B)
+  check("the unresolved record still blocks the tuple", r.ok == false and r.error:find("conflict"), r.error)
+  r = request("input.recover", {}, nil, B)
+  check("recover is owner-scoped: B has nothing to recover", r.ok and r.result.attempted == 0 and r.result.scope == "conn-2", J(r))
+  request("input.fake", { action = "clearFailures" }, nil, A)
+  r = request("input.recover", {}, nil, A)
+  check("owner recover releases the record", r.ok and #r.result.released == 1 and hk.instance:status().unresolved == 0, J(r))
+  -- Tap through the bridge: the deadline is serviced by the module's service() on the loop.
+  r = request("input.tap", { key = "STORE", holdMs = 20 }, nil, A)
+  check("tap accepted with a deadline", r.ok and r.result.hold.kind == "tap" and r.result.hold.deadlineInMs == 20, J(r))
+  _G.FAKE_CLOCK_OFFSET = 1
+  r = request("input.status", {}, nil, A)
+  check("status past the deadline does not release (deadline servicing belongs to the loop)", r.ok and hk.instance:status().capacity.used == 1 and fake.events[#fake.events].kind == "press")
+  hk.instance:service(require("socket").gettime())
+  check("service releases the overdue tap", hk.instance:status().capacity.used == 0 and fake.events[#fake.events].kind == "release" and fake.events[#fake.events].pcKey == "S")
+  _G.FAKE_CLOCK_OFFSET = 0
+  -- Disable while held: release attempted, new input refused, status/release/recover still work.
+  request("input.press", { key = "STORE" }, nil, A)
+  Main(nil, "input=off"); Cleanup()
+  check("'input=off' while running releases held keys and keeps the bridge running", state.running == true and state.input.enabled == false and hk.instance:status().capacity.used == 0 and fake.events[#fake.events].kind == "release" and fake.events[#fake.events].pcKey == "S", J(fake.events[#fake.events]))
+  r = request("input.press", { key = "STORE" }, nil, A)
+  check("press refused while input is disabled, with the enable hint", r.ok == false and r.error:find("input%-disabled") and r.error:find("input=fake"), r.error)
+  r = request("input.status", {}, nil, A)
+  check("status, releaseAll and recover remain available while disabled", r.ok and r.result.policy.enabled == false and request("input.releaseAll", {}, nil, A).ok and request("input.recover", {}, nil, A).ok)
+  Main(nil, "input=fake"); Cleanup()
+  check("'input=fake' re-enables while running", state.input.enabled == true and state.running == true and request("input.press", { key = "STORE" }, nil, A).ok, lastLog())
+  state.stopRequested = true
+  r = request("input.tap", { key = "PLEASE" }, nil, A)
+  check("new input refused while the bridge is stopping", r.ok == false and r.error:find("stopping"), r.error)
+  state.stopRequested = false
+  -- Disconnect: closeClient releases the connection's holds newest first and logs the outcome.
+  request("input.press", { pcKey = "LeftShift" }, nil, A)
+  state.clients = { A, B }
+  local n = #fake.events
+  state._closeClient(1, "disconnect")
+  check("disconnect releases the client's holds newest first", #state.clients == 1 and fake.events[n + 1].kind == "release" and fake.events[n + 1].pcKey == "LeftShift" and fake.events[n + 2].pcKey == "S" and A.session == nil and hk.instance:status().capacity.used == 0, J({ fake.events[n + 1], fake.events[n + 2] }))
+  check("disconnect outcome logged", logFound("input: disconnect conn%-1 released conn%-1 raw%(LeftShift") ~= nil)
+  r = request("input.close", {}, nil, B)
+  check("a client can close its own session", r.ok and B.session == nil and r.result.session == "conn-2", J(r))
+  -- Shutdown with an unresolved release keeps the record across runs; operator recovery adopts it.
+  request("input.open", {}, nil, B)
+  request("input.press", { pcKey = "Q", ctrl = true }, nil, B)
+  request("input.fake", { action = "failRelease", pcKey = "Q", ctrl = true, sticky = true, error = "console frozen" }, nil, B)
+  state.clients = { B }
+  Cleanup()
+  check("owning-call Cleanup attempts the release, keeps the unresolved record and stops", state.running == false and #state.input.unresolved == 1 and state.input.unresolved[1].pcKey == "Q" and state.input.unresolved[1].ctrl == true and state.input.unresolved[1].keptReason == "cleanup" and logFound("1 unresolved release record%(s%) kept"), J(state.input.unresolved))
+  Main(nil, "input recover"); Cleanup()
+  check("'input recover' while stopped keeps the record", lastLog():find("not running") and #state.input.unresolved == 1, lastLog())
+  before = #logs
+  start("input=fake")
+  check("restart adopts the kept record and says its key is reserved", logFound("1 unresolved release record%(s%) from a previous run reserve their keys", before) ~= nil, lastLog())
+  state._loadModules(); state.running = true; state.stopRequested = false; state.ignoreNextCleanup = false
+  hk = state.modules.hardkeys
+  r = request("ping", {})
+  check("ping shows the adopted record as unresolved, nothing left un-adopted", r.ok and r.result.input.unresolved == 1 and r.result.input.unresolvedFromPreviousRun == 0 and r.result.input.holds == 1, J(r.result.input))
+  r = request("input.status", {}, nil, A)
+  check("input.status lists the adopted hold under the previous-run session", r.ok and r.result.status.holds[1].session == "previous-run" and r.result.status.holds[1].state == "unresolved" and r.result.status.holds[1].tupleKey == "Q|s0c1a0n0", J(r.result.status.holds))
+  request("input.open", {}, nil, A)
+  r = request("input.press", { pcKey = "Q", ctrl = true }, nil, A)
+  check("the reserved tuple cannot be pressed by a new session before recovery", r.ok == false and r.error:find("conflict") and r.error:find("previous%-run"), r.error)
+  check("nothing was dispatched for the reserved tuple", #hk.fakeAdapter.events == 0)
+  before = #logs
+  Main(nil, "input recover"); Cleanup()
+  check("'input recover' releases the adopted record with the stored tuple", #state.input.unresolved == 0 and hk.instance:status().unresolved == 0 and hk.fakeAdapter.events[#hk.fakeAdapter.events].kind == "release" and hk.fakeAdapter.events[#hk.fakeAdapter.events].ctrl == true and logFound("input recover: 1 released, 0 still unresolved", before), lastLog())
+  check("bridge still running after operator recovery", state.running == true)
+  check("the tuple is free again", request("input.press", { pcKey = "Q", ctrl = true }, nil, A).ok)
+  request("input.releaseAll", {}, nil, A)
+  -- A module that raises in service() must not take its holds with it: input is disabled, every
+  -- held key gets a release attempt and whatever stays unresolved is kept for "input recover".
+  request("input.press", { key = "STORE" }, nil, A)
+  request("input.press", { pcKey = "W" }, nil, A)
+  request("input.fake", { action = "failRelease", pcKey = "W", sticky = true, error = "wedged" }, nil, A)
+  fake = hk.fakeAdapter
+  hk.instance.service = function() error("service exploded") end
+  state._serviceModules(require("socket").gettime())
+  check("service failure detaches the instance and disables input", hk.instance == nil and state.input.enabled == false and tostring(hk.error):find("service exploded"), hk.error)
+  local ev = fake.events
+  check("service failure released what it could (newest first; the wedged key stays down)", not fake:isDown({ pcKey = "S" }) and fake:isDown({ pcKey = "W" }) and ev[#ev].kind == "release" and ev[#ev].pcKey == "S" and ev[#ev - 1].pcKey == "W" and ev[#ev - 1].failed == "wedged", J(ev))
+  check("service failure kept the unresolved record", #state.input.unresolved == 1 and state.input.unresolved[1].pcKey == "W" and state.input.unresolved[1].keptReason == "service-error", J(state.input.unresolved))
+  r = request("input.press", { key = "STORE" }, nil, A)
+  check("input refused after the failure", r.ok == false, r.error)
+  -- Restart with the default (input disabled), then "input recover": no backend can dispatch, so
+  -- the record must stay reserved and unresolved, and recover after enabling must release it.
+  start("")
+  state._loadModules(); state.running = true; state.stopRequested = false; state.ignoreNextCleanup = false
+  hk = state.modules.hardkeys
+  check("kept record adopted at a start with input disabled", state.input.enabled == false and hk.instance:status().unresolved == 1 and hk.instance:status().holds[1].tupleKey == "W|s0c0a0n0")
+  before = #logs
+  Main(nil, "input recover"); Cleanup()
+  check("'input recover' without a backend explains itself and keeps the record unresolved", logFound("no dispatching backend is attached", before) and hk.instance:status().holds[1].state == "unresolved" and hk.instance:status().holds[1].unresolved.reason:find("no backend"), J(hk.instance:status().holds[1]))
+  Main(nil, "input=fake"); Cleanup()
+  request("input.open", {}, nil, B)
+  r = request("input.press", { pcKey = "W" }, nil, B)
+  check("the record still reserves its key after enabling input", r.ok == false and r.error:find("previous%-run"), r.error)
+  before = #logs
+  Main(nil, "input recover"); Cleanup()
+  check("'input recover' with a backend releases the record", hk.instance:status().unresolved == 0 and logFound("input recover: 1 released, 0 still unresolved", before) and hk.fakeAdapter.events[#hk.fakeAdapter.events].pcKey == "W", lastLog())
+  -- With input=off the backend stays attached: recover must release without the no-backend warning.
+  request("input.press", { pcKey = "W" }, nil, B)
+  request("input.fake", { action = "failRelease", pcKey = "W", sticky = true, error = "wedged again" }, nil, B)
+  Main(nil, "input=off"); Cleanup()
+  check("input=off left the wedged key unresolved", hk.instance:status().unresolved == 1 and state.input.enabled == false)
+  request("input.fake", { action = "clearFailures" }, nil, B)
+  before = #logs
+  Main(nil, "input recover"); Cleanup()
+  check("'input recover' with input off but a backend attached releases without warning", hk.instance:status().unresolved == 0 and logFound("input recover: 1 released, 0 still unresolved", before) and not logFound("no dispatching backend", before), lastLog())
+  Main(nil, "input=fake"); Cleanup()
+  request("input.close", {}, nil, B)
+  state.input.unresolved = {}
+  for _, rec in pairs(state.modules) do if rec.instance then rec.instance:dispose(0) end end
+  state.running = false
+end
+
+-- Full server loop: sessions end on disconnect, and a flooding client cannot starve deadline servicing.
+do
+  local function queuedClient(lines, opts)
+    opts = opts or {}
+    local c = { settimeout = function() end, setoption = function() end, getpeername = function() return "127.0.0.1", 50000 end,
+                send = function(_, data) return #data end, close = function() end, sent = {} }
+    c.send = function(_, data) c.sent[#c.sent + 1] = data; return #data end
+    c.receive = function()
+      _G.FAKE_CLOCK_OFFSET = (_G.FAKE_CLOCK_OFFSET or 0) + 0.001  -- time passes with every socket read
+      if #lines > 0 then return table.remove(lines, 1) end
+      if opts.flood then return opts.flood end
+      if opts.closeWhenDrained then return nil, "closed", "" end
+      return nil, "timeout", ""
+    end
+    return c
+  end
+  local tapper = queuedClient({ J({ id = 1, op = "input.open", args = {} }), J({ id = 2, op = "input.tap", args = { key = "PLEASE", holdMs = 10 } }) })
+  local flooder = queuedClient({}, { flood = J({ id = 3, op = "ping", args = {} }) })
+  local leaver = queuedClient({ J({ id = 4, op = "input.open", args = {} }), J({ id = 5, op = "input.press", args = { key = "STORE" } }) }, { closeWhenDrained = true })
+  local accepts = 0
+  local fakeServer = { settimeout = function() end, close = function() end,
+    accept = function()
+      accepts = accepts + 1
+      if accepts == 1 then return tapper elseif accepts == 2 then return flooder elseif accepts == 3 then return leaver end
+      if accepts >= 8 then state.stopRequested = true end
+      return nil
+    end }
+  local realBind = require("socket").bind
+  require("socket").bind = function() return fakeServer end
+  state.running = false
+  _G.FAKE_CLOCK_OFFSET = 0
+  local requestsBefore = state.requests
+  local co = coroutine.create(function() Main(nil, "input=fake") end)
+  local ok, err = coroutine.resume(co)
+  local frames = 0
+  while ok and coroutine.status(co) == "suspended" and frames < 200 do frames = frames + 1; ok, err = coroutine.resume(co) end
+  assert(ok, err)
+  require("socket").bind = realBind
+  local fake = state.modules.hardkeys.fakeAdapter
+  local kinds = {}
+  for _, e in ipairs(fake.events) do kinds[#kinds + 1] = e.kind .. ":" .. e.pcKey end
+  check("flooding client was served in bounded slices while the loop kept running", state.requests - requestsBefore >= 64 * 4 and frames >= 7, tostring(state.requests - requestsBefore) .. " requests in " .. frames .. " frames")
+  check("tap deadline serviced during the flood (no starvation)", kinds[1] == "press:Enter" and (kinds[2] == "release:Enter" or kinds[3] == "release:Enter"), J(kinds))
+  check("disconnecting client's hold released on disconnect", logFound("input: disconnect conn%-%d+ released conn%-%d+ STORE") ~= nil and not fake:isDown({ pcKey = "S" }), J(kinds))
+  check("tapper's reply carried the hold", tapper.sent[2] and tapper.sent[2]:find('"kind":"tap"'), tapper.sent[2])
+  check("shutdown closed the remaining sessions and stopped cleanly", state.running == false and state.modules.hardkeys.instance:status().state == "disposed" and #state.input.unresolved == 0 and next(fake.down) == nil, J(state.input.unresolved))
+  _G.FAKE_CLOCK_OFFSET = 0
 end
 
 print(string.format("%d passed, %d failed", passes, failures))
