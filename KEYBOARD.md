@@ -94,7 +94,10 @@ The surface integration is a separate consumer, not a new network listener insid
 
 Evidence: [docs/probes/kb-01-macos-2.5.1.md](docs/probes/kb-01-macos-2.5.1.md), reviewed as a written
 live-run record, not independently rerun here. The push adds that record and this design, not an automated
-keyboard regression harness. Windows and non-US layouts are **unverified**; two displays were tested in run 3.
+keyboard regression harness. Two displays were tested in run 3. Windows 11 (onPC 2.5.1.0, one display, US layout)
+was run with the probe script and its manual checks, with matching results
+([docs/probes/kb-01-windows-2.5.1.md](docs/probes/kb-01-windows-2.5.1.md)). Non-US layouts and Windows
+multi-display are **unverified**.
 The evidence page's “complete” status applies to its recorded run, not every KB-01 acceptance criterion.
 
 **Input backend (`Keyboard()`):**
@@ -178,7 +181,10 @@ as a last-resort operator action. A restart is not evidence that an uncertain re
     on Display 1. The bridge must not claim display targeting.
   - *Double-press:* not produced through keyboard shortcuts at 0–16 frame gaps, injected or OS-delivered.
     Keep it unsupported.
-- **Open probes:** module loading/show portability (KB-02), Windows, non-US keyboard layouts.
+- **Windows (script subset):** 26/26 automated checks, long-press, text entry (`aü`) and hardware Shift release
+  in both directions match macOS; injected input reached onPC with another app in the OS foreground. The
+  exploratory follow-ups above were not repeated on Windows.
+- **Open probes:** module loading/show portability (KB-02), non-US keyboard layouts, Windows multi-display.
   Do not infer these from basic shortcut success.
 - **Side effect resolved:** `PRESERVEGRIDPOSITIONS` false→true was reproduced as a result of the cleanup
   command `Unassign Page 1.101` (parsed as `Fixture "Unassign" Page 1.101`), not keyboard input; restored.

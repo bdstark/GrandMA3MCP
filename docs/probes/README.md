@@ -6,6 +6,7 @@ They are evidence for [KEYBOARD.md](../../KEYBOARD.md), not automated regression
 | Record | Platform |
 | --- | --- |
 | [kb-01-macos-2.5.1.md](kb-01-macos-2.5.1.md), [script report](kb-01-macos-2.5.1.json) (26/26) | macOS, onPC 2.5.1.0, one and two displays |
+| [kb-01-windows-2.5.1.md](kb-01-windows-2.5.1.md), [script report](kb-01-windows-2.5.1.json) (26/26) | Windows 11, onPC 2.5.1.0, one display |
 
 ## Running the KB-01 probe on another platform
 
