@@ -4050,10 +4050,11 @@ function Instance:_modeAttach(op, hold)
   op.holds[#op.holds + 1] = hold
 end
 
--- Every dependent key event moves the restore window.
+-- Every dependent key event moves the restore window, while the operation is active and while its
+-- restoration is unresolved (a dependent released during recover() is still the last key event).
 function Instance:_modeEvent(now)
   local op = self._mode
-  if op and op.state == "active" then op.lastEventAt = now end
+  if op and (op.state == "active" or op.state == "unresolved") then op.lastEventAt = now end
 end
 
 function Instance:_modeUnresolved(op, now, reason)

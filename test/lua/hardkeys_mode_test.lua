@@ -436,6 +436,31 @@ do
 end
 
 -------------------------------------------------------------------------------
+-- Same instance: a dependent released during recover() restarts the restore window
+-------------------------------------------------------------------------------
+do
+  reset()
+  console.shortcutsActive = false
+  local inst, b = fresh()
+  local ia = inst:beginInteraction("s", 1, {})
+  local h = inst:press("s", 1, { key = "STORE", interaction = ia.id })
+  console.readRaises = "flaky"
+  inst:service(1.1)
+  check("unreadable state while STORE is held: restoration unresolved", inst:status().modeChange.state == "unresolved", J(inst:status().modeChange))
+  local rel = inst:release("s", 1.2, { hold = h.id })
+  check("the release under an unreadable state is unresolved (route cannot be established)", rel.state == "unresolved", J(rel))
+  console.readRaises = nil
+  local w0 = #console.writes
+  local rec = inst:recover("s", 2)
+  check("recover releases STORE and re-validates the operation but does not restore in that call (the release is the last key event)", #rec.released == 1 and rec.restoration.state == "active" and rec.restoration.pending == "delay" and rec.restoration.lastEventAt == 2 and console.shortcutsActive == true and #console.writes == w0, J(rec.restoration))
+  inst:service(2 + DELAY / 2)
+  check("still not restored before the delay", console.shortcutsActive == true and inst:status().modeChange.state == "active")
+  inst:service(2 + DELAY + 0.001)
+  check("service() restores after the full delay; the record is released", console.shortcutsActive == false and inst:status().modeChange == nil and holdById(inst, h.id).state == "released", J(inst:status().lastModeChange))
+  inst:endInteraction("s", ia.id, 3)
+end
+
+-------------------------------------------------------------------------------
 -- Dispose / adopt: restoration across a restart, never a replacement profile
 -------------------------------------------------------------------------------
 do
