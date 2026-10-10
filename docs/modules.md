@@ -840,8 +840,9 @@ and `test/kb22-probe.test.ts` (4). Live: `node scripts/kb22-probe.mjs run` (pend
 
 ## Vendoring into another plugin (mtpnxk)
 
-Use the immutable upstream revision **`d60bb06e080ce2fef2b593b96f0de119462a0767`** (KB-21 after the PR #25 review round 1, hardkeys 0.10.0 /
-feedback 0.5.0 / control 0.4.0) for the current module set; the earlier pins were `597ba47f7e28c0c50673e8c405b555b942c9b984` (KB-20 after the PR #24 review, hardkeys 0.10.0 / feedback 0.4.0 / control 0.3.0), `01e1561490fc39ce4e2d510e2d170c9c09e4bc53`
+Use the immutable upstream revision **`0315e181bb6b0ff4e22976797a616c8db8720585`** (KB-22, hardkeys 0.10.0 / feedback 0.5.0 /
+control 0.5.0) for the current module set; the earlier pins were `d60bb06e080ce2fef2b593b96f0de119462a0767` (KB-21 after the PR #25 review round 1, hardkeys 0.10.0 /
+feedback 0.5.0 / control 0.4.0), `597ba47f7e28c0c50673e8c405b555b942c9b984` (KB-20 after the PR #24 review, hardkeys 0.10.0 / feedback 0.4.0 / control 0.3.0), `01e1561490fc39ce4e2d510e2d170c9c09e4bc53`
 (KB-20 before the review), `107f54804a9f7183e8bbedee2ebbac70e38e06fd` (KB-19, hardkeys
 0.10.0 / feedback 0.4.0 / control 0.2.0), `9f08f871f864084afcd670008310b285e8b31bfc` (KB-18, hardkeys
 0.10.0 / feedback 0.3.0 / control 0.1.0), `c8dbb3aa6edf352fc977d5196399bb6daf222d2b` (KB-17,
