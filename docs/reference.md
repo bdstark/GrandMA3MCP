@@ -176,7 +176,8 @@ console's budget, never loosen it.
 ### Owned input sessions (plugin v0.5.0, KB-03)
 
 Owned input is a separate per-start opt-in (`Plugin "gma3_mcp_bridge" "input=keyboard"`, `input=fake`, or
-`input=off`); `ping` reports it as `input: {enabled, backend, sessions, holds, unresolved, unresolvedFromPreviousRun}`.
+`input=off`); `ping` reports it as `input: {enabled, backend, sessions, holds, unresolved, unresolvedFromPreviousRun, bank}`
+(`bank` since v0.9.0: `{provisioned, id, state, codes, qualified, problems}` of the KB-12 Quickey bank, or `{provisioned: false, kept}` for a record awaiting re-verification; `input.status.status.bank` has the full report).
 The **keyboard backend** (v0.6.0, KB-04) presses real console keys through `Keyboard()`; the **fake backend**
 records events and simulates aggregate key state, and nothing reaches a console key. A switch between them is
 refused while ownership records exist and leaves the previous policy intact.

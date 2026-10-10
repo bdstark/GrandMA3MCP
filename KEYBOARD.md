@@ -29,7 +29,13 @@ qualification, owned resource provisioning and explicit per-key dispatch policie
 2026-10-09** (Quickey tap/hold/release/chord qualified through an executor; see its records). **KB-11 implemented
 in the shared module on 2026-10-09** (hardkeys 0.6.0): the per-key routing policy, its validation, reporting and
 route retention are harness-tested on the fake backend; `quickkey` dispatch awaits the KB-12/KB-13 backend and the
-text routes await KB-14, so no new console path is qualified by it. KB-12–KB-15 remain planned work.
+text routes await KB-14, so no new console path is qualified by it. **KB-12 implemented in the shared module on
+2026-10-09** (hardkeys 0.7.0, bridge 0.9.0): operator-authorised provisioning of the owned Quickey bank and the reserved
+executor range, marker-based ownership verified by readback before every mutation and dispatch, verify/teardown/adopt and
+the bridge's `bank=` arguments are harness-tested against a fake console and **qualified live on the disposable show**
+(94 Quickeys provisioned and read back, an operator edit reported by `bank verify`, the record adopted across a bridge
+restart, teardown removing exactly the owned objects, paged executor assign/clear confirmed; see its record). Save/reload
+of the show was not exercised. KB-13–KB-15 remain planned work.
 
 This document expands the initial request from `mtpnxk-client-pico` into dependency-ordered features
 and acceptance criteria, following the format of [FEATURES.md](FEATURES.md). The originating project's
@@ -1011,6 +1017,80 @@ a surface-specific allocator. MCP/TypeScript changes are not required unless pro
   is implemented; a common bank does not itself provide cross-plugin press/release ownership.
 - Test collisions, partial failure, deletion/replacement, operator edits, cached-handle invalidation,
   save/reload and plugin restart. Qualify persistence and ownership recovery on a disposable show.
+
+### Module change for KB-12 (hardkeys 0.7.0, bridge 0.9.0, 2026-10-09)
+
+Implemented in `plugin/gma3_mcp_hardkeys.lua` 0.7.0 with the regression harness `test/lua/hardkeys_bank_test.lua`
+(110 checks against a fake Quickey pool and executor page) and the bridge section of `test/lua/bridge_plugin_test.lua`
+(15 checks). No MCP tool or TypeScript contract changed; provisioning is reachable only through the plugin argument.
+
+- **Authorization and ranges.** `provisionBank({ authorized = true, quickeys = { first }, executors = { page, first,
+  count }, codes, label }, now)`. `authorized = true` is the consumer's explicit operator decision (the bridge sets it
+  only from `Plugin "gma3_mcp_bridge" "bank=900/1.190-197"`, never from a client request); without it nothing is read.
+  The executor count must cover `config.maxHolds` (one executor per concurrently held key, KB-10) and defaults to it.
+- **Code set.** Discovered from `Enums.VirtualKeyCode` at provisioning time (never a fixed count): one entry per distinct
+  value, ordered by value (slot = first + rank), aliases folded (`UNDO` → `OOPS`) and reported, value-0 placeholders,
+  `X1`–`X16`, `XKEYS`, `EXEC`, `FADER`, `DEF_*`, `ENCODER_*`, `ONPC_SCREEN*` and the executor button functions
+  (`FLASH` … `RECORD`) excluded with reasons. Each code carries its KB-10 qualification (`{ tap, hold, chord, note }` for
+  NUM1, NUM5, THRU, FIXTURE, PLEASE, CLEAR, STORE, MA1, OOPS; `false` = discovered only, with ESC's note). `codes =
+  "qualified"` provisions only the evidenced codes; an explicit list is accepted; excluded codes cannot be forced in.
+- **Ownership.** Each Quickey gets `Name = "MCP <CODE>"` and a Note marker
+  `gma3_mcp_hardkeys-bank v1 owner=<owner> bank=<id> code=<CODE> exec=<page>.<first>-<last>`; the bank id is
+  deterministic from owner and ranges. An object counts as owned only when marker, `Code` and `Name` all match; a
+  label alone proves nothing. Preflight classifies every slot (`empty`, `owned`, `owned-changed`, `foreign`,
+  `other-bank`, `occupied`) and every executor (`empty`, `owned`, `occupied`, `missing`) before any write; one refusal
+  (`bank-preflight` with `refusals[]`) and nothing is created. Another owner's marker is `bank-foreign-owner` (no
+  shared arbitration); the same owner's other bank id is `bank-mismatch`; an owned object with an operator edit is
+  `bank-mismatch` and is not repaired. Executors already holding a bank Quickey are reused as `assigned`.
+- **Executor reservation (visible across consumers).** The bank has one extra, code-less Quickey `MCP RESERVED`
+  (marker `code=RESERVED`, the slot right after the codes). Provisioning assigns it to every empty reserved executor,
+  re-reading each right before, so the claim is an object on the console: another consumer's preflight reads a foreign
+  marker (`executor-foreign-owner`) and is refused before creating anything, including the same owner's other bank.
+  A reserved executor that reads empty later is `unreserved` (a problem, not silently re-assigned); the same spec on a
+  fresh instance re-reserves it. Executor ownership is the assigned Quickey's **pool index, marker and Code** against the
+  bank's entry, never its name: a same-named Quickey, a marker copy at another index or a changed Code is `occupied`
+  and is left alone by teardown.
+- **Mutation.** Each slot is re-read right before `Store Quickey N /NoConfirmation`; Note is written first, then Code,
+  then Name, and the object must read back as owned. On any failure (`bank-partial`) the rollback re-reads every object
+  this call created and deletes only those that still read back exactly as written (or untouched if nothing was written
+  yet); anything else is `kept[]` with its reason. A slot that became occupied between preflight and creation is a
+  failure, never an overwrite.
+- **Cache and revalidation.** `bankTarget(code, now)` (KB-13 calls it before every press), `bankExecutor(index, now)`
+  and `teardownBank()` first re-read the **show identity**: a mismatch marks the bank `stale` and refuses (`bank-stale`),
+  so matching objects at the same indices in another show are never used or deleted. Then the one Quickey / executor is
+  re-read and refused on `bank-object-missing` / `bank-object-changed` / `bank-executor-*`. `verifyBank(now)` on the
+  bank's show re-reads everything and marks it `ready` or `degraded` with `problems[]`; on another show it keeps the bank
+  `stale`, inspects no object and dispatch stays refused. `service(now)` re-reads only the show identity every
+  `config.bankCheckMs` (2000 ms).
+- **Teardown and release-all are separate.** `teardownBank(now, { authorized = true })` is refused while any Quickey
+  ownership record is held or unresolved (`bank-in-use`). It clears only executors holding a bank Quickey, deletes only
+  Quickeys that still verify (placeholder included), skips changed or replaced objects with reasons, and leaves a
+  `partial` bank for them.
+- **Restart.** `dispose()` returns `bank` (the record); the bridge keeps it in `state.input.bank` like unresolved
+  records and `adoptBank(record, now)` re-verifies every object at the next start (nothing created; a lost marker makes
+  the entry `replaced` and refuses dispatch). The same spec on a fresh instance also finds and reuses the bank through
+  the markers. `status().bank` / `bankStatus()` report everything, including the record; `ping.input.bank` and
+  `input.status` carry the summary. A complete record without the placeholder entry (an older format) is refused; the
+  record of a partially torn-down bank (`partial = true`, its placeholder already deleted) is adopted for cleanup only:
+  dispatch refuses `bank-partial` and teardown completes once the skipped objects are restored or removed. `adopt()` now
+  accepts unresolved Quickey hold records (they have no `pcKey`).
+- **Bridge.** `bank=<quickey>/<page>.<first>[-<last>]`, `bankcodes=hardkeys|qualified`, `bank status`, `bank verify`,
+  `bank teardown`. The console deps address objects in command syntax (`ObjectList("Quickey N")`,
+  `ObjectList("Page P.N")`, `Store`/`Delete Quickey N /NoConfirmation`, `Assign Quickey N At Page P.N` and
+  `Delete Page P.N /NoConfirmation` for an executor) and verify every write by readback, never by the command's return
+  text. The executor read resolves the assigned object's pool index, Note and Code.
+
+Live on 2026-10-09 ([record](docs/probes/kb-12-bank-macos-2.5.1.md)): `bank=900/1.180-187` created 94 Quickeys that
+read back as written, `bank status`/`verify` reported the codes and an operator edit, the record survived a bridge restart
+and was re-verified without creating anything, and `bank teardown` removed exactly the 94 objects. `Assign Quickey N At
+Page 1.180` and `Delete Page 1.180 /NoConfirmation` work as the deps assume. Two console facts shaped the deps: an empty
+executor has no object under `Page P.N` (reported `empty`, not `missing`, when the page exists), and the show identity is
+`Root().MANetSocket:Get("ShowFile")` plus the data pool name (`ShowData().name` is the literal `"ShowData"`).
+
+What is *not* established: save/reload persistence (SaveShow/LoadShow are operator actions), refusals against a foreign
+owner or an unowned object on the console (harness only), teardown while a Quickey hold is live (harness only), the
+behaviour of `Store Quickey` on a locked or full pool, and any Quickey dispatch (KB-13). The `modules.lock.json` pin still
+names the reviewed 0.4.0 bytes.
 
 ## KB-13 — Production Quickey input backend
 

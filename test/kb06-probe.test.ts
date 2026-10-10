@@ -50,7 +50,7 @@ function run(args: string[], env: Record<string, string>): Promise<{ status: num
 }
 
 const modules = { hardkeys: { loaded: true, version: "0.4.0" }, feedback: { loaded: true, version: "0.2.0" } };
-const ping = (extra: Record<string, unknown> = {}) => ({ bridgeVersion: "0.8.0", host: "127.0.0.1", port: 9800, showfile: "mcp-test-disposable", user: "Admin", lua: { enabled: true }, input: { enabled: false, sessions: 0, holds: 0, busy: null }, modules, ...extra });
+const ping = (extra: Record<string, unknown> = {}) => ({ bridgeVersion: "0.9.0", host: "127.0.0.1", port: 9800, showfile: "mcp-test-disposable", user: "Admin", lua: { enabled: true }, input: { enabled: false, sessions: 0, holds: 0, busy: null }, modules, ...extra });
 const mutating: string[] = [];
 const refusing = (p: unknown): Handler => (op) => {
   if (op === "ping") return p;

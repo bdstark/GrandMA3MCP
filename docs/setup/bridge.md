@@ -56,6 +56,28 @@ first, then run `input recover`: the bridge never changes mappings or toggles F1
 is pending it refuses every new press, including an injected F10. See
 [docs/reference.md](../reference.md#owned-input-sessions-plugin-v050-kb-03).
 
+Since v0.9.0 (KB-12) the operator can provision the **Quickey bank** the Quickey dispatch of KB-13 will use. This is the
+only path that creates or deletes show objects, and it is a plugin argument, never a client request:
+
+```text
+Plugin "gma3_mcp_bridge" "bank=900/1.190-197"
+Plugin "gma3_mcp_bridge" "bank=900/1.190 bankcodes=qualified"
+Plugin "gma3_mcp_bridge" "bank status"
+Plugin "gma3_mcp_bridge" "bank verify"
+Plugin "gma3_mcp_bridge" "bank teardown"
+```
+
+`bank=<quickey>/<page>.<first>[-<last>]` creates one Quickey per command-area hardkey code from the given pool index
+upwards (named `MCP <CODE>`, with an ownership marker in the Note) and reserves the executor range for holds by assigning
+the bank's code-less `MCP RESERVED` Quickey to each executor, so the claim is visible to any other plugin (the range must
+cover the hold capacity of 8; without `-<last>` it reserves 8). Every slot and executor is checked before anything
+is written: an unowned object in the range, another plugin's bank or an occupied executor refuses the whole setup and
+nothing is created. A bank of this bridge with the same ranges is verified and reused. `bank status` prints the codes
+(qualified by the KB-10 evidence, or discovered only), problems and exclusions; `bank verify` re-reads every object;
+`bank teardown` deletes only Quickeys that still verify as the bridge's and clears only executors holding one of them,
+and is refused while a Quickey hold or unresolved record exists. The bank record survives a restart like the unresolved
+records and is re-verified at the next start. Use a show you are prepared to have objects created in.
+
 Since v0.7.0 (KB-05) the MCP server exposes input through the [structured input tools](../tools/input.md). While
 any client owns console input (an interaction, a running sequence or a held key), the bridge refuses commands,
 property changes, faders and Lua from **every** client with `[busy]`; `input status` prints the open interactions,
