@@ -11,10 +11,12 @@
 // the operator restores it), a bridge restart with such a stuck hold (the record and its executor target survive,
 // operator recovery releases it), and the teardown refusal while a hold is live. Operator-side actions that must
 // happen while the bridge is [busy] (a hold, an unresolved record) cannot be issued through the bridge, so the
-// probe writes them into the DEFERRED macro (default Macro 116, created if absent) with Wait times and fires it
-// through "lua" before the hold starts: the console executes the lines on its own while the bridge is busy. The
-// restart macro (default 115: stop + "lua input=quickey") and the teardown macro (default 113: "bank teardown")
-// must exist in the show. Reads happen through the unguarded feedback.read op during interactions and through
+// probe writes them into the DEFERRED macro (default Macro 116) with Wait times and fires it through "lua" before
+// the hold starts: the console executes the lines on its own while the bridge is busy. The deferred slot must be
+// EMPTY (the probe creates the macro, named "MCP kb13 deferred", and deletes it at the end) or hold a macro of that
+// name left by an earlier run (reused, left in place); any other macro in the slot refuses the run before any key is
+// pressed, and the slot may not be the restart or teardown macro. The restart macro (default 115: stop + "lua
+// input=quickey") and the teardown macro (default 113: "bank teardown") must exist in the show. Reads happen through the unguarded feedback.read op during interactions and through
 // "lua" otherwise. Nothing is retried or replayed.
 import net from "node:net";
 import fs from "node:fs";
@@ -28,6 +30,8 @@ const outFile = opt("--out", null);
 const RESTART_MACRO = Number(opt("--restart-macro", 115));
 const TEARDOWN_MACRO = Number(opt("--teardown-macro", 113));
 const DEFERRED_MACRO = Number(opt("--deferred-macro", 116));
+const DEFERRED_NAME = "MCP kb13 deferred";
+let deferredCreated = false;  // whether this run created the deferred macro (then it is deleted at the end)
 const SHOW_GUARD = /disposable|mcp-test|scratch/i;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -136,12 +140,45 @@ async function waitSequence(conn, id, timeoutMs) {
  * Deferred operator actions: writes the lines into the deferred macro (command + Wait seconds before the NEXT
  * line) and fires it. Called only while the bridge is idle; the console runs the lines while the bridge is busy.
  */
+const macroName = (conn, n) => lua(conn, `local m = ObjectList('Macro ${n}')[1]; return m and tostring(m.name) or false`);
+/**
+ * Claims the deferred slot before any key is pressed: an empty slot is taken (created, named, deleted at the end),
+ * a macro of the probe's name is reused (left in place), anything else refuses the run. A disposable show name
+ * says nothing about who owns a macro.
+ */
+async function claimDeferredMacro(conn) {
+  const name = await macroName(conn, DEFERRED_MACRO);
+  if (name === false) {
+    const created = await lua(conn, `Cmd('Store Macro ${DEFERRED_MACRO} /NoConfirmation'); local m = ObjectList('Macro ${DEFERRED_MACRO}')[1]; if not m then return false end m:Set('Name', '${DEFERRED_NAME}'); return tostring(m.name)`);
+    if (created !== DEFERRED_NAME) { console.error(`could not create the deferred Macro ${DEFERRED_MACRO} (got ${JSON.stringify(created)})`); process.exit(2); }
+    deferredCreated = true;
+    note("deferred macro", `Macro ${DEFERRED_MACRO} created as "${DEFERRED_NAME}" (deleted at the end of the run)`);
+  } else if (name === DEFERRED_NAME) {
+    note("deferred macro", `Macro ${DEFERRED_MACRO} "${DEFERRED_NAME}" from an earlier run is reused and left in place`);
+  } else {
+    console.error(`Macro ${DEFERRED_MACRO} is occupied by "${name}"; the probe only uses an empty slot or its own "${DEFERRED_NAME}" macro. Pass --deferred-macro <free slot>.`);
+    process.exit(2);
+  }
+  for (const [label, n] of [["restart", RESTART_MACRO], ["teardown", TEARDOWN_MACRO]]) {
+    const nm = await macroName(conn, n);
+    if (nm === false) { console.error(`the ${label} macro (Macro ${n}) does not exist in this show`); process.exit(2); }
+    note(`${label} macro`, `Macro ${n} "${nm}"`);
+  }
+}
+/** Deletes the deferred macro only when this run created it; verifies it is gone. */
+async function releaseDeferredMacro(conn) {
+  if (!deferredCreated) return { skipped: true };
+  const name = await macroName(conn, DEFERRED_MACRO);
+  if (name !== DEFERRED_NAME) return { skipped: true, reason: `Macro ${DEFERRED_MACRO} is now ${JSON.stringify(name)}; not ours any more, left alone` };
+  await lua(conn, `Cmd('Delete Macro ${DEFERRED_MACRO} /NoConfirmation'); return true`);
+  return { deleted: (await macroName(conn, DEFERRED_MACRO)) === false };
+}
 async function deferred(conn, lines) {
   const luaList = "{ " + lines.map((l) => `{ cmd = [==[${l.cmd}]==], wait = [==[${l.wait == null ? "Follow" : String(l.wait)}]==] }`).join(", ") + " }";
   const code = `
     local list = ${luaList}
     local m = ObjectList('Macro ${DEFERRED_MACRO}')[1]
-    if not m then Cmd('Store Macro ${DEFERRED_MACRO} /NoConfirmation'); m = ObjectList('Macro ${DEFERRED_MACRO}')[1]; m:Set('Name', 'MCP kb13 deferred') end
+    if not m or tostring(m.name) ~= '${DEFERRED_NAME}' then error('Macro ${DEFERRED_MACRO} is no longer the deferred macro of this probe (' .. tostring(m and m.name) .. '); refusing to write it', 0) end
     for i = m:Count() + 1, #list do Cmd(string.format('Store Macro %d.%d /NoConfirmation', ${DEFERRED_MACRO}, i)) end
     for i = 1, m:Count() do
       local l = m:Ptr(i)
@@ -184,6 +221,7 @@ async function run() {
   let A = new Conn("A");
   await A.connect();
   const ping = await preflight(A);
+  await claimDeferredMacro(A);
   let r = await A.request("input.status");
   const bank = r.result.status.bank;
   const codeIndex = Object.fromEntries((bank.codes || []).map((c) => [c.name, c.index]));
@@ -344,12 +382,21 @@ async function run() {
   const finalCmd = await readCmd(A);
   const finalMa = await readMa(A);
   record("console and bridge left clean: no holds, nothing unresolved, bank ready, empty command line, MASTATE false", finalPing?.input?.holds === 0 && finalPing?.input?.unresolved === 0 && !finalPing?.input?.busy && finalPing?.input?.bank?.state === "ready" && finalCmd === "" && finalMa === false, { input: finalPing?.input, cmd: finalCmd, ma: finalMa });
+  const rel = await releaseDeferredMacro(A);
+  record("the deferred macro is removed when this run created it, left alone otherwise", rel.skipped ? true : rel.deleted === true, rel);
   await A.end();
   return { ping, finalPing };
 }
 
 if (mode !== "run") {
   console.error("usage: node scripts/kb13-probe.mjs run [--out report.json] [--restart-macro N] [--teardown-macro N] [--deferred-macro N]");
+  process.exit(2);
+}
+for (const [label, n] of [["--restart-macro", RESTART_MACRO], ["--teardown-macro", TEARDOWN_MACRO], ["--deferred-macro", DEFERRED_MACRO]]) {
+  if (!Number.isInteger(n) || n < 1) { console.error(`${label} must be a positive macro number`); process.exit(2); }
+}
+if (DEFERRED_MACRO === RESTART_MACRO || DEFERRED_MACRO === TEARDOWN_MACRO || RESTART_MACRO === TEARDOWN_MACRO) {
+  console.error("the deferred, restart and teardown macros must be three distinct slots (the deferred macro is rewritten by the probe)");
   process.exit(2);
 }
 run().then(({ ping, finalPing }) => {

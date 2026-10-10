@@ -5,8 +5,8 @@ Date: 2026-10-09. Evidence for [KEYBOARD.md](../../KEYBOARD.md) "KB-13 — Produ
 through the KB-12 bank on its reserved executors, with the ownership, duplicate, recovery and restart behaviour of the
 keyboard backend, and does it refuse everything the KB-10 evidence does not cover?
 
-**Result: qualified on the disposable show, 46/46 automated checks** ([script report](kb-13-quickey-macos-2.5.1.json),
-`node scripts/kb13-probe.mjs run`). A NUM5 tap put `5` on the command line through `Assign Quickey 949 At Page 1.180`
+**Result: qualified on the disposable show, 47/47 automated checks** ([script report](kb-13-quickey-macos-2.5.1.json),
+`node scripts/kb13-probe.mjs run`, final run after the review fixes below). A NUM5 tap put `5` on the command line through `Assign Quickey 949 At Page 1.180`
 and `Press`/`Unpress Page 1.180`; an OOPS tap on the same executor removed it; an MA1 hold set `MASTATE` true until its
 release and a repeated press of the held key was answered with the same record and no second dispatch; the MA1+STORE
 chord on executors 180/181 produced `Record`; the `Fixture 1 Thru 5 Please` sequence selected 5 fixtures with the command
@@ -37,9 +37,12 @@ during dispatch (harness only), the chord and hold evidence for codes other than
   "not accepted" (nothing changed) and a raise as "unknown".
 - **OSC input is not enabled on this onPC** (an OSC `/cmd` left no trace), so an operator action that must happen while
   the bridge is `[busy]` (a hold, an unresolved record) cannot be issued through the bridge or over OSC. The probe writes
-  such actions into Macro 116 (`MCP kb13 deferred`) with Wait times and fires it through `lua` before the hold starts; the
+  such actions into a deferred macro (Macro 116) with Wait times and fires it through `lua` before the hold starts; the
   console then executes the lines on its own (`Assign Quickey 955 At Page 1.180` after 3 s, the restore after 10 s, or the
-  restart/recover chain).
+  restart/recover chain). The slot is claimed before any key is pressed: an empty slot is created as `MCP kb13 deferred`
+  and deleted at the end of the run, a macro of that name from an earlier run is reused and left in place, and any other
+  macro in the slot refuses the run (a disposable show name says nothing about who owns a macro); the deferred, restart
+  and teardown slots must be distinct.
 - `input recover` is the operator's path for a record of a previous run: the bridge's `[busy]` guard refuses `lua`, `cmd`
   and every new press from every connection while that record is unresolved, and the client-side `input.recover` acts on
   the client's own session only.
@@ -72,13 +75,17 @@ during dispatch (harness only), the chord and hold evidence for codes other than
 | 22 | `input.tap NUM5` | `[busy] 1 unresolved release record(s): MA1 (hold h1, session 'previous-run') may still be down (...); recover it (owner recover, or the operator's "input recover") before anything else runs` |
 | 23 | at +19 s the macro's `input recover` | log: `input recover released previous-run MA1(quickkey:#1) released (dispatched, effect not observable)`, `input recover: 1 released, 0 still unresolved`; `holds 0, unresolved 0`; `MASTATE` false |
 | 24 | Macro 116 fired (`Go+ Macro 113` at +3 s); `input.begin`; `input.press MA1`; wait 4.5 s | log: `ERROR ... bank teardown refused [bank-in-use]: 1 Quickey ownership record(s) are held or unresolved; release or recover them before tearing the bank down (deleting a Quickey during a hold leaves the key down, KB-10)`; bank still `ready`, hold still `held`; `input.end` released it |
-| 25 | `input.releaseAll`, `input.close`, final reads | `holds 0, unresolved 0`, not busy, bank `ready`, command line empty, `MASTATE` false |
+| 25 | `input.releaseAll`, `input.close`, final reads | `holds 0, unresolved 0`, not busy, bank `ready`, command line empty, `MASTATE` false; Macro 116 (created by this run) deleted and read back absent |
 | 26 | `Go+ Macro 113`; `Go+ Macro 107` | `bank teardown: 95 Quickey(s) removed, 8 executor(s) cleared, 0 object(s) skipped; the bank is gone`; Quickeys 895–1000 empty, executors 180–187 empty, Quickey 1 (`THRU`) untouched; input back on the keyboard backend |
 
 The first run of the script (43/46) failed only on three probe expectations: the `input.release` reply nests the hold
 report under `hold`, and new input after the restart is refused `[busy]` (the intended behaviour: conflicting input is
 blocked until recovery completes) rather than admitted on another executor. The expectations were corrected and the run
-repeated from the same clean state: 46/46.
+repeated from the same clean state: 46/46. After the PR review of `bfe285b` (chord admission now checks every participating
+held key, not only the incoming one; the probe claims and cleans up its deferred macro) the plugin was reinstalled
+(Macro 100, bank re-provisioned with 108, `input=quickey` with 114) and the run repeated: 47/47 (the extra check is the
+macro cleanup). The held-key chord rule (NUM1 held, then NUM5 refused) is harness-covered; live, the chord steps use
+MA1+STORE, both chord-qualified.
 
 ## Acceptance report
 
@@ -95,6 +102,6 @@ repeated from the same clean state: 46/46.
 
 ## Cleanup
 
-Bank removed by its own teardown (step 26); input back on the keyboard backend. Macros 114 (`MCP input quickey`),
-115 (`MCP bridge restart quickey`) and 116 (`MCP kb13 deferred`, its lines left as the last chain wrote them) remain in
-the show as operator tools next to 100–113; they create nothing until fired. Show not saved.
+Bank removed by its own teardown (step 26); input back on the keyboard backend. Macros 114 (`MCP input quickey`) and
+115 (`MCP bridge restart quickey`) remain in the show as operator tools next to 100–113; they create nothing until fired.
+Macro 116 was created and deleted by the probe. Show not saved.

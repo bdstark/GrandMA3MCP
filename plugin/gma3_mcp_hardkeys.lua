@@ -2995,7 +2995,12 @@ function Instance:_validateSequence(sessionId, steps)
         local others = liveQuickkeys > 0 or (next(heldQuickkeys) ~= nil and (count(heldQuickkeys) > 1 or not heldQuickkeys[tk]))
         local cerr = self:_quickkeyCapabilityError(tuple, route, kind, false, others)
         if cerr then return stepFail(i, cerr.code, cerr.message, { reason = cerr.reason, missing = cerr.missing, capabilities = cerr.capabilities }) end
-        if kind == "press" then heldQuickkeys[tk] = true end
+        if others then
+          -- Every key already down when this one goes down (live holds and earlier steps) must chord too.
+          cerr = self:_heldQuickkeyChordError(tk, heldQuickkeys, tuple)
+          if cerr then return stepFail(i, cerr.code, cerr.message, { reason = cerr.reason, missing = cerr.missing, capabilities = cerr.capabilities, heldKey = cerr.heldKey }) end
+        end
+        if kind == "press" then heldQuickkeys[tk] = { quickkey = tuple.quickkey, capabilities = route.capabilities } end
       end
       if kind == "tap" then
         local holdMs = step.holdMs or 50
@@ -3032,7 +3037,9 @@ function Instance:_validateSequence(sessionId, steps)
         if tuple.quickkey then
           local cerr = self:_quickkeyCapabilityError(tuple, route, step.holdMs and "tap" or "hold", true, true)
           if cerr then return stepFail(i, cerr.code, "key " .. k .. ": " .. cerr.message, { key = k, reason = cerr.reason, missing = cerr.missing, capabilities = cerr.capabilities }) end
-          if not step.holdMs then heldQuickkeys[tk] = true end
+          cerr = self:_heldQuickkeyChordError(tk, heldQuickkeys, tuple)
+          if cerr then return stepFail(i, cerr.code, "key " .. k .. ": " .. cerr.message, { key = k, reason = cerr.reason, missing = cerr.missing, capabilities = cerr.capabilities, heldKey = cerr.heldKey }) end
+          if not step.holdMs then heldQuickkeys[tk] = { quickkey = tuple.quickkey, capabilities = route.capabilities } end
         end
         s.specs[k] = spec
         s.keyNames[k] = route.logical or tuple.pcKey
@@ -3690,8 +3697,15 @@ function Instance:_planPress(sessionId, now, spec, ctx)
   -- needs tap, a hold needs hold, and pressing while another Quickey record is live (a combo, or a
   -- second press alongside a held one) needs chord. Checked before any admission or dispatch.
   if tuple.quickkey then
-    local cerr = self:_quickkeyCapabilityError(tuple, route, ctx.kind, ctx.comboIndex ~= nil, self:_liveQuickkeyCount(tupleKey(tuple)) > 0)
+    local simultaneous = self:_liveQuickkeyCount(tupleKey(tuple)) > 0
+    local cerr = self:_quickkeyCapabilityError(tuple, route, ctx.kind, ctx.comboIndex ~= nil, simultaneous)
     if cerr then return nil, cerr end
+    -- A chord needs the flag on EVERY participating key: a held Quickey without chord evidence must not
+    -- get a neighbour either (the hold's own stored flags decide, never the current policy).
+    if simultaneous then
+      cerr = self:_heldQuickkeyChordError(tupleKey(tuple), nil, tuple)
+      if cerr then return nil, cerr end
+    end
   end
   -- An exclusive hold (intended long-press) admits no new press from anyone, the owner included: a
   -- second key or a duplicate press cancels the console's long-press (KB-01).
@@ -3838,6 +3852,33 @@ function Instance:_quickkeyCapabilityError(tuple, route, kind, combo, simultaneo
       combo and "the combo" or (kind == "tap" and "the tap" or "the hold")),
     { reason = "capability", missing = missing, capabilities = caps, kind = kind, combo = combo and true or false })
   return e
+end
+
+-- A chord is only as qualified as its least qualified key: every Quickey already down when another one
+-- goes down must carry the chord flag it was pressed with (stored on its route; the current policy or
+-- adapter never changes that). Checks the live records (held, releasing, unresolved) and, for the sequence
+-- validator, the tuples earlier steps leave down (extraHeld: tupleKey -> { quickkey, capabilities }).
+-- Returns the structured error for the first held key without chord, or nil.
+function Instance:_heldQuickkeyChordError(exceptTupleKey, extraHeld, incoming)
+  local function errorFor(name, caps, state)
+    local _, e = fail("unsupported", string.format("Quickey %s is %s and does not advertise chord (capabilities.quickkey = { tap = %s, hold = %s, chord = %s }); pressing %s next to it is refused before dispatch, nothing is substituted",
+        tostring(name), state, tostring(caps.tap or false), tostring(caps.hold or false), tostring(caps.chord or false), tostring(incoming and incoming.quickkey or "another Quickey")),
+      { reason = "capability", missing = { "chord" }, capabilities = caps, heldKey = name, kind = "hold" })
+    return e
+  end
+  for _, h in pairs(self._holds) do
+    if h.quickkey and h.state ~= "released" and h.tupleKey ~= exceptTupleKey then
+      local caps = h.route and h.route.capabilities or {}
+      if not caps.chord then return errorFor(h.quickkey, caps, h.state == "held" and "held" or h.state) end
+    end
+  end
+  for tk, held in pairs(extraHeld or {}) do
+    if tk ~= exceptTupleKey and type(held) == "table" then
+      local caps = held.capabilities or {}
+      if not caps.chord then return errorFor(held.quickkey, caps, "left down by an earlier step") end
+    end
+  end
+  return nil
 end
 
 -- Quickey records that may still be down (held, releasing or unresolved): a new Quickey press next to

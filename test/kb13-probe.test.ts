@@ -121,6 +121,24 @@ test("refuses when the console is not idle (command line or MASTATE)", async () 
   } finally { b.close(); }
 });
 
+test("refuses an occupied deferred macro slot before any input op, and overlapping macro slots", async () => {
+  const b = await startFakeBridge((op, args) => {
+    if (op === "ping") return ping(idle);
+    if (op === "lua") return { values: [/Macro 116/.test(args.code) ? "Operator thing" : /MAState/.test(args.code) ? false : ""] };
+    if (op.startsWith("input.")) dispatched.push(op);
+    throw new Error("unexpected " + op);
+  });
+  try {
+    const r = await run(["run"], { GMA3_BRIDGE_PORT: String(b.port) });
+    assert.equal(r.status, 2, r.stdout + r.stderr);
+    assert.match(r.stderr, /Macro 116 is occupied by "Operator thing"/);
+    assert.equal(dispatched.length, 0, "no input op was sent");
+  } finally { b.close(); }
+  const r2 = await run(["run", "--deferred-macro", "115"], { GMA3_BRIDGE_PORT: "1" });
+  assert.equal(r2.status, 2);
+  assert.match(r2.stderr, /three distinct slots/);
+});
+
 test("usage error without a mode", async () => {
   const r = await run([], {});
   assert.equal(r.status, 2);

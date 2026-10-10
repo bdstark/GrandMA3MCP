@@ -38,8 +38,8 @@ restart, teardown removing exactly the owned objects, paged executor assign/clea
 of the show was not exercised. **KB-13 implemented on 2026-10-09** (hardkeys 0.8.0, bridge 0.10.0): the owned-Quickey
 backend dispatches taps, holds and chords of the nine KB-10 qualified codes as executor presses of the bank's Quickeys,
 releases only on the recorded executor, keeps the executor target with every record across recovery and restarts, and
-refuses discovered-only codes and unevidenced operations before dispatch; harness-tested (100 checks) and **qualified live
-on the disposable show (46/46)**, including an executor reassigned during a hold and a restart with the stuck record. The
+refuses discovered-only codes and unevidenced operations before dispatch; harness-tested (107 checks) and **qualified live
+on the disposable show (47/47)**, including an executor reassigned during a hold and a restart with the stuck record. The
 NX-K surface path is not qualified (mtpnxk has not vendored 0.8.0). KB-14 and KB-15 remain planned work.
 
 This document expands the initial request from `mtpnxk-client-pico` into dependency-ordered features
@@ -1125,7 +1125,7 @@ machinery. No MCP/TypeScript changes should be needed for the initial surface ba
 ### Module change for KB-13 (hardkeys 0.8.0, bridge 0.10.0, 2026-10-09)
 
 Implemented in `plugin/gma3_mcp_hardkeys.lua` 0.8.0 (`quickeyBackend(instance)`) with the regression harness
-`test/lua/hardkeys_quickey_test.lua` (100 checks against a fake console with executor key state) and the bridge section of
+`test/lua/hardkeys_quickey_test.lua` (107 checks against a fake console with executor key state) and the bridge section of
 `test/lua/bridge_plugin_test.lua` (`input=quickey`). No MCP tool or TypeScript contract changed; the backend is an
 operator decision (`Plugin "gma3_mcp_bridge" "input=quickey"`, with the KB-12 bank provisioned).
 
@@ -1143,7 +1143,10 @@ operator decision (`Plugin "gma3_mcp_bridge" "input=quickey"`, with the KB-12 ba
 - **Qualification per code.** The adapter advertises `capabilities.quickkey = { tap, hold, chord }` and, per code,
   `quickkeyCapabilities(code)` = the KB-10 evidence (`tap` is granted whenever `hold` is, because a tap here is an
   executor pair: MA1 taps, OOPS does not hold, NUM1/THRU/FIXTURE/PLEASE/CLEAR do not chord). `_route()` uses the per-code
-  flags, so the existing capability checks (press, combo, sequence preflight) refuse before dispatch; `supportsQuickkey()`
+  flags, so the existing capability checks (press, combo, sequence preflight) refuse before dispatch. A chord is only as
+  qualified as its least qualified key: a press next to a live Quickey record, and a sequence step next to a tuple an
+  earlier step leaves down, also require `chord` on every key already down (its stored flags, never the current policy),
+  so a held NUM1 refuses a NUM5 just as a held NUM5 refuses a NUM1 (`heldKey` names it); `supportsQuickkey()`
   refuses the 85 discovered-only codes and `unavailable(code)` names "no Quickey bank", "partial bank", "not in bank"
   and "discovered only" in `describeRoute()`. No PC keys (`capabilities.keyboard = false`, `supportsKey()` refuses) and
   no text; the shortcut/shortcutOrType/type methods are unavailable on this backend.
@@ -1167,7 +1170,8 @@ operator decision (`Plugin "gma3_mcp_bridge" "input=quickey"`, with the KB-12 ba
   messages name the three backends. Without a bank every press is `unavailable` naming the KB-12 requirement; a kept
   Quickey record of a previous run makes the bridge `[busy]` until the operator's `input recover` releases it.
 
-Live on 2026-10-09 ([record](docs/probes/kb-13-quickey-macos-2.5.1.md), 46/46 with `node scripts/kb13-probe.mjs run`):
+Live on 2026-10-09 ([record](docs/probes/kb-13-quickey-macos-2.5.1.md), 47/47 with `node scripts/kb13-probe.mjs run`,
+whose operator-side actions during holds go through a deferred show macro the probe creates in an empty slot and removes):
 NUM5 tap → `5`, OOPS tap removed it, MA1 hold with `MASTATE` true/false, duplicate press answered with the same record,
 MA1+STORE chord → `Record `, `Fixture 1 Thru 5 Please` sequence selected 5 fixtures and CLEAR cleared them, ESC/GO/raw PC
 key/MA/non-chord combos refused before dispatch, an executor reassigned during an MA1 hold left the key down and the

@@ -304,11 +304,20 @@ do
   check("a code outside the bank is unavailable", h == nil and err.code == "unavailable" and has(err.unavailable, "not in bank") and #console.cmds == 0, J(err))
   local r; r, err = inst:configureRouting({ default = "quickkey", keys = { STORE = { method = "shortcut" } } })
   check("configureRouting refuses a method this backend cannot serve", r == nil and err.code == "policy-unavailable", J(err))
-  -- NUM1 held, then a chord press of NUM5 (chord-capable) is fine; then a press of THRU (no chord) is refused.
+  -- A chord is only as qualified as its least qualified key, whichever order the keys arrive in.
   h = inst:press("s", 2, { key = "NUM1" })
+  local n = #console.cmds
   local h2; h2, err = inst:press("s", 2.1, { key = "NUM5" })
-  check("NUM5 may join a held key (chord qualified)", h and h2 and h2.target.executor == 191, J(err))
-  local h3; h3, err = inst:press("s", 2.2, { key = "THRU" })
+  check("NUM5 (chord) may not join a held NUM1 (no chord): refused naming the held key, nothing issued", h2 == nil and err.code == "unsupported" and err.reason == "capability" and has(err.missing, "chord") and err.heldKey == "NUM1" and #console.cmds == n and pressedCount() == 1, J(err))
+  h2, err = inst:tap("s", 2.15, { key = "STORE" }, 50)
+  check("a STORE tap next to the held NUM1 is refused the same way", h2 == nil and err.heldKey == "NUM1" and #console.cmds == n, J(err))
+  h2, err = inst:combo("s", 2.2, { { key = "MA1" }, { key = "STORE" } }, { holdMs = 50 })
+  check("a chord-capable combo next to the held NUM1 is refused before its first key", h2 == nil and err.heldKey == "NUM1" and err.key == 1 and #console.cmds == n, J(err))
+  inst:releaseAll("s", 2.3)
+  h = inst:press("s", 2.4, { key = "NUM5" })
+  h2, err = inst:press("s", 2.5, { key = "STORE" })
+  check("NUM5 and STORE (both chord) may be held together", h and h2 and h2.target.executor == 191, J(err))
+  local h3; h3, err = inst:press("s", 2.6, { key = "THRU" })
   check("THRU may not join (chord not qualified); nothing issued", h3 == nil and err.reason == "capability" and has(err.missing, "chord") and lastCmd() == "Press Page 1.191", J(err))
   inst:releaseAll("s", 3)
   check("refusals counted as refused, never raised", backend.counters.refused == 0 and backend.counters.raised == 0 and pressedCount() == 0, J(backend.counters))
@@ -319,6 +328,19 @@ do
   check("sequence preflight refuses a discovered-only code", q == nil and err.code == "unavailable", J(err))
   q, err = inst:startSequence("s", 4, { { kind = "press", key = "MA1" }, { kind = "tap", key = "THRU" } })
   check("sequence preflight refuses a chord of a non-chord code", q == nil and has(err.missing or {}, "chord"), J(err))
+  n = #console.cmds
+  q, err = inst:startSequence("s", 4, { { kind = "press", key = "NUM1" }, { kind = "tap", key = "NUM5" } })
+  check("sequence preflight refuses a chord-capable key next to an earlier non-chord press, nothing dispatched", q == nil and has(err.missing or {}, "chord") and err.heldKey == "NUM1" and err.step == 2 and #console.cmds == n, J(err))
+  q, err = inst:startSequence("s", 4, { { kind = "press", key = "NUM1" }, { kind = "combo", keys = { { key = "MA1" }, { key = "STORE" } }, holdMs = 50 } })
+  check("sequence preflight refuses a combo step next to an earlier non-chord press", q == nil and has(err.missing or {}, "chord") and err.step == 2 and #console.cmds == n, J(err))
+  h = inst:press("s", 4.1, { key = "NUM1" })
+  q, err = inst:startSequence("s", 4.2, { { kind = "tap", key = "NUM5" } })
+  check("sequence preflight refuses a Quickey step while a live non-chord hold exists", q == nil and has(err.missing or {}, "chord") and #console.cmds == n + 2, J(err))
+  inst:releaseAll("s", 4.3)
+  q, err = inst:startSequence("s", 5, { { kind = "press", key = "NUM5" }, { kind = "tap", key = "STORE" }, { kind = "release", key = "NUM5" } })
+  check("a sequence of chord-capable keys validates", q ~= nil, J(err))
+  inst:abortSequence("s", q.id, 5.1, "test")
+  inst:releaseAll("s", 5.2)
 end
 
 -------------------------------------------------------------------------------
