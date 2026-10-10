@@ -784,7 +784,7 @@ the fresh down reaching the new mapping, a forced end, the strip gesture cancell
 
 ## Vendoring into another plugin (mtpnxk)
 
-Use the immutable upstream revision **`14464edebed2ebe2fef0cbfd623e8fbaa903a117`** (KB-21, hardkeys 0.10.0 /
+Use the immutable upstream revision **`9869fb54314dedd7f35c449ae424086ee0ca20d8`** (KB-21 after the live run, hardkeys 0.10.0 /
 feedback 0.5.0 / control 0.4.0) for the current module set; the earlier pins were `597ba47f7e28c0c50673e8c405b555b942c9b984` (KB-20 after the PR #24 review, hardkeys 0.10.0 / feedback 0.4.0 / control 0.3.0), `01e1561490fc39ce4e2d510e2d170c9c09e4bc53`
 (KB-20 before the review), `107f54804a9f7183e8bbedee2ebbac70e38e06fd` (KB-19, hardkeys
 0.10.0 / feedback 0.4.0 / control 0.2.0), `9f08f871f864084afcd670008310b285e8b31bfc` (KB-18, hardkeys
@@ -798,7 +798,7 @@ manifest, not an automatic updater or a runtime dependency on GitHub.
 | File | Module version | API version | SHA-256 |
 | --- | --- | --- | --- |
 | `plugin/gma3_mcp_hardkeys.lua` | 0.10.0 | 1 | `a57ebd29af3b2c7e9e06ef3dcd8b7059c775db83b0dc61760f49e75973cc7dc3` |
-| `plugin/gma3_mcp_feedback.lua` | 0.5.0 | 1 | `d804e41dd92065f2b876d74c4f17c7f3f3f65126a366c1f189d01a2991e44b13` |
+| `plugin/gma3_mcp_feedback.lua` | 0.5.0 | 1 | `6433a3783adc430853f319e44895b33e18ac524f4b31aa7c60a22e7155685bc7` |
 | `plugin/gma3_mcp_control.lua` | 0.4.0 | 1 | `f905493a5820e5a4ae3c1d7ed6dfb770a1ed1dcd3c9d4d94f77d25c82f4e31aa` |
 
 1. Obtain the Lua files from that exact revision of `bdstark/GrandMA3MCP`, rather than a moving branch.
