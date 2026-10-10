@@ -1013,7 +1013,7 @@ do
   start("")  -- bind fails in this harness, so serverMain returns and the instances are disposed again
   local hk, fb = state.modules.hardkeys, state.modules.feedback
   check("modules found through the plugin signal table", hk and hk.loaded and fb and fb.loaded, json.encode({ hk = hk and hk.error, fb = fb and fb.error }))
-  check("module versions recorded", hk.version == "0.9.0" and hk.apiVersion == 1 and fb.version == "0.2.0", json.encode({ hk.version, fb.version }))
+  check("module versions recorded", hk.version == "0.10.0" and hk.apiVersion == 1 and fb.version == "0.2.0", json.encode({ hk.version, fb.version }))
   check("modules start log line", lastLog():find("stopped") or true)
   local disposed = hk.instance and hk.instance:status().state == "disposed" and fb.instance:status().state == "disposed"
   check("instances disposed when the loop ends", disposed, hk.instance and hk.instance:status().state)
@@ -1120,7 +1120,7 @@ do
   Main(nil, "input=keyboard"); Cleanup()
   check("input=keyboard while fake records exist is refused and leaves the fake policy intact", lastLog():find("cannot switch the backend") and lastLog():find("fake enabled") and state.input.backend == "fake" and state.input.enabled == true and state.running == true, lastLog())
   Main(nil, "input=maybe"); Cleanup()
-  check("input=maybe refused", lastLog():find("expected input=keyboard, input=fake, input=quickey or input=off"), lastLog())
+  check("input=maybe refused", lastLog():find("expected input=keyboard, input=fake, input=quickey, input=mixed or input=off"), lastLog())
   -- Fake controls and owner-scoped recovery.
   r = request("input.fake", { action = "failRelease", pcKey = "Enter", sticky = true, error = "host blocked" }, nil, A)
   check("fake controls reachable", r.ok and r.result.backend == "fake" and r.result.down[1] == "Enter|s0c0a0n0", J(r))
@@ -1521,7 +1521,7 @@ do
   r = request("feedback.read", {}, nil, C)
   check("feedback.read without items is refused with a code", r.ok == false and r.code == "no-items", r.error)
   r = request("feedback.read", { readers = { "commandText", "lastCommand", "blind", "solo", "page", "freeze", "selectedSequence", "previewBar", "sequenceActive" }, displays = { 1, 2, 9 }, executors = { 201, 202 }, sequences = { 5, 6 } }, nil, C)
-  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.11.0" and r.result.module.version == "0.2.0" and r.result.identity.showFile == "mcp-test-disposable", J(r))
+  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.12.0" and r.result.module.version == "0.2.0" and r.result.identity.showFile == "mcp-test-disposable", J(r))
   local by = {}
   if r.ok then for _, it in ipairs(r.result.items) do by[it.key] = it end end
   check("feedback.read: command text and last command are raw observations", by.commandText and by.commandText.value == "Store " and by.lastCommand.value == "Go+ Sequence 5 : OK" and by.lastCommand.note:find("not confirmation"), J(by.lastCommand))
@@ -1671,6 +1671,33 @@ do
   check("the keyboard-only logical key MA is not a Quickey code", r.ok == false and r.code == "unsupported" and r.error:find("VirtualKeyCode"), J(r))
   r = request("input.status", {}, nil, A)
   check("input.status reports the backend's limitations and capabilities", r.ok and r.result.status.backend.name == "quickey" and r.result.status.backend.capabilities.keyboard == false and #r.result.status.backend.limitations >= 6 and r.result.status.routing.default == "quickkey", J(r.result.status.backend.capabilities))
+  -- KB-15: the mixed backend through "input=mixed": the quickkey default plus Keyboard() overrides.
+  before = #logs
+  Main(nil, "input=mixed"); Cleanup()
+  check("'input=mixed' attaches the mixed adapter with the quickkey default and every method available", state.input.backend == "mixed" and state.input.enabled == true and hk.instance:status().backend.name == "mixed" and hk.instance:routingReport().default == "quickkey" and hk.instance:routingReport().methods.shortcut.available == true and hk.instance:routingReport().methods.type.available == true and logFound("input now enabled on the mixed backend", before), lastLog())
+  r = request("input.routing", { policy = { default = "quickkey", keys = { STORE = { method = "shortcut" }, THRU = { method = "type", text = "Thru " } } } }, nil, A)
+  check("per-key overrides to the Keyboard() part are accepted on the mixed backend", r.ok and r.result.routing.keys.STORE.method == "shortcut" and r.result.routing.keys.THRU.method == "type", J(r))
+  r = request("input.route", { key = "NUM5" }, nil, A)
+  check("input.route names the part that would press NUM5", r.ok and r.result.route.dispatchBackend == "quickey" and r.result.route.effective == "quickkey", J(r.result))
+  r = request("input.route", { key = "STORE" }, nil, A)
+  check("...and STORE", r.ok and r.result.route.dispatchBackend == "keyboard" and r.result.route.effective == "shortcut-table", J(r.result))
+  fakeProfile.shortcutsActive = "true"; keyboardCalls = {}
+  r = request("input.begin", {}, nil, A)
+  local IM = r.result.interaction.id
+  r = request("input.press", { key = "NUM5", interaction = IM }, nil, A)
+  check("a Quickey hold through the mixed backend is an executor press recording backend quickey", r.ok and r.result.hold.backend == "quickey" and cmds[#cmds] == "Press Page 1.190", J(r))
+  r = request("input.press", { key = "STORE", interaction = IM }, nil, A)
+  check("STORE (Keyboard() part) while the Quickey is held is refused as unqualified-mix; Keyboard() not called", r.ok == false and r.code == "unqualified-mix" and #keyboardCalls == 0, J(r))
+  r = request("input.release", { key = "NUM5" }, nil, A)
+  check("released on the executor", r.ok and cmds[#cmds] == "Unpress Page 1.190", J(r))
+  r = request("input.press", { key = "STORE", interaction = IM }, nil, A)
+  check("STORE now presses through Keyboard() and records backend keyboard", r.ok and r.result.hold.backend == "keyboard" and #keyboardCalls == 1 and keyboardCalls[1].kind == "press", J(r))
+  r = request("input.press", { key = "NUM5", interaction = IM }, nil, A)
+  check("a Quickey while STORE is held is refused, nothing issued", r.ok == false and r.code == "unqualified-mix" and cmds[#cmds] == "Unpress Page 1.190", J(r))
+  request("input.release", { key = "STORE" }, nil, A)
+  request("input.end", { interaction = IM }, nil, A)
+  r = request("input.status", {}, nil, A)
+  check("input.status lists the mixed rules and both parts' counters", r.ok and r.result.status.backend.name == "mixed" and r.result.status.backend.counters.quickey and r.result.status.backend.counters.keyboard and #r.result.status.backend.limitations > 10, J(r.result.status.backend.counters))
   before = #logs
   Main(nil, "input=fake"); Cleanup()
   check("switching back to the fake backend restores the shortcut default", state.input.backend == "fake" and hk.instance:routingReport().default == "shortcut", lastLog())

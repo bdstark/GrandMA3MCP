@@ -13,8 +13,8 @@ probe was rerun against this exact revision. An installation guide is not qualif
 | Component | Version at the reviewed revision | Consumer contract |
 | --- | --- | --- |
 | Node.js MCP server | 0.1.0 | stdio MCP; tools and results in the [reference](reference.md) |
-| Console bridge | 0.11.0 | Local JSON-lines TCP; loopback only, no authentication; `input.routing` / `input.route` since 0.11.0 (KB-14) |
-| Hardkeys module | 0.9.0 (the reviewed baseline above shipped 0.4.0; `modules.lock.json` still pins 0.5.0) | Module API 1; owned input, interactions, text and sequences; since 0.5.0 any `Enums.VirtualKeyCode` name and `prefer` for same-target ties (KB-07); routing policy (0.6.0), Quickey bank and backend (0.7.0/0.8.0), scoped shortcut-mode changes and text routes (0.9.0, KB-14) |
+| Console bridge | 0.12.0 | Local JSON-lines TCP; loopback only, no authentication; `input.routing` / `input.route` since 0.11.0 (KB-14); `input=mixed` since 0.12.0 (KB-15, harness only) |
+| Hardkeys module | 0.10.0 (the reviewed baseline above shipped 0.4.0; `modules.lock.json` pins the 0.10.0 bytes for the KB-15 vendoring) | Module API 1; owned input, interactions, text and sequences; since 0.5.0 any `Enums.VirtualKeyCode` name and `prefer` for same-target ties (KB-07); routing policy (0.6.0), Quickey bank and backend (0.7.0/0.8.0), scoped shortcut-mode changes and text routes (0.9.0, KB-14) |
 | Feedback module | 0.2.0 | Module API 1; read-only observations and bounded polling |
 
 For independent plugins, use the [pinned module pair](modules.md#vendoring-into-another-plugin-mtpnxk).

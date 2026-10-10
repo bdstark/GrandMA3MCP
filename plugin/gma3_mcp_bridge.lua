@@ -32,6 +32,15 @@
 --                                               first or in the same argument); each tap, hold and chord
 --                                               is an executor press of the code's owned Quickey. Only
 --                                               the KB-10 qualified codes dispatch; no PC keys, no text.
+--   Plugin "gma3_mcp_bridge" "input=mixed"      admit input.* ops on the MIXED backend (KB-15, bridge
+--                                               0.12.0 / hardkeys 0.10.0): the quickkey default of
+--                                               input=quickey plus the Keyboard() part for per-key
+--                                               overrides (input.routing: shortcut, shortcutOrType, type)
+--                                               on one instance. Each record is released through the part
+--                                               that pressed it; both kinds are never down at once and the
+--                                               shortcut mode is never changed while a Quickey is down
+--                                               (unqualified-mix refusals). An unavailable Quickey route
+--                                               never falls back to Keyboard().
 --   Plugin "gma3_mcp_bridge" "input=off"        stop admitting input; attempt to release every held key
 --   Plugin "gma3_mcp_bridge" "input status"     print sessions, holds and unresolved releases
 --   Plugin "gma3_mcp_bridge" "input recover"    operator recovery: re-attempt every unresolved release,
@@ -119,7 +128,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.11.0"
+local VERSION      = "0.12.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -1626,6 +1635,16 @@ local function adapterFor(rec, backend)
     if type(mod.quickeyBackend) ~= "function" then return nil, "the loaded hardkeys module has no quickeyBackend() (module " .. tostring(rec.version) .. "; KB-13 needs 0.8.0 or newer)" end
     if not rec.quickeyAdapter then rec.quickeyAdapter = mod.quickeyBackend(rec.instance) end
     return rec.quickeyAdapter
+  elseif backend == "mixed" then
+    -- KB-15: the two real parts on one instance. The parts are the same cached adapters input=quickey
+    -- and input=keyboard use, so records of either are released whichever of the three is attached.
+    if type(mod.mixedBackend) ~= "function" then return nil, "the loaded hardkeys module has no mixedBackend() (module " .. tostring(rec.version) .. "; KB-15 needs 0.10.0 or newer)" end
+    if not rec.mixedAdapter then
+      local q, qerr = adapterFor(rec, "quickey"); if not q then return nil, qerr end
+      local k, kerr = adapterFor(rec, "keyboard"); if not k then return nil, kerr end
+      rec.mixedAdapter = mod.mixedBackend({ quickey = q, keyboard = k })
+    end
+    return rec.mixedAdapter
   end
   return nil, "unknown input backend '" .. tostring(backend) .. "'"
 end
@@ -1634,7 +1653,7 @@ end
 -- method, the PC-key backends only the shortcut routes, so the policy is applied in the same step as
 -- the adapter (hardkeys 0.8.0 validates it against the new adapter; older modules ignore the argument).
 local function routingFor(backend)
-  if backend == "quickey" then return { default = "quickkey" } end
+  if backend == "quickey" or backend == "mixed" then return { default = "quickkey" } end
   return { default = "shortcut" }
 end
 
@@ -1731,13 +1750,16 @@ local function inputRecover()
   -- only: input stays disabled, and a record is only ever released through the backend that pressed it.
   local st = rec.instance:status(now())
   if not (st.backend and st.backend.dispatches) then
-    local wanted
+    -- Records name the part that pressed them (KB-15): keyboard and quickey records together need the
+    -- mixed adapter, one kind its own backend, fake records the fake.
+    local wanted, kinds = nil, {}
     for _, h in ipairs(st.holds) do
-      if h.state ~= "released" then
-        if h.backend == "keyboard" then wanted = "keyboard"; break end
-        if h.backend == "fake" and wanted == nil then wanted = "fake" end
-      end
+      if h.state ~= "released" and type(h.backend) == "string" then kinds[h.backend] = true end
     end
+    if kinds.keyboard and kinds.quickey then wanted = "mixed"
+    elseif kinds.keyboard then wanted = "keyboard"
+    elseif kinds.quickey then wanted = "quickey"
+    elseif kinds.fake then wanted = "fake" end
     if wanted == nil then
       log("input recover: nothing to recover and no backend attached")
     elseif type(rec.instance.attachBackend) ~= "function" then
@@ -1790,7 +1812,7 @@ end
 local function requireInputEnabled()
   if not state.input.enabled then
     error('[input-disabled] input is disabled on the console. The console operator can enable it with:  Plugin "gma3_mcp_bridge" "input=keyboard"  (real console keys through Keyboard()), ' ..
-          '"input=quickey"  (real console keys through the owned Quickey bank, KB-13) or  "input=fake"  (lifecycle only), or start the bridge with that argument. input.status, input.sequence.status, input.release, input.releaseAll, input.recover, input.end and input.close remain available.', 0)
+          '"input=quickey"  (real console keys through the owned Quickey bank, KB-13),  "input=mixed"  (both, KB-15) or  "input=fake"  (lifecycle only), or start the bridge with that argument. input.status, input.sequence.status, input.release, input.releaseAll, input.recover, input.end and input.close remain available.', 0)
   end
   if state.stopRequested then error("[stopping] the bridge is stopping; new input is refused while it releases held keys", 0) end
 end
@@ -2907,9 +2929,10 @@ end
 --   luatime=<ms>  luasteps=<n>   Lua execution budget (0 = unlimited)
 --   luahook=preserve|replace  keep the console's own hook on the plugin thread (default; no hard
 --                             quota while it is present) or replace it with the budget hook
---   input=keyboard | input=fake | input=quickey | input=off | noinput
---                            owned input sessions on the console keyboard backend (KB-04), on the
---                            fake backend (KB-03 lifecycle only) or disabled
+--   input=keyboard | input=fake | input=quickey | input=mixed | input=off | noinput
+--                            owned input sessions on the console keyboard backend (KB-04), the owned
+--                            Quickey backend (KB-13), both on one instance (KB-15), the fake backend
+--                            (KB-03 lifecycle only) or disabled
 --   input status | input recover       print input state / operator recovery of unresolved releases
 --   bank=<quickey>/<page>.<first>[-<last>]  provision the Quickey bank (KB-12); bankcodes=hardkeys|qualified
 --   bank status | bank verify | bank teardown
@@ -2946,8 +2969,9 @@ local function parseArgument(argument)
       if val == "fake" then opts.input, opts.inputBackend = true, "fake"
       elseif val == "keyboard" or val == "kb" then opts.input, opts.inputBackend = true, "keyboard"
       elseif val == "quickey" or val == "quickkey" or val == "qk" then opts.input, opts.inputBackend = true, "quickey"
+      elseif val == "mixed" or val == "quickey+keyboard" or val == "keyboard+quickey" or val == "qk+kb" or val == "kb+qk" then opts.input, opts.inputBackend = true, "mixed"
       elseif val == "off" or val == "0" or val == "no" or val == "false" or val == "none" then opts.input = false
-      else return nil, string.format("\"%s\": expected input=keyboard, input=fake, input=quickey or input=off", tok) end
+      else return nil, string.format("\"%s\": expected input=keyboard, input=fake, input=quickey, input=mixed or input=off", tok) end
     elseif l == "lua" then
       opts.lua = true
     elseif l == "nolua" then
@@ -2973,12 +2997,12 @@ local function parseArgument(argument)
       if not port or port < 1 or port > 65535 then return nil, string.format("\"%s\" is not a valid port number (expected 1-65535)", tok) end
       opts.port = port
     else
-      return nil, string.format("\"%s\" is not a recognised argument (expected a port number, \"stop\", \"status\", \"lua\", \"lua on|off\", \"luatime=<ms>\", \"luasteps=<n>\", \"luahook=preserve|replace\", \"input=keyboard|fake|quickey|off\", \"input status\", \"input recover\", \"bank=<quickey>/<page>.<first>-<last>\", \"bankcodes=hardkeys|qualified\", \"bank status\", \"bank verify\" or \"bank teardown\")", tok)
+      return nil, string.format("\"%s\" is not a recognised argument (expected a port number, \"stop\", \"status\", \"lua\", \"lua on|off\", \"luatime=<ms>\", \"luasteps=<n>\", \"luahook=preserve|replace\", \"input=keyboard|fake|quickey|mixed|off\", \"input status\", \"input recover\", \"bank=<quickey>/<page>.<first>-<last>\", \"bankcodes=hardkeys|qualified\", \"bank status\", \"bank verify\" or \"bank teardown\")", tok)
     end
     prev = l
   end
   if opts.inputToken and opts.command == nil and opts.input == nil then
-    return nil, "\"input\": expected input=keyboard, input=fake, input=quickey, input=off, \"input status\" or \"input recover\" (there is no default input backend)"
+    return nil, "\"input\": expected input=keyboard, input=fake, input=quickey, input=mixed, input=off, \"input status\" or \"input recover\" (there is no default input backend)"
   end
   if opts.bankToken and not (opts.command and opts.command:match("^bank%-")) and opts.bank == nil then
     return nil, "\"bank\": expected bank=<quickey>/<page>.<first>[-<last>], \"bank status\", \"bank verify\" or \"bank teardown\" (there is no default range)"
@@ -3014,6 +3038,7 @@ local function applyInputPolicy(opts)
     state.input.enabled = true
     log("input now enabled on the %s backend (%s)", state.input.backend, state.input.backend == "fake" and "nothing reaches the console"
       or (state.input.backend == "quickey" and "console keys are really pressed through the owned Quickey bank on its reserved executors; logical keys use the quickkey method"
+      or state.input.backend == "mixed" and "console keys are really pressed: Quickeys through the owned bank on its reserved executors (the quickkey default), PC keys and text through Keyboard() for per-key overrides; never both kinds down at once"
       or "console keys are really pressed through Keyboard()"))
   else
     state.input.enabled = false

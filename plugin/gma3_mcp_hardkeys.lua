@@ -116,6 +116,16 @@
 --     target travels with the hold (dispose() records, adopt()), so a restart releases through the
 --     same executor. Only codes with KB-10 evidence are dispatched, each with its own tap/hold/chord
 --     flags; discovered-only codes are refused before dispatch. No PC-key or text dispatch.
+--   * mixed backend (KB-15, 0.10.0): mixedBackend({ quickey = <adapter>, keyboard = <adapter> }) serves
+--     both kinds of tuple on one instance, so a consumer can default its keys to quickkey (after the
+--     explicit KB-12 bank setup) and override single keys to shortcut / shortcutOrType / type. Each record
+--     remembers the PART that pressed it (hold.backend = "quickey" | "keyboard"), so releases, restarts
+--     and recover() go through the same part, and an unavailable Quickey route (no bank, discovered-only
+--     code) stays a refusal: nothing falls back to Keyboard(). The two mechanisms press the console's own
+--     keys and the shortcut mode is one profile property, and their interplay is NOT qualified, so the
+--     instance refuses (unqualified-mix, on every backend) a Quickey next to a live PC-key record and the
+--     reverse, a combo or sequence that would put both kinds down at once, a Quickey while a temporary
+--     shortcut-mode change is active, and a mode change while a Quickey is down.
 --
 -- Ownership semantics (KB-01/KB-03 findings): the console's key state is shared. A physical release
 -- can end a synthetic hold and MASTATE is aggregate, so an ownership record here means "this session is
@@ -139,7 +149,7 @@
 --   * Input is disabled on a new instance. enableInput(adapter) is the operator's explicit decision.
 
 local NAME        = "gma3_mcp_hardkeys"
-local VERSION     = "0.9.0"
+local VERSION     = "0.10.0"
 local API_VERSION = 1
 
 -- Logical keys with special handling in describeKey() and press(). Since 0.5.0 every other
@@ -191,7 +201,23 @@ local QUICKEY_LIMITATIONS = {
   "no PC-key or text dispatch and no mode change (capabilities.keyboard = false, char = false, modeChange = false): the shortcut, shortcutOrType and type methods are unavailable on this backend",
 }
 
+-- What the mixed backend (KB-15) adds to the limitations of its two parts.
+local MIXED_LIMITATIONS = {
+  "two console mechanisms on one instance: Quickey tuples go through the owned-Quickey part (executor presses of the KB-12 bank), PC keys and character events through the Keyboard() part; each record is released, recovered and adopted through the part that pressed it",
+  "their interplay is not qualified (KB-15): a Quickey next to a live PC-key record and the reverse, a combo or sequence putting both kinds down at once, a Quickey while a temporary shortcut-mode change is active and a mode change while a Quickey is down are refused before dispatch (unqualified-mix); nothing is substituted",
+  "an unavailable Quickey route (no bank, partial bank, code not in the bank, discovered-only code) is a refusal naming the requirement; it never falls back to the Keyboard() part",
+  "both parts press the console's own keys: a physical key, another plugin or another console user can interfere with either, and neither part can observe a single key",
+}
+
 local BACKENDS = {
+  mixed = {
+    name = "mixed",
+    description = "mixed backend (KB-15): Quickey tuples through the owned-Quickey part, PC keys and characters through the Keyboard() part, on one instance; console keys are really pressed",
+    requires = {},
+    dispatches = true,
+    capabilities = { keyboard = true, quickkey = { tap = true, hold = true, chord = true }, char = true, modeChange = true },
+    limitations = MIXED_LIMITATIONS,
+  },
   quickey = {
     name = "quickey",
     description = "owned-Quickey backend: Quickey tuples pressed and released through the instance's KB-12 bank on reserved executors (Assign Quickey N At Page P.E, Press / Unpress Page P.E); console keys are really pressed",
@@ -1383,7 +1409,18 @@ end
 -- snapshot: rechecks use the decision that was pressed with, never the current policy.
 function Instance:describeRoute(name, opts)
   checkLive(self, "describeRoute")
-  return self:_route(name, opts)
+  local r = self:_route(name, opts)
+  -- KB-15: the backend (or the part of a mixed backend) that would press this route, for startup/status reports.
+  if self._adapter and (r.tuple or r.effective == "text") then
+    local probe = r.tuple or { pcKey = "" }
+    if type(self._adapter.recordBackend) == "function" then
+      local ok, b = pcall(self._adapter.recordBackend, self._adapter, probe)
+      r.dispatchBackend = (ok and type(b) == "string") and b or self._adapter.name
+    else
+      r.dispatchBackend = self._adapter.name
+    end
+  end
+  return r
 end
 
 function Instance:_route(name, opts, routing)
@@ -1855,6 +1892,98 @@ end
 -- unreadable identity marks the bank stale (cached reads dropped) and returns the refusal.
 -- The state a bank returns to once its show is back or its objects verify: a partially torn-down bank
 -- (cleanup only, dispatch refused) stays "partial" until its last object is gone.
+-- Mixed backend (KB-15) ----------------------------------------------------------
+-- One adapter over two: Quickey tuples go to the owned-Quickey part, PC-key tuples and character events
+-- to the Keyboard() part. It owns nothing and keeps no state: every call is forwarded to the part the
+-- tuple selects, the record remembers that part's name (recordBackend) and a record of either part is
+-- adopted through this adapter (serves). The interference rules (unqualified-mix) live in the instance,
+-- so they hold on every adapter that advertises both kinds, the fake included.
+local MixedBackend = {}
+MixedBackend.__index = MixedBackend
+
+local function mixedBackend(parts)
+  if type(parts) ~= "table" then error(NAME .. ".mixedBackend: a parts table { quickey = <adapter>, keyboard = <adapter> } is required", 2) end
+  local q, k = parts.quickey, parts.keyboard
+  local function isAdapter(a) return type(a) == "table" and type(a.press) == "function" and type(a.release) == "function" and type(a.name) == "string" end
+  if not isAdapter(q) then error(NAME .. ".mixedBackend: parts.quickey must be a backend adapter (quickeyBackend())", 2) end
+  if not isAdapter(k) then error(NAME .. ".mixedBackend: parts.keyboard must be a backend adapter (keyboardBackend())", 2) end
+  if q == k then error(NAME .. ".mixedBackend: the two parts must be different adapters", 2) end
+  if type(q.parts) == "table" or type(k.parts) == "table" or q.name == "mixed" or k.name == "mixed" then error(NAME .. ".mixedBackend: a part cannot itself be a mixed adapter", 2) end
+  local qc, kc = adapterCapabilities(q), adapterCapabilities(k)
+  if not qc.quickkey then error(NAME .. ".mixedBackend: parts.quickey advertises no Quickey dispatch (capabilities.quickkey)", 2) end
+  if not kc.keyboard then error(NAME .. ".mixedBackend: parts.keyboard advertises no PC-key dispatch (capabilities.keyboard)", 2) end
+  local limitations = {}
+  for _, l in ipairs(MIXED_LIMITATIONS) do limitations[#limitations + 1] = l end
+  for _, l in ipairs(q.limitations or (BACKENDS[q.name] and BACKENDS[q.name].limitations) or {}) do limitations[#limitations + 1] = "quickey part: " .. l end
+  for _, l in ipairs(k.limitations or (BACKENDS[k.name] and BACKENDS[k.name].limitations) or {}) do limitations[#limitations + 1] = "keyboard part: " .. l end
+  return setmetatable({
+    name = "mixed", dispatches = true, description = BACKENDS.mixed.description, limitations = limitations,
+    capabilities = { keyboard = kc.keyboard, quickkey = qc.quickkey, char = kc.char, modeChange = kc.modeChange },
+    parts = { quickey = q, keyboard = k },
+    counters = { quickey = q.counters, keyboard = k.counters },
+  }, MixedBackend)
+end
+
+-- The part a tuple selects and its kind ("quickey" | "keyboard"). Text tuples (no key) go to the keyboard part.
+function MixedBackend:partFor(tuple)
+  if type(tuple) == "table" and tuple.quickkey then return self.parts.quickey, "quickey" end
+  return self.parts.keyboard, "keyboard"
+end
+-- The backend name a record of this tuple carries (hold.backend): the part's own name.
+function MixedBackend:recordBackend(tuple) return (self:partFor(tuple)).name end
+-- Records of either part are released through this adapter (_attemptRelease asks).
+function MixedBackend:serves(name) return name == self.name or name == self.parts.quickey.name or name == self.parts.keyboard.name end
+function MixedBackend:supportsKey(pcKey)
+  local k = self.parts.keyboard
+  if type(k.supportsKey) == "function" then return k:supportsKey(pcKey) end
+  return true
+end
+function MixedBackend:supportsQuickkey(code)
+  local q = self.parts.quickey
+  if type(q.supportsQuickkey) == "function" then return q:supportsQuickkey(code) end
+  return true
+end
+function MixedBackend:quickkeyCapabilities(code)
+  local q = self.parts.quickey
+  if type(q.quickkeyCapabilities) == "function" then return q:quickkeyCapabilities(code) end
+  return nil
+end
+function MixedBackend:unavailable(code)
+  local q = self.parts.quickey
+  if type(q.unavailable) == "function" then return q:unavailable(code) end
+  return {}
+end
+function MixedBackend:preflight(tuple, route, ctx)
+  local p = self:partFor(tuple)
+  if type(p.preflight) == "function" then return p:preflight(tuple, route, ctx) end
+  return true
+end
+function MixedBackend:press(tuple) local p = self:partFor(tuple); return p:press(tuple) end
+function MixedBackend:release(tuple, target) local p = self:partFor(tuple); return p:release(tuple, target) end
+function MixedBackend:char(cp, display)
+  local k = self.parts.keyboard
+  if type(k.char) ~= "function" then return false, nil, "the keyboard part has no character events" end
+  return k:char(cp, display)
+end
+-- The keyboard part's observation (per-key state when it has one, the aggregate MASTATE) plus the Quickey
+-- part's under .quickey; tuples the Quickey part reports down join the per-key view.
+function MixedBackend:observe()
+  local k, q = self.parts.keyboard, self.parts.quickey
+  local out
+  if type(k.observe) == "function" then local ok, o = pcall(k.observe, k); if ok and type(o) == "table" then out = o end end
+  if type(out) ~= "table" then out = { available = false, reason = "the keyboard part exposes no observation", aggregate = {} } end
+  if type(q.observe) == "function" then
+    local ok, qo = pcall(q.observe, q)
+    if ok and type(qo) == "table" then
+      out.quickey = qo
+      if type(qo.down) == "table" then out.down = out.down or {}; for tk in pairs(qo.down) do out.down[tk] = true end end
+      out.aggregate = out.aggregate or {}
+      if out.aggregate.maState == nil and type(qo.aggregate) == "table" then out.aggregate.maState = qo.aggregate.maState end
+    end
+  end
+  return out
+end
+
 local function bankBaseState(bank) return bank.partial and "partial" or "degraded" end
 
 function Instance:_bankShowGate(bank)
@@ -3037,7 +3166,31 @@ function Instance:_validateSequence(sessionId, steps)
   local out, estimate = {}, 0
   local pressed = {}
   local heldQuickkeys = {}  -- Quickey tuples a press/combo step leaves down for later steps (chord capability)
-  local liveQuickkeys = self:_liveQuickkeyCount()
+  local heldPcKeys = {}     -- PC-key tuples a press/combo step leaves down (KB-15: never next to a Quickey)
+  -- The instance's live key records by tuple (held, releasing, unresolved; text records own no key), as a
+  -- simulated state the steps update: a release step of a key this session holds removes it, so a later
+  -- step is judged against what will be down then. The runtime checks still catch a release that fails.
+  local liveByTuple = {}
+  for _, h in pairs(self._holds) do
+    if h.kind ~= "text" and (h.state == "held" or h.state == "releasing" or h.state == "unresolved") then liveByTuple[h.tupleKey] = h.quickkey and "quickkey" or "pckey" end
+  end
+  local function liveCount(kind)
+    local n = 0
+    for _, k in pairs(liveByTuple) do if k == kind then n = n + 1 end end
+    return n
+  end
+  -- KB-15: a step must not put a Quickey down next to a PC key or the reverse (live records or earlier steps).
+  local function mixFail(i, tuple, prefix)
+    local tkind = tuple.quickkey and "quickkey" or "pckey"
+    local other = tkind == "quickkey" and "pckey" or "quickkey"
+    local otherHeld = other == "quickkey" and heldQuickkeys or heldPcKeys
+    if liveCount(other) > 0 or next(otherHeld) ~= nil then
+      local _, e = fail("unqualified-mix", string.format("%s%s next to a %s that is down (a live record or an earlier step of this sequence) is not qualified (KB-15); release it first",
+        prefix or "", tkind == "quickkey" and ("Quickey " .. tostring(tuple.quickkey)) or ("PC key " .. tostring(tuple.pcKey)), other == "quickkey" and "Quickey" or "PC key"), { reason = "held", heldKind = other })
+      return e
+    end
+    return nil
+  end
   local unverifiableText = nil  -- index of a text-field text step: a later PLEASE/Enter must not commit it
   local function stepFail(i, code, message, extra)
     local _, e = fail(code, "step " .. i .. ": " .. tostring(message) .. " (nothing was dispatched)", extra)
@@ -3070,7 +3223,7 @@ function Instance:_validateSequence(sessionId, steps)
       end
       if tuple.quickkey then
         local tk = tupleKey(tuple)
-        local others = liveQuickkeys > 0 or (next(heldQuickkeys) ~= nil and (count(heldQuickkeys) > 1 or not heldQuickkeys[tk]))
+        local others = liveCount("quickkey") > 0 or (next(heldQuickkeys) ~= nil and (count(heldQuickkeys) > 1 or not heldQuickkeys[tk]))
         local cerr = self:_quickkeyCapabilityError(tuple, route, kind, false, others)
         if cerr then return stepFail(i, cerr.code, cerr.message, { reason = cerr.reason, missing = cerr.missing, capabilities = cerr.capabilities }) end
         if others then
@@ -3079,6 +3232,11 @@ function Instance:_validateSequence(sessionId, steps)
           if cerr then return stepFail(i, cerr.code, cerr.message, { reason = cerr.reason, missing = cerr.missing, capabilities = cerr.capabilities, heldKey = cerr.heldKey }) end
         end
         if kind == "press" then heldQuickkeys[tk] = { quickkey = tuple.quickkey, capabilities = route.capabilities } end
+      end
+      if tuple.pcKey or tuple.quickkey then
+        local merr = mixFail(i, tuple)
+        if merr then return stepFail(i, merr.code, merr.message, { reason = merr.reason, heldKind = merr.heldKind }) end
+        if kind == "press" and tuple.pcKey then heldPcKeys[tupleKey(tuple)] = true end
       end
       if kind == "tap" then
         local holdMs = step.holdMs or 50
@@ -3097,7 +3255,7 @@ function Instance:_validateSequence(sessionId, steps)
       if #step.keys > self._config.maxComboKeys then return stepFail(i, "bad-argument", "combo accepts at most " .. self._config.maxComboKeys .. " keys") end
       if step.holdMs ~= nil and (type(step.holdMs) ~= "number" or step.holdMs <= 0 or step.holdMs > self._config.maxTapMs) then return stepFail(i, "bad-argument", "holdMs must be a number in (0, " .. self._config.maxTapMs .. "]") end
       s.specs, s.keyNames = {}, {}
-      local seen = {}
+      local seen, comboKind = {}, nil
       for k, ks in ipairs(step.keys) do
         if type(ks) ~= "table" then return stepFail(i, "bad-argument", "keys[" .. k .. "] must be a key spec table") end
         if ks.exclusive then return stepFail(i, "bad-argument", "key " .. k .. ": a combo cannot be exclusive") end
@@ -3112,6 +3270,16 @@ function Instance:_validateSequence(sessionId, steps)
         local tk = tupleKey(tuple)
         if seen[tk] then return stepFail(i, "bad-argument", "key " .. k .. " repeats tuple " .. tk) end
         seen[tk] = true
+        if tuple.pcKey or tuple.quickkey then
+          local tkind = tuple.quickkey and "quickkey" or "pckey"
+          if comboKind and comboKind ~= tkind then
+            return stepFail(i, "unqualified-mix", string.format("key %d: a combo cannot mix Quickeys and PC keys (KB-15)", k), { key = k, reason = "combo", heldKind = comboKind })
+          end
+          comboKind = tkind
+          local merr = mixFail(i, tuple, "key " .. k .. ": ")
+          if merr then return stepFail(i, merr.code, merr.message, { key = k, reason = merr.reason, heldKind = merr.heldKind }) end
+          if not step.holdMs and tuple.pcKey then heldPcKeys[tk] = true end
+        end
         if tuple.quickkey then
           local cerr = self:_quickkeyCapabilityError(tuple, route, step.holdMs and "tap" or "hold", true, true)
           if cerr then return stepFail(i, cerr.code, "key " .. k .. ": " .. cerr.message, { key = k, reason = cerr.reason, missing = cerr.missing, capabilities = cerr.capabilities }) end
@@ -3135,6 +3303,7 @@ function Instance:_validateSequence(sessionId, steps)
         local tk = tupleKey(tuple)
         local existing = self._byTuple[tk]
         known = pressed[tk] ~= nil or (existing ~= nil and existing.session == sessionId and existing.state == "held")
+        if existing ~= nil and existing.session == sessionId and existing.state == "held" then liveByTuple[tk] = nil end
         s.tupleKey, s.logical, s.pcKey = tk, route.logical, tuple.pcKey
       elseif type(spec.key) == "string" then
         known = pressed[spec.key:upper()] ~= nil
@@ -3143,7 +3312,7 @@ function Instance:_validateSequence(sessionId, steps)
         return stepFail(i, terr.code, terr.message)
       end
       if not known then return stepFail(i, "bad-argument", "release of a key that no earlier step of this sequence presses and this session does not hold") end
-      if s.tupleKey then heldQuickkeys[s.tupleKey] = nil end
+      if s.tupleKey then heldQuickkeys[s.tupleKey] = nil; heldPcKeys[s.tupleKey] = nil end
       s.spec = spec
       estimate = estimate + 20
     elseif kind == "text" then
@@ -3223,6 +3392,8 @@ function Instance:_stepWantsOtherMode(st)
       local r = self:_route(spec.key, { executor = spec.executor, prefer = spec.prefer })
       local want
       if r.modeChange then want = r.modeChange.target elseif r.effective == "text" then want = false end
+      -- KB-15: a Quickey is never pressed under a temporary mode change; the step waits for the restoration.
+      if r.effective == "quickkey" and r.tuple then return true end
       if want ~= nil and want ~= op.target then return true end
     end
   end
@@ -3466,7 +3637,7 @@ function Instance:_eventReport(ev, now)
               pressOutcome = ev.pressOutcome, releaseOutcome = ev.releaseOutcome, code = ev.code, error = ev.error, note = ev.note,
               chars = ev.chars, typed = ev.typed, uncertainChar = ev.uncertainChar, pressed = ev.pressed, rollback = ev.rollback,
               readback = ev.readback, startedAt = ev.startedAt, finishedAt = ev.finishedAt,
-              text = ev.text }  -- KB-14 text-route progress (typed, chars, outcome, readback)
+              text = ev.text, waitingFor = ev.waitingFor }  -- KB-14 text-route progress (typed, chars, outcome, readback); the restoration a step waits for
   if ev.chars then r.remaining = ev.chars - (ev.typed or 0) end
   if ev.state == "readback" then r.readback = { outcome = "pending", source = "CmdObj().cmdtext", expected = ev.expected } end
   -- A hold's aggregate readback (MASTATE) may conclude after the sequence finished: report the live one.
@@ -3653,7 +3824,8 @@ function Instance:status(now)
     owner = self._owner, state = self._state,
     inputEnabled = self._inputEnabled and true or false,
     backend = { name = self._backend, attached = self._adapter ~= nil, dispatches = (self._adapter and self._adapter.dispatches) and true or false,
-                available = avail, missing = missing, description = bdef.description, limitations = bdef.limitations,
+                available = avail, missing = missing, description = bdef.description,
+                limitations = (self._adapter and type(self._adapter.limitations) == "table") and self._adapter.limitations or bdef.limitations,
                 displayScoped = false, perKeyObservation = self._observed and self._observed.available or false,
                 capabilities = adapterCapabilities(self._adapter),
                 counters = self._adapter and self._adapter.counters or nil },
@@ -3887,6 +4059,12 @@ function Instance:_planPress(sessionId, now, spec, ctx)
     return fail("route-changed", string.format("a held key's route changed since it was pressed: %s %s (hold %s, session '%s', original %s); release or recover before new input (the operator restores the route; nothing is toggled here)",
       tostring(m.logical), tostring(m.mismatch), tostring(m.hold), tostring(self._holds[m.hold] and self._holds[m.hold].session), tostring(m.original.tupleKey)), { mismatches = mismatch })
   end
+  -- KB-15: Quickeys (executor presses) and PC keys (Keyboard()) never down at once, no Quickey under a
+  -- temporary shortcut-mode change. Refused before any admission or dispatch, on every backend.
+  if tuple.pcKey or tuple.quickkey then
+    local merr = self:_mixError(tuple, ctx)
+    if merr then return nil, merr end
+  end
   -- Quickey capability flags (KB-11): the requested operation must be one the adapter advertises. A tap
   -- needs tap, a hold needs hold, and pressing while another Quickey record is live (a combo, or a
   -- second press alongside a held one) needs chord. Checked before any admission or dispatch.
@@ -4092,6 +4270,14 @@ function Instance:_enterMode(target, now, sessionId, purpose, hold)
   local op = self._mode
   if op and op.state == "unresolved" then
     return fail("busy", "the keyboard-shortcut mode restoration is unresolved: " .. tostring(op.unresolved and op.unresolved.reason) .. "; recover before new input", { reason = "restoration", mode = op.id, owner = op.owner })
+  end
+  -- KB-15: the shortcut mode is never changed while a Quickey may be down (disabling shortcuts drops a
+  -- Keyboard()-held MA, KB-14; what it does to an executor-held Quickey is not qualified).
+  local live = self:_liveKinds()
+  if live.quickkey > 0 then
+    local h = live.first.quickkey
+    return fail("unqualified-mix", string.format("the route needs a temporary shortcut-mode change but Quickey %s (hold %s, session '%s') is %s; changing the shortcut mode while a Quickey is down is not qualified (KB-15): the mode is not changed and nothing is dispatched; release or recover it first",
+      tostring(h.quickkey), h.id, h.session, h.state), { reason = "held", hold = h.id, owner = h.session, state = h.state, heldKind = "quickkey" })
   end
   if op and op.state == "active" then
     if op.target ~= target then return fail("mode-conflict", "a temporary shortcut-mode change in the other direction is active (mode " .. op.id .. ")", { mode = op.id, owner = op.owner, target = op.target }) end
@@ -4429,6 +4615,58 @@ function Instance:_liveQuickkeyCount(exceptTupleKey)
   return n
 end
 
+-- KB-15: how many key records of each kind may still be down (held, releasing or unresolved; text
+-- records own no key), with the first record of each kind for reporting.
+local function tupleKind(tk) return (type(tk) == "string" and tk:sub(1, 9) == "quickkey:") and "quickkey" or "pckey" end
+function Instance:_liveKinds(exceptTupleKey)
+  local out = { quickkey = 0, pckey = 0, first = {} }
+  for _, h in pairs(self._holds) do
+    if h.kind ~= "text" and (h.state == "held" or h.state == "releasing" or h.state == "unresolved") and h.tupleKey ~= exceptTupleKey then
+      local kind = h.quickkey and "quickkey" or "pckey"
+      out[kind] = out[kind] + 1
+      if not out.first[kind] or h.seq < out.first[kind].seq then out.first[kind] = h end
+    end
+  end
+  return out
+end
+
+-- KB-15: the combinations whose console semantics are not qualified, refused before dispatch on every
+-- backend: a Quickey (an executor press) next to a PC key pressed through Keyboard() and the reverse, a
+-- combo mixing both (ctx.reserved), and a Quickey while a temporary shortcut-mode change (KB-14) is
+-- active. Returns the structured error or nil. The mode change while a Quickey is down is refused by
+-- _enterMode with the same code.
+function Instance:_mixError(tuple, ctx)
+  ctx = ctx or {}
+  local kind = tuple.quickkey and "quickkey" or "pckey"
+  local other = kind == "quickkey" and "pckey" or "quickkey"
+  local what = kind == "quickkey" and ("Quickey " .. tostring(tuple.quickkey)) or ("PC key " .. tostring(tuple.pcKey))
+  local otherName = other == "quickkey" and "Quickey" or "PC key"
+  if kind == "quickkey" then
+    local op = self._mode
+    if op and op.state == "active" then
+      local _, e = fail("unqualified-mix", string.format("%s refused: a temporary shortcut-mode change is active (mode %s: shortcuts %s for %s, session '%s'); pressing a Quickey while the operator's shortcut mode is changed is not qualified (KB-15), nothing is dispatched; wait for the restoration (%d ms after its last event) or release its holds",
+        what, op.id, op.target and "on" or "off", tostring(op.purpose), tostring(op.owner), self._config.modeRestoreDelayMs), { reason = "mode", mode = op.id, owner = op.owner, target = op.target })
+      return e
+    end
+  end
+  local live = self:_liveKinds(tupleKey(tuple))
+  if live[other] > 0 then
+    local h = live.first[other]
+    local _, e = fail("unqualified-mix", string.format("%s refused: %s %s (hold %s, session '%s') is %s; a Quickey pressed through an executor next to a PC key pressed through Keyboard() is not a qualified chord (KB-15), nothing is dispatched; release or recover it first",
+      what, otherName, tostring(h.logical or h.quickkey or h.pcKey), h.id, h.session, h.state), { reason = "held", hold = h.id, owner = h.session, state = h.state, heldKind = other })
+    return e
+  end
+  if type(ctx.reserved) == "table" then
+    for tk, index in pairs(ctx.reserved) do
+      if tupleKind(tk) == other then
+        local _, e = fail("unqualified-mix", string.format("%s refused: key %d of the combo is a %s; a combo cannot mix Quickeys and PC keys (KB-15), nothing is dispatched", what, index, otherName), { reason = "combo", key = index, heldKind = other })
+        return e
+      end
+    end
+  end
+  return nil
+end
+
 function Instance:_exclusiveHold()
   for _, h in pairs(self._holds) do
     if h.exclusive and h.state ~= "released" then return h end
@@ -4606,7 +4844,14 @@ function Instance:_newHold(s, tuple, route, now, deadline, deadlineReason)
   hold.tupleKey = tupleKey(tuple)
   hold.route = route
   hold.logical = route and route.logical or nil
-  hold.backend = self._adapter and self._adapter.name or "none"
+  -- KB-15: a mixed adapter names the part that presses this tuple, so the record is released, recovered
+  -- and adopted through that part whatever adapter is attached later.
+  if self._adapter and type(self._adapter.recordBackend) == "function" then
+    local ok, name = pcall(self._adapter.recordBackend, self._adapter, tuple)
+    hold.backend = (ok and type(name) == "string") and name or self._adapter.name
+  else
+    hold.backend = self._adapter and self._adapter.name or "none"
+  end
   hold.pressedAt = now
   hold.state = "held"
   hold.kind = "hold"
@@ -4660,7 +4905,12 @@ function Instance:_attemptRelease(hold, now, reason)
   -- A record is only ever released through the backend that pressed it: a fake record must never
   -- become a real Keyboard() event, and a real hold cannot be "released" by the fake.
   local origin = hold.backend or "unknown"
-  if origin ~= self._adapter.name then
+  local served = origin == self._adapter.name
+  if not served and type(self._adapter.serves) == "function" then
+    local ok, yes = pcall(self._adapter.serves, self._adapter, origin)
+    served = ok and yes == true
+  end
+  if not served then
     attempt.ok, attempt.error = false, string.format("record originates from backend '%s' but the attached backend is '%s'; not dispatched (attach the originating backend to release it)", origin, self._adapter.name)
     hold.dispatch.release = { ok = false, at = now, error = attempt.error, reason = reason }
     self:_markUnresolved(hold, now, attempt.error)
@@ -4895,7 +5145,7 @@ local M = {
   GENERIC_VIRTUAL_KEYS = true,
   UNSUPPORTED_KEYS = { "MA1", "MA2" },
   new = new, consoleDeps = consoleDeps, resolve = resolve, parseShortcut = parseShortcut, tupleKey = tupleKey, validateText = validateText,
-  fakeBackend = fakeBackend, keyboardBackend = keyboardBackend, quickeyBackend = quickeyBackend,
+  fakeBackend = fakeBackend, keyboardBackend = keyboardBackend, quickeyBackend = quickeyBackend, mixedBackend = mixedBackend,
   -- KB-11 routing policy
   METHODS = { "quickkey", "shortcutOrType", "shortcut", "type" }, DEFAULT_METHOD = DEFAULT_METHOD,
   validateRoutingPolicy = validateRoutingPolicy, adapterCapabilities = adapterCapabilities, textForbidden = textForbidden,
@@ -4905,8 +5155,8 @@ local M = {
   validateBankSpec = validateBankSpec, discoverBankCodes = discoverBankCodes, parseBankMarker = parseBankMarker, bankMarkerText = bankMarkerText, bankId = bankId,
   SEQUENCE_STEP_KINDS = { "tap", "press", "release", "combo", "text", "wait" },
   TEXT_CONTEXTS = { "command-line", "text-field" },
-  backends = { keyboard = BACKENDS.keyboard.name, fake = BACKENDS.fake.name, quickey = BACKENDS.quickey.name },
-  KEYBOARD_LIMITATIONS = KEYBOARD_LIMITATIONS, QUICKEY_LIMITATIONS = QUICKEY_LIMITATIONS,
+  backends = { keyboard = BACKENDS.keyboard.name, fake = BACKENDS.fake.name, quickey = BACKENDS.quickey.name, mixed = BACKENDS.mixed.name },
+  KEYBOARD_LIMITATIONS = KEYBOARD_LIMITATIONS, QUICKEY_LIMITATIONS = QUICKEY_LIMITATIONS, MIXED_LIMITATIONS = MIXED_LIMITATIONS,
   DEFAULT_CONFIG = shallowCopy(DEFAULT_CONFIG),
 }
 

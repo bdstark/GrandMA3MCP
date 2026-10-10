@@ -177,6 +177,7 @@ console's budget, never loosen it.
 
 Owned input is a separate per-start opt-in (`Plugin "gma3_mcp_bridge" "input=keyboard"`, `input=quickey` (v0.10.0,
 KB-13: the owned-Quickey backend through the KB-12 bank; holds report `target = {page, executor, quickeyIndex, code}`),
+`input=mixed` (v0.12.0, KB-15: the Quickey and keyboard parts on one instance; holds report the part as `backend`, `input.route` reports `dispatchBackend`, and a press that would put a Quickey and a PC key down at once or change the shortcut mode while a Quickey is down is refused `unqualified-mix`),
 `input=fake`, or `input=off`); `ping` reports it as `input: {enabled, backend, sessions, holds, unresolved, unresolvedFromPreviousRun, bank, modeChange, retained, quarantined}` (the last three since v0.11.0, KB-14: a temporary keyboard-shortcut mode change in progress or unresolved, see [modules.md](modules.md))
 (`bank` since v0.9.0: `{provisioned, id, state, codes, qualified, problems}` of the KB-12 Quickey bank, or `{provisioned: false, kept}` for a record awaiting re-verification; `input.status.status.bank` has the full report).
 The **keyboard backend** (v0.6.0, KB-04) presses real console keys through `Keyboard()`; the **fake backend**
