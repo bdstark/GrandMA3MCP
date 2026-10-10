@@ -81,7 +81,7 @@
 --   * FINE gesture: an event with fine = true uses the step divided by config.fineDivisor (10, the
 --     manual's Coarse-to-Fine ratio). It is an explicitly smaller adjustment, qualified as such; it is
 --     not a claim that the console's own resolution toggle was pressed.
---   * encoder PRESSES (button), touches, absolute positions and executor targets (fader, key, encoder
+--   * encoder PRESSES (button), touches, absolute positions (both served since 0.3.0, below) and executor targets (fader, key, encoder
 --     elements) are NOT served by this backend: they are refused "unsupported" at admission with the
 --     reason (calculator / open / select behaviour of an encoder press is not qualified; strips are
 --     KB-20, executors KB-21/22). Nothing is pressed on the console for them.
@@ -89,6 +89,31 @@
 --     not dispatched, nothing changed); a raise = unresolved. The backend keeps a bounded log of the
 --     commands it issued and counters per outcome (status()).
 --   * contract: a backend never reads the console; the binding is the only source of what a slot is.
+--
+-- What 0.3.0 adds (KB-20, parameter STRIPS on the console backend; the gesture conversion itself, touch
+-- anchoring, sensitivity and the pickup/takeover policy, belongs to the surface service):
+--   * a TOUCH on an attribute slot is served: it is a hold (admission(now) reports BUSY while it is down,
+--     the slot is this session's until the release) that moves nothing on the console; a strip's drag then
+--     travels as the same relative motion KB-19 qualified, and a binding change while the strip is touched
+--     refuses its motion "gesture-rebound" until the release and a new touch (the existing rule, which a
+--     served touch now engages on the console backend).
+--   * an ABSOLUTE position on an attribute slot is served as  Attribute "<name>" At <value>  where the
+--     travel has a verified range: the Percent/PercentFine readouts span 0..100 (KB-16 live: `At 50` =
+--     absolute 50), the Physical readout spans the binding's PhysicalFrom..PhysicalTo (KB-19 live: `At`
+--     takes physical units), on the Absolute layer and the attribute's own channel function only; a mixed
+--     physical range is refused (one position would mean different values per fixture). position(resolved,
+--     value) is exported for consumers.
+--   * MIXED VALUES stay mixed: an absolute event on a slot whose fixtures hold different values (the
+--     binding's valueState, forwarded on the resolved target with the last read `absolute`) is refused
+--     "mixed-values" unless the event carries takeover = true, the surface's statement that the operator
+--     deliberately chose an absolute operation; one whose values were not COMPLETELY read (the binding's
+--     valueComplete is not true: a bounded selection scan, a channel-discovery failure or a failed programmer
+--     read, the reason in valueIncomplete) is refused "values-incomplete" the same way (review: "value" from a
+--     partial read is the agreement of the fixtures that could be read, not the selection's). Values are not
+--     in the generation digest: valueState and absolute are the binding's last read, a hint for the surface's
+--     pickup, never a guarantee.
+--   * capabilities on the console backend become { relative, absolute, touch = true, button = false }.
+--     Encoder presses and executor elements stay refused "unsupported" (KB-21/22).
 --
 -- Rules every consumer must keep (as for the other modules):
 --   * One instance per consumer; the module table is read-only; nothing is published through
@@ -98,7 +123,7 @@
 --   * Input is disabled on a new instance. enableInput(adapter) is the operator's explicit decision.
 
 local NAME        = "gma3_mcp_control"
-local VERSION     = "0.2.0"
+local VERSION     = "0.3.0"
 local API_VERSION = 1
 
 local EVENT_TYPES = { relative = true, absolute = true, touch = true, button = true }
@@ -230,28 +255,65 @@ local function formatAmount(v)
   return s
 end
 
+-- KB-20: the console value a strip position (0..1 of the travel) means for a resolved slot target, in the
+-- units `At` takes for its readout, or nil plus the reason. Qualified exactly where the relative step is
+-- (calibrate(): the same readouts, layer and channel-function rules) and where the travel has a verified
+-- range: Percent/PercentFine span 0..100 (KB-16 live: `At 50` = absolute 50); Physical spans the channel
+-- function's PhysicalFrom..PhysicalTo from the binding (KB-19 live: `At` takes physical units). A mixed
+-- physical range (fixtures with different ranges) is refused: one position cannot mean one value for all.
+-- Exported as position() for consumers and tests.
+local function position(resolved, value, config)
+  if type(value) ~= "number" or value < 0 or value > 1 then return nil, "a position must be a number in 0..1 of the travel" end
+  local step, reason = calibrate(resolved, false, config)
+  if not step then return nil, reason end
+  local from, to
+  if resolved.readout == "Physical" then
+    from, to = tonumber(resolved.physicalFrom), tonumber(resolved.physicalTo)
+    if from == nil or to == nil then return nil, "readout Physical: the attribute's PhysicalFrom/PhysicalTo are not in the binding, so a position cannot be placed" end
+    if resolved.physicalMixed then return nil, "readout Physical: the selected fixtures have different physical ranges; one position would mean different values per fixture (relative motion stays available)" end
+  else
+    from, to = 0, 100
+  end
+  local amount = from + value * (to - from)
+  -- Keep the command's decimals within what formatAmount prints: the readout's finest qualified step.
+  return amount, nil, { from = from, to = to, readout = resolved.readout, physicalRange = resolved.readout == "Physical" and resolved.physicalRange or nil }
+end
+
+-- Formats a signed value for `At <value>` (positions may be negative at the Physical readout).
+local function formatValue(v)
+  local s = formatAmount(v)
+  if v < 0 and s ~= "0" then s = "-" .. s end
+  return s
+end
+
 local function consoleBackend(deps, opts)
   if type(deps) ~= "table" or type(deps.cmd) ~= "function" then error(NAME .. ".consoleBackend: deps.cmd(text) is required (consoleDeps(_G))", 2) end
   opts = opts or {}
   local divisor = tonumber(opts.fineDivisor) or DEFAULT_CONFIG.fineDivisor
   if divisor <= 0 then error(NAME .. ".consoleBackend: opts.fineDivisor must be positive", 2) end
   return setmetatable({
-    name = "console", description = "selection-scoped attribute adjustment (Attribute \"<name>\" At + <detents x step>) for encoder slots; presses, touches, positions and executors are not served",
-    capabilities = { relative = true, absolute = false, touch = false, button = false, targets = { slot = true, executor = false } },
+    name = "console", description = "selection-scoped attribute adjustment (Attribute \"<name>\" At + <detents x step>, KB-19) and placement (Attribute \"<name>\" At <value>, KB-20) for encoder slots; a strip touch reserves its slot and moves nothing; presses and executors are not served",
+    capabilities = { relative = true, absolute = true, touch = true, button = false, targets = { slot = true, executor = false } },
     calibration = { note = CALIBRATION_NOTE, readouts = shallowCopy(CALIBRATION.readouts), resolutions = shallowCopy(CALIBRATION.resolutions), layers = shallowCopy(CALIBRATION.layers), fineDivisor = divisor },
     _deps = deps, _config = { fineDivisor = divisor }, log = tonumber(opts.eventLog) or DEFAULT_CONFIG.eventLog,
     commands = {}, counters = { applied = 0, refused = 0, raised = 0, noop = 0 }, lastCommand = nil,
   }, ConsoleBackend)
 end
 
--- Admission-time verdict: only relative motion on a calibrated attribute slot is served.
+-- Admission-time verdict: relative motion, a touch and an absolute position on a calibrated attribute slot
+-- are served (KB-19 motion; KB-20 strips: a touch is a hold that reserves the slot and moves nothing, a
+-- position is placed only where the travel has a verified range); presses and executors are not.
 function ConsoleBackend:supports(kind, resolved)
-  if kind ~= "relative" then
-    if kind == "button" then return false, "an encoder press is not served by the console backend: calculator/open/select behaviour is not qualified (nothing is pressed)" end
-    if kind == "touch" then return false, "touches are not served by the console backend (parameter strips are KB-20)" end
-    return false, "absolute positions are not served by the console backend (strips are KB-20, executor faders KB-22)"
+  if kind == "button" then return false, "an encoder press is not served by the console backend: calculator/open/select behaviour is not qualified (nothing is pressed)" end
+  if type(resolved) ~= "table" or resolved.kind ~= "slot" then
+    if kind == "absolute" or kind == "touch" then return false, "executor faders are not served by the console backend (KB-21/KB-22); strips are served on encoder slots" end
+    return false, "executor elements are not served by the console backend (KB-21/KB-22)"
   end
-  if type(resolved) ~= "table" or resolved.kind ~= "slot" then return false, "executor elements are not served by the console backend (KB-21/KB-22)" end
+  if kind == "absolute" then
+    local amount, reason = position(resolved, 0, self._config)
+    if amount == nil then return false, reason end
+    return true
+  end
   local step, reason = calibrate(resolved, false, self._config)
   if not step then return false, reason end
   return true
@@ -266,29 +328,41 @@ end
 function ConsoleBackend:apply(intent, now)
   local kind = intent.kind
   if kind == "touch" or kind == "button" then
-    -- Only a forced end of a hold that was admitted under another backend can reach here (the
-    -- adapter refuses downs at admission). Nothing was pressed, so nothing is released.
+    -- A strip touch (KB-20) is a hold that reserves its slot for the gesture and moves nothing on the
+    -- console; a button here is only the forced end of a hold admitted under another backend. Nothing was
+    -- pressed, so nothing is released.
     self.counters.noop = self.counters.noop + 1
-    return true, { noop = true, note = "the console backend presses nothing; the hold had no console effect" }
+    return true, { noop = true, note = kind == "touch" and "a strip touch moves nothing on the console; the hold reserved its slot for the gesture (KB-20)" or "the console backend presses nothing; the hold had no console effect" }
   end
-  if kind ~= "relative" then
+  local rec, command
+  if kind == "absolute" then
+    local amount, reason, pos = position(intent.resolved, intent.value, self._config)
+    if amount == nil then
+      self.counters.refused = self.counters.refused + 1
+      return nil, { code = "backend-refused", message = reason }
+    end
+    command = string.format('Attribute "%s" At %s', intent.resolved.name, formatValue(amount))
+    rec = { at = now, command = command, value = intent.value, amount = amount, from = pos.from, to = pos.to, readout = pos.readout, physicalRange = pos.physicalRange, takeover = intent.takeover or nil,
+            slot = intent.resolved.slot, attribute = intent.resolved.name, mixed = intent.resolved.mixed or nil, valueState = intent.resolved.valueState, events = intent.events, lost = intent.lost, session = intent.session }
+  elseif kind == "relative" then
+    local step, reason, cal = calibrate(intent.resolved, intent.fine, self._config)
+    if not step then
+      self.counters.refused = self.counters.refused + 1
+      return nil, { code = "backend-refused", message = reason }
+    end
+    local delta = intent.delta
+    if not isInt(delta) or delta == 0 then
+      self.counters.refused = self.counters.refused + 1
+      return nil, { code = "backend-refused", message = "a relative intent needs a non-zero integer delta" }
+    end
+    local amount = delta * step
+    command = string.format('Attribute "%s" At %s %s', intent.resolved.name, delta < 0 and "-" or "+", formatAmount(amount))
+    rec = { at = now, command = command, delta = delta, step = step, amount = amount, fine = cal.fine, resolution = cal.resolution, readout = cal.readout, physicalRange = cal.physicalRange, physicalMixed = cal.physicalMixed,
+            slot = intent.resolved.slot, attribute = intent.resolved.name, mixed = intent.resolved.mixed or nil, events = intent.events, lost = intent.lost, session = intent.session }
+  else
     self.counters.refused = self.counters.refused + 1
-    return nil, { code = "backend-refused", message = "absolute positions are not served by the console backend" }
+    return nil, { code = "backend-refused", message = "intent kind " .. tostring(kind) .. " is not served by the console backend" }
   end
-  local step, reason, cal = calibrate(intent.resolved, intent.fine, self._config)
-  if not step then
-    self.counters.refused = self.counters.refused + 1
-    return nil, { code = "backend-refused", message = reason }
-  end
-  local delta = intent.delta
-  if not isInt(delta) or delta == 0 then
-    self.counters.refused = self.counters.refused + 1
-    return nil, { code = "backend-refused", message = "a relative intent needs a non-zero integer delta" }
-  end
-  local amount = delta * step
-  local command = string.format('Attribute "%s" At %s %s', intent.resolved.name, delta < 0 and "-" or "+", formatAmount(amount))
-  local rec = { at = now, command = command, delta = delta, step = step, amount = amount, fine = cal.fine, resolution = cal.resolution, readout = cal.readout, physicalRange = cal.physicalRange, physicalMixed = cal.physicalMixed,
-                slot = intent.resolved.slot, attribute = intent.resolved.name, mixed = intent.resolved.mixed or nil, events = intent.events, lost = intent.lost, session = intent.session }
   local ok, fb = pcall(self._deps.cmd, command)
   if not ok then
     self.counters.raised = self.counters.raised + 1
@@ -301,7 +375,9 @@ function ConsoleBackend:apply(intent, now)
     self.counters.applied = self.counters.applied + 1
     rec.outcome = "applied"
     self:_record(rec)
-    return true, { command = command, amount = amount, step = step, fine = cal.fine, resolution = cal.resolution, readout = cal.readout, physicalRange = cal.physicalRange, physicalMixed = cal.physicalMixed, attribute = intent.resolved.name, slot = intent.resolved.slot, mixed = rec.mixed, feedback = fb }
+    local result = shallowCopy(rec)
+    result.at, result.events, result.lost, result.session, result.outcome = nil, nil, nil, nil, nil
+    return true, result
   end
   self.counters.refused = self.counters.refused + 1
   rec.outcome = "refused"
@@ -499,6 +575,9 @@ local function resolveTarget(snap, target)
     if sl.resolution == nil then return fail("target-unavailable", string.format("slot %d (%s) has no readable resolution", target.slot, tostring(sl.name)), { target = target }) end
     return { kind = "slot", slot = target.slot, ref = sl.ref, name = sl.name, layer = sl.layer, resolution = sl.resolution, readout = sl.readout,
              channelFunction = sl.channelFunction, availability = sl.availability, mixed = sl.availability == "mixed" or nil,
+             -- KB-20: the programmer's value state as the binding last read it (value | empty | mixed | unavailable; values
+             -- are not in the generation digest, so this is a hint for pickup, not a guarantee of the current value)
+             valueState = sl.valueState, absolute = sl.absolute, valueComplete = sl.valueComplete, valueIncomplete = sl.valueIncomplete,
              physicalRange = sl.physicalRange, physicalFrom = sl.physicalFrom, physicalTo = sl.physicalTo, physicalMixed = sl.physicalMixed, physicalUnavailable = sl.physicalUnavailable,
              key = string.format("slot%d|%s|%s|%s", target.slot, tostring(sl.ref), tostring(sl.layer), tostring(sl.resolution)), supersedes = true }
   elseif target.executor ~= nil then
@@ -608,6 +687,7 @@ local function validateEvent(self, ev)
   end
   if ev.gesture ~= nil and not (isInt(ev.gesture) and ev.gesture >= 0) and type(ev.gesture) ~= "string" then return fail("bad-event", "event.gesture must be an integer or string id") end
   if ev.fine ~= nil and type(ev.fine) ~= "boolean" then return fail("bad-event", "event.fine must be a boolean") end
+  if ev.takeover ~= nil and (type(ev.takeover) ~= "boolean" or ev.type ~= "absolute") then return fail("bad-event", "event.takeover must be a boolean and is only meaningful on an absolute event") end
   if ev.generation ~= nil and not isInt(ev.generation) then return fail("bad-event", "event.generation must be an integer") end
   if ev.binding ~= nil and not isInt(ev.binding) then return fail("bad-event", "event.binding must be an integer (the binding revision)") end
   return true
@@ -752,6 +832,20 @@ function Instance:submit(sessionId, now, ev)
   end
   local target, terr = resolveTarget(snap, ev.target)
   if not target then return refuse(terr) end
+  -- KB-20: a position on a slot whose selected fixtures hold different values would collapse them to one.
+  -- Mixed values stay mixed unless the operator's surface says the operation is a deliberate takeover.
+  if ev.type == "absolute" and target.kind == "slot" and ev.takeover ~= true then
+    if target.valueState == "mixed" then
+      return refuse(errOf("mixed-values", string.format("slot %d (%s): the selected fixtures hold different values; a position would set them all to one. Relative motion keeps their relationship; send takeover = true for a deliberate absolute operation", target.slot, tostring(target.name)),
+                          { target = ev.target, valueState = target.valueState }))
+    end
+    -- Review (PR #24): "value" from a bounded scan or with a failed read is the agreement of the fixtures that could be
+    -- read, not the selection's; a position placed on it could flatten fixtures whose values were never seen.
+    if target.valueComplete ~= true then
+      return refuse(errOf("values-incomplete", string.format("slot %d (%s): the selection's values were not completely read (%s); a position could set fixtures whose values are unknown. Relative motion stays available; send takeover = true for a deliberate absolute operation", target.slot, tostring(target.name), tostring(target.valueIncomplete or "the binding reports no value completeness")),
+                          { target = ev.target, valueState = target.valueState, valueIncomplete = target.valueIncomplete }))
+    end
+  end
   -- KB-19: the attached backend may serve only some kinds and targets; what it does not serve is
   -- refused here, before any gesture record or queue entry exists.
   local adapter = self._adapter
@@ -784,7 +878,7 @@ function Instance:submit(sessionId, now, ev)
   if ev.type == "relative" then
     intent.delta, intent.events, intent.lost, intent.resolution = ev.delta, 1, lost, target.resolution
   elseif ev.type == "absolute" then
-    intent.value, intent.lost, intent.supersedes = ev.value, lost, target.supersedes
+    intent.value, intent.lost, intent.supersedes, intent.takeover = ev.value, lost, target.supersedes, ev.takeover or nil
   else
     intent.down = true
     if self:_holdCount() >= self._config.maxHolds then
@@ -1125,11 +1219,11 @@ local M = {
   NAME = NAME, VERSION = VERSION, API_VERSION = API_VERSION,
   EVENT_TYPES = { "relative", "absolute", "touch", "button" }, ELEMENTS = { "fader", "key", "encoder" },
   STATEFUL_FUNCTIONS = shallowCopy(STATEFUL_FUNCTIONS),
-  new = new, consoleDeps = consoleDeps, fakeBackend = fakeBackend, consoleBackend = consoleBackend, calibrate = calibrate, resolveTarget = resolveTarget,
+  new = new, consoleDeps = consoleDeps, fakeBackend = fakeBackend, consoleBackend = consoleBackend, calibrate = calibrate, position = position, resolveTarget = resolveTarget,
   backends = { fake = "fake", console = "console" },
   CALIBRATION = { readouts = shallowCopy(CALIBRATION.readouts), resolutions = shallowCopy(CALIBRATION.resolutions), layers = shallowCopy(CALIBRATION.layers), note = CALIBRATION_NOTE },
   LIMITATIONS = {
-    "the console backend (KB-19) serves relative motion on attribute slots only, as the selection-scoped Attribute \"<name>\" At +/- <amount> adjustment (an explicitly limited mode, not native encoder equivalence): calibrated for the Percent/PercentFine readouts (1 per Coarse detent) and the Physical readout (the attribute's range / 120 per Coarse detent, in physical units) with Fine at a tenth, on the Absolute layer; other readouts, Increment/Native, other layers, named channel functions, encoder presses, touches, positions and executor elements are refused unsupported",
+    "the console backend serves attribute slots only: relative motion (KB-19) as the selection-scoped Attribute \"<name>\" At +/- <amount> adjustment (an explicitly limited mode, not native encoder equivalence), calibrated for the Percent/PercentFine readouts (1 per Coarse detent) and the Physical readout (the attribute's range / 120 per Coarse detent, in physical units) with Fine at a tenth, on the Absolute layer; a strip touch (KB-20) as a hold that reserves the slot and moves nothing; an absolute position (KB-20) as Attribute \"<name>\" At <value> over the verified travel only (Percent/PercentFine 0..100, Physical PhysicalFrom..PhysicalTo of the binding, never a mixed physical range), refused mixed-values while the selection's values disagree and values-incomplete while they were not completely read, unless the event says takeover; other readouts, Increment/Native, other layers, named channel functions, encoder presses and executor elements are refused unsupported",
     "generations are those of the consumer's binding source (one gma3_mcp_feedback instance and spec); events from a surface bound to another instance are refused as stale",
     "packet loss is reported, never repaired: a lost relative delta is gone, a lost absolute position is superseded by the next one",
   },

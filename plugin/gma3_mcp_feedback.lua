@@ -424,12 +424,22 @@ local function slotState(d, scan, attrName)
   elseif not anyValue then st.valueState, st.valueFixture, st.uiChannel = "empty", first.fixture, first.uiChannel; st.valueNote = "the programmer holds no value for this attribute (output values are not read here)"
   else st.valueState, st.absolute, st.raw, st.channelFunction, st.valueFixture, st.uiChannel = "value", first.absolute, first.raw, first.channelFunction, first.fixture, first.uiChannel end
   if readErr and st.valueState ~= "unavailable" then st.valueNote = (st.valueNote and (st.valueNote .. "; ") or "") .. "some fixtures could not be read: " .. readErr end
-  -- Review (PR #23): a range is reported only when it is complete and verified: every scanned fixture with the
-  -- channel contributed its own range for this attribute AND the scan covered the whole selection (a fixture
-  -- outside the bounded scan could have a smaller range, and the console sizes one click by the smallest).
   if #scan.discoveryFailures > 0 then
     st.discoveryIncomplete = string.format("channel discovery failed for %d fixture(s) (%s): they are not confirmed to lack this attribute", #scan.discoveryFailures, scan.discoveryFailures[1].reason)
   end
+  -- KB-20 review: a value state is COMPLETE only when every selected fixture was scanned, every scanned fixture's
+  -- channels were discovered and every fixture with the channel was read. Otherwise "value" means "the fixtures that
+  -- could be read agree": a consumer must not treat it as the whole selection's value (a position placed on it would
+  -- set fixtures whose values were never seen).
+  if st.with > 0 then
+    if #scan.discoveryFailures > 0 then st.valueIncomplete = "values are not complete while " .. st.discoveryIncomplete
+    elseif scan.partial then st.valueIncomplete = string.format("the selection scan is bounded (%d of %d fixtures); the values of the fixtures outside the scan are unknown", #scan.fixtures, scan.count)
+    elseif readErr then st.valueIncomplete = "some fixtures with the channel could not be read: " .. readErr end
+    st.valueComplete = st.valueIncomplete == nil
+  end
+  -- Review (PR #23): a range is reported only when it is complete and verified: every scanned fixture with the
+  -- channel contributed its own range for this attribute AND the scan covered the whole selection (a fixture
+  -- outside the bounded scan could have a smaller range, and the console sizes one click by the smallest).
   if st.with > 0 then
     if #scan.discoveryFailures > 0 then
       st.physicalUnavailable = "the physical range cannot be established while " .. st.discoveryIncomplete
@@ -647,6 +657,7 @@ local READERS = {
           local st = slotState(d, scan, inner.name)
           slot.availability, slot.fixtures, slot.with, slot.partial, slot.discoveryIncomplete = st.availability, st.fixtures, st.with, st.partial, st.discoveryIncomplete
           slot.valueState, slot.absolute, slot.raw, slot.valueChannelFunction, slot.valueFixture, slot.uiChannel, slot.valueNote = st.valueState, st.absolute, st.raw, st.channelFunction, st.valueFixture, st.uiChannel, st.valueNote
+          slot.valueComplete, slot.valueIncomplete = st.valueComplete, st.valueIncomplete
           if st.physical then
             local ph = st.physical
             slot.physicalFrom, slot.physicalTo, slot.physicalRange, slot.physicalFunction, slot.physicalFunctionIndex = ph.from, ph.to, ph.range, ph["function"], ph.index

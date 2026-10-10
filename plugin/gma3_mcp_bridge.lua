@@ -48,7 +48,7 @@
 --                                               backend attached it attaches the records' own backend
 --                                               for cleanup only; input stays disabled.
 -- Continuous control (KB-18, bridge 0.14.0 / gma3_mcp_control 0.1.0; KB-19, bridge 0.15.0 / control
--- 0.2.0) is OFF by default and enabled per start, or toggled while running. It admits the control.* ops:
+-- 0.2.0; KB-20, bridge 0.16.0 / control 0.3.0) is OFF by default and enabled per start, or toggled while running. It admits the control.* ops:
 -- encoder motion, strip positions, touches and encoder buttons from a surface, each stamped with the
 -- feedback module's binding generation and admitted, ordered, coalesced and bounded by the control
 -- module before a backend applies them:
@@ -58,8 +58,11 @@
 --                                               motion on an attribute slot of the bound display is
 --                                               applied as  Attribute "<name>" At +/- <detents x step>
 --                                               for the selection (Percent/PercentFine readout, Coarse
---                                               1 / Fine 0.1 per detent, fine gesture /10); presses,
---                                               touches, positions and executors are refused unsupported
+--                                               1 / Fine 0.1 per detent, fine gesture /10); a strip touch
+--                                               (KB-20) is a hold that reserves the slot and moves
+--                                               nothing; a strip position is  Attribute "<name>" At <value>
+--                                               over the verified travel (mixed values need takeover);
+--                                               presses and executors are refused unsupported
 --   Plugin "gma3_mcp_bridge" "control=off"      stop admitting; end every gesture, drop queued motion
 --   Plugin "gma3_mcp_bridge" "control status"   print sessions, gestures, queues and unresolved releases
 --   Plugin "gma3_mcp_bridge" "control recover"  re-attempt the unresolved touch/button releases
@@ -144,7 +147,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.15.0"
+local VERSION      = "0.16.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -2343,7 +2346,7 @@ controlSummary = function()
     moduleInputEnabled = st and st.inputEnabled or false, sessions = sessions, gestures = gestures, queued = queued,
     unresolved = st and #st.unresolved or 0, unresolvedFromPreviousRun = #state.control.unresolved,
     spec = state.control.spec, counters = st and st.counters or nil,
-    note = state.control.backend == "console" and "KB-19: relative motion on attribute slots is applied as Attribute \"<name>\" At +/- <amount> for the selection; presses, touches, positions and executors are refused unsupported" or "KB-18: admission, ordering, coalescing and bounds; the fake backend records intents and moves nothing on the console (control=console applies attribute adjustments, KB-19)",
+    note = state.control.backend == "console" and "KB-19: relative motion on attribute slots is applied as Attribute \"<name>\" At +/- <amount> for the selection; KB-20: a strip touch holds the slot and moves nothing, a position is Attribute \"<name>\" At <value> over the verified travel (mixed values need takeover); presses and executors are refused unsupported" or "KB-18: admission, ordering, coalescing and bounds; the fake backend records intents and moves nothing on the console (control=console applies attribute adjustments, KB-19)",
     backendStatus = st and st.backendStatus or nil,
   }
 end
@@ -3431,7 +3434,7 @@ local function applyControlPolicy(opts)
     end
     state.control.enabled, state.control.backend = true, backend
     if backend == "console" then
-      log("control now enabled on the console backend: relative motion on attribute slots is applied as Attribute \"<name>\" At +/- <amount> for the selection (KB-19); presses, touches, positions and executors are refused unsupported")
+      log("control now enabled on the console backend: relative motion on attribute slots is applied as Attribute \"<name>\" At +/- <amount> for the selection (KB-19); strip touches hold the slot and positions are Attribute \"<name>\" At <value> (KB-20); presses and executors are refused unsupported")
     else
       log("control now enabled on the fake backend (intents are recorded; nothing moves on the console)")
     end
