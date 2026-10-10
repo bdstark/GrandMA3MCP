@@ -10,7 +10,7 @@ The bridge plugin ships two reusable, instance-based Lua modules as extra compon
 | `gma3_mcp_hardkeys` | [plugin/gma3_mcp_hardkeys.lua](../plugin/gma3_mcp_hardkeys.lua) | Owned input sessions, leases, deadline servicing and recovery over a backend adapter; read-only logical-key resolution |
 | `gma3_mcp_feedback` | [plugin/gma3_mcp_feedback.lua](../plugin/gma3_mcp_feedback.lua) | Read-only console state readers confirmed in KB-01, with freshness and bounded polling (KB-06) |
 
-Module API version **1**; `gma3_mcp_hardkeys` **0.6.0** (KB-03 to KB-05; 0.5.0 resolves any `Enums.VirtualKeyCode` name, KB-07; 0.6.0 adds the per-key routing policy, KB-11), `gma3_mcp_feedback` **0.2.0** (KB-02 + KB-06).
+Module API version **1**; `gma3_mcp_hardkeys` **0.7.0** (KB-03 to KB-05; 0.5.0 resolves any `Enums.VirtualKeyCode` name, KB-07; 0.6.0 adds the per-key routing policy, KB-11; 0.7.0 adds the owned Quickey bank, KB-12), `gma3_mcp_feedback` **0.2.0** (KB-02 + KB-06).
 Two backend adapters dispatch: the **fake backend** (records events, simulates aggregate console key state,
 nothing reaches a console key) and the **keyboard backend** (`keyboardBackend(deps)`, KB-04: the console's
 `Keyboard()` PC-key emulation; console keys are really pressed).
@@ -334,6 +334,43 @@ selected but a named requirement is missing; `effective` and `unavailable[]` are
 anything, and a refused press is never queued for a later mode or table change. Regressions:
 `test/lua/hardkeys_routing_test.lua`.
 
+## Quickey bank (`gma3_mcp_hardkeys` 0.7.0, KB-12)
+
+The Quickey backend of KB-13 needs one owned Quickey per command-area hardkey code and, because a Quickey addressed
+directly is always a tap (KB-10), a reserved executor per concurrently held key. The module provisions, verifies and
+removes both so no surface writes its own allocator. It never creates, changes or deletes a show object unless the call
+carries `authorized = true` (the consumer's explicit operator decision), and it never touches an object it cannot prove
+it owns: ownership is the marker written into the Quickey's Note plus the matching `Code` and `Name`, re-read before every
+mutation and before every dispatch. Nothing is repaired; a mismatch is reported and refused.
+
+```lua
+local inst = HK.new({ owner = "gma3_mcp_bridge", deps = HK.consoleDeps(_G) }):init()
+local bank, err = inst:provisionBank({ authorized = true, quickeys = { first = 900 },
+                                       executors = { page = 1, first = 190, count = 8 },   -- count >= config.maxHolds
+                                       codes = "hardkeys" }, now)                          -- | "qualified" | { "NUM5", ... }
+local t = inst:bankTarget("NUM5", now)      -- re-reads Quickey 9xx: { index, value, qualified = { tap, hold, chord }, executors }
+local v = inst:verifyBank(now)              -- re-reads everything: state ready | degraded, problems[]
+local td = inst:teardownBank(now, { authorized = true })   -- refused while Quickey records are live
+local rec = inst:dispose(now).bank          -- keep it; inst2:adoptBank(rec, now) re-verifies, creates nothing
+```
+
+| Call | Effect |
+| --- | --- |
+| `provisionBank(spec, now)` | Validates the spec (`bank-invalid`; `bank-unauthorized` before anything is read), discovers the codes from `Enums.VirtualKeyCode` (one per distinct value, ordered by value, slot = `first` + rank; aliases such as `UNDO` folded onto `OOPS` and reported; value-0 placeholders, `X1`–`X16`, `XKEYS`, `EXEC`, `FADER`, `DEF_*`, `ENCODER_*`, `ONPC_SCREEN*` and the executor button functions excluded with reasons), preflights every slot and executor without writing, then creates what is missing: each slot re-read right before `create`, Note (marker) → Code → Name written and verified by readback. Refusals: `bank-preflight` with `refusals[]` (`slot-occupied`, `bank-foreign-owner`, `bank-mismatch`, `executor-occupied`, `executor-missing`, `unreadable`) and nothing created; `bank-partial` with `removed[]`/`kept[]` after a rollback that deletes only objects this call created and that still read back as written; `bank-exists`. An existing bank of the same owner and ranges is reused after verification (`reused` count). |
+| `bankTarget(code, now)` / `bankExecutor(index, now)` | Dispatch-time revalidation of one Quickey / one reserved executor by readback: `code-not-in-bank`, `bank-stale`, `bank-object-missing`, `bank-object-changed`, `bank-executor-occupied|missing|unreadable`. Aliases resolve to the canonical entry (`alias` reported). The result carries `qualified` (`{ tap, hold, chord, note }` from KB-10, or `false` = discovered only: a backend must not advertise it). |
+| `verifyBank(now)` | Re-reads every object and the show identity; `state` `ready` or `degraded`, `problems[]` (`kind` = `quickey` / `executor` / `show`, `state` = `missing` / `changed` / `replaced` / `occupied` / `unreadable`). |
+| `service(now)` | Every `config.bankCheckMs` (2000 ms) re-reads only the show identity; a change marks the bank `stale` (cached reads dropped, dispatch refused until `verifyBank()`). |
+| `teardownBank(now, { authorized = true })` | Separate from release-all: `bank-in-use` while any Quickey ownership record is held or unresolved. Clears only executors holding a bank Quickey, deletes only Quickeys that still verify, `skipped[]` for changed/replaced objects (left alone), `complete` or a `partial` bank for the rest. |
+| `adoptBank(record, now)` / `dispose().bank` | The record is the consumer's to keep across a restart (the bridge keeps it beside the unresolved records); adoption re-verifies everything and creates nothing; another owner's record is `bank-foreign-owner`. |
+| `bankStatus(now)` / `status().bank` | Read-only: `id`, `state` (`ready`, `degraded`, `stale`, `partial`), `codes[]` with `index`/`value`/`qualified`/`state`/`problem`, `executors[]`, `exclusions[]`, `aliases[]`, `counters`, `record`. |
+
+Console deps (`consoleDeps(_G)`): `showIdentity()` = show name plus data pool name; `quickeys.read/create/set/delete`
+over `ObjectList("Quickey N")` and `Store`/`Delete Quickey N /NoConfirmation`; `executors.read/clear` over
+`ObjectList("Page P.N")` and `Delete Page P.N /NoConfirmation`. Every write is verified by a readback, never by the
+command's return text. On 2.5.1 an empty executor has no object under `Page P.N` (the deps report `empty` when the page
+exists), and the show identity is `Root().MANetSocket:Get("ShowFile")` plus the data pool name. Qualified live on the
+disposable show ([record](probes/kb-12-bank-macos-2.5.1.md)); regressions: `test/lua/hardkeys_bank_test.lua`.
+
 ## Feedback readers (`gma3_mcp_feedback` 0.2.0, KB-06)
 
 Every observation is `{ name, key, scope, source, params?, available, value?, reason? | error?, observedAt, epoch,
@@ -437,7 +474,7 @@ a flooding client that cannot starve deadline servicing; and since 0.7.0 the `[b
 shared-connection ownership, `input.sequence` serviced by the loop, a disconnect mid-sequence and cleanup while
 input is disabled; and since 0.8.0 the `feedback.describe`/`feedback.read` ops with Lua and input disabled, partial
 failures, displays, executor and sequence expansion, bounds, the show-change epoch bump, `[no-feedback]` and a read
-answered while another connection owns an interaction). `node scripts/kb03-probe.mjs run` exercises the lifecycle against a live bridge
+answered while another connection owns an interaction; and since 0.9.0 the `bank=` argument: provisioning at start, the record kept across a dispose and adopted at the next load, `bank status`/`verify`/`teardown`, the in-use and preflight refusals) and [test/lua/hardkeys_bank_test.lua](../test/lua/hardkeys_bank_test.lua) (the KB-12 bank against a fake pool: spec validation, discovery, preflight refusals, creation with readback, reuse, partial-failure rollback, verification, dispatch-time target checks, staleness, teardown, dispose/adopt). `node scripts/kb03-probe.mjs run` exercises the lifecycle against a live bridge
 started with `input=fake` over real TCP connections ([record](probes/kb-03-fake-macos-2.5.1.md));
 `node scripts/kb04-probe.mjs run|restart` presses real keys through a bridge started with `lua input=keyboard` on a
 disposable show ([record](probes/kb-04-keyboard-macos-2.5.1.md)); `node scripts/kb05-probe.mjs run` exercises the

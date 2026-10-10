@@ -32,6 +32,23 @@
 --                                               including records kept from a previous run. With no
 --                                               backend attached it attaches the records' own backend
 --                                               for cleanup only; input stays disabled.
+-- Quickey bank (KB-12, bridge 0.9.0 / hardkeys 0.7.0): the operator provisions the owned Quickeys and the
+-- reserved executors the Quickey dispatch of KB-13 will use. It is the only path that creates or deletes
+-- show objects, and it is a plugin argument, never a client request:
+--   Plugin "gma3_mcp_bridge" "bank=900/1.190-197"   one Quickey per command-area hardkey code from
+--                                               Quickey 900 upwards, executors 190-197 of page 1 reserved
+--                                               (the executor count must cover the hold capacity, 8).
+--                                               "bank=900/1.190" reserves 8 executors from 190.
+--                                               Add "bankcodes=qualified" to provision only the codes
+--                                               with KB-10 evidence (default: every command-area code,
+--                                               each reported qualified or discovered).
+--   Plugin "gma3_mcp_bridge" "bank status"      print the bank: codes, slots, executors, problems
+--   Plugin "gma3_mcp_bridge" "bank verify"      re-read every owned object and report what changed
+--   Plugin "gma3_mcp_bridge" "bank teardown"    delete the verified owned Quickeys and clear their
+--                                               executors (refused while Quickey records are live)
+-- An existing bank of this bridge (same ranges) is verified and reused; another plugin's bank or any
+-- unowned object in the range refuses the whole setup and nothing is created. The bank record survives
+-- a bridge restart (like unresolved records) and is re-verified at the next start, never trusted blindly.
 -- Every held key belongs to a session bound to the TCP connection that opened it; a client can only
 -- act on its own session, and a disconnect, lease expiry, "input=off", stop or Cleanup attempts to
 -- release what that session still holds. A release that fails or cannot be confirmed is kept as an
@@ -84,7 +101,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.8.0"
+local VERSION      = "0.9.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -1360,7 +1377,7 @@ local MODULE_COMPONENTS = {
   { key = "feedback", component = "gma3_mcp_feedback" },
 }
 
-local enableInputOn, adoptKeptRecords  -- defined with the input ops below; used by loadModules()
+local enableInputOn, adoptKeptRecords, adoptKeptBank  -- defined with the input ops below; used by loadModules()
 
 -- Best-effort detail for an error message: is the component in the plugin, and did it fail to parse?
 local function componentInfo(name)
@@ -1417,6 +1434,7 @@ local function loadModules()
         -- so their tuples are reserved (a new session gets [conflict]). Releasing them stays an
         -- explicit operator action ("input recover"); adopt() dispatches nothing.
         adoptKeptRecords(rec)
+        adoptKeptBank(rec)
         if state.input.enabled then
           local okE, err = enableInputOn(rec)
           if not okE then
@@ -1494,6 +1512,8 @@ detachHardkeys = function(rec, t, reason)
     if #(res.records or {}) > 0 then
       logerr("input: %d unresolved release record(s) kept; run  Plugin \"gma3_mcp_bridge\" \"input recover\"  once the bridge runs again", #res.records)
     end
+    -- The Quickey bank record (KB-12) is kept like the unresolved records; the next start re-verifies it.
+    if type(res.bank) == "table" then state.input.bank = res.bank; log("input: bank record %s kept for the next start (%d codes); nothing on the console was changed", tostring(res.bank.id), #(res.bank.codes or {})) end
   elseif not ok then
     logerr("input: dispose failed: %s", tostring(res))
   end
@@ -1583,6 +1603,7 @@ local function inputSummary()
     interaction = st and st.activeInteraction or nil,
     sequence = st and st.sequence and st.sequence.state == "running" and st.sequence.id or nil,
     busy = st and st.busy or nil,
+    bank = st and st.bank and { provisioned = st.bank.provisioned, id = st.bank.id, state = st.bank.state, codes = st.bank.codeCount, qualified = st.bank.qualifiedCount, problems = st.bank.problemCount } or (type(state.input.bank) == "table" and { provisioned = false, kept = state.input.bank.id } or nil),
     note = "ownership records, not physical key state; see input.status. busy: cmd/set/setfader/lua are refused for every connection while it is set",
   }
 end
@@ -2776,6 +2797,8 @@ end
 --                            owned input sessions on the console keyboard backend (KB-04), on the
 --                            fake backend (KB-03 lifecycle only) or disabled
 --   input status | input recover       print input state / operator recovery of unresolved releases
+--   bank=<quickey>/<page>.<first>[-<last>]  provision the Quickey bank (KB-12); bankcodes=hardkeys|qualified
+--   bank status | bank verify | bank teardown
 local function parseArgument(argument)
   local opts = {}
   local text = argument and tostring(argument) or ""
@@ -2785,6 +2808,20 @@ local function parseArgument(argument)
     local key, val = l:match("^(%a+)=(.*)$")
     if (l == "status" or l == "recover") and prev == "input" then
       opts.command = "input-" .. l
+    elseif (l == "status" or l == "verify" or l == "teardown") and prev == "bank" then
+      opts.command = "bank-" .. l
+    elseif l == "bank" then
+      opts.bankToken = true  -- followed by "status", "verify" or "teardown"
+    elseif key == "bank" then
+      local q, page, first, last = val:match("^(%d+)/(%d+)%.(%d+)%-(%d+)$")
+      if not q then q, page, first = val:match("^(%d+)/(%d+)%.(%d+)$") end
+      if not q then return nil, string.format("\"%s\": expected bank=<quickey>/<page>.<first>[-<last>], e.g. bank=900/1.190-197", tok) end
+      local count = last and (tonumber(last) - tonumber(first) + 1) or nil
+      if last and count < 1 then return nil, string.format("\"%s\": the executor range is empty", tok) end
+      opts.bank = { quickeyFirst = tonumber(q), page = tonumber(page), executorFirst = tonumber(first), executorCount = count }
+    elseif key == "bankcodes" then
+      if val == "hardkeys" or val == "qualified" then opts.bankCodes = val
+      else return nil, string.format("\"%s\": expected bankcodes=hardkeys or bankcodes=qualified", tok) end
     elseif l == "stop" or l == "status" then
       opts.command = l
     elseif l == "input" then
@@ -2821,13 +2858,17 @@ local function parseArgument(argument)
       if not port or port < 1 or port > 65535 then return nil, string.format("\"%s\" is not a valid port number (expected 1-65535)", tok) end
       opts.port = port
     else
-      return nil, string.format("\"%s\" is not a recognised argument (expected a port number, \"stop\", \"status\", \"lua\", \"lua on|off\", \"luatime=<ms>\", \"luasteps=<n>\", \"luahook=preserve|replace\", \"input=keyboard|fake|off\", \"input status\" or \"input recover\")", tok)
+      return nil, string.format("\"%s\" is not a recognised argument (expected a port number, \"stop\", \"status\", \"lua\", \"lua on|off\", \"luatime=<ms>\", \"luasteps=<n>\", \"luahook=preserve|replace\", \"input=keyboard|fake|off\", \"input status\", \"input recover\", \"bank=<quickey>/<page>.<first>-<last>\", \"bankcodes=hardkeys|qualified\", \"bank status\", \"bank verify\" or \"bank teardown\")", tok)
     end
     prev = l
   end
   if opts.inputToken and opts.command == nil and opts.input == nil then
     return nil, "\"input\": expected input=keyboard, input=fake, input=off, \"input status\" or \"input recover\" (there is no default input backend)"
   end
+  if opts.bankToken and not (opts.command and opts.command:match("^bank%-")) and opts.bank == nil then
+    return nil, "\"bank\": expected bank=<quickey>/<page>.<first>[-<last>], \"bank status\", \"bank verify\" or \"bank teardown\" (there is no default range)"
+  end
+  if opts.bankCodes and not opts.bank then return nil, "\"bankcodes\" needs a bank=... range in the same argument" end
   return opts
 end
 
@@ -2865,6 +2906,54 @@ local function applyInputPolicy(opts)
     end
     log("input now disabled (%s)", describeInput())
   end
+end
+
+-- Quickey bank (KB-12): operator-only provisioning through the plugin argument. The module does the
+-- preflight, creation, verification and rollback; the bridge logs the outcome and keeps the record.
+local function logBankSummary(prefix, b)
+  if type(b) ~= "table" then return end
+  if not b.provisioned then log("%s: no bank (%s)", prefix, tostring(b.note)); return end
+  log("%s: bank %s state=%s codes=%d (qualified %d, discovered %d) problems=%d quickeys from %d, executors page %d %d-%d show='%s'",
+    prefix, tostring(b.id), tostring(b.state), b.codeCount or 0, b.qualifiedCount or 0, b.discoveredCount or 0, b.problemCount or 0,
+    b.spec.quickeys.first, b.spec.executors.page, b.spec.executors.first, b.spec.executors.first + b.spec.executors.count - 1, tostring(b.show))
+  for _, p in ipairs(b.problems or {}) do logerr("%s: problem %s %s: %s", prefix, tostring(p.kind), tostring(p.index or p.executor or ""), tostring(p.detail)) end
+end
+
+local function bankInstance(what)
+  local rec, err = hardkeysRec()
+  if not rec then logerr("bank %s: %s", what, tostring(err)); return nil end
+  if type(rec.instance.provisionBank) ~= "function" then logerr("bank %s: the loaded hardkeys module has no Quickey bank (module %s; KB-12 needs 0.7.0 or newer)", what, tostring(rec.version)); return nil end
+  return rec
+end
+
+local function applyBankPolicy(opts)
+  if not opts.bank then return end
+  local rec = bankInstance("provision")
+  if not rec then return end
+  local spec = { authorized = true, quickeys = { first = opts.bank.quickeyFirst },
+                 executors = { page = opts.bank.page, first = opts.bank.executorFirst, count = opts.bank.executorCount }, codes = opts.bankCodes }
+  local ok, r, err = pcall(rec.instance.provisionBank, rec.instance, spec, now())
+  if not ok then logerr("bank provision: raised: %s", tostring(r)); return end
+  if not r then
+    logerr("bank provision refused [%s]: %s", tostring(err and err.code), tostring(err and err.message))
+    for _, rf in ipairs(err and err.refusals or {}) do logerr("bank provision: %s %s: %s", tostring(rf.reason), tostring(rf.index or rf.executor or ""), tostring(rf.detail)) end
+    for _, k in ipairs(err and err.kept or {}) do logerr("bank provision: Quickey %d (%s) created in this call was KEPT: %s", k.index, tostring(k.code), tostring(k.reason)) end
+    return
+  end
+  state.input.bank = r.record
+  log("bank provision: %d Quickey(s) created, %d reused", r.created or 0, r.reused or 0)
+  logBankSummary("bank provision", r)
+end
+
+-- At start: a record kept from the previous run is adopted (every object re-verified; nothing created).
+adoptKeptBank = function(rec)
+  local record = state.input.bank
+  if type(record) ~= "table" then return end
+  if type(rec.instance.adoptBank) ~= "function" then logerr("bank: a record is kept but the loaded module has no adoptBank() (module %s)", tostring(rec.version)); return end
+  local ok, r, err = pcall(rec.instance.adoptBank, rec.instance, record, now())
+  if not ok then logerr("bank adopt: raised: %s; the record is kept", tostring(r)); return end
+  if not r then logerr("bank adopt refused [%s]: %s; the record is dropped (provision again with bank=...)", tostring(err and err.code), tostring(err and err.message)); state.input.bank = nil; return end
+  logBankSummary("bank adopt", r)
 end
 
 local function MainImpl(display_handle, argument)
@@ -2912,6 +3001,41 @@ local function MainImpl(display_handle, argument)
     inputRecover()
     return
   end
+  if opts.command == "bank-status" or opts.command == "bank-verify" or opts.command == "bank-teardown" then
+    local rec = bankInstance(opts.command:sub(6))
+    if not rec then
+      if type(state.input) == "table" and type(state.input.bank) == "table" then log("bank: a record from a previous run is kept (%s, %d codes); it is re-verified at the next start", tostring(state.input.bank.id), #(state.input.bank.codes or {})) end
+      return
+    end
+    local inst = rec.instance
+    if opts.command == "bank-status" then
+      local b = inst:bankStatus(now())
+      logBankSummary("bank status", b)
+      for _, c in ipairs(b.codes or {}) do
+        if c.state ~= "ok" or c.qualified then
+          log("bank code %s: Quickey %d value %d %s%s%s", c.name, c.index, c.value or -1, c.qualified and ("qualified tap=" .. tostring(c.qualified.tap) .. " hold=" .. tostring(c.qualified.hold) .. " chord=" .. tostring(c.qualified.chord)) or "discovered",
+            c.state ~= "ok" and (" " .. string.upper(tostring(c.state)) .. ": " .. tostring(c.problem)) or "", c.note and (" (" .. c.note .. ")") or "")
+        end
+      end
+      for _, x in ipairs(b.executors or {}) do if x.state ~= "reserved" then log("bank executor %d.%d: %s%s%s", x.page, x.index, x.state, x.assigned and (" " .. x.assigned) or "", x.problem and (": " .. x.problem) or "") end end
+      for _, e in ipairs(b.exclusions or {}) do log("bank excluded %s (%s): %s", tostring(e.name), tostring(e.value), tostring(e.reason)) end
+    elseif opts.command == "bank-verify" then
+      local ok, r, err = pcall(inst.verifyBank, inst, now())
+      if not ok then logerr("bank verify: raised: %s", tostring(r))
+      elseif not r then logerr("bank verify refused [%s]: %s", tostring(err and err.code), tostring(err and err.message))
+      else state.input.bank = r.record; logBankSummary("bank verify", r) end
+    else
+      local ok, r, err = pcall(inst.teardownBank, inst, now(), { authorized = true })
+      if not ok then logerr("bank teardown: raised: %s", tostring(r))
+      elseif not r then logerr("bank teardown refused [%s]: %s", tostring(err and err.code), tostring(err and err.message))
+      else
+        log("bank teardown: %d Quickey(s) removed, %d executor(s) cleared, %d object(s) skipped%s", #(r.removed or {}), #(r.cleared or {}), #(r.skipped or {}), r.complete and "; the bank is gone" or "; the bank is PARTIAL (skipped objects are left alone, not ours as they stand)")
+        for _, s in ipairs(r.skipped or {}) do logerr("bank teardown: skipped %s: %s", tostring(s.index and ("Quickey " .. s.index) or s.executor), tostring(s.reason)) end
+        if r.complete then state.input.bank = nil else state.input.bank = r.record end
+      end
+    end
+    return
+  end
 
   if state.running then
     if opts.port then
@@ -2926,6 +3050,10 @@ local function MainImpl(display_handle, argument)
     end
     if opts.input ~= nil then
       applyInputPolicy(opts)
+      changed = true
+    end
+    if opts.bank then
+      applyBankPolicy(opts)
       changed = true
     end
     if not changed then
@@ -2944,11 +3072,12 @@ local function MainImpl(display_handle, argument)
   state.lua = { enabled = LUA_DEFAULT_ENABLED, maxMs = LUA_DEFAULT_MAX_MS, maxSteps = LUA_DEFAULT_MAX_STEPS, hookMode = LUA_DEFAULT_HOOK_MODE }
   applyLuaPolicy(opts)
   -- Input is likewise an explicit per-start decision; only the unresolved records carry over.
-  state.input = { enabled = opts.input == true, backend = opts.input == true and (opts.inputBackend or "fake") or nil, unresolved = state.input.unresolved or {} }
+  state.input = { enabled = opts.input == true, backend = opts.input == true and (opts.inputBackend or "fake") or nil, unresolved = state.input.unresolved or {}, bank = state.input.bank }
   state.running = true
   state.stopRequested = false
   state.clients = {}
   loadModules()
+  if opts.bank then applyBankPolicy(opts) end
   -- Run the server loop inside this plugin call. The loop yields every frame so the console stays
   -- responsive, and the plugin stays "running" until it is stopped (onPC calls Cleanup when the
   -- plugin call ends, so the loop must not be handed off to a Timer).

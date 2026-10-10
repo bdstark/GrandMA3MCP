@@ -1011,7 +1011,7 @@ do
   start("")  -- bind fails in this harness, so serverMain returns and the instances are disposed again
   local hk, fb = state.modules.hardkeys, state.modules.feedback
   check("modules found through the plugin signal table", hk and hk.loaded and fb and fb.loaded, json.encode({ hk = hk and hk.error, fb = fb and fb.error }))
-  check("module versions recorded", hk.version == "0.6.0" and hk.apiVersion == 1 and fb.version == "0.2.0", json.encode({ hk.version, fb.version }))
+  check("module versions recorded", hk.version == "0.7.0" and hk.apiVersion == 1 and fb.version == "0.2.0", json.encode({ hk.version, fb.version }))
   check("modules start log line", lastLog():find("stopped") or true)
   local disposed = hk.instance and hk.instance:status().state == "disposed" and fb.instance:status().state == "disposed"
   check("instances disposed when the loop ends", disposed, hk.instance and hk.instance:status().state)
@@ -1519,7 +1519,7 @@ do
   r = request("feedback.read", {}, nil, C)
   check("feedback.read without items is refused with a code", r.ok == false and r.code == "no-items", r.error)
   r = request("feedback.read", { readers = { "commandText", "lastCommand", "blind", "solo", "page", "freeze", "selectedSequence", "previewBar", "sequenceActive" }, displays = { 1, 2, 9 }, executors = { 201, 202 }, sequences = { 5, 6 } }, nil, C)
-  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.8.0" and r.result.module.version == "0.2.0" and r.result.identity.showFile == "mcp-test-disposable", J(r))
+  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.9.0" and r.result.module.version == "0.2.0" and r.result.identity.showFile == "mcp-test-disposable", J(r))
   local by = {}
   if r.ok then for _, it in ipairs(r.result.items) do by[it.key] = it end end
   check("feedback.read: command text and last command are raw observations", by.commandText and by.commandText.value == "Store " and by.lastCommand.value == "Go+ Sequence 5 : OK" and by.lastCommand.note:find("not confirmation"), J(by.lastCommand))
@@ -1563,6 +1563,109 @@ do
   GetDisplayByIndex = function(n) if n == 1 then return {} end return nil end
   for _, rec in pairs(state.modules) do if rec.instance then rec.instance:dispose(0) end end
   state.running = false
+end
+
+
+-------------------------------------------------------------------------------
+-- Quickey bank (KB-12): operator-only provisioning through the plugin argument
+-------------------------------------------------------------------------------
+do
+  -- Fake show data for the module's consoleDeps: a Quickey pool and one executor page addressed in
+  -- command syntax ("Quickey 900", "Page 1.190"), created/deleted through Cmd().
+  local pool, execs, cmds = {}, {}, {}
+  for i = 190, 197 do execs[i] = { object = nil } end
+  Enums.VirtualKeyCode = { [""] = 0, UNKNOWN = 0, MA1 = 1, STORE = 66, NUM5 = 72, THRU = 78, PLEASE = 84, OOPS = 86, UNDO = 86, CLEAR = 87, X1 = 19 }
+  local function quickeyHandle(i)
+    local q = pool[i]
+    return { name = q.name, GetClass = function() return "Quickey" end,
+             Get = function(_, k) if k == "Code" then return q.code elseif k == "Note" then return q.note elseif k == "Lock" then return false end end,
+             Set = function(_, k, v) if k == "Code" then q.code = v elseif k == "Name" then q.name = v elseif k == "Note" then q.note = v end end }
+  end
+  local function execHandle(i)
+    local x = execs[i]
+    return { GetClass = function() return "Executor" end, Get = function(_, k) if k == "Object" then return x.object end end }
+  end
+  ObjectList = function(ref)
+    local qi = tostring(ref):match("^Quickey (%d+)$")
+    if qi then return pool[tonumber(qi)] and { quickeyHandle(tonumber(qi)) } or {} end
+    local page, ei = tostring(ref):match("^Page (%d+)%.(%d+)$")
+    if page then return (page == "1" and execs[tonumber(ei)]) and { execHandle(tonumber(ei)) } or {} end
+    return {}
+  end
+  Cmd = function(c)
+    cmds[#cmds + 1] = c
+    local si = c:match("^Store Quickey (%d+) /NoConfirmation$")
+    if si then pool[tonumber(si)] = { name = "Quickey " .. si, code = "", note = "" }; return "OK" end
+    local di = c:match("^Delete Quickey (%d+) /NoConfirmation$")
+    if di then pool[tonumber(di)] = nil; return "OK" end
+    local dp, de = c:match("^Delete Page (%d+)%.(%d+) /NoConfirmation$")
+    if dp then execs[tonumber(de)].object = nil; return "OK" end
+    return "OK"
+  end
+  DataPool = function() return { name = "Default" } end
+  local prevRoot = Root
+  Root = function() local r = prevRoot(); r.MANetSocket = { Get = function(_, k) if k == "ShowFile" then return "mcp-test-disposable" end end }; return r end
+  local function countPool() local n = 0; for _ in pairs(pool) do n = n + 1 end; return n end
+
+  Main(nil, "bank"); Cleanup()
+  check("'bank' alone is refused", lastLog():find("expected bank=<quickey>/<page>.<first>"), lastLog())
+  Main(nil, "bank=900"); Cleanup()
+  check("a bank range without executors is refused", lastLog():find("bank=<quickey>/<page>"), lastLog())
+  Main(nil, "bankcodes=qualified"); Cleanup()
+  check("bankcodes needs a range", lastLog():find("needs a bank="), lastLog())
+  state.input.bank = nil
+  local before = #logs
+  start("9800 input=fake bank=900/1.190-197")
+  -- The start provisioned the bank, then the failed bind disposed the modules: the record is kept.
+  check("bank provisioned at start from the plugin argument", logFound("bank provision: 7 Quickey%(s%) created, 0 reused", before) and countPool() == 7 and pool[900].code == "MA1" and pool[900].name == "MCP MA1" and pool[900].note:find("gma3_mcp_hardkeys%-bank v1 owner=gma3_mcp_bridge"), lastLog())
+  check("the bank record is kept across the dispose", type(state.input.bank) == "table" and state.input.bank.id == "gma3_mcp_bridge@q900.e1.190-197" and logFound("bank record .* kept for the next start", before), J(state.input.bank and state.input.bank.id))
+  before = #logs
+  state._loadModules(); state.running = true; state.stopRequested = false; state.ignoreNextCleanup = false
+  local hk = state.modules.hardkeys
+  check("the kept record is adopted and re-verified at the next load, creating nothing", logFound("bank adopt: bank gma3_mcp_bridge@q900.e1.190%-197 state=ready codes=7", before) and hk.instance:bankStatus().state == "ready" and countPool() == 7, lastLog())
+  local A = { id = 31 }
+  local r = request("input.status", {}, nil, A)
+  check("input.status reports the bank", r.ok and r.result.status.bank.provisioned == true and r.result.status.bank.codeCount == 7 and r.result.policy.bank.state == "ready" and r.result.policy.bank.qualified == 7, J(r.result.policy.bank))
+  r = request("ping", {})
+  check("ping.input summarises the bank", r.ok and r.result.input.bank.provisioned == true and r.result.input.bank.codes == 7, J(r.result.input))
+  before = #logs
+  Main(nil, "bank status"); Cleanup()
+  check("'bank status' prints the bank and the qualified codes", logFound("bank status: bank gma3_mcp_bridge@q900", before) and logFound("bank code NUM5: Quickey 902 value 72 qualified tap=true hold=true chord=true", before) and logFound("bank excluded X1", before), lastLog())
+  -- An operator edit is reported by verify and refuses the target; nothing is repaired.
+  pool[902].code = "NUM6"
+  before = #logs
+  Main(nil, "bank verify"); Cleanup()
+  check("'bank verify' reports the changed object", logFound("bank verify: bank .* state=degraded .* problems=1", before) and logFound("problem quickey 902: Code is NUM6", before) and pool[902].code == "NUM6", lastLog())
+  pool[902].code = "NUM5"
+  -- Re-provisioning the same range while running reuses the bank: nothing created.
+  before = #logs
+  Main(nil, "bank=900/1.190-197"); Cleanup()
+  check("re-provisioning while a bank exists is refused as bank-exists", logFound("bank provision refused %[bank%-exists%]", before), lastLog())
+  -- Teardown is refused while a Quickey record is live, then removes only verified objects.
+  hk.instance:configureRouting({ default = "quickkey" })
+  r = request("input.open", {}, nil, A)
+  r = request("input.begin", {}, nil, A)
+  local press = request("input.press", { key = "NUM5", interaction = r.result.interaction.id }, nil, A)
+  before = #logs
+  Main(nil, "bank teardown"); Cleanup()
+  check("'bank teardown' is refused while a Quickey hold is live", press.ok and logFound("bank teardown refused %[bank%-in%-use%]", before) and countPool() == 7, lastLog())
+  request("input.releaseAll", {}, nil, A)
+  pool[906].name = "renamed by operator"
+  execs[190].object = { name = "MCP STORE", GetClass = function() return "Quickey" end }
+  before = #logs
+  Main(nil, "bank teardown"); Cleanup()
+  check("'bank teardown' removes verified Quickeys, clears our executor and skips the edited object", logFound("bank teardown: 6 Quickey%(s%) removed, 1 executor%(s%) cleared, 1 object%(s%) skipped; the bank is PARTIAL", before) and countPool() == 1 and pool[906] ~= nil and execs[190].object == nil and state.input.bank ~= nil, lastLog())
+  pool[906].name = "MCP CLEAR"
+  before = #logs
+  Main(nil, "bank teardown"); Cleanup()
+  check("the second teardown completes and drops the record", logFound("the bank is gone", before) and countPool() == 0 and state.input.bank == nil, lastLog())
+  -- An unowned object in the range refuses the whole setup; nothing is created.
+  pool[903] = { name = "Operator thing", code = "GO", note = "" }
+  before = #logs
+  Main(nil, "bank=900/1.190-197"); Cleanup()
+  check("an unowned object in the range refuses provisioning with nothing created", logFound("bank provision refused %[bank%-preflight%]", before) and logFound("slot%-occupied 903", before) and countPool() == 1, lastLog())
+  pool[903] = nil
+  Cleanup()
 end
 
 print(string.format("%d passed, %d failed", passes, failures))

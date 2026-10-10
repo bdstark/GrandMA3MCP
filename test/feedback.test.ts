@@ -31,7 +31,7 @@ const reply = (items: Array<Record<string, unknown>>, extra: Record<string, unkn
   count: items.length,
   truncated: 0,
   limitations: [],
-  bridgeVersion: "0.8.0",
+  bridgeVersion: "0.9.0",
   module: { component: "gma3_mcp_feedback", version: "0.2.0" },
   ...extra,
 });
@@ -45,7 +45,7 @@ test("no arguments reads every parameterless reader through feedback.read {all:t
   assert.equal(result.context.atomic, false);
   assert.equal(result.context.epoch, 1);
   assert.equal(result.context.identity.showFile, "mcp-test-disposable");
-  assert.equal(result.context.bridgeVersion, "0.8.0");
+  assert.equal(result.context.bridgeVersion, "0.9.0");
   assert.equal(result.byKey.blind.value, true);
   assert.equal(result.byKey.freeze.available, false);
   assert.equal(result.byKey.freeze.value, null, "unavailable is an explicit null, never false");

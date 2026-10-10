@@ -76,6 +76,17 @@
 --     policy keep the pre-0.6.0 behaviour (method "shortcut"). Quickey tuples ({ quickkey = <code> })
 --     need an adapter that advertises capabilities.quickkey (the fake does; the KB-13 backend will);
 --     the text routes of shortcutOrType/type are resolved and reported but their dispatch is KB-14.
+--   * Quickey bank (KB-12, 0.7.0): provisionBank(spec, now) creates one owned Quickey per command-area
+--     hardkey code in an operator-selected pool range and reserves an executor range for holds (KB-10:
+--     press/release needs the Quickey on an executor). Codes are discovered from Enums.VirtualKeyCode,
+--     aliases deduplicated, exclusions reported, and each code carries its KB-10 qualification.
+--     Ownership is the marker written into the Quickey's Note plus the matching Code/Name, re-read
+--     before every mutation and before every dispatch (bankTarget/bankExecutor); nothing is overwritten,
+--     repaired or deleted unless it verifies, and nothing is created or deleted without
+--     spec.authorized == true (the consumer's explicit operator decision). verifyBank() re-reads all,
+--     service() marks the bank stale on a show/data-pool change, teardownBank() removes only verified
+--     owned objects and refuses while Quickey records are live, dispose() hands the record back for
+--     adoptBank(). A second owner on the same slots is rejected (no shared arbitration yet).
 --
 -- Ownership semantics (KB-01/KB-03 findings): the console's key state is shared. A physical release
 -- can end a synthetic hold and MASTATE is aggregate, so an ownership record here means "this session is
@@ -99,7 +110,7 @@
 --   * Input is disabled on a new instance. enableInput(adapter) is the operator's explicit decision.
 
 local NAME        = "gma3_mcp_hardkeys"
-local VERSION     = "0.6.0"
+local VERSION     = "0.7.0"
 local API_VERSION = 1
 
 -- Logical keys with special handling in describeKey() and press(). Since 0.5.0 every other
@@ -179,6 +190,7 @@ local DEFAULT_CONFIG = {
   -- consumer that is itself the only caller (a surface plugin pressing keys as they arrive) keeps the
   -- KB-03 per-session ownership rules; interactions and sequences still work and still lock the instance.
   requireInteraction = true,
+  bankCheckMs        = 2000,    -- how often service() re-reads the show identity to invalidate the Quickey bank (KB-12)
 }
 
 -- Text policy (KB-05). Input is UTF-8 and is iterated by code point, never by byte. Control characters
@@ -528,6 +540,209 @@ local function entryField(policy, key, field)
   return e and e[field] or nil
 end
 
+-- Quickey bank (KB-12, 0.7.0) ----------------------------------------------------
+--
+-- One owned Quickey per command-area hardkey code, created in an operator-selected pool range, plus a
+-- reserved executor range for holds: KB-10 established that a Quickey addressed directly is always a
+-- complete tap, and that press/release needs the Quickey assigned to an executor (Press/Unpress
+-- Executor). Provisioning, verification, teardown and adoption live here so that no surface writes its
+-- own allocator. Rules:
+--   * nothing is created, changed or deleted unless provisionBank()/teardownBank() are called with
+--     spec.authorized == true, the consumer's explicit operator decision (the bridge takes it from the
+--     plugin argument, never from a client request);
+--   * ownership is proven by the marker the module wrote into the Quickey's Note (owner, bank id, code,
+--     executor range) AND the matching Code/Name, re-read before every mutation and before every
+--     dispatch; a label alone proves nothing, and an object that fails the check is refused, never
+--     repaired or overwritten;
+--   * preflight checks the complete reservation before the first object is created, and every target is
+--     re-read right before it is mutated; preflight is not an atomic reservation against other plugins;
+--   * a bank marked by another owner is refused (no shared arbitration in this version); a bank of the
+--     same owner is reused only after identity, codes and configuration verified;
+--   * codes are discovered from Enums.VirtualKeyCode at provisioning time (not a fixed count), aliases
+--     are deduplicated and exclusions reported; each code carries its KB-10 qualification, and a code
+--     without evidence is provisioned as DISCOVERED (qualified = false): a backend must not advertise it.
+local BANK_MARKER         = "gma3_mcp_hardkeys-bank"
+local BANK_MARKER_VERSION = 1
+local BANK_NAME_PREFIX    = "MCP "        -- Quickey Name "MCP NUM5"; the Note carries the marker
+local BANK_MAX_CODES      = 512           -- sanity bound on the discovered enum
+
+-- Codes that are not command-area hardkeys (KB-10 "Exclusions to decide at provisioning time").
+local BANK_EXCLUDED = {
+  [""] = "enum placeholder (value 0)", UNKNOWN = "enum placeholder (value 0)",
+  XKEYS = "X-key bank key, not a command-area hardkey", EXEC = "executor key, not a command-area hardkey",
+  FADER = "fader key, not a command-area hardkey",
+}
+local BANK_EXCLUDED_PATTERNS = {
+  { "^X%d+$", "X-key" }, { "^ENCODER_", "encoder key" }, { "^ONPC_SCREEN%d+$", "onPC screen selector" },
+  { "^DEF_", "default-executor button function" },
+}
+-- Executor button functions (VirtualKeyCode 101-114 on 2.5.1): they act on an executor, not on the command area.
+local BANK_EXECUTOR_FUNCTIONS = { FLASH = true, BLACK = true, KILL = true, RATE1 = true, TEMP = true, TOGGLE = true, TOP = true, LOAD = true,
+                                  LOWLIGHT = true, GOSTEP = true, SWAP = true, HALF_SPEED = true, DOUBLE_SPEED = true, RECORD = true }
+-- Alias -> canonical name for enum entries that share a value (KB-10: UNDO = 86 = OOPS). Unknown
+-- aliases are deduplicated by value with the alphabetically first name and reported.
+local BANK_ALIASES = { UNDO = "OOPS" }
+
+-- KB-10 evidence per code (onPC 2.5.1.0, macOS, executor path for holds). Everything else is
+-- discovered only. `tap` is a direct Press Quickey or an executor press/release pair; `hold` is an
+-- executor Press kept down until Unpress; `chord` is a hold next to another held bank key.
+local BANK_QUALIFIED = {
+  NUM1    = { tap = true, hold = true,  chord = false },
+  NUM5    = { tap = true, hold = true,  chord = true, note = "a direct Unpress Quickey re-activates it: stuck-key recovery is NOT qualified for NUM5" },
+  THRU    = { tap = true, hold = true,  chord = false },
+  FIXTURE = { tap = true, hold = true,  chord = false },
+  PLEASE  = { tap = true, hold = true,  chord = false, note = "executes the command line; immediately after digits it is accepted in the same chunk outside a text pop-up" },
+  CLEAR   = { tap = true, hold = true,  chord = false },
+  STORE   = { tap = true, hold = true,  chord = true, note = "a 2 s executor hold did not open the Store Settings pop-up" },
+  MA1     = { tap = false, hold = true, chord = true, note = "a direct tap holds nothing; qualified as an executor hold (MA1+STORE gave Record); the only code whose stuck-key recovery (direct Unpress Quickey) is qualified" },
+  OOPS    = { tap = true, hold = false, chord = false, note = "Undo on an empty command line: it can revert show data, never use it as a clear" },
+}
+-- Discovered codes with evidence that they do NOT behave as command-area keys through a Quickey.
+local BANK_UNQUALIFIED_NOTES = { ESC = "as a Quickey, ESC never touched the command line (direct and executor path)" }
+
+-- Marker text written into the Note: "gma3_mcp_hardkeys-bank v1 owner=<owner> bank=<id> code=<NAME> exec=<page>.<first>-<last>".
+-- Owner and id are percent-free tokens (no whitespace); the parser is strict.
+local function bankMarkerText(owner, id, code, ex)
+  return string.format("%s v%d owner=%s bank=%s code=%s exec=%d.%d-%d", BANK_MARKER, BANK_MARKER_VERSION, owner, id, code, ex.page, ex.first, ex.first + ex.count - 1)
+end
+local function parseBankMarker(note)
+  if type(note) ~= "string" then return nil end
+  local v, rest = note:match("^" .. BANK_MARKER:gsub("%-", "%%-") .. " v(%d+) (.*)$")
+  if not v then return nil end
+  local m = { version = tonumber(v) }
+  for k, val in rest:gmatch("(%a+)=(%S+)") do m[k] = val end
+  if not (m.owner and m.bank and m.code and m.exec) then return nil end
+  local page, first, last = m.exec:match("^(%d+)%.(%d+)%-(%d+)$")
+  if not page then return nil end
+  m.execPage, m.execFirst, m.execLast = tonumber(page), tonumber(first), tonumber(last)
+  return m
+end
+-- The bank id is deterministic from owner and ranges, so the same spec finds its own bank after a
+-- restart without any stored state; a different spec on the same slots is a mismatch, never a merge.
+local function bankId(owner, spec)
+  return string.format("%s@q%d.e%d.%d-%d", owner, spec.quickeys.first, spec.executors.page, spec.executors.first, spec.executors.first + spec.executors.count - 1)
+end
+local function bankIsToken(s) return type(s) == "string" and s ~= "" and not s:find("%s") and not s:find("=") end
+
+-- Validates a provisioning spec and returns a normalised copy, or nil, { code, message }.
+-- spec = { authorized = true, quickeys = { first = n }, executors = { page = p, first = n, count = k },
+--          codes = "hardkeys" | "qualified" | { "NUM1", ... }, label = <string> }
+local function validateBankSpec(spec, config)
+  if type(spec) ~= "table" then return nil, { code = "bank-invalid", message = "provisioning spec must be a table { authorized, quickeys, executors, codes, label }" } end
+  for k in pairs(spec) do
+    if k ~= "authorized" and k ~= "quickeys" and k ~= "executors" and k ~= "codes" and k ~= "label" then
+      return nil, { code = "bank-invalid", message = "unknown provisioning field '" .. tostring(k) .. "' (fields: authorized, quickeys, executors, codes, label)" }
+    end
+  end
+  local function posInt(v, what, max)
+    if type(v) ~= "number" or v < 1 or v ~= math.floor(v) or (max and v > max) then
+      return nil, { code = "bank-invalid", message = what .. " must be a positive integer" .. (max and (" up to " .. max) or "") .. " (got " .. tostring(v) .. ")" }
+    end
+    return v
+  end
+  if type(spec.quickeys) ~= "table" then return nil, { code = "bank-invalid", message = "quickeys = { first = <pool index> } is required: the operator selects the Quickey range" } end
+  local qfirst, err = posInt(spec.quickeys.first, "quickeys.first", 9999); if not qfirst then return nil, err end
+  for k in pairs(spec.quickeys) do if k ~= "first" then return nil, { code = "bank-invalid", message = "unknown quickeys field '" .. tostring(k) .. "' (fields: first)" } end end
+  if type(spec.executors) ~= "table" then return nil, { code = "bank-invalid", message = "executors = { page, first, count } is required: holds need the Quickey on an executor (KB-10), so the operator selects the executor range" } end
+  for k in pairs(spec.executors) do if k ~= "page" and k ~= "first" and k ~= "count" then return nil, { code = "bank-invalid", message = "unknown executors field '" .. tostring(k) .. "' (fields: page, first, count)" } end end
+  local page; page, err = posInt(spec.executors.page, "executors.page", 9999); if not page then return nil, err end
+  local efirst; efirst, err = posInt(spec.executors.first, "executors.first", 9999); if not efirst then return nil, err end
+  local count = spec.executors.count
+  if count == nil then count = config.maxHolds end
+  count, err = posInt(count, "executors.count", 64); if not count then return nil, err end
+  if count < config.maxHolds then
+    return nil, { code = "bank-invalid", message = string.format("executors.count %d is below config.maxHolds %d: every concurrently held key needs its own executor", count, config.maxHolds) }
+  end
+  local codes = spec.codes
+  if codes == nil then codes = "hardkeys" end
+  if type(codes) == "string" then
+    if codes ~= "hardkeys" and codes ~= "qualified" then return nil, { code = "bank-invalid", message = "codes must be \"hardkeys\" (every command-area code, discovered), \"qualified\" (KB-10 evidence only) or a list of VirtualKeyCode names" } end
+  elseif type(codes) == "table" then
+    if #codes == 0 then return nil, { code = "bank-invalid", message = "codes list is empty" } end
+    local seen, list = {}, {}
+    for i, c in ipairs(codes) do
+      if type(c) ~= "string" or c == "" then return nil, { code = "bank-invalid", message = "codes[" .. i .. "] must be a VirtualKeyCode name" } end
+      local u = c:upper()
+      if not seen[u] then seen[u] = true; list[#list + 1] = u end
+    end
+    codes = list
+  else
+    return nil, { code = "bank-invalid", message = "codes must be a string or a list" }
+  end
+  if spec.label ~= nil and type(spec.label) ~= "string" then return nil, { code = "bank-invalid", message = "label must be a string" } end
+  return { authorized = spec.authorized == true, quickeys = { first = qfirst }, executors = { page = page, first = efirst, count = count }, codes = codes, label = spec.label }
+end
+
+-- Discovers the code set from the VirtualKeyCode enum: one entry per distinct value, aliases folded
+-- onto their canonical name, exclusions reported with their reason, ordered by value (the pool slot
+-- is first + rank, so the layout is stable for a given console enum). selection = "hardkeys" |
+-- "qualified" | list of names.
+local function discoverBankCodes(vk, selection)
+  if type(vk) ~= "table" then return nil, "Enums.VirtualKeyCode is not a table" end
+  local byValue, names = {}, {}
+  for name, value in pairs(vk) do
+    if type(name) == "string" and type(value) == "number" then
+      names[#names + 1] = name
+      byValue[value] = byValue[value] or {}
+      table.insert(byValue[value], name)
+    end
+  end
+  if #names == 0 then return nil, "Enums.VirtualKeyCode has no entries" end
+  if #names > BANK_MAX_CODES then return nil, "Enums.VirtualKeyCode has " .. #names .. " entries, more than the bound " .. BANK_MAX_CODES end
+  local values = {}
+  for v in pairs(byValue) do values[#values + 1] = v end
+  table.sort(values)
+  local wanted
+  if type(selection) == "table" then wanted = {}; for _, n in ipairs(selection) do wanted[n] = true end end
+  local codes, exclusions, aliases, unresolvedAliases = {}, {}, {}, {}
+  for _, value in ipairs(values) do
+    local group = byValue[value]
+    table.sort(group)
+    local canonical
+    local nonAlias = {}
+    for _, n in ipairs(group) do if not BANK_ALIASES[n] and n ~= "" then nonAlias[#nonAlias + 1] = n end end
+    if value == 0 then canonical = nonAlias[1] or group[1]
+    elseif #nonAlias == 1 then canonical = nonAlias[1]
+    elseif #nonAlias == 0 then canonical = group[1]
+    else
+      canonical = nonAlias[1]
+      if value ~= 0 then unresolvedAliases[#unresolvedAliases + 1] = { value = value, names = group, chosen = canonical } end
+    end
+    if value ~= 0 then
+      for _, n in ipairs(group) do if n ~= canonical then aliases[#aliases + 1] = { alias = n, canonical = canonical, value = value } end end
+    end
+    local reason
+    if value == 0 then reason = "enum placeholder (value 0)"
+    elseif BANK_EXCLUDED[canonical] then reason = BANK_EXCLUDED[canonical]
+    elseif BANK_EXECUTOR_FUNCTIONS[canonical] then reason = "executor button function, not a command-area hardkey"
+    else
+      for _, p in ipairs(BANK_EXCLUDED_PATTERNS) do if canonical:match(p[1]) then reason = p[2] .. ", not a command-area hardkey"; break end end
+    end
+    local q = BANK_QUALIFIED[canonical]
+    if reason then
+      if wanted and wanted[canonical] then return nil, "code " .. canonical .. " is excluded from banks: " .. reason end
+      exclusions[#exclusions + 1] = { name = canonical, value = value, reason = reason }
+    elseif selection == "qualified" and not q then
+      exclusions[#exclusions + 1] = { name = canonical, value = value, reason = "no KB-10 evidence (codes = \"qualified\")" }
+    elseif wanted and not wanted[canonical] then
+      -- not selected: silently absent (an explicit list is the operator's choice)
+    else
+      codes[#codes + 1] = { name = canonical, value = value, qualified = q and shallowCopy(q) or false, note = (q and q.note) or BANK_UNQUALIFIED_NOTES[canonical] }
+    end
+  end
+  if wanted then
+    for n in pairs(wanted) do
+      local found = false
+      for _, c in ipairs(codes) do if c.name == n then found = true; break end end
+      if not found then
+        if BANK_ALIASES[n] and vk[n] ~= nil then return nil, "code " .. n .. " is an alias of " .. BANK_ALIASES[n] .. "; name the canonical code" end
+        return nil, "code " .. n .. " is not an Enums.VirtualKeyCode name on this console"
+      end
+    end
+  end
+  return { codes = codes, exclusions = exclusions, aliases = aliases, unresolvedAliases = unresolvedAliases, enumEntries = #names, distinctValues = #values }
+end
+
 -- Console dependency builder -------------------------------------------------
 
 -- Returns closures over the console API. Nothing is called here; every read happens when a consumer
@@ -587,6 +802,59 @@ local function consoleDeps(env)
       end
       return out
     end,
+    -- Quickey bank (KB-12). Objects are addressed in command syntax ("Quickey N", "Page P.N") through
+    -- ObjectList(), which resolves in the current data pool; creation and deletion go through Cmd() with
+    -- /NoConfirmation, and every write is verified by the module through a readback, never through the
+    -- command's return text. The show identity is the show name plus the data pool, so a LoadShow or a
+    -- pool switch invalidates cached reads.
+    showIdentity = function()
+      -- The show FILE name (ShowData().name is the literal "ShowData" on 2.5.1) plus the data pool name.
+      local okF, file = pcall(function() return env.Root().MANetSocket:Get("ShowFile") end)
+      if not okF or file == nil or file == "" then error("show file name unreadable" .. (okF and "" or (": " .. tostring(file))), 0) end
+      local dp = env.DataPool()
+      return tostring(file) .. "|" .. tostring(dp and dp.name)
+    end,
+    quickeys = {
+      read = function(index)
+        local h = env.ObjectList(string.format("Quickey %d", index))[1]
+        if h == nil then return nil end
+        return { name = tostring(h.name), code = tostring(h:Get("Code")), note = tostring(h:Get("Note")), lock = h:Get("Lock"), class = tostring(h:GetClass()) }
+      end,
+      create = function(index) env.Cmd(string.format("Store Quickey %d /NoConfirmation", index)); return true end,
+      set = function(index, props)
+        local h = env.ObjectList(string.format("Quickey %d", index))[1]
+        if h == nil then return false, "Quickey " .. index .. " does not exist" end
+        for k, v in pairs(props) do h:Set(k, v) end
+        return true
+      end,
+      delete = function(index) env.Cmd(string.format("Delete Quickey %d /NoConfirmation", index)); return true end,
+    },
+    executors = {
+      read = function(page, index)
+        local h = env.ObjectList(string.format("Page %d.%d", page, index))[1]
+        if h == nil then
+          -- An EMPTY executor has no object under the page on 2.5.1 (ObjectList("Page 1.190") is nil for
+          -- the empty executor 190, like GetExecutor()). The slot exists when the page does and the
+          -- number is an executor number; it is reported empty, never missing.
+          local pg = env.ObjectList(string.format("Page %d", page))[1]
+          if pg == nil then return { exists = false, reason = "Page " .. page .. " does not exist" } end
+          if index < 1 or index > 999 then return { exists = false, reason = "executor numbers are 1-999" } end
+          return { exists = true, class = "Executor", empty = true }
+        end
+        local cls = tostring(h:GetClass())
+        local obj = h:Get("Object")
+        local o = nil
+        if type(obj) == "table" or type(obj) == "userdata" then
+          local okN, n = pcall(function() return tostring(obj.name) end)
+          local okC, c = pcall(function() return tostring(obj:GetClass()) end)
+          o = { name = okN and n or nil, class = okC and c or nil }
+        end
+        return { exists = true, class = cls, empty = o == nil, object = o }
+      end,
+      -- Clears an executor's assignment ("Delete Page P.N" is the paged form of the "Delete Executor N"
+      -- the KB-10 probe used); the module only calls it for an executor it verified holds a bank Quickey.
+      clear = function(page, index) env.Cmd(string.format("Delete Page %d.%d /NoConfirmation", page, index)); return true end,
+    },
   }
 end
 
@@ -1126,6 +1394,504 @@ function Instance:_route(name, opts, routing)
 end
 
 
+-- Quickey bank (KB-12) -------------------------------------------------------------
+--
+-- Console access goes through deps.quickeys / deps.executors / deps.showIdentity (consoleDeps builds
+-- them; the harness fakes them). Every read is pcall'd; a raise is a failure of that step, never a
+-- guess. Contract:
+--   quickeys.read(index)  -> nil (empty slot) | { name, code, note, lock, class }
+--   quickeys.create(index) / set(index, { Note, Code, Name }) / delete(index) -> true | false, err
+--   executors.read(page, index) -> { exists, class, empty, object = { class, name } | nil }
+--   executors.clear(page, index) -> true | false, err
+--   showIdentity() -> string identifying the show and data pool the objects live in
+
+function Instance:_bankDeps()
+  local d = self._deps
+  local missing = {}
+  if type(d.quickeys) ~= "table" or type(d.quickeys.read) ~= "function" then missing[#missing + 1] = "quickeys.read" end
+  if type(d.executors) ~= "table" or type(d.executors.read) ~= "function" then missing[#missing + 1] = "executors.read" end
+  if type(d.virtualKeyCodes) ~= "function" then missing[#missing + 1] = "virtualKeyCodes" end
+  if #missing > 0 then return nil, { code = "unavailable", message = "the Quickey bank needs console deps " .. table.concat(missing, ", ") .. " (consoleDeps(_G) provides them)" } end
+  return d
+end
+
+local function bankCall(fn, ...)
+  if type(fn) ~= "function" then return false, nil, "operation not provided by deps" end
+  local ok, a, b = pcall(fn, ...)
+  if not ok then return false, nil, "raised: " .. tostring(a) end
+  return true, a, b
+end
+-- A mutating call: false (with its reason) and a raise are both failures.
+local function bankOp(fn, ...)
+  local ok, a, b = bankCall(fn, ...)
+  if not ok then return false, b end
+  if a == false then return false, tostring(b or "refused") end
+  return true
+end
+
+function Instance:_readShowIdentity()
+  if type(self._deps.showIdentity) ~= "function" then return nil, "deps.showIdentity missing" end
+  local ok, v = pcall(self._deps.showIdentity)
+  if not ok then return nil, tostring(v) end
+  if v == nil then return nil, "showIdentity() returned nil" end
+  return tostring(v)
+end
+
+-- Reads one Quickey slot and classifies it against an expected entry: "empty", "owned" (marker, code
+-- and name all match), "owned-changed" (our marker but Code or Name differ: an operator edit), "foreign"
+-- (another owner's marker), "other-bank" (our owner, another bank id), "occupied" (no marker).
+function Instance:_classifySlot(index, expect, owner, id)
+  local ok, obj, err = bankCall(self._deps.quickeys.read, index)
+  if not ok then return { state = "error", error = err } end
+  if obj == nil then return { state = "empty" } end
+  if type(obj) ~= "table" then return { state = "error", error = "quickeys.read returned " .. type(obj) } end
+  local r = { state = "occupied", read = { name = obj.name, code = obj.code, note = obj.note, lock = obj.lock, class = obj.class } }
+  if obj.class ~= nil and tostring(obj.class) ~= "Quickey" then r.state, r.error = "error", "slot " .. index .. " holds a " .. tostring(obj.class) .. ", not a Quickey"; return r end
+  local m = parseBankMarker(obj.note)
+  if not m then return r end
+  r.marker = m
+  if m.owner ~= owner then r.state = "foreign"; return r end
+  if m.bank ~= id then r.state = "other-bank"; return r end
+  if expect then
+    local codeOk = tostring(obj.code) == expect.name and m.code == expect.name
+    local nameOk = tostring(obj.name) == BANK_NAME_PREFIX .. expect.name
+    if codeOk and nameOk then r.state = "owned"
+    else
+      r.state = "owned-changed"
+      r.changed = {}
+      if not codeOk then r.changed[#r.changed + 1] = string.format("Code is %s (marker %s), expected %s", tostring(obj.code), tostring(m.code), expect.name) end
+      if not nameOk then r.changed[#r.changed + 1] = string.format("Name is '%s', expected '%s'", tostring(obj.name), BANK_NAME_PREFIX .. expect.name) end
+    end
+  else
+    r.state = "owned"
+  end
+  return r
+end
+
+-- Reads one executor and classifies it: "empty", "owned" (assigned to a Quickey named like one of this
+-- bank's), "occupied" (something else), "missing" (no such executor), "error".
+function Instance:_classifyExecutor(page, index, bankNames)
+  local ok, ex, err = bankCall(self._deps.executors.read, page, index)
+  if not ok then return { state = "error", error = err } end
+  if type(ex) ~= "table" then return { state = "error", error = "executors.read returned " .. type(ex) } end
+  if ex.exists == false then return { state = "missing" } end
+  if ex.class ~= nil and tostring(ex.class) ~= "Executor" then return { state = "error", error = string.format("Page %d.%d is a %s, not an Executor", page, index, tostring(ex.class)) } end
+  if ex.empty or ex.object == nil then return { state = "empty" } end
+  local o = ex.object
+  local r = { state = "occupied", object = { class = o.class, name = o.name } }
+  if tostring(o.class) == "Quickey" and type(o.name) == "string" and bankNames and bankNames[o.name] then
+    r.state, r.code = "owned", bankNames[o.name]
+  end
+  return r
+end
+
+-- Provisions the bank: discovers the codes, preflights every Quickey slot and executor, then creates
+-- what is missing. Nothing is mutated unless the whole preflight passes; every target is re-read right
+-- before it is written; a failure rolls back only the objects this call created and can still prove it
+-- owns. An existing bank of the same owner and spec is reused after verification (nothing written).
+function Instance:provisionBank(spec, now)
+  checkReady(self, "provisionBank")
+  checkNow(now, "provisionBank")
+  if type(spec) == "table" and spec.authorized ~= true then
+    return fail("bank-unauthorized", "provisioning creates show objects: the consumer passes authorized = true only for an explicit operator decision (never for a client request)")
+  end
+  local s, err = validateBankSpec(spec, self._config)
+  if not s then return nil, err end
+  if self._bank and self._bank.state ~= "removed" then
+    return fail("bank-exists", "this instance already has a bank (" .. self._bank.id .. ", state " .. self._bank.state .. "); verify it, or tear it down before provisioning another", { bank = self:_bankSummary(now) })
+  end
+  local d; d, err = self:_bankDeps()
+  if not d then return nil, err end
+  local okV, vk = pcall(d.virtualKeyCodes)
+  if not okV or type(vk) ~= "table" then return fail("unreadable", "Enums.VirtualKeyCode cannot be read (" .. tostring(okV and "not a table" or vk) .. "); codes are discovered from the console, never assumed") end
+  local disc, derr = discoverBankCodes(vk, s.codes)
+  if not disc then return fail("bank-invalid", derr) end
+  if #disc.codes == 0 then return fail("bank-invalid", "the selection leaves no code to provision") end
+  local owner, id = self._owner, bankId(self._owner, s)
+  if not bankIsToken(owner) then return fail("bank-invalid", "the instance owner '" .. tostring(owner) .. "' cannot be written into a marker (no whitespace or '=' allowed)") end
+  local show, serr = self:_readShowIdentity()
+  if not show then return fail("unreadable", "the show identity cannot be read (" .. tostring(serr) .. "); cached handles could not be invalidated on a show change") end
+  -- Preflight: the complete reservation, no writes.
+  local plan, refusals, bankNames = {}, {}, {}
+  for rank, c in ipairs(disc.codes) do
+    local index = s.quickeys.first + rank - 1
+    bankNames[BANK_NAME_PREFIX .. c.name] = c.name
+    local cls = self:_classifySlot(index, c, owner, id)
+    local p = { name = c.name, value = c.value, index = index, qualified = c.qualified, note = c.note, slot = cls }
+    if cls.state == "empty" then p.action = "create"
+    elseif cls.state == "owned" then p.action = "reuse"
+    elseif cls.state == "owned-changed" then refusals[#refusals + 1] = { index = index, code = c.name, reason = "bank-mismatch", detail = "owned Quickey was modified: " .. table.concat(cls.changed or {}, "; ") .. " (not repaired; tear the bank down or restore the object)" }
+    elseif cls.state == "foreign" then refusals[#refusals + 1] = { index = index, code = c.name, reason = "bank-foreign-owner", detail = "Quickey " .. index .. " belongs to bank " .. tostring(cls.marker.bank) .. " of owner '" .. tostring(cls.marker.owner) .. "'; a second owner is rejected (no shared arbitration)" }
+    elseif cls.state == "other-bank" then refusals[#refusals + 1] = { index = index, code = c.name, reason = "bank-mismatch", detail = "Quickey " .. index .. " belongs to another bank of this owner (" .. tostring(cls.marker.bank) .. "); tear that bank down first" }
+    elseif cls.state == "occupied" then refusals[#refusals + 1] = { index = index, code = c.name, reason = "slot-occupied", detail = "Quickey " .. index .. " exists and carries no marker of this module ('" .. tostring(cls.read and cls.read.name) .. "'); unowned objects are never overwritten" }
+    else refusals[#refusals + 1] = { index = index, code = c.name, reason = "unreadable", detail = tostring(cls.error) } end
+    plan[#plan + 1] = p
+  end
+  local executors = {}
+  for i = 0, s.executors.count - 1 do
+    local index = s.executors.first + i
+    local cls = self:_classifyExecutor(s.executors.page, index, bankNames)
+    local e = { page = s.executors.page, index = index, state = cls.state == "owned" and "assigned" or "reserved", assigned = cls.code }
+    if cls.state == "occupied" then refusals[#refusals + 1] = { executor = string.format("%d.%d", s.executors.page, index), reason = "executor-occupied", detail = string.format("Page %d.%d holds %s '%s'; the bank reserves only empty executors", s.executors.page, index, tostring(cls.object and cls.object.class), tostring(cls.object and cls.object.name)) }
+    elseif cls.state == "missing" then refusals[#refusals + 1] = { executor = string.format("%d.%d", s.executors.page, index), reason = "executor-missing", detail = string.format("Page %d.%d does not exist", s.executors.page, index) }
+    elseif cls.state == "error" then refusals[#refusals + 1] = { executor = string.format("%d.%d", s.executors.page, index), reason = "unreadable", detail = tostring(cls.error) } end
+    executors[#executors + 1] = e
+  end
+  if #refusals > 0 then
+    return fail("bank-preflight", string.format("%d of %d Quickey slots / %d executors cannot be reserved; nothing was created (%s)", #refusals, #plan, #executors, refusals[1].reason .. ": " .. refusals[1].detail),
+      { refusals = refusals, plan = plan, executors = executors, exclusions = disc.exclusions })
+  end
+  -- Mutation: create the missing objects one by one, re-reading each slot right before it is written.
+  local created, failure = {}, nil
+  if type(d.quickeys.create) ~= "function" or type(d.quickeys.set) ~= "function" then
+    return fail("unavailable", "deps.quickeys.create/set are missing; the bank can only be reused, not created")
+  end
+  local marker = function(code) return bankMarkerText(owner, id, code, s.executors) end
+  for _, p in ipairs(plan) do
+    if p.action == "create" then
+      local again = self:_classifySlot(p.index, p, owner, id)
+      if again.state ~= "empty" then failure = { index = p.index, code = p.name, error = "slot was " .. again.state .. " at the recheck right before creation; it was empty at preflight (another writer?)" }; break end
+      local okC, cerr = bankOp(d.quickeys.create, p.index)
+      if not okC then failure = { index = p.index, code = p.name, error = "create failed: " .. tostring(cerr) }; break end
+      local verify = self:_classifySlot(p.index, nil, owner, id)
+      if verify.state == "error" then failure = { index = p.index, code = p.name, error = "readback after create failed: " .. tostring(verify.error) }; break end
+      if verify.state == "empty" then failure = { index = p.index, code = p.name, error = "create returned but the slot is still empty" }; break end
+      local rec = { index = p.index, name = p.name, written = {} }
+      created[#created + 1] = rec
+      -- Note first (the ownership marker), then Code, then Name, each verified by readback.
+      local props = { { "Note", marker(p.name) }, { "Code", p.name }, { "Name", BANK_NAME_PREFIX .. p.name } }
+      for _, pv in ipairs(props) do
+        local okS, serr2 = bankOp(d.quickeys.set, p.index, { [pv[1]] = pv[2] })
+        if not okS then failure = { index = p.index, code = p.name, error = "set " .. pv[1] .. " failed: " .. tostring(serr2) }; break end
+        rec.written[pv[1]] = pv[2]
+      end
+      if failure then break end
+      local final = self:_classifySlot(p.index, p, owner, id)
+      if final.state ~= "owned" then
+        failure = { index = p.index, code = p.name, error = "readback after the writes: " .. final.state .. (final.changed and (" (" .. table.concat(final.changed, "; ") .. ")") or (final.error and (": " .. final.error) or "")) .. "; the console accepted the writes but the object does not read back as expected" }
+        break
+      end
+      rec.verified = true
+      p.action, p.slot = "created", final
+    end
+  end
+  if failure then
+    local rb = self:_rollbackCreated(created, owner, id)
+    return fail("bank-partial", string.format("provisioning stopped at Quickey %d (%s): %s; %d object(s) created in this call were removed, %d kept", failure.index, failure.code, failure.error, #rb.removed, #rb.kept),
+      { failed = failure, removed = rb.removed, kept = rb.kept, plan = plan })
+  end
+  local bank = { id = id, owner = owner, label = s.label, spec = s, state = "ready", show = show, createdAt = now, verifiedAt = now, checkedAt = now,
+                 codes = {}, byName = {}, byIndex = {}, executors = executors, exclusions = disc.exclusions, aliases = disc.aliases,
+                 unresolvedAliases = disc.unresolvedAliases, enumEntries = disc.enumEntries, counters = { created = 0, reused = 0, verifications = 0, targetChecks = 0, refusedTargets = 0 } }
+  for _, p in ipairs(plan) do
+    local e = { name = p.name, value = p.value, index = p.index, qualified = p.qualified, note = p.note, state = "ok", created = p.action == "created", lastRead = p.slot.read, lastReadAt = now }
+    bank.codes[#bank.codes + 1] = e
+    bank.byName[e.name], bank.byIndex[e.index] = e, e
+    if e.created then bank.counters.created = bank.counters.created + 1 else bank.counters.reused = bank.counters.reused + 1 end
+  end
+  self._bank = bank
+  return self:_bankSummary(now, { created = bank.counters.created, reused = bank.counters.reused })
+end
+
+-- Removes objects created by the current provisionBank() call after a failure: only those that still
+-- read back as ours (marker written, or still exactly as created with nothing else written) and unchanged.
+function Instance:_rollbackCreated(created, owner, id)
+  local out = { removed = {}, kept = {} }
+  local d = self._deps
+  for i = #created, 1, -1 do
+    local rec = created[i]
+    local ok, obj, err = bankCall(d.quickeys.read, rec.index)
+    local why
+    if not ok then why = "unreadable: " .. tostring(err)
+    elseif obj == nil then why = nil; out.removed[#out.removed + 1] = { index = rec.index, code = rec.name, note = "already gone" }
+    else
+      local m = parseBankMarker(obj.note)
+      local ours
+      if rec.written.Note then
+        ours = m ~= nil and m.owner == owner and m.bank == id and m.code == rec.name
+          and (rec.written.Code == nil or tostring(obj.code) == rec.written.Code) and (rec.written.Name == nil or tostring(obj.name) == rec.written.Name)
+        if not ours then why = "the object no longer reads back as written (marker/code/name differ); kept" end
+      else
+        -- Nothing was written yet: a freshly created Quickey has an empty Note and no Code.
+        ours = (obj.note == nil or obj.note == "") and (obj.code == nil or obj.code == "" or obj.code == "UNKNOWN" or obj.code == "0")
+        if not ours then why = "created but something else already wrote to it (" .. tostring(obj.code) .. "/'" .. tostring(obj.note) .. "'); kept" end
+      end
+      if ours then
+        if type(d.quickeys.delete) ~= "function" then why = "deps.quickeys.delete missing"
+        else
+          local okD, derr = bankOp(d.quickeys.delete, rec.index)
+          if not okD then why = "delete failed: " .. tostring(derr)
+          else
+            local okR, after = bankCall(d.quickeys.read, rec.index)
+            if okR and after == nil then out.removed[#out.removed + 1] = { index = rec.index, code = rec.name }
+            else why = "delete returned but the slot still reads back" end
+          end
+        end
+      end
+    end
+    if why then out.kept[#out.kept + 1] = { index = rec.index, code = rec.name, reason = why } end
+  end
+  return out
+end
+
+-- Re-reads every Quickey and executor of the bank and records what changed. Nothing is written.
+function Instance:verifyBank(now)
+  checkReady(self, "verifyBank")
+  checkNow(now, "verifyBank")
+  local bank = self._bank
+  if not bank or bank.state == "removed" then return fail("no-bank", "no Quickey bank is provisioned on this instance") end
+  local d, err = self:_bankDeps()
+  if not d then return nil, err end
+  bank.counters.verifications = bank.counters.verifications + 1
+  local problems = {}
+  local show, serr = self:_readShowIdentity()
+  if not show then problems[#problems + 1] = { kind = "show", detail = "show identity unreadable: " .. tostring(serr) }
+  elseif show ~= bank.show then problems[#problems + 1] = { kind = "show", detail = "show/data pool changed from '" .. bank.show .. "' to '" .. show .. "'; the bank's objects belong to another show" } end
+  for _, e in ipairs(bank.codes) do
+    local cls = self:_classifySlot(e.index, e, bank.owner, bank.id)
+    e.lastReadAt = now
+    if cls.state == "owned" then e.state, e.problem, e.lastRead = "ok", nil, cls.read
+    elseif cls.state == "empty" then e.state, e.problem = "missing", "Quickey " .. e.index .. " was deleted"
+    elseif cls.state == "owned-changed" then e.state, e.problem, e.lastRead = "changed", table.concat(cls.changed or {}, "; "), cls.read
+    elseif cls.state == "error" then e.state, e.problem = "unreadable", tostring(cls.error)
+    else e.state, e.problem, e.lastRead = "replaced", "Quickey " .. e.index .. " is now " .. cls.state .. " ('" .. tostring(cls.read and cls.read.name) .. "')", cls.read end
+    if e.state ~= "ok" then problems[#problems + 1] = { kind = "quickey", index = e.index, code = e.name, state = e.state, detail = e.problem } end
+  end
+  local bankNames = {}
+  for _, e in ipairs(bank.codes) do bankNames[BANK_NAME_PREFIX .. e.name] = e.name end
+  for _, x in ipairs(bank.executors) do
+    local cls = self:_classifyExecutor(x.page, x.index, bankNames)
+    x.lastReadAt = now
+    if cls.state == "empty" then x.state, x.assigned, x.problem = "reserved", nil, nil
+    elseif cls.state == "owned" then x.state, x.assigned, x.problem = "assigned", cls.code, nil
+    elseif cls.state == "missing" then x.state, x.problem = "missing", string.format("Page %d.%d no longer exists", x.page, x.index)
+    elseif cls.state == "error" then x.state, x.problem = "unreadable", tostring(cls.error)
+    else x.state, x.problem = "occupied", string.format("Page %d.%d now holds %s '%s' (not ours)", x.page, x.index, tostring(cls.object and cls.object.class), tostring(cls.object and cls.object.name)) end
+    if x.problem then problems[#problems + 1] = { kind = "executor", executor = string.format("%d.%d", x.page, x.index), state = x.state, detail = x.problem } end
+  end
+  bank.verifiedAt, bank.checkedAt, bank.problems = now, now, problems
+  bank.state = #problems == 0 and "ready" or "degraded"
+  if #problems == 0 and show then bank.show = show end
+  return self:_bankSummary(now, { problems = problems })
+end
+
+-- Dispatch-time check of one code (KB-13 calls it before every press): the Quickey must still read back
+-- as this bank's object with this code. A missing, changed or replaced object is refused; nothing is
+-- repaired. Returns { index, value, name, qualified, note, executors } or nil, err.
+function Instance:bankTarget(codeName, now)
+  checkReady(self, "bankTarget")
+  local bank = self._bank
+  if not bank or bank.state == "removed" then return fail("no-bank", "no Quickey bank is provisioned on this instance") end
+  local key = type(codeName) == "string" and codeName:upper() or tostring(codeName)
+  local canonical = BANK_ALIASES[key] or key
+  local e = bank.byName[canonical]
+  if not e then return fail("code-not-in-bank", "code " .. key .. " is not in bank " .. bank.id .. (bank.spec.codes == "qualified" and " (codes = \"qualified\")" or ""), { bank = bank.id }) end
+  if bank.state == "stale" then return fail("bank-stale", "the show or data pool changed since the bank was verified (" .. tostring(bank.staleReason) .. "); verify the bank before dispatching through it", { bank = bank.id }) end
+  local d, err = self:_bankDeps()
+  if not d then return nil, err end
+  bank.counters.targetChecks = bank.counters.targetChecks + 1
+  local cls = self:_classifySlot(e.index, e, bank.owner, bank.id)
+  if type(now) == "number" then e.lastReadAt = now end
+  if cls.state ~= "owned" then
+    bank.counters.refusedTargets = bank.counters.refusedTargets + 1
+    local why
+    if cls.state == "empty" then e.state, why = "missing", "Quickey " .. e.index .. " was deleted"
+    elseif cls.state == "owned-changed" then e.state, why = "changed", "Quickey " .. e.index .. " was modified: " .. table.concat(cls.changed or {}, "; ")
+    elseif cls.state == "error" then e.state, why = "unreadable", tostring(cls.error)
+    else e.state, why = "replaced", "Quickey " .. e.index .. " is now " .. cls.state .. " ('" .. tostring(cls.read and cls.read.name) .. "')" end
+    e.problem = why
+    bank.state = "degraded"
+    return fail("bank-object-" .. (e.state == "missing" and "missing" or "changed"), why .. "; dispatch through it is refused and nothing is repaired (verify or re-provision explicitly)", { index = e.index, quickeyCode = e.name, state = e.state })
+  end
+  e.state, e.problem, e.lastRead = "ok", nil, cls.read
+  return { name = e.name, alias = (canonical ~= key) and key or nil, value = e.value, index = e.index, qualified = e.qualified, note = e.note, bank = bank.id,
+           executors = { page = bank.spec.executors.page, first = bank.spec.executors.first, count = bank.spec.executors.count } }
+end
+
+-- Dispatch-time check of one reserved executor (KB-13): it must still be empty or hold one of this
+-- bank's Quickeys. Returns the executor record or nil, err.
+function Instance:bankExecutor(index, now)
+  checkReady(self, "bankExecutor")
+  local bank = self._bank
+  if not bank or bank.state == "removed" then return fail("no-bank", "no Quickey bank is provisioned on this instance") end
+  local x
+  for _, cand in ipairs(bank.executors) do if cand.index == index then x = cand; break end end
+  if not x then return fail("executor-not-in-bank", string.format("Page %d.%d is not one of the bank's reserved executors", bank.spec.executors.page, tonumber(index) or -1)) end
+  if bank.state == "stale" then return fail("bank-stale", "the show or data pool changed since the bank was verified (" .. tostring(bank.staleReason) .. "); verify the bank first") end
+  local d, err = self:_bankDeps()
+  if not d then return nil, err end
+  local bankNames = {}
+  for _, e in ipairs(bank.codes) do bankNames[BANK_NAME_PREFIX .. e.name] = e.name end
+  local cls = self:_classifyExecutor(x.page, x.index, bankNames)
+  if type(now) == "number" then x.lastReadAt = now end
+  if cls.state == "empty" then x.state, x.assigned, x.problem = "reserved", nil, nil
+  elseif cls.state == "owned" then x.state, x.assigned, x.problem = "assigned", cls.code, nil
+  else
+    x.state = cls.state == "missing" and "missing" or (cls.state == "error" and "unreadable" or "occupied")
+    x.problem = cls.error or string.format("Page %d.%d holds %s '%s' (not ours)", x.page, x.index, tostring(cls.object and cls.object.class), tostring(cls.object and cls.object.name))
+    bank.state = "degraded"
+    return fail("bank-executor-" .. x.state, x.problem .. "; the executor is not used and nothing is repaired", { page = x.page, index = x.index, state = x.state })
+  end
+  return { page = x.page, index = x.index, state = x.state, assigned = x.assigned }
+end
+
+-- Explicit teardown: deletes only Quickeys that still verify as this bank's and clears only executors
+-- that hold one of them. Refused while any Quickey ownership record is live (release-all is a separate
+-- operation and comes first). Objects that fail verification are skipped and reported, never deleted.
+function Instance:teardownBank(now, opts)
+  checkReady(self, "teardownBank")
+  checkNow(now, "teardownBank")
+  opts = opts or {}
+  if opts.authorized ~= true then return fail("bank-unauthorized", "teardown deletes show objects: the consumer passes authorized = true only for an explicit operator decision") end
+  local bank = self._bank
+  if not bank or bank.state == "removed" then return fail("no-bank", "no Quickey bank is provisioned on this instance") end
+  local live = 0
+  for _, h in pairs(self._holds) do if h.state ~= "released" and h.quickkey then live = live + 1 end end
+  if live > 0 then return fail("bank-in-use", live .. " Quickey ownership record(s) are held or unresolved; release or recover them before tearing the bank down (deleting a Quickey during a hold leaves the key down, KB-10)", { live = live }) end
+  local d, err = self:_bankDeps()
+  if not d then return nil, err end
+  if type(d.quickeys.delete) ~= "function" then return fail("unavailable", "deps.quickeys.delete is missing") end
+  local removed, skipped, cleared = {}, {}, {}
+  local bankNames = {}
+  for _, e in ipairs(bank.codes) do bankNames[BANK_NAME_PREFIX .. e.name] = e.name end
+  -- Executors first: an assignment to a Quickey that is about to be deleted would dangle.
+  for _, x in ipairs(bank.executors) do
+    local cls = self:_classifyExecutor(x.page, x.index, bankNames)
+    if cls.state == "owned" then
+      if type(d.executors.clear) ~= "function" then skipped[#skipped + 1] = { executor = string.format("%d.%d", x.page, x.index), reason = "deps.executors.clear missing" }
+      else
+        local okC, cerr = bankOp(d.executors.clear, x.page, x.index)
+        local after = okC and self:_classifyExecutor(x.page, x.index, bankNames) or nil
+        if okC and after and after.state == "empty" then cleared[#cleared + 1] = { executor = string.format("%d.%d", x.page, x.index), hadCode = cls.code }; x.state, x.assigned = "reserved", nil
+        else skipped[#skipped + 1] = { executor = string.format("%d.%d", x.page, x.index), reason = okC and ("clear returned but the executor reads back " .. tostring(after and after.state)) or ("clear failed: " .. tostring(cerr)) } end
+      end
+    elseif cls.state ~= "empty" and cls.state ~= "missing" then
+      skipped[#skipped + 1] = { executor = string.format("%d.%d", x.page, x.index), reason = cls.error or ("holds " .. tostring(cls.object and cls.object.class) .. " '" .. tostring(cls.object and cls.object.name) .. "', not ours; left alone") }
+    end
+  end
+  local remaining = {}
+  for _, e in ipairs(bank.codes) do
+    local cls = self:_classifySlot(e.index, e, bank.owner, bank.id)
+    if cls.state == "empty" then removed[#removed + 1] = { index = e.index, code = e.name, note = "already gone" }
+    elseif cls.state == "owned" then
+      local okD, derr = bankOp(d.quickeys.delete, e.index)
+      local after = okD and self:_classifySlot(e.index, e, bank.owner, bank.id) or nil
+      if okD and after and after.state == "empty" then removed[#removed + 1] = { index = e.index, code = e.name }
+      else
+        e.state, e.problem = "unreadable", okD and ("delete returned but the slot reads back " .. tostring(after and after.state)) or ("delete failed: " .. tostring(derr))
+        skipped[#skipped + 1] = { index = e.index, code = e.name, reason = e.problem }; remaining[#remaining + 1] = e
+      end
+    else
+      e.state = cls.state == "owned-changed" and "changed" or (cls.state == "error" and "unreadable" or "replaced")
+      e.problem = cls.changed and table.concat(cls.changed, "; ") or cls.error or ("slot is " .. cls.state .. " ('" .. tostring(cls.read and cls.read.name) .. "')")
+      skipped[#skipped + 1] = { index = e.index, code = e.name, reason = e.problem .. "; not ours as it stands, left alone" }; remaining[#remaining + 1] = e
+    end
+  end
+  local summary
+  if #remaining == 0 then
+    bank.state = "removed"
+    summary = self:_bankSummary(now)
+    self._bank = nil
+  else
+    bank.codes = remaining
+    bank.byName, bank.byIndex = {}, {}
+    for _, e in ipairs(remaining) do bank.byName[e.name], bank.byIndex[e.index] = e, e end
+    bank.state = "partial"
+    summary = self:_bankSummary(now)
+  end
+  summary.removed, summary.skipped, summary.cleared = removed, skipped, cleared
+  summary.complete = #remaining == 0
+  return summary
+end
+
+-- Adopts a bank record handed back by dispose() (or kept by the consumer across a restart): verifies
+-- every object against the console before the record is trusted; nothing is created.
+function Instance:adoptBank(record, now)
+  checkReady(self, "adoptBank")
+  checkNow(now, "adoptBank")
+  if self._bank and self._bank.state ~= "removed" then return fail("bank-exists", "this instance already has a bank (" .. self._bank.id .. ")") end
+  if type(record) ~= "table" or type(record.id) ~= "string" or type(record.spec) ~= "table" or type(record.codes) ~= "table" then
+    return fail("bad-argument", "adoptBank needs the record returned by dispose().bank")
+  end
+  if record.owner ~= self._owner then return fail("bank-foreign-owner", "the record belongs to owner '" .. tostring(record.owner) .. "', this instance is '" .. self._owner .. "'") end
+  local s, err = validateBankSpec({ authorized = true, quickeys = record.spec.quickeys, executors = record.spec.executors, codes = record.spec.codes, label = record.spec.label }, self._config)
+  if not s then return nil, err end
+  if bankId(self._owner, s) ~= record.id then return fail("bank-mismatch", "the record's id does not match its spec") end
+  local bank = { id = record.id, owner = self._owner, label = s.label, spec = s, state = "degraded", show = record.show or "", createdAt = record.createdAt, adoptedAt = now, verifiedAt = nil, checkedAt = now,
+                 codes = {}, byName = {}, byIndex = {}, executors = {}, exclusions = record.exclusions or {}, aliases = record.aliases or {}, unresolvedAliases = record.unresolvedAliases or {},
+                 enumEntries = record.enumEntries, counters = { created = 0, reused = 0, verifications = 0, targetChecks = 0, refusedTargets = 0 } }
+  for _, c in ipairs(record.codes) do
+    if type(c) == "table" and type(c.name) == "string" and type(c.index) == "number" then
+      local e = { name = c.name, value = c.value, index = c.index, qualified = c.qualified, note = c.note, state = "unverified" }
+      bank.codes[#bank.codes + 1] = e; bank.byName[e.name], bank.byIndex[e.index] = e, e
+    end
+  end
+  for i = 0, s.executors.count - 1 do bank.executors[#bank.executors + 1] = { page = s.executors.page, index = s.executors.first + i, state = "unverified" } end
+  if #bank.codes == 0 then return fail("bad-argument", "the record lists no codes") end
+  self._bank = bank
+  local v, verr = self:verifyBank(now)
+  if not v then self._bank = nil; return nil, verr end
+  if not record.show or record.show == "" then bank.show = select(1, self:_readShowIdentity()) or "" end
+  v.adopted = true
+  return v
+end
+
+-- The record dispose() hands back (and status().bank.record mirrors): enough to adoptBank() later.
+function Instance:_bankRecord()
+  local bank = self._bank
+  if not bank then return nil end
+  local codes = {}
+  for _, e in ipairs(bank.codes) do codes[#codes + 1] = { name = e.name, value = e.value, index = e.index, qualified = e.qualified, note = e.note } end
+  return { id = bank.id, owner = bank.owner, spec = { quickeys = bank.spec.quickeys, executors = bank.spec.executors, codes = bank.spec.codes, label = bank.spec.label },
+           show = bank.show, createdAt = bank.createdAt, codes = codes, exclusions = bank.exclusions, aliases = bank.aliases, unresolvedAliases = bank.unresolvedAliases, enumEntries = bank.enumEntries }
+end
+
+-- Bounded freshness check from service(): the show identity is re-read every config.bankCheckMs; a
+-- change marks the bank stale (cached reads dropped, dispatch refused until verifyBank()). No object is
+-- re-read here; that is verifyBank()'s explicit, complete pass.
+function Instance:_serviceBank(now)
+  local bank = self._bank
+  if not bank or bank.state == "removed" then return nil end
+  if bank.checkedAt and (now - bank.checkedAt) * 1000 < self._config.bankCheckMs then return { state = bank.state } end
+  bank.checkedAt = now
+  local show, serr = self:_readShowIdentity()
+  if not show then
+    bank.state, bank.staleReason = "stale", "show identity unreadable: " .. tostring(serr)
+  elseif show ~= bank.show and bank.state ~= "stale" then
+    bank.state, bank.staleReason = "stale", "show/data pool changed from '" .. bank.show .. "' to '" .. show .. "'"
+    for _, e in ipairs(bank.codes) do e.lastRead, e.state = nil, "unverified" end
+    for _, x in ipairs(bank.executors) do x.state = "unverified" end
+  end
+  return { state = bank.state, staleReason = bank.staleReason }
+end
+
+function Instance:bankStatus(now)
+  checkLive(self, "bankStatus")
+  return self:_bankSummary(now)
+end
+
+function Instance:_bankSummary(now, extra)
+  local bank = self._bank
+  if not bank then return { provisioned = false, note = "no Quickey bank; provisionBank({ authorized = true, quickeys = { first }, executors = { page, first, count } }) is the operator's explicit setup" } end
+  local codes, qualified, discovered, problems = {}, 0, 0, 0
+  for _, e in ipairs(bank.codes) do
+    codes[#codes + 1] = { name = e.name, value = e.value, index = e.index, qualified = e.qualified, note = e.note, state = e.state, problem = e.problem, created = e.created, lastReadAt = e.lastReadAt }
+    if e.qualified then qualified = qualified + 1 else discovered = discovered + 1 end
+    if e.state ~= "ok" then problems = problems + 1 end
+  end
+  local executors = {}
+  for _, x in ipairs(bank.executors) do executors[#executors + 1] = { page = x.page, index = x.index, state = x.state, assigned = x.assigned, problem = x.problem } end
+  local out = { provisioned = true, id = bank.id, owner = bank.owner, label = bank.label, state = bank.state, staleReason = bank.staleReason, show = bank.show,
+                spec = { quickeys = bank.spec.quickeys, executors = bank.spec.executors, codes = bank.spec.codes },
+                codeCount = #bank.codes, qualifiedCount = qualified, discoveredCount = discovered, problemCount = problems,
+                codes = codes, executors = executors, exclusions = bank.exclusions, aliases = bank.aliases, unresolvedAliases = bank.unresolvedAliases, enumEntries = bank.enumEntries,
+                createdAt = bank.createdAt, adoptedAt = bank.adoptedAt, verifiedAt = bank.verifiedAt, checkedAt = bank.checkedAt, counters = shallowCopy(bank.counters), problems = bank.problems,
+                record = self:_bankRecord(),
+                note = "qualified = KB-10 evidence per code (tap/hold/chord); discovered codes are provisioned but a backend must not advertise them; every dispatch re-reads its Quickey (bankTarget) and nothing is ever repaired" }
+  if extra then for k, v in pairs(extra) do out[k] = v end end
+  return out
+end
+
 -- Operator decision: stop admitting presses and attempt to release everything held. Records whose
 -- release fails or cannot be confirmed stay as unresolved; the adapter stays attached so recover()
 -- and releases remain possible while input is disabled.
@@ -1525,8 +2291,8 @@ function Instance:adopt(records, now, sessionId)
   sessionId = sessionId or "previous-run"
   local adopted, rejected = {}, {}
   for _, rec in ipairs(records or {}) do
-    if type(rec) ~= "table" or type(rec.pcKey) ~= "string" or rec.pcKey == "" then
-      rejected[#rejected + 1] = { record = rec, reason = "no pcKey" }
+    if type(rec) ~= "table" or ((type(rec.pcKey) ~= "string" or rec.pcKey == "") and (type(rec.quickkey) ~= "string" or rec.quickkey == "")) then
+      rejected[#rejected + 1] = { record = rec, reason = "no pcKey or quickkey" }
     else
       local tuple = copyTuple(rec)
       local tk = tupleKey(tuple)
@@ -2243,6 +3009,8 @@ function Instance:service(now)
       self._observed = { available = false, error = ok and "observe() returned no table" or tostring(obs), at = now }
     end
   end
+  -- Quickey bank freshness (KB-12): bounded, reads only the show identity.
+  if self._bank then out.bank = self:_serviceBank(now) end
   return out
 end
 
@@ -2299,6 +3067,7 @@ function Instance:status(now)
                 capabilities = adapterCapabilities(self._adapter),
                 counters = self._adapter and self._adapter.counters or nil },
     routing = self:routingReport(),
+    bank = self:_bankSummary(now),
     capacity = { maxHolds = self._config.maxHolds, used = self:_liveCount() },
     config = shallowCopy(self._config),
     sessions = sessions, sessionCount = count(sessions),
@@ -2342,6 +3111,10 @@ function Instance:dispose(now)
       records[#records + 1] = rec
     end
   end
+  -- The bank record travels with the consumer (like unresolved records) so adoptBank() can verify and
+  -- reuse the objects after a restart; nothing on the console is touched by disposing.
+  result.bank = self:_bankRecord()
+  self._bank = nil
   self._state = "disposed"
   self._inputEnabled = false
   self._holds, self._byTuple, self._sessions = {}, {}, {}
@@ -3004,6 +3777,7 @@ local function new(opts)
     _interactions = {}, _endedInteractions = {}, _interactionSeq = 0,
     _sequence = nil, _sequences = {}, _sequenceSeq = 0,
     _seq = 0, _pressCount = 0, _releaseAttempts = 0, _serviced = 0, _lastServiced = nil, _observed = nil,
+    _bank = nil,
   }, Instance)
   return self
 end
@@ -3019,6 +3793,10 @@ local M = {
   -- KB-11 routing policy
   METHODS = { "quickkey", "shortcutOrType", "shortcut", "type" }, DEFAULT_METHOD = DEFAULT_METHOD,
   validateRoutingPolicy = validateRoutingPolicy, adapterCapabilities = adapterCapabilities, textForbidden = textForbidden,
+  -- KB-12 Quickey bank
+  BANK_MARKER = BANK_MARKER, BANK_NAME_PREFIX = BANK_NAME_PREFIX, BANK_ALIASES = shallowCopy(BANK_ALIASES),
+  BANK_QUALIFIED = (function() local o = {} for k, v in pairs(BANK_QUALIFIED) do o[k] = shallowCopy(v) end return o end)(),
+  validateBankSpec = validateBankSpec, discoverBankCodes = discoverBankCodes, parseBankMarker = parseBankMarker, bankMarkerText = bankMarkerText, bankId = bankId,
   SEQUENCE_STEP_KINDS = { "tap", "press", "release", "combo", "text", "wait" },
   TEXT_CONTEXTS = { "command-line", "text-field" },
   backends = { keyboard = BACKENDS.keyboard.name, fake = BACKENDS.fake.name },

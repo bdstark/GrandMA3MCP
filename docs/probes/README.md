@@ -15,6 +15,7 @@ They are evidence for [KEYBOARD.md](../../KEYBOARD.md), not automated regression
 | [kb-10-cmdtext-write-macos-2.5.1.md](kb-10-cmdtext-write-macos-2.5.1.md) (`CmdObj().CmdText` is not writable: writes are silently ignored; readback plus on-screen caret/selection/pop-up checks) | macOS, onPC 2.5.1.0 |
 | [kb-10-macro-append-macos-2.5.1.md](kb-10-macro-append-macos-2.5.1.md) (`AddToCmdline=Yes, Execute=No` macros insert at the caret on the next frame without executing; spaces stripped, digits contiguous, ShCuts on/off, pop-up) | macOS, onPC 2.5.1.0 |
 | [kb-10-quickey-macos-2.5.1.md](kb-10-quickey-macos-2.5.1.md) (direct `Press Quickey` is a tap; press/release/chords through `Press`/`Unpress Executor`; 146 codes; stuck-key recovery by code; Oops is Undo; pop-up focus reorders digits) | macOS, onPC 2.5.1.0 |
+| [kb-12-bank-macos-2.5.1.md](kb-12-bank-macos-2.5.1.md) (owned Quickey bank: 94 codes provisioned by plugin argument with readback-verified markers, operator edit detected by `bank verify`, record adopted across a bridge restart, teardown removes exactly the owned objects; paged executor assign/clear confirmed) | macOS, onPC 2.5.1.0 |
 
 ## Running the KB-01 probe on another platform
 
