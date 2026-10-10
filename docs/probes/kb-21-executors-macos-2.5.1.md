@@ -12,7 +12,9 @@ probe's own page change / deletion / reassignment while a button was held (now r
 116, the KB-13 pattern), an empty executor on the user's page carrying no page identity (`GetExecutor` returns no page
 handle for it), and a following binding's generation moving **four times** per console page change while the cached
 executors were re-read (now no generation is claimed until every following executor was observed on the page the
-snapshot names: one move per page change). The JSON report is the final run's.
+snapshot names: one move per page change). Re-run unchanged after the PR #25 review round 1 (`d60bb06`: the frozen record
+survives the gesture-bound force-end, a raised release, `recover()` and adoption): the bridge re-imported from the library
+and restarted the same way, 28/28 again. The JSON report is this re-run's.
 
 ## Facts established
 
