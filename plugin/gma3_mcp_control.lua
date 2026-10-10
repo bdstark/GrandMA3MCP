@@ -106,8 +106,12 @@
 --   * MIXED VALUES stay mixed: an absolute event on a slot whose fixtures hold different values (the
 --     binding's valueState, forwarded on the resolved target with the last read `absolute`) is refused
 --     "mixed-values" unless the event carries takeover = true, the surface's statement that the operator
---     deliberately chose an absolute operation. Values are not in the generation digest: valueState and
---     absolute are the binding's last read, a hint for the surface's pickup, never a guarantee.
+--     deliberately chose an absolute operation; one whose values were not COMPLETELY read (the binding's
+--     valueComplete is not true: a bounded selection scan, a channel-discovery failure or a failed programmer
+--     read, the reason in valueIncomplete) is refused "values-incomplete" the same way (review: "value" from a
+--     partial read is the agreement of the fixtures that could be read, not the selection's). Values are not
+--     in the generation digest: valueState and absolute are the binding's last read, a hint for the surface's
+--     pickup, never a guarantee.
 --   * capabilities on the console backend become { relative, absolute, touch = true, button = false }.
 --     Encoder presses and executor elements stay refused "unsupported" (KB-21/22).
 --
@@ -573,7 +577,7 @@ local function resolveTarget(snap, target)
              channelFunction = sl.channelFunction, availability = sl.availability, mixed = sl.availability == "mixed" or nil,
              -- KB-20: the programmer's value state as the binding last read it (value | empty | mixed | unavailable; values
              -- are not in the generation digest, so this is a hint for pickup, not a guarantee of the current value)
-             valueState = sl.valueState, absolute = sl.absolute,
+             valueState = sl.valueState, absolute = sl.absolute, valueComplete = sl.valueComplete, valueIncomplete = sl.valueIncomplete,
              physicalRange = sl.physicalRange, physicalFrom = sl.physicalFrom, physicalTo = sl.physicalTo, physicalMixed = sl.physicalMixed, physicalUnavailable = sl.physicalUnavailable,
              key = string.format("slot%d|%s|%s|%s", target.slot, tostring(sl.ref), tostring(sl.layer), tostring(sl.resolution)), supersedes = true }
   elseif target.executor ~= nil then
@@ -830,9 +834,17 @@ function Instance:submit(sessionId, now, ev)
   if not target then return refuse(terr) end
   -- KB-20: a position on a slot whose selected fixtures hold different values would collapse them to one.
   -- Mixed values stay mixed unless the operator's surface says the operation is a deliberate takeover.
-  if ev.type == "absolute" and target.kind == "slot" and target.valueState == "mixed" and ev.takeover ~= true then
-    return refuse(errOf("mixed-values", string.format("slot %d (%s): the selected fixtures hold different values; a position would set them all to one. Relative motion keeps their relationship; send takeover = true for a deliberate absolute operation", target.slot, tostring(target.name)),
-                        { target = ev.target, valueState = target.valueState }))
+  if ev.type == "absolute" and target.kind == "slot" and ev.takeover ~= true then
+    if target.valueState == "mixed" then
+      return refuse(errOf("mixed-values", string.format("slot %d (%s): the selected fixtures hold different values; a position would set them all to one. Relative motion keeps their relationship; send takeover = true for a deliberate absolute operation", target.slot, tostring(target.name)),
+                          { target = ev.target, valueState = target.valueState }))
+    end
+    -- Review (PR #24): "value" from a bounded scan or with a failed read is the agreement of the fixtures that could be
+    -- read, not the selection's; a position placed on it could flatten fixtures whose values were never seen.
+    if target.valueComplete ~= true then
+      return refuse(errOf("values-incomplete", string.format("slot %d (%s): the selection's values were not completely read (%s); a position could set fixtures whose values are unknown. Relative motion stays available; send takeover = true for a deliberate absolute operation", target.slot, tostring(target.name), tostring(target.valueIncomplete or "the binding reports no value completeness")),
+                          { target = ev.target, valueState = target.valueState, valueIncomplete = target.valueIncomplete }))
+    end
   end
   -- KB-19: the attached backend may serve only some kinds and targets; what it does not serve is
   -- refused here, before any gesture record or queue entry exists.
@@ -1211,7 +1223,7 @@ local M = {
   backends = { fake = "fake", console = "console" },
   CALIBRATION = { readouts = shallowCopy(CALIBRATION.readouts), resolutions = shallowCopy(CALIBRATION.resolutions), layers = shallowCopy(CALIBRATION.layers), note = CALIBRATION_NOTE },
   LIMITATIONS = {
-    "the console backend serves attribute slots only: relative motion (KB-19) as the selection-scoped Attribute \"<name>\" At +/- <amount> adjustment (an explicitly limited mode, not native encoder equivalence), calibrated for the Percent/PercentFine readouts (1 per Coarse detent) and the Physical readout (the attribute's range / 120 per Coarse detent, in physical units) with Fine at a tenth, on the Absolute layer; a strip touch (KB-20) as a hold that reserves the slot and moves nothing; an absolute position (KB-20) as Attribute \"<name>\" At <value> over the verified travel only (Percent/PercentFine 0..100, Physical PhysicalFrom..PhysicalTo of the binding, never a mixed physical range), refused mixed-values while the selection's values disagree unless the event says takeover; other readouts, Increment/Native, other layers, named channel functions, encoder presses and executor elements are refused unsupported",
+    "the console backend serves attribute slots only: relative motion (KB-19) as the selection-scoped Attribute \"<name>\" At +/- <amount> adjustment (an explicitly limited mode, not native encoder equivalence), calibrated for the Percent/PercentFine readouts (1 per Coarse detent) and the Physical readout (the attribute's range / 120 per Coarse detent, in physical units) with Fine at a tenth, on the Absolute layer; a strip touch (KB-20) as a hold that reserves the slot and moves nothing; an absolute position (KB-20) as Attribute \"<name>\" At <value> over the verified travel only (Percent/PercentFine 0..100, Physical PhysicalFrom..PhysicalTo of the binding, never a mixed physical range), refused mixed-values while the selection's values disagree and values-incomplete while they were not completely read, unless the event says takeover; other readouts, Increment/Native, other layers, named channel functions, encoder presses and executor elements are refused unsupported",
     "generations are those of the consumer's binding source (one gma3_mcp_feedback instance and spec); events from a surface bound to another instance are refused as stale",
     "packet loss is reported, never repaired: a lost relative delta is gone, a lost absolute position is superseded by the next one",
   },

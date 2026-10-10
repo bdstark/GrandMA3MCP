@@ -309,7 +309,7 @@ PercentFine readout: 1 per Coarse detent; Physical: the attribute's range / 120 
 `fine` event a tenth again); since v0.16.0 (KB-20, control 0.3.0) a strip **touch** on an attribute slot is a hold
 (the bridge is `[busy]` with it, the slot is the session's, nothing is issued) and a strip **position** is
 `Attribute "<name>" At <value>` over the verified travel (Percent 0..100, Physical `physicalFrom..physicalTo` in physical
-units), refused `mixed-values` while the selection's values disagree unless the event carries `takeover: true`; presses
+units), refused `mixed-values` while the selection's values disagree and `values-incomplete` while they were not completely read (a bounded scan or a failed read) unless the event carries `takeover: true`; presses
 and executor elements stay refused `unsupported` (with `backend` and `reason`); switching backends while running ends the
 gestures through the previous one. `control.status`
 then also carries `capabilities` and `backendStatus` (counters, the last command, the calibration table), `lastApplied.result`
@@ -324,7 +324,7 @@ need neither). A snapshot built from stale observations is no binding
 {events: [...]}` (at most 32 per request, or `event` for one) admits each event in order and reports every outcome in
 place: `{accepted, queued, coalesced?, superseded?, lost, target, generation}` or `{refused: code, message, ...}` with
 the module's codes (`bad-event`, `duplicate`, `out-of-order`, `rate`, `binding-unknown`, `stale-generation` with the
-current `generation`, `stale-binding` and `binding-required` with the current `binding`, `target-unavailable`, `unsupported`, `mixed-values` (KB-20), `gesture-rebound`, `busy` with the other owner,
+current `generation`, `stale-binding` and `binding-required` with the current `binding`, `target-unavailable`, `unsupported`, `mixed-values` and `values-incomplete` (KB-20), `gesture-rebound`, `busy` with the other owner,
 `conflict` with the owning session, `capacity`, `queue-full`); a refusal never stops the batch. `control.status {}` is
 read-only (sessions with per-device order counters and gestures, counters, the bounded event log, unresolved releases,
 `busy`, `yourSession`); `control.recover {}` adopts the releases kept from a previous run and re-attempts every

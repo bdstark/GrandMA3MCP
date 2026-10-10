@@ -374,7 +374,10 @@ half serves:
   The newest queued position supersedes; a stale one is dropped, never placed late.
 - **Mixed values stay mixed:** a position on a slot whose fixtures hold different values is refused `mixed-values`
   (for every backend) unless the event carries `takeover = true`; relative motion keeps the relationship. The resolved
-  slot forwards the binding's `valueState` and last read `absolute` as a pickup hint (values are not in the digest).
+  slot forwards the binding's `valueState`, `valueComplete`/`valueIncomplete` and last read `absolute` as a pickup
+  hint (values are not in the digest). Review (PR #24): a `"value"` from a bounded selection scan, a discovery failure
+  or a failed programmer read is the agreement of the readable fixtures only; feedback now says so (`valueComplete`),
+  the module refuses a position on it `values-incomplete` unless `takeover`, and the surface never picks up on it.
 - **Pressure:** no event type carries it; nothing to ignore here (the surface drops the M-Touch pressure keys).
 - **Live (28/28):** the touch hold made the bridge `[busy]` (reason `touch-down`) and refused a console command; the
   drag inside it read 40 -> 42, the re-touch 42 -> 37; `At 25`, the ends 100 and 0; a two-fixture selection at 20/50
@@ -383,11 +386,13 @@ half serves:
 - **Bridge:** `control=console` serves the three kinds on slots; `control.status` capabilities say
   `{ relative, absolute, touch = true, button = false }`; `lastApplied.result` carries the placement (`value, amount,
   from, to, readout, takeover`).
-- **Harness:** `test/lua/control_admission_test.lua` (189 checks; 24 new: `position()` per readout and its refusals,
+- **Harness:** `test/lua/control_admission_test.lua` (194 checks; 29 new: `position()` per readout and its refusals,
   capabilities, executor refusals kept, the touch hold (busy, ownership, noop, conflict), the drag inside it, rebound
   after a binding change and the release/re-touch recovery, positions at Percent and Physical, supersession, a stale
-  position dropped, the mixed-values refusal and takeover, bad `takeover`, the fake backend), the bridge harness (487,
-  version only) and `test/kb20-probe.test.ts` (4).
+  position dropped, the mixed-values refusal and takeover, the values-incomplete refusal for a bounded scan, a failed read and a binding
+  without completeness, bad `takeover`, the fake backend), `test/lua/feedback_context_test.lua` (120; 4 new: value
+  completeness under a bounded scan, a failed read, a discovery failure, and complete otherwise), the bridge harness
+  (487, version only) and `test/kb20-probe.test.ts` (4).
 
 **Limitations:** the console half places and adjusts; it does not know where the finger is. Missed touch-ups are bounded
 by the module's `maxGestureMs` (30 s force-end) and by the surface's own release on disconnect; a binding change cannot

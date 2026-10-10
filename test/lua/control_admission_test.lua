@@ -762,7 +762,10 @@ do
   check("kb20: the release is a boundary (noop end), a new touch and its motion are served against the new binding", okU and okU.boundary and okT2 and okT2.accepted and okR2 and okR2.accepted and cmds[2] == 'Attribute "Dimmer" At + 2' and b.counters.noop == 3, J(cmds))
   inst:submit("s", 1.1, stouch(10, 1, false)); inst:service(1.11)
   check("kb20: after the release the instance is idle again", inst:admission(1.5) == nil and inst:status(1.5).sessions.s.gestures == 0)
-  -- Absolute positions: Attribute "<name>" At <value>, the newest queued position supersedes (slots).
+  -- Absolute positions: Attribute "<name>" At <value>, the newest queued position supersedes (slots). The binding's
+  -- values are complete here (review: a position is placed only on completely read values).
+  binding.slots.value.slots[1].valueState = "value"; binding.slots.value.slots[1].valueComplete = true
+  binding.slots.value.slots[2].valueState = "empty"; binding.slots.value.slots[2].valueComplete = true
   inst, b = freshConsole()
   inst:submit("s", 2, stouch(1, 1, true))
   inst:submit("s", 2, sabs(2, 1, 0.1))
@@ -785,11 +788,12 @@ do
     local r = inst:service(3.5)
     return r.dropped.expired == 1 and cmds[#cmds] == 'Attribute "Pan" At 0'
   end)())
+  binding.slots.value.slots[2].valueState = nil; binding.slots.value.slots[2].valueComplete = nil
   -- Mixed values stay mixed unless the operator takes over.
   inst, b = freshConsole()
-  binding.slots.value.slots[1].valueState = "mixed"; binding.slots.value.slots[1].absolute = 30
+  binding.slots.value.slots[1].valueState = "mixed"; binding.slots.value.slots[1].absolute = 30; binding.slots.value.slots[1].valueComplete = true
   local resolved = CTL.resolveTarget(binding, { slot = 1 })
-  check("kb20: the resolved slot forwards the binding's value state and last read value", resolved.valueState == "mixed" and resolved.absolute == 30)
+  check("kb20: the resolved slot forwards the binding's value state, completeness and last read value", resolved.valueState == "mixed" and resolved.absolute == 30 and resolved.valueComplete == true)
   local okM, eM = inst:submit("s", 4, sabs(1, 1, 0.5))
   check("kb20: a position on a slot with mixed values is refused mixed-values, nothing queued", okM == nil and eM.code == "mixed-values" and eM.message:find("takeover = true") and inst:status(4).sessions.s.queued == 0, J(eM))
   check("kb20: relative motion on the same slot is served (the relationship is preserved)", inst:submit("s", 4, srel(2, 1, 1)).accepted)
@@ -799,16 +803,31 @@ do
   local okB, eB = inst:submit("s", 4.03, srel(4, 1, 1, { takeover = true, gesture = 13 }))
   local okB2, eB2 = inst:submit("s", 4.03, sabs(5, 1, 0.5, { takeover = 1, gesture = 13 }))
   check("kb20: takeover on a relative event, or a non-boolean takeover, is a bad event", okB == nil and eB.code == "bad-event" and okB2 == nil and eB2.code == "bad-event", J({ eB, eB2 }))
+  -- Review (PR #24): "value" from a bounded scan or a failed read is not the selection's value.
+  binding.slots.value.slots[1].valueState = "value"; binding.slots.value.slots[1].absolute = 50; binding.slots.value.slots[1].valueComplete = false
+  binding.slots.value.slots[1].valueIncomplete = "the selection scan is bounded (8 of 9 fixtures); the values of the fixtures outside the scan are unknown"
+  local okI, eI = inst:submit("s", 4.1, sabs(6, 1, 0.5, { gesture = 14 }))
+  check("kb20 review: a position on a slot whose values were not completely read (bounded scan) is refused values-incomplete with the binding's reason, nothing queued", okI == nil and eI.code == "values-incomplete" and eI.message:find("8 of 9 fixtures") and eI.message:find("takeover = true") and inst:status(4.1).sessions.s.queued == 0, J(eI))
+  check("kb20 review: relative motion on it is served", inst:submit("s", 4.1, srel(7, 1, 1, { gesture = 14 })).accepted)
+  local okI2 = inst:submit("s", 4.1, sabs(8, 1, 0.5, { gesture = 15, takeover = true }))
+  inst:service(4.11)
+  check("kb20 review: takeover places it", okI2 and okI2.accepted and cmds[#cmds] == 'Attribute "Dimmer" At 50', J(cmds))
+  binding.slots.value.slots[1].valueIncomplete = "some fixtures with the channel could not be read: GetProgPhaser exploded"
+  local okI3, eI3 = inst:submit("s", 4.12, sabs(9, 1, 0.5, { gesture = 16 }))
+  check("kb20 review: a failed programmer read on another fixture refuses the position the same way", okI3 == nil and eI3.code == "values-incomplete" and eI3.valueIncomplete:find("exploded"), J(eI3))
+  binding.slots.value.slots[1].valueComplete = nil; binding.slots.value.slots[1].valueIncomplete = nil
+  local okI4, eI4 = inst:submit("s", 4.13, sabs(10, 1, 0.5, { gesture = 17 }))
+  check("kb20 review: a binding that reports no completeness at all (an older feedback) is refused too, never assumed complete", okI4 == nil and eI4.code == "values-incomplete" and eI4.message:find("no value completeness"), J(eI4))
   binding.slots.value.slots[1].valueState = nil; binding.slots.value.slots[1].absolute = nil
   -- The fake backend serves strips too; the mixed-values rule is resolution, not the backend.
   local iF = fresh(); iF:openSession({ id = "s" }, 5)
-  binding.slots.value.slots[1].valueState = "mixed"
+  binding.slots.value.slots[1].valueState = "mixed"; binding.slots.value.slots[1].valueComplete = true
   local okFM, eFM = iF:submit("s", 5, sabs(1, 1, 0.5))
   binding.slots.value.slots[1].valueState = "value"
   local okFV = iF:submit("s", 5, sabs(2, 1, 0.5))
-  binding.slots.value.slots[1].valueState = nil
-  check("kb20: the mixed-values refusal applies on the fake backend as well; a single value is served", okFM == nil and eFM.code == "mixed-values" and okFV and okFV.accepted, J(eFM))
-  check("kb20: the limitations name strips, positions and the mixed-values rule", CTL.LIMITATIONS[1]:find("KB%-20") and CTL.LIMITATIONS[1]:find("mixed%-values"))
+  binding.slots.value.slots[1].valueState = nil; binding.slots.value.slots[1].valueComplete = nil
+  check("kb20: the mixed-values refusal applies on the fake backend as well; a complete single value is served", okFM == nil and eFM.code == "mixed-values" and okFV and okFV.accepted, J(eFM))
+  check("kb20: the limitations name strips, positions, the mixed-values and the values-incomplete rule", CTL.LIMITATIONS[1]:find("KB%-20") and CTL.LIMITATIONS[1]:find("mixed%-values") and CTL.LIMITATIONS[1]:find("values%-incomplete"))
 end
 
 -------------------------------------------------------------------------------

@@ -694,11 +694,17 @@ service; this module serves what a strip produces on an **attribute slot**:
 readout, physicalRange }`. The newest queued position of a slot supersedes an older one (slots are stateless targets);
 a position older than `maxEventAgeMs` when applied is dropped like motion, never placed late.
 
-**Mixed values stay mixed.** `resolveTarget` forwards the binding's `valueState` (`value | empty | mixed | unavailable`)
-and last read `absolute` on the resolved slot; an `absolute` event on a slot whose fixtures hold different values
-(`valueState == "mixed"`) is refused `mixed-values` at admission, for every backend, unless the event carries
-`takeover = true` (the surface's statement that the operator deliberately chose an absolute operation; `takeover` on a
-relative event or a non-boolean is `bad-event`). Relative motion on such a slot keeps the fixtures' relationship.
+**Mixed values stay mixed.** `resolveTarget` forwards the binding's `valueState` (`value | empty | mixed | unavailable`),
+`valueComplete`/`valueIncomplete` and last read `absolute` on the resolved slot; an `absolute` event on a slot whose
+fixtures hold different values (`valueState == "mixed"`) is refused `mixed-values` at admission, for every backend,
+unless the event carries `takeover = true` (the surface's statement that the operator deliberately chose an absolute
+operation; `takeover` on a relative event or a non-boolean is `bad-event`). **Incomplete reads are not agreement**
+(review of PR #24): feedback reports `valueComplete = true` only when every selected fixture was scanned, every scanned
+fixture's channels were discovered and every fixture with the channel was read; otherwise `valueIncomplete` says why
+(a bounded scan beyond `maxSelectionScan`, a discovery failure, a failed `GetProgPhaser`) and `"value"` means only
+"the fixtures that could be read agree". A position on a slot whose `valueComplete` is not true (including a binding
+that reports no completeness) is refused `values-incomplete` with that reason unless `takeover = true`. Relative
+motion on such slots keeps the fixtures' relationship.
 Values are not in the generation digest (a value change never moves the generation), so `valueState`/`absolute` are the
 binding's last read: a hint for the surface's pickup policy, never a guarantee of the console's current value.
 
