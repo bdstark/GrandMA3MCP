@@ -1427,6 +1427,25 @@ function Instance:contextSnapshot(spec, now, opts)
     snap.generationNote = "no generation: " .. notObserved .. " item(s) not observed in this epoch (service() must observe every watched item first)"
     return snap
   end
+  -- KB-21 live: a cached snapshot straddles a page change: the page item already names the new page while
+  -- executors that follow the user's page were last read on the old one (service() re-reads them a few per
+  -- tick), and every re-read batch would move the generation. Until every following executor was observed
+  -- on the page the snapshot names, the binding's meaning is unknown: no generation is claimed or advanced.
+  if cached and snap.executorPage and snap.executorPage.no ~= nil then
+    local behind = 0
+    for _, x in ipairs(snap.executors) do
+      local v = x.available and x.value
+      if v and v.mode == "current" and type(v.page) == "table" and v.page.no ~= nil and v.page.no ~= snap.executorPage.no then behind = behind + 1 end
+    end
+    if behind > 0 then
+      snap.generation = nil
+      snap.generationUnknown = true
+      snap.lastGeneration = g and g.generation or nil
+      snap.pageChangePending = behind
+      snap.generationNote = string.format("no generation: %d executor(s) were observed on another page than the current page %s (a page change is being re-read; service() must observe them again first)", behind, tostring(snap.executorPage.no))
+      return snap
+    end
+  end
   if g == nil then
     g = { generation = 1, digest = digest, since = now }
     self._generations[gkey] = g

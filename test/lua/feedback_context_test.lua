@@ -610,6 +610,33 @@ do
   pages[2] = page2
   local b5 = fs:contextSnapshot({ executors = { 201 }, executorPage = "two" }, 8)
   check("kb21: a bad executorPage is reported and the executors follow the current page", b5.limitations[1]:find("executorPage") and b5.executorMode == "current" and b5.executors[1].params.page == nil, json.encode(b5.limitations))
+  -- Cached path, a page change (KB-21 live): the page item is re-read before the executors; while any following
+  -- executor still shows the old page no generation is claimed, and the full re-read moves it exactly once.
+  do
+    local cp = { page = pageH, execs = execs }
+    local dpc = deps(); dpc.currentExecPage = function() return cp.page end; dpc.executor = function(n) if cp.execs[n] then return cp.execs[n], cp.page end return nil end
+    local fpc = FB.new({ owner = "kb21pc", deps = dpc, config = { maxReadsPerService = 2, pollIntervalMs = 0 } }):init()
+    local sp = { executors = { 201, 202, 203, 205 } }
+    fpc:watchContext(sp, 1)
+    for i = 1, 8 do fpc:service(1 + i * 0.01) end
+    local c0 = fpc:contextSnapshot(sp, 1.2, { cached = true })
+    check("kb21 page change: before the change the cached snapshot claims generation 1", c0.generation == 1 and c0.pageChangePending == nil, tostring(c0.generation) .. " " .. tostring(c0.generationNote))
+    cp.page, cp.execs = page2, execs2
+    -- The items are re-read in order: dataPool, page first; the executors a few per tick.
+    fpc:service(1.3)  -- dataPool, page
+    local c1 = fpc:contextSnapshot(sp, 1.31, { cached = true })
+    check("kb21 page change: the page item already says page 2 while the executors still show page 1: no generation, the reason names the re-read", c1.generation == nil and c1.generationUnknown == true and c1.pageChangePending == 4 and c1.lastGeneration == 1 and c1.executorPage.no == 2 and c1.generationNote:find("observed on another page"), tostring(c1.generation) .. " " .. tostring(c1.pageChangePending) .. " " .. tostring(c1.generationNote))
+    fpc:service(1.4); fpc:service(1.5)  -- encoder bank, slots, then two executors
+    local c2 = fpc:contextSnapshot(sp, 1.51, { cached = true })
+    check("kb21 page change: half the executors re-read is still no generation", c2.generation == nil and c2.pageChangePending == 2, tostring(c2.generation) .. " " .. tostring(c2.pageChangePending))
+    fpc:service(1.6)
+    local c3 = fpc:contextSnapshot(sp, 1.61, { cached = true })
+    check("kb21 page change: once every executor was observed on page 2 the generation moves exactly once (1 -> 2)", c3.generation == 2 and c3.generationChanged == true and c3.pageChangePending == nil and c3.executors[1].value.page.no == 2, tostring(c3.generation) .. " " .. tostring(c3.generationNote))
+    for i = 1, 6 do fpc:service(1.7 + i * 0.01) end
+    local c4 = fpc:contextSnapshot(sp, 1.8, { cached = true })
+    check("kb21 page change: it stays at 2 afterwards", c4.generation == 2 and c4.generationChanged == false)
+    cp.page, cp.execs = pageH, execs
+  end
   -- Cached path: watchContext with an independent page observes the paged items.
   local fcch = FB.new({ owner = "kb21c", deps = deps() }):init()
   fcch:watchContext(indep, 1)

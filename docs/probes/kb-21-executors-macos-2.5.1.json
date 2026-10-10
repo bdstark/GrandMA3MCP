@@ -2,7 +2,7 @@
   "mode": "run",
   "host": "127.0.0.1",
   "port": 9800,
-  "startedAt": "2026-10-10T22:30:00.704Z",
+  "startedAt": "2026-10-10T22:32:05.294Z",
   "ping": {
     "bridgeVersion": "0.17.0",
     "build": {
@@ -46,34 +46,25 @@
       "unresolvedFromPreviousRun": 0,
       "gestures": 0,
       "unresolved": 0,
-      "enabled": true,
-      "spec": {
-        "executorPage": 1,
-        "executors": [
-          191,
-          192,
-          193,
-          194
-        ]
-      },
-      "note": "KB-18: admission, ordering, coalescing and bounds; the fake backend records intents and moves nothing on the console (control=console applies attribute adjustments, KB-19)",
+      "queued": 0,
+      "sessions": 0,
       "counters": {
         "rateDropped": 0,
         "evicted": 0,
-        "admitted": 2,
+        "admitted": 0,
         "unresolved": 0,
-        "applied": 2,
+        "applied": 0,
         "lost": 0,
         "staleDropped": 0,
         "dropped": 0,
         "coalesced": 0,
         "expired": 0,
         "backendRefused": 0,
-        "refused": 6
+        "refused": 0
       },
       "moduleInputEnabled": true,
-      "queued": 0,
-      "sessions": 0,
+      "note": "KB-18: admission, ordering, coalescing and bounds; the fake backend records intents and moves nothing on the console (control=console applies attribute adjustments, KB-19)",
+      "enabled": true,
       "backend": "fake"
     },
     "lua": {
@@ -127,34 +118,25 @@
           "unresolvedFromPreviousRun": 0,
           "gestures": 0,
           "unresolved": 0,
-          "enabled": true,
-          "spec": {
-            "executorPage": 1,
-            "executors": [
-              191,
-              192,
-              193,
-              194
-            ]
-          },
-          "note": "KB-18: admission, ordering, coalescing and bounds; the fake backend records intents and moves nothing on the console (control=console applies attribute adjustments, KB-19)",
+          "queued": 0,
+          "sessions": 0,
           "counters": {
             "rateDropped": 0,
             "evicted": 0,
-            "admitted": 2,
+            "admitted": 0,
             "unresolved": 0,
-            "applied": 2,
+            "applied": 0,
             "lost": 0,
             "staleDropped": 0,
             "dropped": 0,
             "coalesced": 0,
             "expired": 0,
             "backendRefused": 0,
-            "refused": 6
+            "refused": 0
           },
           "moduleInputEnabled": true,
-          "queued": 0,
-          "sessions": 0,
+          "note": "KB-18: admission, ordering, coalescing and bounds; the fake backend records intents and moves nothing on the console (control=console applies attribute adjustments, KB-19)",
+          "enabled": true,
           "backend": "fake"
         },
         "lua": {
@@ -317,7 +299,7 @@
       "detail": {
         "bindingKey": "display=1;executors=191,192,193,194;page=1",
         "generation": 1,
-        "binding": 3
+        "binding": 1
       }
     },
     {
@@ -337,7 +319,7 @@
       "name": "verify: nothing queued, no gesture, not busy",
       "pass": true,
       "detail": {
-        "conn-33": {
+        "conn-35": {
           "devices": {
             "probe-mtouch": {
               "late": 0,
@@ -348,12 +330,12 @@
               "rateDropped": 0
             }
           },
-          "openedAt": 1791671401.3354,
+          "openedAt": 1791671525.9149,
           "gestures": 0,
-          "remainingMs": 14986,
-          "expiresAt": 1791671416.3354,
+          "remainingMs": 14966,
+          "expiresAt": 1791671540.9149,
           "state": "active",
-          "id": "conn-33",
+          "id": "conn-35",
           "leaseMs": 15000,
           "counters": {
             "evicted": 0,
@@ -364,7 +346,7 @@
             "lost": 0,
             "applied": 0
           },
-          "binding": "client 33",
+          "binding": "client 35",
           "renewals": 0,
           "queued": 0,
           "gestureList": []
@@ -377,6 +359,7 @@
       "detail": [
         {
           "executor": 180,
+          "page": 1,
           "mode": "current",
           "pool": "Default",
           "empty": true,
@@ -385,6 +368,7 @@
         },
         {
           "executor": 181,
+          "page": 1,
           "mode": "current",
           "pool": "Default",
           "empty": true,
@@ -393,6 +377,7 @@
         },
         {
           "executor": 182,
+          "page": 1,
           "mode": "current",
           "pool": "Default",
           "empty": true,
@@ -401,6 +386,7 @@
         },
         {
           "executor": 183,
+          "page": 1,
           "mode": "current",
           "pool": "Default",
           "empty": true,
@@ -474,6 +460,7 @@
         },
         {
           "executor": 181,
+          "page": 1,
           "mode": "current",
           "pool": "Default",
           "empty": true,
@@ -591,7 +578,7 @@
           ]
         },
         "held": {
-          "generation": 7,
+          "generation": 3,
           "target": {
             "executor": 180,
             "element": "key"
@@ -608,7 +595,7 @@
           "kind": "button",
           "device": "probe-mtouch",
           "targetKey": "execDefault#1/1.180.key|14.14.1.7.5527|Go+",
-          "since": 1791671402.2505
+          "since": 1791671526.8183
         }
       }
     },
@@ -619,28 +606,29 @@
         "ok": false,
         "id": "a34",
         "code": "busy",
-        "error": "[busy] a command is refused while input ownership is active: button is down on probe-mtouch/PFA180 of session conn-33. Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first",
+        "error": "[busy] a command is refused while input ownership is active: button is down on probe-mtouch/PFA180 of session conn-35. Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first",
         "detail": {
-          "owner": "conn-33",
+          "owner": "conn-35",
           "control": "PFA180",
           "code": "busy",
           "device": "probe-mtouch",
           "module": "control",
-          "message": "a command is refused while input ownership is active: button is down on probe-mtouch/PFA180 of session conn-33. Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first",
+          "message": "a command is refused while input ownership is active: button is down on probe-mtouch/PFA180 of session conn-35. Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first",
           "reason": "button-down"
         }
       }
     },
     {
       "name": "run: Page 2 moves the following binding's generation; its targets are now page 2's (180 empty there)",
-      "pass": false,
+      "pass": true,
       "detail": {
         "generation": [
-          7,
-          8
+          3,
+          4
         ],
         "target": {
           "executor": 180,
+          "page": 2,
           "mode": "current",
           "pool": "Default",
           "empty": true,
@@ -650,11 +638,11 @@
       }
     },
     {
-      "name": "run: the hold is still owned, now marked rebound; its frozen target is unchanged",
-      "pass": false,
+      "name": "run: the hold is still owned under the old generation; its frozen target is unchanged (a page change moves the generation, a replaced binding would mark the hold rebound)",
+      "pass": true,
       "detail": [
         {
-          "generation": 7,
+          "generation": 3,
           "target": {
             "executor": 180,
             "element": "key"
@@ -671,7 +659,7 @@
           "kind": "button",
           "device": "probe-mtouch",
           "targetKey": "execDefault#1/1.180.key|14.14.1.7.5527|Go+",
-          "since": 1791671402.2505
+          "since": 1791671526.8183
         }
       ]
     },
@@ -694,7 +682,7 @@
           },
           "down": false,
           "outcome": "applied",
-          "at": 1791671404.9227,
+          "at": 1791671529.4752,
           "kind": "button"
         }
       }
@@ -799,7 +787,7 @@
             "kind": "button",
             "device": "probe-mtouch",
             "targetKey": "execDefault#1/1.182.key|14.14.1.7.5527|Go+",
-            "since": 1791671407.2172
+            "since": 1791671531.8147
           }
         ]
       }
@@ -840,7 +828,7 @@
           },
           "down": false,
           "outcome": "applied",
-          "at": 1791671411.0104,
+          "at": 1791671535.5566,
           "kind": "button"
         }
       }
@@ -885,7 +873,7 @@
           },
           "down": false,
           "outcome": "applied",
-          "at": 1791671414.2485,
+          "at": 1791671538.7854,
           "kind": "button"
         }
       }
@@ -1042,7 +1030,7 @@
             "result": {
               "dropped": 0,
               "unresolved": [],
-              "session": "conn-34",
+              "session": "conn-36",
               "ended": []
             }
           }
@@ -1056,7 +1044,7 @@
             "result": {
               "dropped": 0,
               "unresolved": [],
-              "session": "conn-33",
+              "session": "conn-35",
               "ended": []
             }
           }
@@ -1086,6 +1074,7 @@
         "targets": [
           {
             "executor": 180,
+            "page": 1,
             "mode": "current",
             "pool": "Default",
             "empty": true,
@@ -1094,6 +1083,7 @@
           },
           {
             "executor": 181,
+            "page": 1,
             "mode": "current",
             "pool": "Default",
             "empty": true,
@@ -1102,6 +1092,7 @@
           },
           {
             "executor": 182,
+            "page": 1,
             "mode": "current",
             "pool": "Default",
             "empty": true,
@@ -1110,6 +1101,7 @@
           },
           {
             "executor": 183,
+            "page": 1,
             "mode": "current",
             "pool": "Default",
             "empty": true,
@@ -1128,7 +1120,7 @@
       }
     }
   ],
-  "finishedAt": "2026-10-10T22:30:18.537Z",
-  "passed": 26,
-  "failed": 2
+  "finishedAt": "2026-10-10T22:32:23.044Z",
+  "passed": 28,
+  "failed": 0
 }
