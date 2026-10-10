@@ -1,11 +1,15 @@
 # KB-16 encoder context and executor semantics — macOS, onPC 2.5.1.0
 
 Date: 2026-10-10. Evidence for [ENCODERS.md](../../ENCODERS.md) "KB-16 results". Script report:
-[kb-16-encoders-macos-2.5.1.json](kb-16-encoders-macos-2.5.1.json) (`run`, 47/47). Every observation came through the
+[kb-16-encoders-macos-2.5.1.json](kb-16-encoders-macos-2.5.1.json) (`run`, 44/44 at the reviewed revision; the first run of the day, 47/47, used `Press Executor n` and a weaker precondition, see below). Every observation came through the
 bridge's `lua` op (no production reader exists yet; KB-17 builds the feedback-module readers from this record) and its
 `cmd`/`setfader` ops. `run` changed console state on the disposable show (selection, encoder bank/page, one programmer
-attribute, four executor presses, three fader moves, the executor page) and restored each; it ended with `ClearAll`,
-which the precondition (empty selection, no programmer values) made a no-op.
+attribute, five executor presses, three fader moves, the executor page) and restored each. It starts with a preflight
+gate that refuses before any change unless the selection is empty, nothing is held through the bridge and the
+programmer is provably empty through the bridge's `programmer` op (complete coverage of all 70 (sub)fixtures, 342
+channels, no data); every undo is registered before the change it belongs to, on a page-qualified target with the
+original value read first, and the cleanup runs all of them at the end even if one fails (`scripts/lib/kb16-steps.mjs`,
+injected-failure tests in `test/kb16-steps.test.ts`). The closing `ClearAll` was a no-op by the gate.
 
 | Item | Value |
 | --- | --- |
@@ -52,14 +56,14 @@ which the precondition (empty selection, no programmer values) made a no-op.
 | 33 | silent no-op | `Attribute "ColorRGB_R" At 50` on fixture 601 answers OK and writes nothing (no UI channel): there is no refusal to detect; the reader must know the selection's channels |
 | 34 | mixed selection | `Fixture 401 + 601`: page 1 `RGB` available again, labels `R G B Amber`, selection 2 |
 | 35 | `ClearSelection` | selection 0, bank/page/labels remain |
-| 36–37 | Temp, Flash | `Press Executor n` → `HasActivePlayback()=true`, `Unpress Executor n` → false (release is the holder's responsibility: a 1.2 s hold stayed active until the Unpress) |
-| 38–39 | Toggle | Press → true, Unpress → still true; `Off Sequence` restores |
-| 40–41 | Top / Go+ | Press (Top) → active; Unpress (Go+) → inactive on this sequence (it ran past its last cue); `Off` restores. The after-state depends on the cue list, not on the key function |
-| 43–44 | Master fader | `setfader Page 1.191 25` → `GetFader{FaderMaster}=25`, restored to 100 |
-| — | `FaderRate Page 1.191 At 75` | OK, read back `FaderRate=50`: the rate master of this sequence did not follow (the executor's fader is Master; function-specific setters need their own qualification, not assumed from the Master path) |
-| 45–46 | Temp fader | `FaderTemp Page 1.210 At 60` → `FaderTemp=59.999996 (60%)` **and the sequence becomes active**; `At 0` → inactive. A Temp fader above zero is a playback start |
-| 47 | page navigation | `Page 2` then `Page 1`: `CurrentExecPage()` follows and the Temp/Toggle sequences stayed inactive throughout |
-| — | restore | `Off Attribute "ColorRGB_R"`, `Select EncoderBank 1.1`, `ClearSelection`, `ClearAll`; final bank 0, page 0, selection 0 |
+| 36–37 | Temp, Flash | `Press Page 1.193` / `Press Page 1.201` → `HasActivePlayback()=true`, `Unpress Page 1.n` → false (release is the holder's responsibility: a 1.2 s hold stayed active until the Unpress) |
+| 38 | Toggle (`Page 1.195`) | Press → true, Unpress → still true; `Off Sequence` → false |
+| 39 | Top / Go+ (`Page 1.191`) | Press (Top) → active; Unpress (Go+) → inactive on this sequence (it ran past its last cue); `Off` → false. The after-state depends on the cue list, not on the key function |
+| 41 | Master fader | original 100 read first; `setfader Page 1.191 25` → `GetFader{FaderMaster}=25`; restored to 100 and read back |
+| — | `FaderRate Page 1.191 At 75` | OK, read back `FaderRate=50` before and after: the rate master of this sequence did not follow (the executor's fader is Master; function-specific setters need their own qualification, not assumed from the Master path) |
+| 42 | Temp fader | original 0 read first; `FaderTemp Page 1.210 At 60` → `FaderTemp=59.999996 (60%)` **and the sequence becomes active**; `At 0` → inactive. A Temp fader above zero is a playback start |
+| 43 | page navigation | `Page 2` then `Page 1` (registered before leaving): `CurrentExecPage()` follows and the Temp/Toggle sequences stayed inactive throughout |
+| 44 | cleanup | the three undos the normal path had not consumed ran newest first, each OK: `Off Attribute "ColorRGB_R"`, `Select EncoderBank 1.1`, `ClearSelection`; then `ClearAll`; final bank 0, page 0, selection 0 |
 
 ## Observations worth keeping
 
@@ -72,7 +76,7 @@ which the precondition (empty selection, no programmer values) made a no-op.
   compare the pool page's attributes with the selection's UI channels to say whether a slot is live.
 - The on-screen band `Value` is not the programmer value; `GetProgPhaser(ui, false)` is (`absolute`, `absolute_value`,
   masks, `channel_function`).
-- Executor press/release through `Press`/`Unpress Executor n` runs the configured `KeyPress`/`KeyUnpress`
+- Executor press/release through `Press`/`Unpress Page <p>.<e>` runs the configured `KeyPress`/`KeyUnpress`
   function (Temp, Flash, Toggle, Top/Go+ confirmed); what the sequence does afterwards is the sequence's business.
 - A Temp fader starts playback when raised; `FaderRate` on a Master-fader executor did not change the readable rate.
 

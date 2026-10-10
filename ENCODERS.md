@@ -56,7 +56,7 @@ Completion gate: No production operation may claim native encoder or executor eq
 ### KB-16 results (console half, 2026-10-10; surface half in mtpnxk)
 
 Live on macOS, onPC 2.5.1.0, bridge 0.12.0 with Lua: [record](docs/probes/kb-16-encoders-macos-2.5.1.md),
-[script report](docs/probes/kb-16-encoders-macos-2.5.1.json) (`scripts/kb16-probe.mjs run`, 47/47). No production
+[script report](docs/probes/kb-16-encoders-macos-2.5.1.json) (`scripts/kb16-probe.mjs run`, 44/44; the run refuses to start unless the programmer is provably empty through the `programmer` op and registers every undo before the change it belongs to). No production
 dispatch or reader changed; the probe reads through the `lua` op. The hardware half (M-Touch/M-Play decoders, output
 encoders, regression tests from the MTouchPlay captures at revision `e48eb2c`, the `mtouch-listen`/`mtouch-led-test`
 operator commands and the live-qualification procedure) is in mtpnxk `docs/mtouch-protocol-reuse.md`, and both devices were qualified live on
@@ -92,7 +92,7 @@ reports delivered at open, clean unplug detection and replug). Windows/Linux hos
   readout (Percent here); one Coarse click = `+ 1` at Percent readout (manual); clamped at the range ends. The command is
   selection-scoped and ignores the active bank, and on a selection without the attribute it answers OK and does nothing,
   so the slot identity and the availability check are the reader's job, not the command's.
-- `Press Executor n` / `Unpress Executor n` run the executor's configured press/release functions (Temp and Flash active
+- `Press Page <p>.<e>` / `Unpress Page <p>.<e>` run the executor's configured press/release functions (Temp and Flash active
   while held, Toggle latches, Top on press then Go+ on release); the state after the release is the sequence's.
 - `setfader` / `FaderMaster … At` for Master faders; `FaderTemp … At` for Temp faders (raising it starts the playback).
   `FaderRate … At` on a Master-fader executor did not change the readable rate: function-specific setters are qualified one

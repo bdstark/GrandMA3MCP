@@ -14,10 +14,14 @@
 // expose the active encoder bank/page, the on-screen slot labels/values/resolution, the profile's slot
 // assignments, the selected feature/attribute, the preset-bar context, and per-executor assignment,
 // key/fader/encoder functions, appearance and activity. `run` establishes what changes them and how
-// a signed adjustment lands, and restores what it changed. Nothing is retried.
+// a signed adjustment lands, and restores what it changed. Nothing is retried. `run` refuses to start when the
+// programmer is not provably empty (the bridge's `programmer` op, complete coverage, no data), registers every
+// undo before the change it belongs to (scripts/lib/kb16-steps.mjs) and runs all of them at the end even when
+// one fails.
 // GMA3_BRIDGE_HOST / GMA3_BRIDGE_PORT select the bridge.
 import net from "node:net";
 import fs from "node:fs";
+import { createCleanup, execRef, probeExecutorButton, probeFader, programmerEmpty } from "./lib/kb16-steps.mjs";
 
 const host = process.env.GMA3_BRIDGE_HOST ?? "127.0.0.1";
 const port = Number(process.env.GMA3_BRIDGE_PORT ?? 9800);
@@ -413,7 +417,27 @@ async function main() {
   c = await lua(A, LUA_CONTEXT(1));
   record("reads left bank, page and selection unchanged", c.value?.bank?.i64 === ctx0.bank?.i64 && c.value?.page?.i64 === ctx0.page?.i64 && c.value?.selectionCount === ctx0.selectionCount, contextSummary(c.value));
 
-  if (mode === "run") await runPhase(A, ctx0, banks, playback, tokens);
+  if (mode === "run") {
+    // Preflight gate (review item 2): nothing below mutates the console unless the selection is empty, no key
+    // is held through the bridge, and the programmer is provably empty. The band widget's Value is not evidence.
+    const pingNow = (await A.request("ping")).result ?? {};
+    const prog = await A.request("programmer", { scope: "all", limit: 1 });
+    const gate = programmerEmpty(prog);
+    const problems = [];
+    if (ctx0.selectionCount !== 0) problems.push(`selection is not empty (${ctx0.selectionCount})`);
+    if ((pingNow.input?.holds ?? 0) > 0 || pingNow.input?.busy) problems.push("keys are held or the bridge is busy");
+    if (!gate.ok) problems.push(gate.reason);
+    if (problems.length) {
+      record("run: preflight gate (empty selection, no holds, programmer provably empty)", false, problems);
+      console.error(`refusing to change state: ${problems.join("; ")}`);
+      report.finishedAt = new Date().toISOString(); report.failed = failed + 1; report.refused = problems;
+      if (outFile) fs.writeFileSync(outFile, JSON.stringify(report, null, 2));
+      await A.end();
+      process.exit(2);
+    }
+    record("run: preflight gate (empty selection, no holds, programmer provably empty through the programmer op)", true, gate.detail);
+    await runPhase(A, ctx0, banks, playback, tokens);
+  }
 
   report.finishedAt = new Date().toISOString();
   report.failed = failed;
@@ -442,19 +466,20 @@ async function cmd(A, command) {
 
 async function runPhase(A, ctx0, banks, playback, tokens) {
   const read = async (d = 1) => (await lua(A, LUA_CONTEXT(d))).value;
-  const restore = [];
+  const cleanup = createCleanup();
+  const restoreCmd = (label) => cleanup.add(label, () => cmd(A, label));
   const bank0 = (ctx0.bank?.i64 ?? 0) + 1;
   const page0 = (ctx0.page?.i64 ?? 0) + 1;
   const RGB_FIXTURE = 401; // Mega Hex Par: Dimmer, ColorRGB_R/G/B/W/RY/UV, Shutter1
   const BEAM_FIXTURE = 601; // 180W Beam Moving Head: Dimmer, Pan, Tilt, Color1 (wheel), Gobo1, ...: no RGB
   const bankName = (no) => banks.get(no)?.name ?? String(no);
   try {
-    // R1. selection changes the on-screen values and the selected attribute's availability
-    record("run: initial selection is empty and no programmer values are shown (precondition)", ctx0.selectionCount === 0 && [1, 2, 3, 4].every((n) => /^0(\.0+)?$/.test(String(place(ctx0, n)?.value ?? "0"))), { selection: ctx0.selectionCount, values: [1, 2, 3, 4].map((n) => place(ctx0, n)?.value) });
+    // R1. selection changes the on-screen values and the selected attribute's availability (the programmer
+    // precondition was established by the preflight gate in main, before anything here runs)
+    restoreCmd("ClearSelection");
     let r = await cmd(A, `Fixture ${RGB_FIXTURE}`);
     await sleep(150);
     let ctx = await read();
-    restore.push("ClearSelection");
     record(`run: Fixture ${RGB_FIXTURE} selects (SelectionCount > 0); bank and page unchanged by a selection`, r.ok && ctx.selectionCount > 0 && ctx.bank.i64 === ctx0.bank.i64 && ctx.page.i64 === ctx0.page.i64, contextSummary(ctx));
     let a = await lua(A, LUA_ATTRIBUTES(["Dimmer", "Pan", "ColorRGB_R"]), "selection channels");
     record("run: the selection's UI channels and attribute names are readable (GetUIChannels/GetAttributeByUIChannel on SelectionFirst)", Array.isArray(a.value?.selectionChannels) && a.value.selectionChannels.some((l) => /attributes=.*ColorRGB_R/.test(l)), a.value?.selectionChannels);
@@ -462,10 +487,10 @@ async function runPhase(A, ctx0, banks, playback, tokens) {
     // R2. bank and page switching through the documented EncoderBank keyword
     const colorBank = [...banks.values()].find((b) => /color/i.test(b.name) && b.pages.length >= 2);
     if (colorBank) {
+      restoreCmd(`Select EncoderBank ${bank0}.${page0}`);
       r = await cmd(A, `Select EncoderBank ${colorBank.no}`);
       await sleep(150);
       ctx = await read();
-      restore.push(`Select EncoderBank ${bank0}.${page0}`);
       const landed = colorBank.pages[ctx.page?.i64 ?? -1];
       record(`run: Select EncoderBank ${colorBank.no} (${colorBank.name}) moves EncoderBankSelector to ${colorBank.no - 1}; the bank reopens on a page the selection supports and the live labels match that page`, r.ok && ctx.bank.i64 === colorBank.no - 1 && !!landed && landed.slots.filter(Boolean).every((s, i) => labelMatches(s, place(ctx, i + 1)?.label ?? "")), { ...contextSummary(ctx), landedPage: landed?.name, landedSlots: landed?.slots });
       record("run: SelectedFeature/GetSelectedAttribute follow the bank (feature group of the first slot)", /#\d+/.test(String(ctx.selectedAttribute)) && String(ctx.selectedAttribute) !== String(ctx0.selectedAttribute), { before: ctx0.selectedAttribute, after: ctx.selectedAttribute, feature: ctx.selectedFeature, group: ctx.selectedFeatureGroup });
@@ -488,10 +513,10 @@ async function runPhase(A, ctx0, banks, playback, tokens) {
         return { shown: abs, band: place(c, 1)?.value, label: place(c, 1)?.label, resolution: place(c, 1)?.resolution, raw, ctx: c };
       };
       const v0 = await readVal();
+      restoreCmd(`Off Attribute "${slot1}"`);
       r = await cmd(A, `Attribute "${slot1}" At 50`);
       await sleep(200);
       const v1 = await readVal();
-      restore.push(`Off Attribute "${slot1}"`);
       record(`run: Attribute "${slot1}" At 50 lands in the programmer (GetProgPhaser step 1 absolute = 50)`, r.ok && near(v1.shown, 50), { before: v0.shown, after: v1.shown, feedback: r.feedback, raw: v1.raw });
       record("run: the on-screen BandFader.Value of the slot does not follow the programmer value (it is not the readable value state)", v1.band === v0.band, { before: v0.band, after: v1.band });
       r = await cmd(A, `Attribute "${slot1}" At + 10`);
@@ -559,111 +584,83 @@ async function runPhase(A, ctx0, banks, playback, tokens) {
     ctx = await read();
     record("run: ClearSelection empties the selection; the bank/page and slot labels remain", r.ok && ctx.selectionCount === 0 && presentPlacesOf(ctx).length >= 4, contextSummary(ctx));
 
-    // R5. executor buttons: configured press/release functions through Press/Unpress Executor
+    // R5. executor buttons: configured press/release functions through Press/Unpress on page-qualified targets.
+    // Each step registers its release (and Off for latching functions) before the Press; an error in the
+    // middle is recorded and the registered undo runs in the cleanup at the end (scripts/lib/kb16-steps.mjs).
     const page = (await lua(A, LUA_EXECUTORS([101], tokens))).value?.page;
     const pageNo = Number(String(page ?? "").replace(/^.*#/, "")) || 1;
-    const activity = async (n) => { const c = await lua(A, LUA_EXECUTORS([n], tokens)); const l = c.value?.executors?.[0] ?? ""; return { active: /active=true/.test(l), line: l }; };
-    const tryButton = async (e, expectDuring, expectAfter, holdMs, cleanup) => {
-      const ref = `Executor ${e.index}`;
-      const s0 = await activity(e.index);
-      const p = await cmd(A, `Press ${ref}`);
-      await sleep(holdMs);
-      const s1 = await activity(e.index);
-      const u = await cmd(A, `Unpress ${ref}`);
-      await sleep(250);
-      const s2 = await activity(e.index);
-      record(`run: ${e.name} (${e.keyPress}/${e.keyUnpress}): Press -> active=${s1.active}, Unpress -> active=${s2.active}`, p.ok && u.ok && s0.active === false && s1.active === expectDuring && s2.active === expectAfter, { before: s0.active, during: s1.active, after: s2.active, press: p.feedback, unpress: u.feedback });
-      if (cleanup) { const c = await cmd(A, cleanup); await sleep(200); const s3 = await activity(e.index); record(`run: ${e.name} restored with ${cleanup}`, c.ok && s3.active === false, s3.active); }
+    const activity = async (n) => { const c = await lua(A, LUA_EXECUTORS([n], tokens)); if (!c.ok) throw new Error(`activity read failed: ${c.error}`); const l = c.value?.executors?.[0] ?? ""; return { active: /active=true/.test(l), line: l }; };
+    const faderValue = async (n, token) => { const c = await lua(A, LUA_EXECUTORS([n], [token])); if (!c.ok) throw new Error(`fader read failed: ${c.error}`); const m = (c.value?.executors?.[0] ?? "").match(new RegExp(`${token}=([-\\d.]+)`)); return m ? Number(m[1]) : undefined; };
+    const io = { cmd: (c) => cmd(A, c), activity, faderValue, setfader: async (ref, value) => { const r = await A.request("setfader", { ref, value }); return r.ok ? { ok: true } : { ok: false, error: r.error }; }, sleep };
+    const button = async (e, { expectDuring, expectAfter, holdMs, off, title }) => {
+      try {
+        const o = await probeExecutorButton({ io, cleanup, pageNo, exec: e, holdMs, off });
+        const pass = o.before === false && (expectDuring === undefined || o.during === expectDuring) && (expectAfter === undefined || o.after === expectAfter) && (!off || o.afterOff === false);
+        record(title(o), pass, o);
+        return o;
+      } catch (err) {
+        record(`run: ${e.name}: ${err.step ?? "step"} failed; its release/off is left to the cleanup`, false, { error: err.message, partial: err.partial, pendingCleanup: cleanup.pending() });
+        return null;
+      }
     };
     const temp = playback.find((e) => e.keyPress === "Temp" && e.klass === "Sequence");
     const flash = playback.find((e) => e.keyPress === "Flash" && e.klass === "Sequence");
     const toggle = playback.find((e) => e.keyPress === "Toggle" && e.klass === "Sequence");
     const top = playback.find((e) => e.keyPress === "Top" && e.klass === "Sequence");
-    if (temp) await tryButton(temp, true, false, 400); else note("run: no Temp executor on the page");
-    if (flash) await tryButton(flash, true, false, 400); else note("run: no Flash executor on the page");
-    if (toggle) await tryButton(toggle, true, true, 300, `Off Sequence "${toggle.name}"`); else note("run: no Toggle executor on the page");
-    if (top) {
-      // Top on press, Go+ on release: what the sequence does after the release depends on its cues (a
-      // one-cue sequence goes past its last cue and releases), so the after-state is an observation.
-      const s0 = await activity(top.index);
-      const p = await cmd(A, `Press Executor ${top.index}`);
-      await sleep(300);
-      const s1 = await activity(top.index);
-      const u = await cmd(A, `Unpress Executor ${top.index}`);
-      await sleep(300);
-      const s2 = await activity(top.index);
-      record(`run: ${top.name} (${top.keyPress}/${top.keyUnpress}): Press runs Top (active), Unpress runs Go+ (observed active=${s2.active})`, p.ok && u.ok && !s0.active && s1.active, { before: s0.active, during: s1.active, after: s2.active });
-      const c = await cmd(A, `Off Sequence "${top.name}"`);
-      await sleep(200);
-      record(`run: ${top.name} restored with Off`, c.ok && !(await activity(top.index)).active);
-    } else note("run: no Top/Go+ executor on the page");
+    const momentary = (o) => `run: ${o.name} (${o.keyPress}/${o.keyUnpress}): Press ${o.ref} -> active=${o.during}, Unpress -> active=${o.after}`;
+    if (temp) await button(temp, { expectDuring: true, expectAfter: false, holdMs: 400, title: momentary }); else note("run: no Temp executor on the page");
+    if (flash) await button(flash, { expectDuring: true, expectAfter: false, holdMs: 400, title: momentary }); else note("run: no Flash executor on the page");
+    if (toggle) await button(toggle, { expectDuring: true, expectAfter: true, holdMs: 300, off: `Off Sequence "${toggle.name}"`, title: (o) => `run: ${o.name} (Toggle): Press ${o.ref} -> active=${o.during}, Unpress -> still active=${o.after}, Off -> active=${o.afterOff}` }); else note("run: no Toggle executor on the page");
+    // Top on press, Go+ on release: what the sequence does after the release depends on its cues (a one-cue
+    // sequence goes past its last cue and releases), so the after-state is an observation, not an expectation.
+    if (top) await button(top, { expectDuring: true, holdMs: 300, off: `Off Sequence "${top.name}"`, title: (o) => `run: ${o.name} (Top/Go+): Press ${o.ref} runs Top (active=${o.during}), Unpress runs Go+ (observed active=${o.after}), Off -> active=${o.afterOff}` }); else note("run: no Top/Go+ executor on the page");
     // Disconnect-style recovery: a held Temp released by the plain Unpress after the probe's own delay.
-    if (temp) {
-      const p = await cmd(A, `Press Executor ${temp.index}`);
-      await sleep(1200);
-      const s1 = await activity(temp.index);
-      const u = await cmd(A, `Unpress Executor ${temp.index}`);
-      await sleep(250);
-      const s2 = await activity(temp.index);
-      record("run: a Temp held for 1.2 s stays active until the Unpress (release is the holder's responsibility)", p.ok && u.ok && s1.active && !s2.active, { during: s1.active, after: s2.active });
-    }
+    if (temp) await button(temp, { expectDuring: true, expectAfter: false, holdMs: 1200, title: (o) => `run: a Temp held for 1.2 s stays active until the Unpress ${o.ref} (release is the holder's responsibility): during=${o.during}, after=${o.after}` });
 
-    // R6. fader functions: Master through the fader keyword and GetFader read-back; Temp on a Temp fader
+    // R6. fader functions: the original level is read and its restoration registered before every move.
     const master = playback.find((e) => e.fader === "Master" && e.klass === "Sequence" && e.keyPress !== "Toggle");
     if (master) {
-      const ref = `Page ${pageNo}.${master.index}`;
-      const before = await lua(A, LUA_EXECUTORS([master.index], ["FaderMaster"]));
-      const m0 = Number((before.value?.executors?.[0] ?? "").match(/FaderMaster=([\d.]+)/)?.[1]);
-      const target = m0 > 50 ? 25 : 75;
-      const s1 = await A.request("setfader", { ref, value: target });
-      await sleep(200);
-      const mid = await lua(A, LUA_EXECUTORS([master.index], ["FaderMaster"]));
-      const m1 = Number((mid.value?.executors?.[0] ?? "").match(/FaderMaster=([\d.]+)/)?.[1]);
-      record(`run: Master fader of ${master.name} set to ${target} and read back through GetFader{FaderMaster}`, s1.ok && Math.abs(m1 - target) < 0.5, { before: m0, after: m1 });
-      const s2 = await A.request("setfader", { ref, value: Number.isFinite(m0) ? m0 : 100 });
-      await sleep(200);
-      const after = await lua(A, LUA_EXECUTORS([master.index], ["FaderMaster"]));
-      const m2 = Number((after.value?.executors?.[0] ?? "").match(/FaderMaster=([\d.]+)/)?.[1]);
-      record(`run: Master fader of ${master.name} restored`, s2.ok && Math.abs(m2 - m0) < 0.5, { after: m2 });
-      const rate = await cmd(A, `FaderRate ${ref} At 75`);
-      await sleep(200);
-      const rl = (await lua(A, LUA_EXECUTORS([master.index], ["FaderRate", "FaderSpeed"]))).value?.executors?.[0] ?? "";
-      note("run: FaderRate keyword on a Master-fader executor (function-specific setter, read back through GetFader{FaderRate})", { cmd: rate, readback: rl.replace(/^.*faders /, "") });
-      await cmd(A, `FaderRate ${ref} At 50`);
-      await sleep(150);
+      try {
+        const m0 = await faderValue(master.index, "FaderMaster");
+        const o = await probeFader({ io, cleanup, pageNo, exec: master, token: "FaderMaster", target: m0 > 50 ? 25 : 75, set: io.setfader });
+        record(`run: Master fader of ${master.name} (${o.ref}) set to ${o.target} and read back through GetFader{FaderMaster}, then restored to ${o.original}`, Math.abs(o.moved - o.target) < 0.5 && Math.abs(o.restored - o.original) < 0.5, o);
+      } catch (err) { record(`run: Master fader of ${master.name}: ${err.step ?? "step"} failed; its restoration is left to the cleanup`, false, { error: err.message, partial: err.partial, pendingCleanup: cleanup.pending() }); }
+      try {
+        const setRate = async (ref, value) => cmd(A, `FaderRate ${ref} At ${value}`);
+        const o = await probeFader({ io, cleanup, pageNo, exec: master, token: "FaderRate", target: 75, set: setRate, tolerance: 1 });
+        note("run: FaderRate keyword on a Master-fader executor (function-specific setter, read back through GetFader{FaderRate})", o);
+      } catch (err) { note("run: FaderRate on a Master-fader executor could not be exercised", { error: err.message, partial: err.partial, pendingCleanup: cleanup.pending() }); }
     }
     const tempFader = playback.find((e) => e.fader === "Temp" && e.klass === "Sequence");
     if (tempFader) {
-      const ref = `Page ${pageNo}.${tempFader.index}`;
-      const t0 = (await lua(A, LUA_EXECUTORS([tempFader.index], ["FaderMaster", "FaderTemp"]))).value?.executors?.[0] ?? "";
-      const r1 = await cmd(A, `FaderTemp ${ref} At 60`);
-      await sleep(200);
-      const t1 = (await lua(A, LUA_EXECUTORS([tempFader.index], ["FaderMaster", "FaderTemp"]))).value?.executors?.[0] ?? "";
-      record(`run: Temp fader of ${tempFader.name}: FaderTemp At 60 read back through GetFader{FaderTemp} (59.99…, text 60%) and the sequence becomes active`, r1.ok && /FaderTemp=(59\.9|60)/.test(t1) && /active=true/.test(t1), { before: t0.replace(/^.*faders /, ""), after: t1.replace(/^.*faders /, ""), active: /active=true/.test(t1) });
-      const r2 = await cmd(A, `FaderTemp ${ref} At 0`);
-      await sleep(200);
-      const t2 = (await lua(A, LUA_EXECUTORS([tempFader.index], ["FaderMaster", "FaderTemp"]))).value?.executors?.[0] ?? "";
-      record(`run: Temp fader of ${tempFader.name} restored to 0 and the sequence inactive again`, r2.ok && /FaderTemp=0/.test(t2) && /active=false/.test(t2), { after: t2.replace(/^.*faders /, ""), active: /active=true/.test(t2) });
+      try {
+        const setTemp = async (ref, value) => cmd(A, `FaderTemp ${ref} At ${value}`);
+        const o = await probeFader({ io, cleanup, pageNo, exec: tempFader, token: "FaderTemp", target: 60, set: setTemp });
+        record(`run: Temp fader of ${tempFader.name} (${o.ref}): FaderTemp At 60 read back through GetFader{FaderTemp} (59.99…) and the sequence becomes active; back to ${o.original} and inactive again`, Math.abs(o.moved - 60) < 0.5 && o.activeAfterMove === true && Math.abs(o.restored - o.original) < 0.5 && o.activeAfterRestore === false, o);
+      } catch (err) { record(`run: Temp fader of ${tempFader.name}: ${err.step ?? "step"} failed; its restoration is left to the cleanup`, false, { error: err.message, partial: err.partial, pendingCleanup: cleanup.pending() }); }
     } else note("run: no Temp-fader executor on the page");
     // Page navigation neither stops nor starts playbacks.
     const pageBefore = (await lua(A, LUA_EXECUTORS([101], tokens))).value?.page;
     const actBefore = await Promise.all([temp, toggle].filter(Boolean).map((e) => activity(e.index)));
+    const pageBack = cleanup.add("Page 1", () => cmd(A, "Page 1"));
     r = await cmd(A, "Page 2");
     await sleep(200);
     const pageUp = (await lua(A, LUA_EXECUTORS([101], tokens))).value?.page;
     const back = await cmd(A, "Page 1");
+    if (back.ok) pageBack.done();
     await sleep(200);
     const pageAfter = (await lua(A, LUA_EXECUTORS([101], tokens))).value?.page;
     const actAfter = await Promise.all([temp, toggle].filter(Boolean).map((e) => activity(e.index)));
     record("run: Page 2 / Page 1 (both exist) changes the page and back without starting or stopping playbacks", r.ok && back.ok && pageUp !== pageBefore && pageAfter === pageBefore && actBefore.every((s, i) => s.active === actAfter[i].active), { before: pageBefore, up: pageUp, after: pageAfter, activity: actAfter.map((s) => s.active) });
   } finally {
-    for (const c of restore.reverse()) {
-      const r = await cmd(A, c);
-      note(`run: restore ${c}`, r.ok ? r.feedback : r.error);
-      await sleep(150);
-    }
+    // Every registered undo that the normal path did not complete, newest first, each attempted even if an
+    // earlier one failed; the outcomes are part of the record.
+    const pending = cleanup.pending();
+    const outcomes = await cleanup.run();
+    record(`run: cleanup ran ${outcomes.length} registered undo(s) (${pending.length} were still pending)`, outcomes.every((o) => o.ok), outcomes);
+    await sleep(150);
     const r = await cmd(A, "ClearAll");
-    note("run: ClearAll (the initial programmer was empty by precondition)", r.ok ? r.feedback : r.error);
+    note("run: ClearAll (the programmer was provably empty at the preflight gate)", r.ok ? r.feedback : r.error);
     await sleep(150);
     const ctxEnd = await read();
     record("run: final context equals the initial one (bank, page, selection, values)", ctxEnd.bank?.i64 === ctx0.bank?.i64 && ctxEnd.page?.i64 === ctx0.page?.i64 && ctxEnd.selectionCount === 0, contextSummary(ctxEnd));

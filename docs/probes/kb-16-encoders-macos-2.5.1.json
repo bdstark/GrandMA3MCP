@@ -2,7 +2,7 @@
   "mode": "run",
   "host": "127.0.0.1",
   "port": 9800,
-  "startedAt": "2026-10-10T06:36:06.758Z",
+  "startedAt": "2026-10-10T07:16:47.962Z",
   "ping": {
     "bridgeVersion": "0.12.0",
     "build": {
@@ -354,16 +354,12 @@
       }
     },
     {
-      "name": "run: initial selection is empty and no programmer values are shown (precondition)",
+      "name": "run: preflight gate (empty selection, no holds, programmer provably empty through the programmer op)",
       "pass": true,
       "detail": {
-        "selection": 0,
-        "values": [
-          "0.0",
-          "0.0",
-          "0.0",
-          "0.0"
-        ]
+        "scannedFixtures": 70,
+        "totalFixtures": 70,
+        "scannedChannels": 342
       }
     },
     {
@@ -658,105 +654,185 @@
       }
     },
     {
-      "name": "run: LOS2 Odd (Temp/): Press -> active=true, Unpress -> active=false",
+      "name": "run: LOS2 Odd (Temp/): Press Page 1.193 -> active=true, Unpress -> active=false",
       "pass": true,
       "detail": {
+        "ref": "Page 1.193",
+        "name": "LOS2 Odd",
+        "keyPress": "Temp",
+        "keyUnpress": "",
         "before": false,
+        "press": {
+          "ok": true,
+          "feedback": "OK"
+        },
         "during": true,
-        "after": false,
-        "press": "OK",
-        "unpress": "OK"
+        "unpress": {
+          "ok": true,
+          "feedback": "OK"
+        },
+        "after": false
       }
     },
     {
-      "name": "run: StartShow 1 (Flash/): Press -> active=true, Unpress -> active=false",
+      "name": "run: StartShow 1 (Flash/): Press Page 1.201 -> active=true, Unpress -> active=false",
       "pass": true,
       "detail": {
+        "ref": "Page 1.201",
+        "name": "StartShow 1",
+        "keyPress": "Flash",
+        "keyUnpress": "",
         "before": false,
+        "press": {
+          "ok": true,
+          "feedback": "OK"
+        },
         "during": true,
-        "after": false,
-        "press": "OK",
-        "unpress": "OK"
+        "unpress": {
+          "ok": true,
+          "feedback": "OK"
+        },
+        "after": false
       }
     },
     {
-      "name": "run: LOS2 Chase (Toggle/): Press -> active=true, Unpress -> active=true",
+      "name": "run: LOS2 Chase (Toggle): Press Page 1.195 -> active=true, Unpress -> still active=true, Off -> active=false",
       "pass": true,
       "detail": {
+        "ref": "Page 1.195",
+        "name": "LOS2 Chase",
+        "keyPress": "Toggle",
+        "keyUnpress": "",
         "before": false,
+        "press": {
+          "ok": true,
+          "feedback": "OK"
+        },
         "during": true,
+        "unpress": {
+          "ok": true,
+          "feedback": "OK"
+        },
         "after": true,
-        "press": "OK",
-        "unpress": "OK"
+        "off": {
+          "ok": true,
+          "feedback": "OK"
+        },
+        "afterOff": false
       }
     },
     {
-      "name": "run: LOS2 Chase restored with Off Sequence \"LOS2 Chase\"",
-      "pass": true,
-      "detail": false
-    },
-    {
-      "name": "run: LOS2 All DelayA (Top/Go+): Press runs Top (active), Unpress runs Go+ (observed active=false)",
+      "name": "run: LOS2 All DelayA (Top/Go+): Press Page 1.191 runs Top (active=true), Unpress runs Go+ (observed active=false), Off -> active=false",
       "pass": true,
       "detail": {
+        "ref": "Page 1.191",
+        "name": "LOS2 All DelayA",
+        "keyPress": "Top",
+        "keyUnpress": "Go+",
         "before": false,
+        "press": {
+          "ok": true,
+          "feedback": "OK"
+        },
         "during": true,
+        "unpress": {
+          "ok": true,
+          "feedback": "OK"
+        },
+        "after": false,
+        "off": {
+          "ok": true,
+          "feedback": "OK"
+        },
+        "afterOff": false
+      }
+    },
+    {
+      "name": "run: a Temp held for 1.2 s stays active until the Unpress Page 1.193 (release is the holder's responsibility): during=true, after=false",
+      "pass": true,
+      "detail": {
+        "ref": "Page 1.193",
+        "name": "LOS2 Odd",
+        "keyPress": "Temp",
+        "keyUnpress": "",
+        "before": false,
+        "press": {
+          "ok": true,
+          "feedback": "OK"
+        },
+        "during": true,
+        "unpress": {
+          "ok": true,
+          "feedback": "OK"
+        },
         "after": false
       }
     },
     {
-      "name": "run: LOS2 All DelayA restored with Off",
-      "pass": true
-    },
-    {
-      "name": "run: a Temp held for 1.2 s stays active until the Unpress (release is the holder's responsibility)",
+      "name": "run: Master fader of LOS2 All DelayA (Page 1.191) set to 25 and read back through GetFader{FaderMaster}, then restored to 100",
       "pass": true,
       "detail": {
-        "during": true,
-        "after": false
-      }
-    },
-    {
-      "name": "run: Master fader of LOS2 All DelayA set to 25 and read back through GetFader{FaderMaster}",
-      "pass": true,
-      "detail": {
-        "before": 100,
-        "after": 25
-      }
-    },
-    {
-      "name": "run: Master fader of LOS2 All DelayA restored",
-      "pass": true,
-      "detail": {
-        "after": 100
+        "ref": "Page 1.191",
+        "name": "LOS2 All DelayA",
+        "token": "FaderMaster",
+        "original": 100,
+        "target": 25,
+        "set": {
+          "ok": true
+        },
+        "moved": 25,
+        "activeAfterMove": false,
+        "restoreCall": {
+          "ok": true
+        },
+        "restored": 100,
+        "activeAfterRestore": false
       }
     },
     {
       "name": "run: FaderRate keyword on a Master-fader executor (function-specific setter, read back through GetFader{FaderRate})",
       "pass": null,
       "detail": {
-        "cmd": {
+        "ref": "Page 1.191",
+        "name": "LOS2 All DelayA",
+        "token": "FaderRate",
+        "original": 50,
+        "target": 75,
+        "set": {
           "ok": true,
           "feedback": "OK"
         },
-        "readback": "FaderRate=50.0(50%) FaderSpeed=50.0(50%)"
+        "moved": 50,
+        "activeAfterMove": false,
+        "restoreCall": {
+          "ok": true,
+          "feedback": "OK"
+        },
+        "restored": 50,
+        "activeAfterRestore": false
       }
     },
     {
-      "name": "run: Temp fader of Rotate: FaderTemp At 60 read back through GetFader{FaderTemp} (59.99…, text 60%) and the sequence becomes active",
+      "name": "run: Temp fader of Rotate (Page 1.210): FaderTemp At 60 read back through GetFader{FaderTemp} (59.99…) and the sequence becomes active; back to 0 and inactive again",
       "pass": true,
       "detail": {
-        "before": "210 | exec=Page 1.Executor 210 : Sequence 5437 'Rotate' | object=Sequence 5437 'Rotate' | class=Sequence | name=Rotate | keyPress=Temp keyUnpress= keyUnpressCombined=<Temp>\n fader=Temp encoder=Temp encoderLeft= encoderRight= isXKey=No width=1 | config=Configuration 1 'DefaultSequence' | appearance= | active=false | faders FaderMaster=100.0(100%) FaderTemp=0.0(0%)",
-        "after": "210 | exec=Page 1.Executor 210 : Sequence 5437 'Rotate' | object=Sequence 5437 'Rotate' | class=Sequence | name=Rotate | keyPress=Temp keyUnpress= keyUnpressCombined=<Temp>\n fader=Temp encoder=Temp encoderLeft= encoderRight= isXKey=No width=1 | config=Configuration 1 'DefaultSequence' | appearance= | active=true | faders FaderMaster=100.0(100%) FaderTemp=59.999996423721313(60%)",
-        "active": true
-      }
-    },
-    {
-      "name": "run: Temp fader of Rotate restored to 0 and the sequence inactive again",
-      "pass": true,
-      "detail": {
-        "after": "210 | exec=Page 1.Executor 210 : Sequence 5437 'Rotate' | object=Sequence 5437 'Rotate' | class=Sequence | name=Rotate | keyPress=Temp keyUnpress= keyUnpressCombined=<Temp>\n fader=Temp encoder=Temp encoderLeft= encoderRight= isXKey=No width=1 | config=Configuration 1 'DefaultSequence' | appearance= | active=false | faders FaderMaster=100.0(100%) FaderTemp=0.0(0%)",
-        "active": false
+        "ref": "Page 1.210",
+        "name": "Rotate",
+        "token": "FaderTemp",
+        "original": 0,
+        "target": 60,
+        "set": {
+          "ok": true,
+          "feedback": "OK"
+        },
+        "moved": 59.99999642372131,
+        "activeAfterMove": true,
+        "restoreCall": {
+          "ok": true,
+          "feedback": "OK"
+        },
+        "restored": 0,
+        "activeAfterRestore": false
       }
     },
     {
@@ -773,22 +849,37 @@
       }
     },
     {
-      "name": "run: restore Off Attribute \"ColorRGB_R\"",
-      "pass": null,
-      "detail": "OK"
+      "name": "run: cleanup ran 3 registered undo(s) (3 were still pending)",
+      "pass": true,
+      "detail": [
+        {
+          "label": "Off Attribute \"ColorRGB_R\"",
+          "ok": true,
+          "detail": {
+            "ok": true,
+            "feedback": "OK"
+          }
+        },
+        {
+          "label": "Select EncoderBank 1.1",
+          "ok": true,
+          "detail": {
+            "ok": true,
+            "feedback": "OK"
+          }
+        },
+        {
+          "label": "ClearSelection",
+          "ok": true,
+          "detail": {
+            "ok": true,
+            "feedback": "OK"
+          }
+        }
+      ]
     },
     {
-      "name": "run: restore Select EncoderBank 1.1",
-      "pass": null,
-      "detail": "OK"
-    },
-    {
-      "name": "run: restore ClearSelection",
-      "pass": null,
-      "detail": "OK"
-    },
-    {
-      "name": "run: ClearAll (the initial programmer was empty by precondition)",
+      "name": "run: ClearAll (the programmer was provably empty at the preflight gate)",
       "pass": null,
       "detail": "OK"
     },
@@ -821,7 +912,7 @@
       }
     }
   ],
-  "finishedAt": "2026-10-10T06:36:19.216Z",
+  "finishedAt": "2026-10-10T07:17:00.644Z",
   "failed": 0,
-  "passed": 47
+  "passed": 44
 }
