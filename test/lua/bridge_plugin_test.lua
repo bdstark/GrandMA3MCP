@@ -1692,9 +1692,11 @@ do
   Cmd = function() return "OK" end
   local C, D = { id = 81 }, { id = 82 }
   local function tnow() return os.clock() + (_G.FAKE_CLOCK_OFFSET or 0) end
+  local brev = 1  -- the bridge's binding can be replaced (control.bind), so every motion/down carries the revision
   local ev = function(seq, extra)
-    local e = { type = "relative", device = "nxk", control = "Rotary1", seq = seq, generation = gen, target = { slot = 1 }, delta = 1, gesture = 1 }
+    local e = { type = "relative", device = "nxk", control = "Rotary1", seq = seq, generation = gen, binding = brev, target = { slot = 1 }, delta = 1, gesture = 1 }
     for k, v in pairs(extra or {}) do e[k] = v end
+    if extra and extra.noBinding then e.binding = nil; e.noBinding = nil end
     return e
   end
   local r = request("control.submit", { events = { ev(1) } }, nil, C)
@@ -1722,7 +1724,7 @@ do
   check("the session was opened on demand with one coalesced intent queued", r.ok and r.result.yourSession == "conn-81" and r.result.sessions["conn-81"].queued == 1 and r.result.busy and r.result.busy.reason == "motion", J(r.result.sessions))
   r = request("cmd", { command = "Clear" }, nil, D)
   check("a queued/moving gesture makes cmd [busy] for every connection", r.ok == false and r.code == "busy" and r.error:find("input ownership is active") and r.detail.reason == "motion", J(r))
-  r = request("control.submit", { events = { { type = "touch", device = "mtouch", control = "Strip1", seq = 1, generation = gen, target = { executor = 201, element = "fader" }, down = true, gesture = 2 } } }, nil, C)
+  r = request("control.submit", { events = { { type = "touch", device = "mtouch", control = "Strip1", seq = 1, generation = gen, binding = brev, target = { executor = 201, element = "fader" }, down = true, gesture = 2 } } }, nil, C)
   check("a touch down is admitted", r.ok and r.result.accepted == 1, J(r))
   state._serviceModules(tnow() + 0.1)
   r = request("control.status", {}, nil, C)
@@ -1731,7 +1733,7 @@ do
   _G.FAKE_CLOCK_OFFSET = (_G.FAKE_CLOCK_OFFSET or 0) + 1
   r = request("cmd", { command = "Clear" }, nil, D)
   check("while the touch is down cmd stays [busy] with the gesture", r.ok == false and r.code == "busy" and r.detail.reason == "touch-down", J(r))
-  r = request("control.submit", { events = { { type = "absolute", device = "mtouch", control = "Strip1", seq = 2, generation = gen, target = { executor = 201, element = "fader" }, value = 0.5, gesture = 2 } } }, nil, D)
+  r = request("control.submit", { events = { { type = "absolute", device = "mtouch", control = "Strip1", seq = 2, generation = gen, binding = brev, target = { executor = 201, element = "fader" }, value = 0.5, gesture = 2 } } }, nil, D)
   check("another connection is refused the touched target (conflict)", r.ok and r.result.outcomes[1].refused == "conflict" and r.result.outcomes[1].owner == "conn-81", J(r))
   -- The hardkeys owner blocks motion from other sessions.
   Main(nil, "input=fake"); Cleanup()
@@ -1739,7 +1741,7 @@ do
   check("kb18: an input interaction of another connection is open", r.ok, J(r))
   r = request("control.submit", { events = { ev(6, { device = "nxk2" }) } }, nil, C)
   check("motion is refused while another input owner is busy", r.ok and r.result.outcomes[1].refused == "busy" and r.result.outcomes[1].owner == "conn-82", J(r))
-  r = request("control.submit", { events = { { type = "touch", device = "mtouch", control = "Strip1", seq = 3, generation = gen, target = { executor = 201, element = "fader" }, down = false, gesture = 2 } } }, nil, C)
+  r = request("control.submit", { events = { { type = "touch", device = "mtouch", control = "Strip1", seq = 3, generation = gen, binding = brev, target = { executor = 201, element = "fader" }, down = false, gesture = 2 } } }, nil, C)
   check("the release is admitted regardless", r.ok and r.result.outcomes[1].accepted and r.result.outcomes[1].boundary, J(r))
   request("input.end", { interaction = r.ok and "i1" or nil }, nil, D); request("input.close", {}, nil, D)
   -- A generation move drops queued motion before it is applied.
@@ -1756,15 +1758,18 @@ do
   bindingKey = "display=1;executors=202"
   r = request("control.bind", { executors = { 202 } }, nil, C)
   check("rebinding to another spec with the same generation number moves the revision", r.ok and r.result.binding == 2 and r.result.generation == 2, J(r.result))
-  r = request("control.submit", { events = { ev(10, { gesture = 5, generation = 2, binding = 1 }) } }, nil, C)
+  r = request("control.submit", { events = { ev(10, { gesture = 5, generation = 2, noBinding = true }) } }, nil, C)
+  check("an event without a revision is refused binding-required on the bridge (its binding is mutable)", r.ok and r.result.outcomes[1].refused == "binding-required", J(r))
+  brev = 2
+  r = request("control.submit", { events = { ev(13, { gesture = 5, generation = 2, binding = 1 }) } }, nil, C)
   check("an event carrying the old revision is refused stale-binding with the new one", r.ok and r.result.outcomes[1].refused == "stale-binding" and r.result.outcomes[1].binding == 2, J(r))
   r = request("control.status", {}, nil, C)
   check("the queued event from the old binding was dropped and status reports the revision", r.ok and r.result.sessions["conn-81"].queued == 0 and r.result.binding.revision == 2 and r.result.counters.staleDropped >= 2, J(r.result.counters))
-  r = request("control.submit", { events = { ev(11, { gesture = 6, generation = 2, binding = 2 }) } }, nil, C)
+  r = request("control.submit", { events = { ev(14, { gesture = 6, generation = 2 }) } }, nil, C)
   check("an event carrying the current revision is admitted", r.ok and r.result.accepted == 1, J(r))
   state._serviceModules(tnow() + 0.01)
   -- Disconnect ends the connection's gestures.
-  r = request("control.submit", { events = { { type = "button", device = "nxk", control = "Rotary1", seq = 12, generation = 2, binding = 2, target = { slot = 1 }, down = true } } }, nil, C)
+  r = request("control.submit", { events = { { type = "button", device = "nxk", control = "Rotary1", seq = 15, generation = 2, binding = brev, binding = 2, target = { slot = 1 }, down = true } } }, nil, C)
   state._serviceModules(tnow() + 0.01)
   state.clients = { C }
   state._closeClient(1, "disconnect")
@@ -1784,7 +1789,7 @@ do
   Main(nil, "control status"); Cleanup()
   check("'control status' prints the summary", logFound("control=fake enabled sessions=0") ~= nil, lastLog())
   -- An unresolved release survives a stop and is adopted at the next control=fake start.
-  r = request("control.submit", { events = { { type = "touch", device = "mtouch", control = "Strip1", seq = 20, generation = 2, target = { executor = 201, element = "fader" }, down = true, gesture = 9 } } }, nil, D)
+  r = request("control.submit", { events = { { type = "touch", device = "mtouch", control = "Strip1", seq = 20, generation = 2, binding = brev, target = { executor = 201, element = "fader" }, down = true, gesture = 9 } } }, nil, D)
   state._serviceModules(tnow() + 0.01)
   state.modules.control.instance._adapter:raiseNext("touch", "Keyboard() raised")
   Main(nil, "control=off"); Cleanup()

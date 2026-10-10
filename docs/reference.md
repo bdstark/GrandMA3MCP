@@ -306,14 +306,15 @@ the `control.*` ops is OFF until the operator enables it (`Plugin "gma3_mcp_brid
 moves on the console. `control.bind {display?, executors?}` names what this bridge's events mean (the same spec
 `feedback.watch` takes; the loop keeps it observed and the cached generation is what events are checked against) and
 returns the current `generation` or why none is claimed, plus the `binding` revision: generations are per spec, so a
-replaced spec is a new revision (queued motion dropped, holds rebound) and events should carry `binding` as well as
-`generation` (`stale-binding` names the current revision). A snapshot built from stale observations is no binding
+replaced spec is a new revision (queued motion dropped, holds rebound) and events must carry `binding` as well as
+`generation` (`binding-required` without it, `stale-binding` with an old one, each naming the current revision; releases
+need neither). A snapshot built from stale observations is no binding
 (`binding-unknown`). `control.open {leaseMs?, label?}` / `control.renew` /
 `control.close` are this connection's session (`conn-<id>`, opened on demand by `control.submit`). `control.submit
 {events: [...]}` (at most 32 per request, or `event` for one) admits each event in order and reports every outcome in
 place: `{accepted, queued, coalesced?, superseded?, lost, target, generation}` or `{refused: code, message, ...}` with
 the module's codes (`bad-event`, `duplicate`, `out-of-order`, `rate`, `binding-unknown`, `stale-generation` with the
-current `generation`, `stale-binding` with the current `binding`, `target-unavailable`, `unsupported`, `gesture-rebound`, `busy` with the other owner,
+current `generation`, `stale-binding` and `binding-required` with the current `binding`, `target-unavailable`, `unsupported`, `gesture-rebound`, `busy` with the other owner,
 `conflict` with the owning session, `capacity`, `queue-full`); a refusal never stops the batch. `control.status {}` is
 read-only (sessions with per-device order counters and gestures, counters, the bounded event log, unresolved releases,
 `busy`, `yourSession`); `control.recover {}` adopts the releases kept from a previous run and re-attempts every

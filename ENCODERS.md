@@ -222,10 +222,11 @@ them on this onPC; if a console shows an encoder bar on several displays, the co
 - **Bridge:** `control=fake|off`, `control status`, `control recover` arguments (Macros 118/119 on the test show);
   `control.bind/open/renew/close/submit/status/recover` ops (32 events per request), binding = the bridge's feedback
   instance cached for the bound spec.
-- **Harness:** `test/lua/control_admission_test.lua` (132 checks, including the PR review's late releases, release
-  capacity, recovery batches, rebound holds, stale and replaced bindings: loss, duplicates, reordering, bursts, reconnect/
+- **Harness:** `test/lua/control_admission_test.lua` (138 checks, including the PR review's late releases (beyond the
+  sequence window too), release capacity, recovery batches, rebound holds, stale and replaced bindings, releases kept
+  across a rebind, the required binding revision: loss, duplicates, reordering, bursts, reconnect/
   expiry/close/dispose, stale generations and rebound touches, context changes while queued, every bound, conflicts,
-  backend faults, recover/adopt) and the bridge harness block (43 checks); `test/kb18-probe.test.ts` (5).
+  backend faults, recover/adopt) and the bridge harness block (44 checks); `test/kb18-probe.test.ts` (5).
 
 **Limitations:** KB-18 ships the fake backend only (intents are admitted, ordered, coalesced, bounded and recorded;
 nothing moves on the console; KB-19 adds the adjustment backend and calibration); generations are those of one

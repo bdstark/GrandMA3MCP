@@ -92,6 +92,10 @@ function fakeControl(ref: { gen: number; selection: number }) {
       const s = (sessions[sid] ??= { queued: [], gestures: 0, devices: {}, counters: { applied: 0 } });
       const outcomes = (args.events as any[]).map((e) => {
         if (!["relative", "absolute", "touch", "button"].includes(e.type)) return { refused: "bad-event" };
+        if (!((e.type === "touch" || e.type === "button") && e.down === false) && e.target?.executor !== 999999 && e.generation === ref.gen) {
+          if (e.binding === undefined) return { refused: "binding-required", binding: 1 };
+          if (e.binding !== 1) return { refused: "stale-binding", binding: 1 };
+        }
         const d = (s.devices[e.device] ??= { last: 0, seen: new Set<number>() });
         if (e.seq <= d.last) return d.seen.has(e.seq) ? { refused: "duplicate" } : { refused: "out-of-order" };
         const lost = d.last === 0 ? 0 : e.seq - d.last - 1;
@@ -155,14 +159,14 @@ test("verify queues nothing: only refusals reach control.submit, and control is 
     if (op === "feedback.context") return snapshot(args.allExecutors ? [191] : args.executors ?? [], ref.gen, ref.selection);
     if (op === "feedback.watch") return { watched: 4 + args.executors.length };
     if (op === "feedback.unwatch") return { watched: 0 };
-    if (op === "control.bind") { if (args.display === 0) throw new Error("[bad-args] args.display must be a positive integer"); return { watched: 5, generation: ref.gen }; }
+    if (op === "control.bind") { if (args.display === 0) throw new Error("[bad-args] args.display must be a positive integer"); return { watched: 5, generation: ref.gen, binding: 1 }; }
     if (op.startsWith("control.") || op === "__close") return ctl(`conn-${conn}`, op, args);
     throw new Error("unexpected " + op);
   });
   try {
     const r = await run(["verify"], { GMA3_BRIDGE_PORT: String(b.port) });
     assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.match(r.stdout, /PASS verify: a malformed event, a stale generation and an unbound executor are refused in place/);
+    assert.match(r.stdout, /PASS verify: a malformed event, a stale generation, an unbound executor, a missing and a wrong binding revision are refused in place/);
     assert.match(r.stdout, /PASS verify: slot 1 without a selection is refused target-unavailable/);
     assert.match(r.stdout, /PASS verify: control.close ends the session/);
     const submits = ops.filter((o) => o.op === "control.submit");
@@ -174,7 +178,7 @@ test("verify queues nothing: only refusals reach control.submit, and control is 
     if (op === "feedback.context") return snapshot([], 1);
     if (op === "feedback.watch") return { watched: 4 };
     if (op === "feedback.unwatch") return { watched: 0 };
-    if (op === "control.bind") { if (args.display === 0) throw new Error("[bad-args] args.display must be a positive integer"); return { watched: 4, generation: 1 }; }
+    if (op === "control.bind") { if (args.display === 0) throw new Error("[bad-args] args.display must be a positive integer"); return { watched: 4, generation: 1, binding: 1 }; }
     if (op === "control.status") return { version: "0.1.0", limitations: ["fake only"], yourSession: null, sessions: {}, busy: null, unresolved: [] };
     if (op === "control.submit") throw new Error('[control-disabled] continuous control is disabled on the console. The console operator can enable it with:  Plugin "gma3_mcp_bridge" "control=fake"');
     throw new Error("unexpected " + op);
@@ -198,7 +202,7 @@ test("run: the selection is undone after a failure mid-way, and the happy path r
     if (op === "feedback.context") { if (failAfterSelect && ref.selection === 1) throw new Error("[not-running] simulated failure"); return snapshot(args.allExecutors ? [191] : args.executors ?? [], ref.gen, ref.selection); }
     if (op === "feedback.watch") return { watched: 5 };
     if (op === "feedback.unwatch") return { watched: 0 };
-    if (op === "control.bind") { if (args.display === 0) throw new Error("[bad-args] args.display must be a positive integer"); return { watched: 5, generation: ref.gen }; }
+    if (op === "control.bind") { if (args.display === 0) throw new Error("[bad-args] args.display must be a positive integer"); return { watched: 5, generation: ref.gen, binding: 1 }; }
     if (op === "cmd") {
       if (/^Fixture /.test(args.command)) { ref.selection = 1; ref.gen += 1; }
       if (args.command === "ClearSelection") { ref.selection = 0; ref.gen += 1; }
@@ -239,13 +243,14 @@ test("run: the selection is undone after a failure mid-way, and the happy path r
 });
 
 test("eventFactory numbers events per device and outcomesOf compresses a result", () => {
-  const ev = eventFactory("d", 4);
+  const ev = eventFactory("d", 4, 2);
   const a = ev.relative(1, 2);
   const t = ev.touch(201, true);
   ev.skip(2);
   const c = ev.button(1, false);
   assert.deepEqual([a.seq, t.seq, c.seq], [1, 2, 5]);
   assert.equal(a.generation, 4);
+  assert.equal(a.binding, 2);
   assert.deepEqual(a.target, { slot: 1 });
   assert.deepEqual(t.target, { executor: 201, element: "fader" });
   assert.deepEqual(outcomesOf({ ok: true, result: { accepted: 2, refused: 1, lost: 0, outcomes: [{ accepted: true, queued: 1 }, { accepted: true, coalesced: true }, { refused: "duplicate" }] } }), { accepted: 2, refused: 1, lost: 0, outcomes: ["queued", "coalesced", "duplicate"] });

@@ -89,6 +89,7 @@ local DEFAULT_CONFIG = {
   eventLog           = 64,
   seqWindow          = 64,     -- per device: sequence numbers behind the newest that are remembered as seen
   maxDelta           = 4096,   -- |delta| of one relative event (detents)
+  requireBindingRevision = true, -- motion and downs must carry `binding`; a consumer whose spec never changes sets false
 }
 
 local function shallowCopy(t) local o = {} for k, v in pairs(t or {}) do o[k] = v end return o end
@@ -369,9 +370,13 @@ end
 -- may act on the new one.
 function Instance:_rebindAll(now, why)
   for _, s in pairs(self._sessions) do
-    local n = #s.queue
+    -- Queued releases end holds against their captured targets and are kept; only motion is dropped.
+    local keep, n = {}, 0
+    for _, it in ipairs(s.queue) do
+      if (it.kind == "touch" or it.kind == "button") and it.down == false then keep[#keep + 1] = it else n = n + 1 end
+    end
     if n > 0 then
-      s.queue = {}
+      s.queue = keep
       s.counters.dropped = s.counters.dropped + n; self._counters.dropped = self._counters.dropped + n; self._counters.staleDropped = self._counters.staleDropped + n
     end
     for _, g in pairs(s.gestures) do if g.kind == "touch" or g.kind == "button" then g.rebound = true end end
@@ -431,7 +436,10 @@ local function orderEvent(self, s, ev, release)
   if not d then d = { last = 0, seen = {}, times = {}, lost = 0, duplicates = 0, reordered = 0, late = 0 }; s.devices[ev.device] = d end
   if ev.seq <= d.last then
     if d.seen[ev.seq] then d.duplicates = d.duplicates + 1; return fail("duplicate", string.format("event %d of device %s was already admitted", ev.seq, ev.device), { seq = ev.seq, last = d.last }) end
-    if release and release.downSeq and ev.seq > release.downSeq and ev.seq > d.last - self._config.seqWindow then
+    -- A delayed release is validated against the hold it ends, not the motion history: the hold still
+    -- existing proves its release was not processed, and `seq > downSeq` protects a newer hold. The
+    -- window does not bound it.
+    if release and release.downSeq and ev.seq > release.downSeq then
       d.late = d.late + 1
       return 0, d, true
     end
@@ -558,6 +566,10 @@ function Instance:submit(sessionId, now, ev)
   end
   local target, terr = resolveTarget(snap, ev.target)
   if not target then return refuse(terr) end
+  if ev.binding == nil and self._config.requireBindingRevision then
+    return refuse(errOf("binding-required", string.format("the event carries no binding revision; this consumer's binding can be replaced, so motion and downs must carry binding = %d (bindingInfo())", snap.bindingRevision),
+                        { binding = snap.bindingRevision, generation = snap.generation }))
+  end
   if existing and existing.kind == "touch" and ev.type ~= "touch" and ev.type ~= "button" and (existing.rebound or existing.generation ~= snap.generation) then
     existing.rebound = true
     return refuse(errOf("gesture-rebound", "the binding changed while this touch was down; release and touch again to control the new target", { target = ev.target, heldGeneration = existing.generation, generation = snap.generation }))
@@ -890,7 +902,9 @@ local function new(opts)
   local config = shallowCopy(DEFAULT_CONFIG)
   for k, v in pairs(opts.config or {}) do
     if DEFAULT_CONFIG[k] == nil then error(NAME .. ".new: unknown config key '" .. tostring(k) .. "'", 2) end
-    if type(v) ~= "number" or v <= 0 then error(NAME .. ".new: config." .. k .. " must be a positive number", 2) end
+    if type(DEFAULT_CONFIG[k]) == "boolean" then
+      if type(v) ~= "boolean" then error(NAME .. ".new: config." .. k .. " must be a boolean", 2) end
+    elseif type(v) ~= "number" or v <= 0 then error(NAME .. ".new: config." .. k .. " must be a positive number", 2) end
     config[k] = v
   end
   return setmetatable({

@@ -83,13 +83,13 @@ function record(name, pass, detail) {
 function note(name, detail) { steps.push({ name, note: true, detail }); console.log(`NOTE ${name}${detail !== undefined ? ` ${JSON.stringify(detail)}` : ""}`); }
 
 /** Builds the per-device event sequence for a probe device. */
-export function eventFactory(device, generation) {
+export function eventFactory(device, generation, binding) {
   let seq = 0;
   return {
-    relative: (slot, delta, extra = {}) => ({ type: "relative", device, control: `Rotary${slot}`, seq: ++seq, generation, target: { slot }, delta, gesture: extra.gesture ?? 1, ...extra }),
-    absolute: (executor, value, extra = {}) => ({ type: "absolute", device, control: `Strip${executor}`, seq: ++seq, generation, target: { executor, element: "fader" }, value, gesture: extra.gesture ?? 1, ...extra }),
-    touch: (executor, down, extra = {}) => ({ type: "touch", device, control: `Strip${executor}`, seq: ++seq, generation, target: { executor, element: "fader" }, down, gesture: extra.gesture ?? 1, ...extra }),
-    button: (slot, down, extra = {}) => ({ type: "button", device, control: `Rotary${slot}`, seq: ++seq, generation, target: { slot }, down, ...extra }),
+    relative: (slot, delta, extra = {}) => ({ type: "relative", device, control: `Rotary${slot}`, seq: ++seq, generation, binding, target: { slot }, delta, gesture: extra.gesture ?? 1, ...extra }),
+    absolute: (executor, value, extra = {}) => ({ type: "absolute", device, control: `Strip${executor}`, seq: ++seq, generation, binding, target: { executor, element: "fader" }, value, gesture: extra.gesture ?? 1, ...extra }),
+    touch: (executor, down, extra = {}) => ({ type: "touch", device, control: `Strip${executor}`, seq: ++seq, generation, binding, target: { executor, element: "fader" }, down, gesture: extra.gesture ?? 1, ...extra }),
+    button: (slot, down, extra = {}) => ({ type: "button", device, control: `Rotary${slot}`, seq: ++seq, generation, binding, target: { slot }, down, ...extra }),
     skip: (n = 1) => { seq += n; },
     get seq() { return seq; },
   };
@@ -133,7 +133,8 @@ async function main() {
   // Playback targets first (the KB-12 bank's Quickeys are never ones), at most 8 so the watch stays bounded.
   const execNumbers = ctx0.ok ? ctx0.result.executors.filter((x) => x.available && !x.value.empty).sort((a, b) => (b.value.playbackTarget ? 1 : 0) - (a.value.playbackTarget ? 1 : 0)).map((x) => x.value.executor).slice(0, 8) : [];
   const bind = await A.request("control.bind", { executors: execNumbers });
-  record("control.bind watches the context and reports a generation or why none is claimed", bind.ok && bind.result.watched >= 4 && (typeof bind.result.generation === "number" || bind.result.generationUnknown === true), bind.ok ? { generation: bind.result.generation, generationUnknown: bind.result.generationUnknown, note: bind.result.generationNote, watched: bind.result.watched } : bind);
+  record("control.bind watches the context and reports a generation (or why none is claimed) and the binding revision", bind.ok && bind.result.watched >= 4 && (typeof bind.result.generation === "number" || bind.result.generationUnknown === true) && typeof bind.result.binding === "number", bind.ok ? { generation: bind.result.generation, generationUnknown: bind.result.generationUnknown, note: bind.result.generationNote, watched: bind.result.watched, binding: bind.result.binding } : bind);
+  const brev = bind.ok ? bind.result.binding : undefined;
   await sleep(400);  // the loop observes the watched items (8 reads per iteration)
   const cached = await A.request("feedback.context", { executors: execNumbers, cached: true });
   record("the cached snapshot claims a generation once the loop observed every part", cached.ok && typeof cached.result.generation === "number" && cached.result.notObserved === 0, cached.ok ? { generation: cached.result.generation, notObserved: cached.result.notObserved, note: cached.result.generationNote } : cached);
@@ -143,12 +144,12 @@ async function main() {
   const B = new Conn("b");
   await B.connect();
   if (!ping.control?.enabled) {
-    const off = await A.request("control.submit", { events: [{ type: "relative", device: "probe", control: "Rotary1", seq: 1, generation: gen ?? 0, target: { slot: 1 }, delta: 1 }] });
+    const off = await A.request("control.submit", { events: [{ type: "relative", device: "probe", control: "Rotary1", seq: 1, generation: gen ?? 0, binding: brev, target: { slot: 1 }, delta: 1 }] });
     record("control.submit is [control-disabled] until the operator enables control (nothing was queued)", !off.ok && off.code === "control-disabled" && /control=fake/.test(off.error ?? ""), off);
   } else {
-    const ev = eventFactory("probe-verify", gen);
-    const r1 = await A.request("control.submit", { events: [{ type: "wheel", device: "probe-verify", control: "x", seq: 1 }, ev.relative(1, 1, { generation: (gen ?? 0) + 1000 }), { ...ev.relative(99, 1), target: { executor: 999999, element: "fader" }, control: "Strip999999" }] });
-    record("verify: a malformed event, a stale generation and an unbound executor are refused in place; nothing is queued", r1.ok && r1.result.refused === 3 && r1.result.accepted === 0 && r1.result.outcomes[0].refused === "bad-event" && r1.result.outcomes[1].refused === "stale-generation" && r1.result.outcomes[1].generation === gen && r1.result.outcomes[2].refused === "target-unavailable", outcomesOf(r1));
+    const ev = eventFactory("probe-verify", gen, brev);
+    const r1 = await A.request("control.submit", { events: [{ type: "wheel", device: "probe-verify", control: "x", seq: 1 }, ev.relative(1, 1, { generation: (gen ?? 0) + 1000 }), { ...ev.relative(99, 1), target: { executor: 999999, element: "fader" }, control: "Strip999999" }, { ...ev.relative(1, 1), binding: undefined }, ev.relative(1, 1, { binding: (brev ?? 0) + 100 })] });
+    record("verify: a malformed event, a stale generation, an unbound executor, a missing and a wrong binding revision are refused in place; nothing is queued", r1.ok && r1.result.refused === 5 && r1.result.accepted === 0 && r1.result.outcomes[0].refused === "bad-event" && r1.result.outcomes[1].refused === "stale-generation" && r1.result.outcomes[1].generation === gen && r1.result.outcomes[2].refused === "target-unavailable" && r1.result.outcomes[3].refused === "binding-required" && r1.result.outcomes[4].refused === "stale-binding" && r1.result.outcomes[4].binding === brev, outcomesOf(r1));
     const sel = cached.ok ? cached.result.slots?.value?.selection?.count : undefined;
     const slot1 = cached.ok ? cached.result.slots?.value?.slots?.find((s) => s.slot === 1) : undefined;
     if (sel === 0 && slot1?.kind === "attribute") {
@@ -174,7 +175,7 @@ async function main() {
       const g1 = c1.ok ? c1.result.generation : undefined;
       const slot1 = c1.ok ? c1.result.slots?.value?.slots?.find((s) => s.slot === 1) : undefined;
       record(`run: Fixture ${RGB_FIXTURE} selected; the cached generation moved and slot 1 is available`, selR.ok && typeof g1 === "number" && g1 !== gen && slot1?.availability === "available", { generation: [gen, g1], slot1: slot1 && [slot1.name, slot1.availability, slot1.resolution] });
-      const ev = eventFactory("probe-nxk", g1);
+      const ev = eventFactory("probe-nxk", g1, brev);
       const burst = Array.from({ length: 10 }, (_, i) => ev.relative(1, i % 3 === 2 ? -1 : 1));
       const b1 = await A.request("control.submit", { events: burst });
       record("run: a burst of 10 relative events on slot 1 is admitted and coalesced into one queued intent", b1.ok && b1.result.accepted === 10 && b1.result.refused === 0 && b1.result.outcomes.filter((o) => o.coalesced).length === 9 && b1.result.outcomes[9].queued === 1, outcomesOf(b1));
@@ -198,7 +199,7 @@ async function main() {
         record(`run: a touch down on executor ${faderExec} (fader) is admitted`, td.ok && td.result.outcomes[0].accepted, outcomesOf(td));
         const busy = await B.request("cmd", { command: "Echo kb18-probe" });
         record("run: a command from another connection is [busy] while the touch is down (the control module's gesture: touch-down or the motion just before it)", !busy.ok && busy.code === "busy" && ["touch-down", "motion"].includes(busy.detail?.reason) && busy.detail?.module === "control" && busy.detail?.owner === st2.result.yourSession, busy);
-        const evB = eventFactory("probe-mtouch-b", g1);
+        const evB = eventFactory("probe-mtouch-b", g1, brev);
         const conflict = await B.request("control.submit", { events: [evB.absolute(faderExec, 0.5)] });
         record("run: another connection's position for the touched target is a conflict with the owner", conflict.ok && conflict.result.outcomes[0].refused === "conflict" && conflict.result.outcomes[0].owner === st2.result.yourSession, outcomesOf(conflict));
         const pos = await A.request("control.submit", { events: [ev.absolute(faderExec, 0.2, { gesture: 7 }), ev.absolute(faderExec, 0.4, { gesture: 7 }), ev.absolute(faderExec, 0.6, { gesture: 7 })] });
@@ -232,7 +233,7 @@ async function main() {
       await sleep(400);
       const c3 = need(await A.request("feedback.context", { executors: execNumbers, cached: true }), "feedback.context after the second selection");
       const g3 = c3.ok ? c3.result.generation : undefined;
-      const evC = eventFactory("probe-nxk-c", g3);
+      const evC = eventFactory("probe-nxk-c", g3, brev);
       await sleep(650);  // A's last motion on slot 1 keeps the target for gestureIdleMs
       const C = new Conn("c");
       await C.connect();

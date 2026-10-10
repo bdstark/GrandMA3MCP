@@ -32,7 +32,7 @@ check("module table is read-only", not pcall(function() CTL.x = 1 end) and CTL.x
 check("module registers in the signal table", signals.__gma3_mcp_modules.gma3_mcp_control == CTL)
 check("publishes nothing globally", package.loaded.gma3_mcp_control == nil and _G.gma3_mcp_control == nil)
 check("new() needs an owner", not pcall(CTL.new, {}) and pcall(CTL.new, { owner = "t" }))
-check("new() refuses unknown and non-positive config", not pcall(CTL.new, { owner = "t", config = { nope = 1 } }) and not pcall(CTL.new, { owner = "t", config = { maxQueue = 0 } }))
+check("new() refuses unknown and non-positive config, and a non-boolean flag", not pcall(CTL.new, { owner = "t", config = { nope = 1 } }) and not pcall(CTL.new, { owner = "t", config = { maxQueue = 0 } }) and not pcall(CTL.new, { owner = "t", config = { requireBindingRevision = 1 } }) and CTL.DEFAULT_CONFIG.requireBindingRevision == true)
 
 -------------------------------------------------------------------------------
 -- Fake binding: a feedback contextSnapshot() shape
@@ -55,6 +55,8 @@ local binding = {
 }
 local busyOwner = nil
 local function fresh(config)
+  config = config or {}
+  if config.requireBindingRevision == nil then config.requireBindingRevision = false end  -- a fixed binding, as the surface plugin declares
   local inst = CTL.new({ owner = "test", config = config, deps = { binding = function() return binding end, busy = function() return busyOwner end } }):init()
   local b = CTL.fakeBackend()
   inst:enableInput(b)
@@ -84,7 +86,7 @@ local function code(_, err) return err and err.code end
 -- Lifecycle, sessions and admission
 -------------------------------------------------------------------------------
 do
-  local inst = CTL.new({ owner = "test", deps = { binding = function() return binding end } }):init()
+  local inst = CTL.new({ owner = "test", config = { requireBindingRevision = false }, deps = { binding = function() return binding end } }):init()
   check("input is disabled on a new instance", inst:status().inputEnabled == false and inst:status().backend == nil)
   check("submit before enableInput is input-disabled", code(inst:submit("s", 1, rel(1, 1, 1))) == "input-disabled")
   check("enableInput needs a backend", not pcall(inst.enableInput, inst))
@@ -507,6 +509,40 @@ do
     binding.bindingKey = "display=1;executors=201"; i8:bindingInfo(1.05); binding.generation = nil
     local bi = i8:bindingInfo(1.06); binding.generation = 1; binding.bindingKey = nil
     return bi.revision == 3 and bi.unknown and bi.unknown.code == "binding-unknown" end)())
+  -- Second review round.
+  -- (R2-1) a queued release survives a rebind and ends its hold against the captured target.
+  local i9, b9 = fresh()
+  i9:openSession({ id = "s" }, 1)
+  binding.bindingKey = "A"
+  i9:submit("s", 1, button(1, 1, true)); i9:service(1.01)
+  i9:submit("s", 1.02, button(2, 1, false)); i9:submit("s", 1.02, rel(3, 2, 1))
+  binding.bindingKey = "B"
+  i9:bindingInfo(1.03)
+  local out9 = i9:service(1.04)
+  check("review R2-1: rebinding keeps the queued release (applied against its captured target) and drops only the motion", out9.applied == 1 and b9:last().kind == "button" and b9:last().down == false and b9:last().targetKey == "slot1|Attribute 1 'Dimmer'|Absolute|Coarse" and i9:status(1.05).counters.staleDropped == 1 and holds(i9, 1.05) == 0, J(out9))
+  binding.bindingKey = nil
+  -- (R2-2) the revision is required unless the consumer declares a fixed binding.
+  local i10 = CTL.new({ owner = "t", deps = { binding = function() return binding end } }):init(); i10:enableInput(CTL.fakeBackend()); i10:openSession({ id = "s" }, 1)
+  binding.bindingKey = "A"
+  local _, e10 = i10:submit("s", 1, rel(1, 1, 1))
+  check("review R2-2: by default an event without a binding revision is refused binding-required with the current one", e10 and e10.code == "binding-required" and e10.binding == 1, J(e10))
+  binding.bindingKey = "B"
+  check("review R2-2: after replacing the binding at the same generation, an event without a revision is still refused, the old revision is stale-binding, the current one is admitted",
+    code(i10:submit("s", 1.01, rel(1, 1, 1))) == "binding-required" and code(i10:submit("s", 1.01, rel(1, 1, 1, { binding = 1 }))) == "stale-binding" and i10:submit("s", 1.01, rel(1, 1, 1, { binding = 2 })).accepted == true)
+  check("review R2-2: a malformed or unresolvable target is reported before the revision check; a release never needs the revision", code(i10:submit("s", 1.02, rel(2, 9, 1))) == "target-unavailable" and code(i10:submit("s", 1.02, rel(2, 1, 1, { target = { slot = 0 } }))) == "bad-event" and (function()
+    local d = button(2, 1, true); d.binding = 2; i10:submit("s", 1.03, d); return i10:submit("s", 1.04, button(3, 1, false)).accepted == true end)())
+  binding.bindingKey = nil
+  -- (R2-3) a delayed release beyond the sequence window still ends its hold.
+  local i11 = fresh()
+  i11:openSession({ id = "s" }, 1)
+  i11:submit("s", 1, button(1, 1, true))
+  for q = 3, 67 do i11:submit("s", 1 + q * 0.001, rel(q, 2, 1, { gesture = q })) end
+  local r11 = i11:submit("s", 1.1, button(2, 1, false))
+  check("review R2-3: down 1, motion 3-67, the delayed release 2 is admitted late beyond the window and ends the hold", r11 and r11.accepted and r11.late == true and holds(i11, 1.11) == 0, J(r11))
+  check("review R2-3: a release older than the hold's press stays refused beyond the window too", (function()
+    local i12 = fresh({ maxQueue = 200 }); i12:openSession({ id = "s" }, 1)
+    i12:submit("s", 1.2, button(70, 1, true)); for q = 71, 140 do i12:submit("s", 1.2 + q * 0.0001, rel(q, 2, 1, { gesture = q })) end
+    return code(i12:submit("s", 1.3, button(69, 1, false))) == "duplicate" and holds(i12, 1.31) == 1 end)())
   check("review 6: a bad binding revision is bad-event", code(i8:submit("s", 1.07, rel(4, 1, 1, { binding = 1.5 }))) == "bad-event")
   local _ = b, b2
 end
