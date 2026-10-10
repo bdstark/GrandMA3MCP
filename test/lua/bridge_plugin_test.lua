@@ -1738,6 +1738,14 @@ do
   check("control.bind validates its arguments", r.ok == false and r.code == "bad-args", r.error)
   r = request("control.bind", { executors = { 201 }, executorPage = 2 }, nil, C)
   check("kb21: control.bind passes executorPage into the watched spec", r.ok and watched.executorPage == 2 and state.control.spec.executorPage == 2, J({ r, watched }))
+  check("kb21: the control module's binding source is the same page-bound spec (live bug: the key named no page)", (function()
+    local seen
+    local fbi = state.modules.feedback.instance
+    local saved = fbi.contextSnapshot
+    fbi.contextSnapshot = function(self, spec, t, opts) seen = spec; return saved(self, spec, t, opts) end
+    state.modules.control.instance:bindingInfo(tnow())
+    fbi.contextSnapshot = saved
+    return seen and seen.executorPage == 2 and seen.executors[1] == 201 end)())
   r = request("control.bind", { executors = { 201 }, executorPage = -1 }, nil, C)
   check("kb21: control.bind refuses a bad executorPage", r.ok == false and r.code == "bad-args", r.error)
   r = request("control.bind", { executors = { 201 } }, nil, C)

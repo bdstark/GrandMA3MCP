@@ -1499,7 +1499,9 @@ local function loadModules()
             local finst = fb and fb.instance
             local spec = state.control.spec
             if not finst or type(finst.contextSnapshot) ~= "function" or type(spec) ~= "table" then return nil end
-            return finst:contextSnapshot({ display = spec.display, executors = spec.executors }, t, { cached = true })
+            -- KB-21: the page the executors are bound to is part of the spec (a page-bound binding is a different
+            -- snapshot spec from a following one; the watched items and the binding must be the same spec).
+            return finst:contextSnapshot({ display = spec.display, executors = spec.executors, executorPage = spec.executorPage }, t, { cached = true })
           end
           deps.busy = function(_, t)
             local hk = state.modules.hardkeys
