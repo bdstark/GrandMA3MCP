@@ -351,7 +351,40 @@ function Instance:_binding(now)
   if snap.generation == nil then
     return nil, errOf("binding-unknown", "the binding claims no generation: " .. tostring(snap.generationNote or "unknown"), { lastGeneration = snap.lastGeneration })
   end
+  if snap.stale == true then
+    return nil, errOf("binding-unknown", "the binding is built from stale observations (its generation may lag the console); wait for the loop to observe it again", { generation = snap.generation, stale = true })
+  end
+  -- Binding identity (review): generations are per spec, so a different spec can carry the same number.
+  -- A changed key is a new binding revision: queued motion is dropped and every hold is rebound.
+  if snap.bindingKey ~= nil and snap.bindingKey ~= self._bindingKey then
+    if self._bindingKey ~= nil then self:_rebindAll(now, "binding changed from " .. tostring(self._bindingKey) .. " to " .. tostring(snap.bindingKey)) end
+    self._bindingKey = snap.bindingKey
+    self._bindingRevision = self._bindingRevision + 1
+  end
+  snap.bindingRevision = self._bindingRevision
   return snap
+end
+
+-- Drops every queued intent and marks every hold rebound: nothing produced against the previous binding
+-- may act on the new one.
+function Instance:_rebindAll(now, why)
+  for _, s in pairs(self._sessions) do
+    local n = #s.queue
+    if n > 0 then
+      s.queue = {}
+      s.counters.dropped = s.counters.dropped + n; self._counters.dropped = self._counters.dropped + n; self._counters.staleDropped = self._counters.staleDropped + n
+    end
+    for _, g in pairs(s.gestures) do if g.kind == "touch" or g.kind == "button" then g.rebound = true end end
+  end
+  logEvent(self, { at = now, rebind = why, revision = self._bindingRevision + 1 })
+end
+
+-- The current binding revision and generation (what events must carry).
+function Instance:bindingInfo(now)
+  checkReady(self); checkNow(now)
+  local snap, err = self:_binding(now)
+  if not snap then return { revision = self._bindingRevision, key = self._bindingKey, unknown = err } end
+  return { revision = snap.bindingRevision, key = snap.bindingKey, generation = snap.generation }
 end
 
 -------------------------------------------------------------------------------
@@ -385,15 +418,23 @@ local function validateEvent(self, ev)
   if ev.gesture ~= nil and not (isInt(ev.gesture) and ev.gesture >= 0) and type(ev.gesture) ~= "string" then return fail("bad-event", "event.gesture must be an integer or string id") end
   if ev.fine ~= nil and type(ev.fine) ~= "boolean" then return fail("bad-event", "event.fine must be a boolean") end
   if ev.generation ~= nil and not isInt(ev.generation) then return fail("bad-event", "event.generation must be an integer") end
+  if ev.binding ~= nil and not isInt(ev.binding) then return fail("bad-event", "event.binding must be an integer (the binding revision)") end
   return true
 end
 
 -- Per-device ordering: duplicate / out-of-order / gap (loss). Returns lost count or nil, err.
-local function orderEvent(self, s, ev)
+-- `release` is the hold a touch end / button release would end (nil when none): a delayed release that is
+-- newer than the hold's own press is admitted even after another control advanced the device sequence
+-- (it ends an existing hold, never a newer one); it does not move the device's newest sequence.
+local function orderEvent(self, s, ev, release)
   local d = s.devices[ev.device]
-  if not d then d = { last = 0, seen = {}, times = {}, lost = 0, duplicates = 0, reordered = 0 }; s.devices[ev.device] = d end
+  if not d then d = { last = 0, seen = {}, times = {}, lost = 0, duplicates = 0, reordered = 0, late = 0 }; s.devices[ev.device] = d end
   if ev.seq <= d.last then
     if d.seen[ev.seq] then d.duplicates = d.duplicates + 1; return fail("duplicate", string.format("event %d of device %s was already admitted", ev.seq, ev.device), { seq = ev.seq, last = d.last }) end
+    if release and release.downSeq and ev.seq > release.downSeq and ev.seq > d.last - self._config.seqWindow then
+      d.late = d.late + 1
+      return 0, d, true
+    end
     if ev.seq > d.last - self._config.seqWindow then
       d.reordered = d.reordered + 1
       return fail("out-of-order", string.format("event %d of device %s arrived after event %d; it is not applied late", ev.seq, ev.device, d.last), { seq = ev.seq, last = d.last })
@@ -406,7 +447,13 @@ local function orderEvent(self, s, ev)
   return lost, d
 end
 
-local function commitOrder(self, d, ev, lost)
+local function commitOrder(self, d, ev, lost, late)
+  if late then
+    -- Counted as lost when the gap was seen; it arrived after all.
+    d.seen[ev.seq] = true
+    if d.lost > 0 then d.lost = d.lost - 1 end
+    return
+  end
   d.last = ev.seq
   d.seen[ev.seq] = true
   d.seen[ev.seq - self._config.seqWindow] = nil
@@ -454,21 +501,23 @@ function Instance:submit(sessionId, now, ev)
   if not s then self._counters.refused = self._counters.refused + 1; return nil, err end
   local okV, verr = validateEvent(self, ev)
   if not okV then s.counters.refused = s.counters.refused + 1; self._counters.refused = self._counters.refused + 1; return nil, verr end
-  local lost, d = orderEvent(self, s, ev)
+  local release = (ev.type == "touch" or ev.type == "button") and ev.down == false
+  local heldFor = release and s.gestures[gestureKey(ev)] or nil
+  if heldFor and heldFor.kind ~= ev.type then heldFor = nil end
+  local lost, d, late = orderEvent(self, s, ev, heldFor)
   if lost == nil then
     s.counters.refused = s.counters.refused + 1; self._counters.refused = self._counters.refused + 1
     logEvent(self, { at = now, session = sessionId, type = ev.type, device = ev.device, control = ev.control, seq = ev.seq, refused = d.code })
     return nil, d
   end
   local motion = ev.type == "relative" or ev.type == "absolute"
-  local release = (ev.type == "touch" or ev.type == "button") and ev.down == false
   local function refuse(e)
     s.counters.refused = s.counters.refused + 1; self._counters.refused = self._counters.refused + 1
     logEvent(self, { at = now, session = sessionId, type = ev.type, device = ev.device, control = ev.control, seq = ev.seq, refused = e.code })
     return nil, e
   end
   if motion and rateExceeded(self, d, now) then
-    commitOrder(self, d, ev, lost)  -- the event was seen; it is dropped, not deferred
+    commitOrder(self, d, ev, lost, late)  -- the event was seen; it is dropped, not deferred
     d.rateDropped = (d.rateDropped or 0) + 1
     self._counters.rateDropped = self._counters.rateDropped + 1
     return refuse(errOf("rate", string.format("device %s exceeded %d events/s; the event is dropped, not deferred", ev.device, self._config.maxEventsPerSecond)))
@@ -477,32 +526,41 @@ function Instance:submit(sessionId, now, ev)
   local existing = s.gestures[gkey]
   if release then
     -- A touch end or button release only needs the hold it ends. It is admitted without a binding,
-    -- ahead of the queue bound, and never rate-limited: releases stay responsive during a flood.
-    commitOrder(self, d, ev, lost)
+    -- never rate-limited, and the queue keeps room for it (maxQueue + maxHolds, evicting the session's
+    -- oldest motion first): releases stay responsive during a flood. The hold stays owned until the
+    -- release is queued, so a refused release leaves the target reserved for its retransmission.
     if not existing or existing.kind ~= ev.type then
+      commitOrder(self, d, ev, lost, late)
       s.counters.admitted = s.counters.admitted + 1
       logEvent(self, { at = now, session = sessionId, type = ev.type, device = ev.device, control = ev.control, seq = ev.seq, noop = true })
       return { accepted = true, noop = true, lost = lost, note = "no " .. ev.type .. " of that control is down for this session" }
     end
     local intent = { kind = ev.type, down = false, target = existing.target, targetKey = existing.targetKey, generation = existing.generation, device = ev.device, control = ev.control,
                      gesture = existing.gesture, seq = ev.seq, session = sessionId, at = now, rebound = existing.rebound }
+    local queued, qerr = self:_enqueue(s, intent, true)
+    if not queued then return refuse(qerr) end
+    commitOrder(self, d, ev, lost, late)
     s.gestures[gkey] = nil
-    local queued = self:_enqueue(s, intent, true)
     s.counters.admitted = s.counters.admitted + 1; s.counters.lost = s.counters.lost + lost; self._counters.admitted = self._counters.admitted + 1; self._counters.lost = self._counters.lost + lost
     logEvent(self, { at = now, session = sessionId, type = ev.type, device = ev.device, control = ev.control, seq = ev.seq, admitted = true })
-    return { accepted = true, queued = queued.position, evicted = queued.evicted, lost = lost, boundary = true }
+    return { accepted = true, queued = queued.position, evicted = queued.evicted, lost = lost, late = late or nil, boundary = true }
   end
   -- Everything else needs the binding and a resolvable target.
   local snap, berr = self:_binding(now)
   if not snap then return refuse(berr) end
+  if ev.binding ~= nil and ev.binding ~= snap.bindingRevision then
+    return refuse(errOf("stale-binding", string.format("event binding revision %s is not the current revision %d (the binding was replaced); rebind before sending more", tostring(ev.binding), snap.bindingRevision),
+                        { binding = snap.bindingRevision, generation = snap.generation }))
+  end
   if ev.generation ~= snap.generation then
     return refuse(errOf("stale-generation", string.format("event generation %s is not the binding's current generation %d; rebind before sending more", tostring(ev.generation), snap.generation),
                                  { generation = snap.generation, eventGeneration = ev.generation }))
   end
   local target, terr = resolveTarget(snap, ev.target)
   if not target then return refuse(terr) end
-  if existing and existing.rebound and ev.type ~= "touch" and ev.type ~= "button" and existing.kind == "touch" then
-    return refuse(errOf("gesture-rebound", "the binding changed while this touch was down; release and touch again to control the new target", { target = ev.target }))
+  if existing and existing.kind == "touch" and ev.type ~= "touch" and ev.type ~= "button" and (existing.rebound or existing.generation ~= snap.generation) then
+    existing.rebound = true
+    return refuse(errOf("gesture-rebound", "the binding changed while this touch was down; release and touch again to control the new target", { target = ev.target, heldGeneration = existing.generation, generation = snap.generation }))
   end
   local busyDep = self._deps.busy
   if type(busyDep) == "function" then
@@ -515,7 +573,7 @@ function Instance:submit(sessionId, now, ev)
   if owner then
     return refuse(errOf("conflict", string.format("%s is being operated by session %s (%s on %s/%s)", target.key, owner, og.kind, og.device, og.control), { owner = owner, target = ev.target }))
   end
-  local intent = { kind = ev.type, target = ev.target, targetKey = target.key, resolved = target, generation = snap.generation, device = ev.device, control = ev.control,
+  local intent = { kind = ev.type, target = ev.target, targetKey = target.key, resolved = target, generation = snap.generation, binding = snap.bindingRevision, device = ev.device, control = ev.control,
                    gesture = ev.gesture, seq = ev.seq, session = sessionId, at = now, firstAt = now, fine = ev.fine or nil }
   if ev.type == "relative" then
     intent.delta, intent.events, intent.lost, intent.resolution = ev.delta, 1, lost, target.resolution
@@ -527,12 +585,12 @@ function Instance:submit(sessionId, now, ev)
       return refuse(errOf("capacity", string.format("%d touches/buttons are down (maxHolds)", self._config.maxHolds)))
     end
   end
-  commitOrder(self, d, ev, lost)
+  commitOrder(self, d, ev, lost, late)
   -- Gesture records: a touch or button down owns its target until the release; motion refreshes an
   -- idle gesture record so the target stays this session's for gestureIdleMs.
   if ev.type == "touch" or ev.type == "button" then
     s.gestures[gkey] = { kind = ev.type, device = ev.device, control = ev.control, target = ev.target, targetKey = target.key, generation = snap.generation,
-                         gesture = ev.gesture, since = now, lastAt = now }
+                         gesture = ev.gesture, since = now, lastAt = now, downSeq = ev.seq }
   else
     local g = s.gestures[gkey]
     if g and (g.kind == "touch" or g.kind == "button") then
@@ -588,8 +646,11 @@ function Instance:_enqueue(s, intent, boundary)
     for i = 1, #q do
       if q[i].kind == "relative" or q[i].kind == "absolute" then table.remove(q, i); evicted = 1; break end
     end
-    if evicted == 0 then return fail("queue-full", "the queue holds only boundaries; the release is dropped", { queued = #q }) end
-    s.counters.evicted = s.counters.evicted + evicted; self._counters.evicted = self._counters.evicted + evicted
+    if evicted == 0 and #q >= self._config.maxQueue + self._config.maxHolds then
+      -- Reserved release capacity (one per possible hold) exhausted too: refuse, the hold stays owned.
+      return fail("queue-full", "the queue holds only boundaries and the release reserve is used; the release is refused, the hold stays owned for its retransmission", { queued = #q })
+    end
+    if evicted > 0 then s.counters.evicted = s.counters.evicted + evicted; self._counters.evicted = self._counters.evicted + evicted end
   end
   self._intentSeq = self._intentSeq + 1
   intent.id = "c" .. self._intentSeq
@@ -613,7 +674,7 @@ function Instance:_applyNow(s, intent, now)
     self._counters.unresolved = self._counters.unresolved + 1
     local rec = { kind = intent.kind, session = s.id, device = intent.device, control = intent.control, target = intent.target, generation = intent.generation,
                   down = intent.down, error = tostring(res), at = now, backend = adapter.name }
-    if intent.kind == "touch" or intent.kind == "button" then self._unresolved[#self._unresolved + 1] = rec end
+    if (intent.kind == "touch" or intent.kind == "button") and not intent.recovering then self._unresolved[#self._unresolved + 1] = rec end
     self._lastApplied = { outcome = "unresolved", kind = intent.kind, at = now, error = tostring(res) }
     return { outcome = "unresolved", unresolved = rec }
   end
@@ -677,7 +738,7 @@ function Instance:service(now)
         if (now - intent.firstAt) * 1000 > self._config.maxEventAgeMs then
           out.dropped.expired = out.dropped.expired + 1; s.counters.dropped = s.counters.dropped + 1; self._counters.dropped = self._counters.dropped + 1
           self._counters.expired = self._counters.expired + 1
-        elseif not snap or snap.generation ~= intent.generation then
+        elseif not snap or snap.generation ~= intent.generation or snap.bindingRevision ~= intent.binding then
           out.dropped.staleGeneration = out.dropped.staleGeneration + 1; s.counters.dropped = s.counters.dropped + 1; self._counters.dropped = self._counters.dropped + 1
           self._counters.staleDropped = self._counters.staleDropped + 1
           -- The gesture that produced it is rebound: a touch that stays down must be lifted before
@@ -710,13 +771,17 @@ end
 function Instance:recover(now)
   checkReady(self); checkNow(now)
   local out = { resolved = {}, unresolved = {} }
+  -- A detached batch: a failure during this pass is retained once (below), never retried in the same pass.
+  local batch = self._unresolved
+  self._unresolved = {}
   local keep = {}
-  for _, rec in ipairs(self._unresolved) do
+  for _, rec in ipairs(batch) do
     local s = { id = rec.session, counters = { applied = 0 } }
-    local r = self:_applyNow(s, { kind = rec.kind, down = false, target = rec.target, generation = rec.generation, device = rec.device, control = rec.control, forced = true, reason = "recover", session = rec.session, at = now }, now)
+    local r = self:_applyNow(s, { kind = rec.kind, down = false, target = rec.target, generation = rec.generation, device = rec.device, control = rec.control, forced = true, reason = "recover", recovering = true, session = rec.session, at = now }, now)
     if r.outcome == "applied" then out.resolved[#out.resolved + 1] = rec
-    else rec.attempts = (rec.attempts or 1) + 1; keep[#keep + 1] = rec; out.unresolved[#out.unresolved + 1] = rec end
+    else rec.attempts = (rec.attempts or 1) + 1; rec.error = r.unresolved and r.unresolved.error or (r.error and r.error.message) or rec.error; keep[#keep + 1] = rec; out.unresolved[#out.unresolved + 1] = rec end
   end
+  for _, rec in ipairs(self._unresolved) do keep[#keep + 1] = rec end  -- anything added meanwhile (none expected)
   self._unresolved = keep
   return out
 end
@@ -773,7 +838,7 @@ function Instance:status(now)
   for id, s in pairs(self._sessions) do
     local v = self:_sessionView(s, now or s.openedAt)
     v.devices = {}
-    for dev, d in pairs(s.devices) do v.devices[dev] = { last = d.last, lost = d.lost, duplicates = d.duplicates, reordered = d.reordered, rateDropped = d.rateDropped or 0 } end
+    for dev, d in pairs(s.devices) do v.devices[dev] = { last = d.last, lost = d.lost, duplicates = d.duplicates, reordered = d.reordered, late = d.late or 0, rateDropped = d.rateDropped or 0 } end
     v.gestureList = {}
     for _, g in pairs(s.gestures) do v.gestureList[#v.gestureList + 1] = { kind = g.kind, device = g.device, control = g.control, target = g.target, generation = g.generation, gesture = g.gesture, since = g.since, rebound = g.rebound } end
     table.sort(v.gestureList, function(a, b) return a.device .. a.control < b.device .. b.control end)
@@ -788,7 +853,7 @@ function Instance:status(now)
            capabilities = self._adapter and shallowCopy(self._adapter.capabilities or {}) or nil,
            sessions = sessions, counters = shallowCopy(self._counters), events = events, unresolved = unresolved,
            lastApplied = self._lastApplied and shallowCopy(self._lastApplied) or nil, serviced = self._serviced, lastServiced = self._lastServiced,
-           expiredSessions = #self._expired, config = shallowCopy(self._config) }
+           expiredSessions = #self._expired, config = shallowCopy(self._config), binding = { revision = self._bindingRevision, key = self._bindingKey } }
 end
 
 function Instance:dispose(now)
@@ -830,7 +895,7 @@ local function new(opts)
   end
   return setmetatable({
     _owner = opts.owner, _deps = opts.deps or {}, _config = config, _adapter = nil, _inputEnabled = false, _state = "created",
-    _sessions = {}, _expired = {}, _events = {}, _unresolved = {}, _intentSeq = 0, _serviced = 0, _lastServiced = nil, _lastApplied = nil,
+    _sessions = {}, _expired = {}, _events = {}, _unresolved = {}, _intentSeq = 0, _bindingKey = nil, _bindingRevision = 0, _serviced = 0, _lastServiced = nil, _lastApplied = nil,
     _counters = { admitted = 0, refused = 0, applied = 0, dropped = 0, lost = 0, coalesced = 0, evicted = 0, rateDropped = 0, expired = 0, staleDropped = 0, unresolved = 0, backendRefused = 0 },
   }, Instance)
 end

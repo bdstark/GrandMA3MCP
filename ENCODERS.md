@@ -200,16 +200,19 @@ them on this onPC; if a console shows an encoder bar on several displays, the co
   control, per-device sequence, the feedback module's binding generation, a gesture id (motion, touches) and a target
   (`{slot}` or `{executor, element}`); a surface's intent is resolved against the binding, never against attribute names.
 - **Admission (`submit`):** expired/unknown sessions, malformed events, duplicates (`duplicate`), older unseen
-  sequence numbers (`out-of-order`, never applied late) and gaps (accepted, `lost` reported: loss is reported, never
-  replayed) are decided per device before the binding; motion needs the binding's current generation
-  (`stale-generation` carries the current one, `binding-unknown` while none is claimed) and a resolvable target with
-  the binding's reason otherwise; queued motion is re-checked at apply time and dropped when the generation moved.
+  sequence numbers (`out-of-order`, never applied late; a delayed release newer than its own press is admitted late
+  and ends only that hold) and gaps (accepted, `lost` reported: loss is reported, never replayed) are decided per
+  device before the binding; motion needs the binding's current generation and revision (`stale-generation` and
+  `stale-binding` carry the current ones, `binding-unknown` while none is claimed or the snapshot is stale) and a
+  resolvable target with the binding's reason otherwise; a touch held under another generation or binding is
+  `gesture-rebound` until released; queued motion is re-checked at apply time and dropped when the generation,
+  revision or freshness moved.
 - **Coalescing:** relative deltas merge only within one session, device, control, target, generation, resolution,
   fine flag and gesture, and never across a touch/button or generation boundary; absolute positions supersede a queued
   one only for stateless functions (attribute slots, `Master`, `Rate`, ...); `X`/`XA`/`XB`/crossfade/`Temp` keep every
   position in order, so endpoint transitions are never skipped.
-- **Bounds:** queue 64 per session (motion refused `queue-full`; a release always gets in and evicts the oldest
-  motion), event age 250 ms at apply time (`expired`), 400 motion events/s per device (`rate`, dropped not deferred;
+- **Bounds:** queue 64 per session (motion refused `queue-full`; a release evicts the oldest motion and has reserved
+  capacity, and when even that is used it is refused with the hold kept owned for its retransmission), event age 250 ms at apply time (`expired`), 400 motion events/s per device (`rate`, dropped not deferred;
   releases are never rate-refused or expired), 4 intents applied per loop iteration, 30 s gesture ceiling, 16 holds.
 - **Serialisation:** a touched/pressed target belongs to its session (motion keeps it 500 ms); another session gets
   `conflict`; the bridge's `[busy]` guard refuses `cmd`/`set`/`setfader`/`lua` from every connection while a surface
@@ -219,9 +222,10 @@ them on this onPC; if a console shows an encoder bar on several displays, the co
 - **Bridge:** `control=fake|off`, `control status`, `control recover` arguments (Macros 118/119 on the test show);
   `control.bind/open/renew/close/submit/status/recover` ops (32 events per request), binding = the bridge's feedback
   instance cached for the bound spec.
-- **Harness:** `test/lua/control_admission_test.lua` (113 checks: loss, duplicates, reordering, bursts, reconnect/
+- **Harness:** `test/lua/control_admission_test.lua` (132 checks, including the PR review's late releases, release
+  capacity, recovery batches, rebound holds, stale and replaced bindings: loss, duplicates, reordering, bursts, reconnect/
   expiry/close/dispose, stale generations and rebound touches, context changes while queued, every bound, conflicts,
-  backend faults, recover/adopt) and the bridge harness block (38 checks); `test/kb18-probe.test.ts` (5).
+  backend faults, recover/adopt) and the bridge harness block (43 checks); `test/kb18-probe.test.ts` (5).
 
 **Limitations:** KB-18 ships the fake backend only (intents are admitted, ordered, coalesced, bounded and recorded;
 nothing moves on the console; KB-19 adds the adjustment backend and calibration); generations are those of one

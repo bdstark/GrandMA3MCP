@@ -417,6 +417,101 @@ do
 end
 
 -------------------------------------------------------------------------------
+-- Review findings (PR #22): late releases, release capacity, recovery batches, rebound holds, stale
+-- and replaced bindings
+-------------------------------------------------------------------------------
+do
+  -- (1) a delayed release after another control advanced the device sequence still ends its hold.
+  local inst, b = fresh()
+  inst:openSession({ id = "s" }, 1)
+  local function holds(i, t) local n = 0; for _, g in ipairs(i:status(t).sessions.s.gestureList) do if g.kind == "touch" or g.kind == "button" then n = n + 1 end end return n end
+  check("review 1: button down (seq 1), another control's motion (seq 3), the delayed release (seq 2) is admitted late and ends the hold",
+    inst:submit("s", 1, button(1, 1, true)).accepted and inst:submit("s", 1.01, rel(3, 2, 1)).lost == 1 and (function()
+      local r = inst:submit("s", 1.02, button(2, 1, false)); return r and r.accepted and r.late == true and r.boundary end)()
+    and holds(inst, 1.03) == 0 and inst:status(1.03).sessions.s.devices.nxk.late == 1 and inst:status(1.03).sessions.s.devices.nxk.lost == 0, J(inst:status(1.03).sessions.s.devices))
+  check("review 1: the late release is remembered (a repeat is a duplicate) and the device's newest sequence did not move back", code(inst:submit("s", 1.04, button(2, 1, false))) == "duplicate" and inst:status().sessions.s.devices.nxk.last == 3)
+  check("review 1: a late release older than the hold's own press is still out-of-order (it would end a newer hold)", (function()
+    inst:submit("s", 1.1, button(5, 1, true)); inst:submit("s", 1.1, rel(7, 2, 1))
+    return code(inst:submit("s", 1.11, button(4, 1, false))) == "out-of-order" and holds(inst, 1.11) == 1 end)())
+  check("review 1: a late release with no hold to end stays out-of-order (nothing to act on, nothing applied late)", (function()
+    inst:submit("s", 1.2, button(8, 1, false)); inst:service(1.21)
+    local e = button(6, 3, false); e.control = "Rotary3"
+    return code(inst:submit("s", 1.22, e)) == "out-of-order" end)())
+  -- (2) a queue holding only boundaries cannot lose a release; ownership survives a refused release.
+  local i2, b2 = fresh({ maxQueue = 1, maxHolds = 2 })
+  i2:openSession({ id = "s" }, 1)
+  i2:submit("s", 1, touch(1, 201, true)); i2:service(1.01)
+  i2:submit("s", 1.02, touch(2, 202, true, { control = "Strip202" })); i2:service(1.03)
+  i2:submit("s", 1.04, rel(1, 1, 1))  -- the queue is full of motion
+  check("review 2: two holds, a full queue: the first release evicts the motion, the second uses the reserve; neither raises and both holds end", (function()
+    local okc, r1 = pcall(i2.submit, i2, "s", 1.05, touch(3, 201, false)); local okd, r2 = pcall(i2.submit, i2, "s", 1.05, touch(4, 202, false, { control = "Strip202" }))
+    return okc and okd and r1 and r1.accepted and r1.evicted == 1 and r2 and r2.accepted and r2.evicted == nil and i2:status().sessions.s.queued == 2 and holds(i2, 1.06) == 0 end)())
+  check("review 2: when even the reserve is used the release is refused queue-full, the hold stays owned and nothing raises", (function()
+    local i3 = fresh({ maxQueue = 1, maxHolds = 1 }); i3:openSession({ id = "s" }, 1)
+    i3:submit("s", 1, button(1, 1, true)); i3:service(1.01)
+    local sess = i3._sessions.s
+    for i = 1, 2 do sess.queue[#sess.queue + 1] = { kind = "touch", down = false, session = "s", id = "x" .. i } end  -- only boundaries, maxQueue + maxHolds of them
+    local okc, r, e = pcall(i3.submit, i3, "s", 1.02, button(2, 1, false))
+    local kept = holds(i3, 1.03) == 1
+    sess.queue = {}
+    local again = i3:submit("s", 1.04, button(2, 1, false))
+    return okc and r == nil and e and e.code == "queue-full" and kept and again and again.accepted and again.boundary end)())
+  -- (3) recovery iterates a detached batch: a persistent raise is retried once per recover(), never looped.
+  local i5, b5 = fresh()
+  i5:openSession({ id = "s" }, 1)
+  i5:submit("s", 1, touch(1, 201, true)); i5:service(1.01)
+  b5:raiseNext("touch", "raise 1"); i5:closeSession("s", 1.02)
+  check("review 3: one unresolved record after the close", #i5:status().unresolved == 1 and b5.counters.touch == 1)
+  local calls = 0
+  local realApply = getmetatable(b5).__index.apply
+  b5.apply = function(self, intent, now) calls = calls + 1; error("always", 0) end
+  local rc = i5:recover(1.1)
+  check("review 3: a backend that always raises is called once per record per recover(), the record retained once", calls == 1 and #rc.unresolved == 1 and #i5:status().unresolved == 1 and rc.unresolved[1].attempts == 2 and rc.unresolved[1].error == "always", J(rc))
+  rc = i5:recover(1.2)
+  check("review 3: the next recover() tries once more", calls == 2 and #i5:status().unresolved == 1 and rc.unresolved[1].attempts == 3)
+  b5.apply = realApply
+  check("review 3: it resolves once the backend applies", #i5:recover(1.3).resolved == 1 and #i5:status().unresolved == 0)
+  -- (4) a held touch is rebound by the generation change itself, whether or not motion was queued.
+  local i6 = fresh()
+  i6:openSession({ id = "s" }, 1)
+  i6:submit("s", 1, touch(1, 201, true)); i6:service(1.01)
+  binding.generation = 2
+  local _, e4 = i6:submit("s", 1.02, abs(2, 201, 0.5, { generation = 2 }))
+  check("review 4: motion with the new generation under a touch held from the old one is gesture-rebound (empty queue)", e4 and e4.code == "gesture-rebound" and e4.heldGeneration == 1 and e4.generation == 2, J(e4))
+  check("review 4: the hold is marked rebound and release + re-touch is the way back", i6:status(1.03).sessions.s.gestureList[1].rebound == true and i6:submit("s", 1.04, touch(3, 201, false)).accepted and i6:submit("s", 1.05, touch(4, 201, true, { generation = 2 })).accepted and i6:submit("s", 1.05, abs(5, 201, 0.5, { generation = 2 })).accepted)
+  binding.generation = 1
+  -- (5) stale snapshots are not a binding.
+  local i7, b7 = fresh()
+  i7:openSession({ id = "s" }, 1)
+  binding.stale = true
+  local _, e5 = i7:submit("s", 1, rel(1, 1, 1))
+  check("review 5: a stale snapshot refuses motion as binding-unknown with the reason", e5 and e5.code == "binding-unknown" and e5.stale == true and e5.message:find("stale"), J(e5))
+  binding.stale = nil
+  i7:submit("s", 1.01, rel(2, 1, 1))
+  binding.stale = true
+  local out5 = i7:service(1.02)
+  check("review 5: motion queued before the snapshot went stale is dropped at apply time, not applied", out5.dropped.staleGeneration == 1 and #b7.intents == 0, J(out5))
+  binding.stale = nil
+  -- (6) a replaced binding with the same generation number is a new revision: old events and queued work are refused/dropped.
+  local i8, b8 = fresh()
+  i8:openSession({ id = "s" }, 1)
+  binding.bindingKey = "display=1;executors=201"
+  local info = i8:bindingInfo(1)
+  check("review 6: bindingInfo reports revision 1 for the first key", info.revision == 1 and info.key == "display=1;executors=201" and info.generation == 1, J(info))
+  i8:submit("s", 1, rel(1, 1, 1, { binding = 1 })); i8:submit("s", 1, touch(1, 201, true, { binding = 1 }))
+  binding.bindingKey = "display=1;executors=202"   -- a different spec whose generation is also 1
+  local _, e6 = i8:submit("s", 1.01, rel(2, 1, 1, { binding = 1 }))
+  check("review 6: an event carrying the old revision is stale-binding with the new revision; the queue was dropped and the hold rebound", e6 and e6.code == "stale-binding" and e6.binding == 2 and i8:status(1.02).sessions.s.queued == 0 and i8:status(1.02).counters.staleDropped == 2 and i8:status(1.02).sessions.s.gestureList[1].rebound == true, J(e6))
+  check("review 6: an event without a revision but the right generation is admitted (consumers with a fixed spec); the record carries revision 2", (function() local r = i8:submit("s", 1.03, rel(3, 1, 1)); i8:service(1.04); return r and r.accepted and b8.intents[1].binding == 2 end)())
+  check("review 6: the revision is monotonic and an unknown binding reports it with the reason", (function()
+    binding.bindingKey = "display=1;executors=201"; i8:bindingInfo(1.05); binding.generation = nil
+    local bi = i8:bindingInfo(1.06); binding.generation = 1; binding.bindingKey = nil
+    return bi.revision == 3 and bi.unknown and bi.unknown.code == "binding-unknown" end)())
+  check("review 6: a bad binding revision is bad-event", code(i8:submit("s", 1.07, rel(4, 1, 1, { binding = 1.5 }))) == "bad-event")
+  local _ = b, b2
+end
+
+-------------------------------------------------------------------------------
 -- Status and the event log
 -------------------------------------------------------------------------------
 do

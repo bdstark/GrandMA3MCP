@@ -2353,9 +2353,15 @@ ops["control.bind"] = function(args)
   local w = frec.instance:watchContext(spec, now())
   state.control.spec = spec
   local snap = frec.instance:contextSnapshot(spec, now(), { cached = true })
+  -- Binding identity (review): generations are per spec, so a replaced spec can carry the same number.
+  -- The module turns a changed spec into a new binding revision (queued motion dropped, holds rebound)
+  -- and events should carry it as `binding`; an old revision is refused stale-binding.
+  local crec = controlRec()
+  local info = type(crec.instance.bindingInfo) == "function" and crec.instance:bindingInfo(now()) or nil
   return { bound = spec, watched = w.watched, limitations = emptyArray(w.limitations), generation = snap.generation, generationUnknown = snap.generationUnknown or nil,
-           generationNote = snap.generationNote, notObserved = snap.notObserved,
-           note = "events carry this generation; feedback.context {cached=true} follows it; a stale or unknown generation refuses motion until the client rebinds" }
+           generationNote = snap.generationNote, notObserved = snap.notObserved, stale = snap.stale or nil,
+           binding = info and info.revision or nil, bindingKey = snap.bindingKey,
+           note = "events carry this generation (and binding revision); feedback.context {cached=true} follows it; a stale, unknown or replaced binding refuses motion until the client rebinds" }
 end
 
 ops["control.open"] = function(args, ctx)
@@ -2429,6 +2435,7 @@ ops["control.status"] = function(args, ctx)
   st.controlEnabled = state.control.enabled and true or false
   st.policyBackend = state.control.backend
   st.spec = state.control.spec
+  st.binding = type(rec.instance.bindingInfo) == "function" and rec.instance:bindingInfo(now()) or nil
   st.busy = rec.instance:admission(now())
   st.limitations = emptyArray(rec.module.LIMITATIONS)
   local client = ctx and ctx.client

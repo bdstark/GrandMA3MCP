@@ -1678,8 +1678,9 @@ do
   -- The binding source is this bridge's feedback instance; replace it with a controllable fake snapshot
   -- (the module's own harness covers the real readers; here the wiring is what is tested).
   local gen = 1
+  local bindingKey = "display=1;executors=201"
   local snapshot = function()
-    return { generation = gen, slots = { available = true, value = { selection = { count = 1, fixtures = { 401 }, identityComplete = true }, slots = {
+    return { generation = gen, bindingKey = bindingKey, slots = { available = true, value = { selection = { count = 1, fixtures = { 401 }, identityComplete = true }, slots = {
       { slot = 1, kind = "attribute", ref = "Attribute 1 'Dimmer'", name = "Dimmer", layer = "Absolute", resolution = "Coarse", readout = "Percent", channelFunction = "Dimmer", availability = "available" } } } },
       executors = { { available = true, value = { executor = 201, page = 1, empty = false, playbackTarget = true, assigned = { addr = "Sequence 1" }, functions = { keyPress = "Go+", fader = "Master" }, level = { token = "FaderMaster", value = 0 } } } } }
   end
@@ -1712,6 +1713,7 @@ do
   check("without a binding motion is binding-unknown (bind first)", r.ok and r.result.refused == 1 and r.result.outcomes[1].refused == "binding-unknown" and r.result.outcomes[1].message:find("bind"), J(r))
   r = request("control.bind", { executors = { 201 } }, nil, C)
   check("control.bind watches the context and reports the generation", r.ok and r.result.generation == 1 and r.result.watched == 5 and watched.executors[1] == 201 and state.control.spec.executors[1] == 201, J(r))
+  check("control.bind reports the binding revision (review 6)", r.result.binding == 1 and r.result.bindingKey ~= nil, J(r.result))
   r = request("control.bind", { display = 0 }, nil, C)
   check("control.bind validates its arguments", r.ok == false and r.code == "bad-args", r.error)
   r = request("control.submit", { events = { ev(1), ev(2), ev(3, { delta = -1 }), ev(4, { generation = 9 }), ev(5) } }, nil, C)
@@ -1750,9 +1752,19 @@ do
   check("a stale event is refused with the current generation", r.ok and r.result.outcomes[1].refused == "stale-generation" and r.result.outcomes[1].generation == 2, J(r))
   r = request("control.submit", { events = { ev(9, { gesture = 4, generation = 2 }) } }, nil, C)
   check("the rebound event is admitted", r.ok and r.result.accepted == 1, J(r))
+  -- Review 6: a replaced spec is a new binding revision even when its generation number repeats.
+  bindingKey = "display=1;executors=202"
+  r = request("control.bind", { executors = { 202 } }, nil, C)
+  check("rebinding to another spec with the same generation number moves the revision", r.ok and r.result.binding == 2 and r.result.generation == 2, J(r.result))
+  r = request("control.submit", { events = { ev(10, { gesture = 5, generation = 2, binding = 1 }) } }, nil, C)
+  check("an event carrying the old revision is refused stale-binding with the new one", r.ok and r.result.outcomes[1].refused == "stale-binding" and r.result.outcomes[1].binding == 2, J(r))
+  r = request("control.status", {}, nil, C)
+  check("the queued event from the old binding was dropped and status reports the revision", r.ok and r.result.sessions["conn-81"].queued == 0 and r.result.binding.revision == 2 and r.result.counters.staleDropped >= 2, J(r.result.counters))
+  r = request("control.submit", { events = { ev(11, { gesture = 6, generation = 2, binding = 2 }) } }, nil, C)
+  check("an event carrying the current revision is admitted", r.ok and r.result.accepted == 1, J(r))
   state._serviceModules(tnow() + 0.01)
   -- Disconnect ends the connection's gestures.
-  r = request("control.submit", { events = { { type = "button", device = "nxk", control = "Rotary1", seq = 10, generation = 2, target = { slot = 1 }, down = true } } }, nil, C)
+  r = request("control.submit", { events = { { type = "button", device = "nxk", control = "Rotary1", seq = 12, generation = 2, binding = 2, target = { slot = 1 }, down = true } } }, nil, C)
   state._serviceModules(tnow() + 0.01)
   state.clients = { C }
   state._closeClient(1, "disconnect")
