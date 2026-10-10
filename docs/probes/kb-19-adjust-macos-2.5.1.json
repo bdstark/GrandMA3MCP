@@ -2,7 +2,7 @@
   "mode": "run",
   "host": "127.0.0.1",
   "port": 9800,
-  "startedAt": "2026-10-10T18:51:58.258Z",
+  "startedAt": "2026-10-10T19:15:06.829Z",
   "ping": {
     "bridgeVersion": "0.15.0",
     "build": {
@@ -349,12 +349,12 @@
       "pass": true,
       "detail": {
         "sessions": {
-          "conn-486": {
+          "conn-493": {
             "gestureList": [],
             "renewals": 0,
             "state": "active",
-            "expiresAt": 1791658333.8369,
-            "id": "conn-486",
+            "expiresAt": 1791659722.3939,
+            "id": "conn-493",
             "leaseMs": 15000,
             "counters": {
               "dropped": 0,
@@ -367,7 +367,7 @@
             },
             "gestures": 0,
             "queued": 0,
-            "remainingMs": 14966,
+            "remainingMs": 14952,
             "devices": {
               "probe-verify": {
                 "late": 0,
@@ -378,8 +378,8 @@
                 "duplicates": 0
               }
             },
-            "openedAt": 1791658318.8369,
-            "binding": "client 486"
+            "openedAt": 1791659707.3939,
+            "binding": "client 493"
           }
         },
         "backend": {
@@ -399,7 +399,7 @@
           "ended": [],
           "dropped": 0,
           "unresolved": [],
-          "session": "conn-486"
+          "session": "conn-493"
         }
       }
     },
@@ -461,7 +461,7 @@
           "delta": 1,
           "outcome": "applied",
           "target": "slot1|Attribute 1 'Dimmer'|Absolute|Coarse",
-          "at": 1791658319.49,
+          "at": 1791659708.0424,
           "result": {
             "feedback": "OK",
             "readout": "Percent",
@@ -486,7 +486,7 @@
           "delta": 10,
           "outcome": "applied",
           "target": "slot1|Attribute 1 'Dimmer'|Absolute|Coarse",
-          "at": 1791658320.2343,
+          "at": 1791659708.7757,
           "result": {
             "feedback": "OK",
             "readout": "Percent",
@@ -535,7 +535,7 @@
           "delta": 2,
           "outcome": "applied",
           "target": "slot1|Attribute 1 'Dimmer'|Absolute|Coarse",
-          "at": 1791658321.6712,
+          "at": 1791659710.2017,
           "result": {
             "feedback": "OK",
             "readout": "Percent",
@@ -668,7 +668,7 @@
           "delta": 7,
           "outcome": "applied",
           "target": "slot2|Attribute 108 'ColorRGB_G'|Absolute|Coarse",
-          "at": 1791658325.4176,
+          "at": 1791659713.9761,
           "result": {
             "feedback": "OK",
             "readout": "Percent",
@@ -738,17 +738,17 @@
       "pass": true,
       "detail": {
         "ok": false,
-        "error": "[busy] a command is refused while input ownership is active: probe-nxk/Rotary1 of session conn-486 moved 19 ms ago. Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first",
+        "error": "[busy] a command is refused while input ownership is active: probe-nxk/Rotary1 of session conn-493 moved 14 ms ago. Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first",
         "code": "busy",
         "detail": {
           "code": "busy",
-          "remainingMs": 481,
+          "remainingMs": 486,
           "reason": "motion",
           "device": "probe-nxk",
           "module": "control",
-          "message": "a command is refused while input ownership is active: probe-nxk/Rotary1 of session conn-486 moved 19 ms ago. Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first",
+          "message": "a command is refused while input ownership is active: probe-nxk/Rotary1 of session conn-493 moved 14 ms ago. Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first",
           "control": "Rotary1",
-          "owner": "conn-486"
+          "owner": "conn-493"
         }
       }
     },
@@ -823,7 +823,7 @@
           "delta": 4,
           "outcome": "applied",
           "target": "slot1|Attribute 2 'Pan'|Absolute|Coarse",
-          "at": 1791658328.9834,
+          "at": 1791659717.5305,
           "result": {
             "feedback": "OK",
             "readout": "Physical",
@@ -858,7 +858,7 @@
           "delta": 3,
           "outcome": "applied",
           "target": "slot2|Attribute 3 'Tilt'|Absolute|Coarse",
-          "at": 1791658330.3911,
+          "at": 1791659718.9494,
           "result": {
             "feedback": "OK",
             "readout": "Physical",
@@ -922,7 +922,7 @@
           "delta": 2,
           "outcome": "applied",
           "target": "slot1|Attribute 21 'Gobo1'|Absolute|Coarse",
-          "at": 1791658331.6067,
+          "at": 1791659720.1498,
           "result": {
             "feedback": "OK",
             "readout": "Physical",
@@ -1063,7 +1063,7 @@
               "ended": [],
               "dropped": 0,
               "unresolved": [],
-              "session": "conn-486"
+              "session": "conn-493"
             }
           }
         },
@@ -1107,12 +1107,13 @@
       "pass": true,
       "detail": {
         "selection": {
-          "scanned": 0,
-          "limitations": [],
-          "partial": false,
           "identityComplete": true,
+          "scanned": 0,
+          "fixtures": [],
+          "partial": false,
+          "discoveryFailures": 0,
           "count": 0,
-          "fixtures": []
+          "limitations": []
         },
         "bank": {
           "pages": 1,
@@ -1145,7 +1146,7 @@
       }
     }
   ],
-  "finishedAt": "2026-10-10T18:52:16.938Z",
+  "finishedAt": "2026-10-10T19:15:25.455Z",
   "passed": 39,
   "failed": 0
 }
