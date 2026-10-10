@@ -303,9 +303,9 @@ hold never changes the route its release uses. Callers that configure nothing ke
 | Method | Behaviour in 0.6.0 |
 | --- | --- |
 | `quickkey` | Press/release the Quickey tuple `{ quickkey = <name>, quickkeyCode = <value> }` (`tupleKey = "quickkey:#<value>"`: ownership is the validated code value, so aliases such as `OOPS`/`UNDO` are one tuple; the requested name is kept for reporting). Needs an adapter advertising `capabilities.quickkey = { tap, hold, chord }`, and each flag is enforced per operation before dispatch on every path (a tap needs `tap`, a hold needs `hold`, a combo or a press next to another live Quickey needs `chord`; refusals are `unsupported` with `reason = "capability"` and `missing[]`); the fake backend simulates it, the `Keyboard()` backend refuses it, the owned-Quickey backend (`quickeyBackend()`, KB-13, 0.8.0) dispatches it with per-code flags from the KB-10 evidence. `MA1` is a valid code here. |
-| `shortcut` | The shortcut-table / fixed (`MA`) / native (`PLEASE`) PC-key route as before. A shortcut-table route while shortcuts are off is refused as before and additionally lists the KB-14 requirement (temporary enable); nothing is toggled. |
-| `shortcutOrType` | Fixed/native routes whatever the mode. Otherwise the shortcut route only when enablement reads `true` and resolution succeeds; the key's explicit `text` when the table was read and has no row for the key, or when enablement reads `false` (no row needed). Unreadable enablement, ambiguity, collisions, unknown keys and a missing `text` are refusals, never permission to type. The text branch is selected but refused `unavailable` until KB-14 implements text-route dispatch. |
-| `type` | The key's explicit `text`, inserted once on press (KB-14). Resolved and reported; refused at `enableInput()`/`configureRouting()` as `policy-unavailable` against every current backend. |
+| `shortcut` | The shortcut-table / fixed (`MA`) / native (`PLEASE`) PC-key route as before. A shortcut-table route while shortcuts are off temporarily enables them for the hold on a backend with `capabilities.modeChange` (0.9.0, KB-14, below); otherwise it is refused as before and lists the requirement; nothing is toggled. |
+| `shortcutOrType` | Fixed/native routes whatever the mode. Otherwise the shortcut route only when enablement reads `true` and resolution succeeds; the key's explicit `text` when the table was read and has no row for the key (shortcuts temporarily disabled for the insertion), or when enablement reads `false` (no row, no mode change). Unreadable enablement, ambiguity, collisions, unknown keys and a missing `text` are refusals, never permission to type. The text branch needs `capabilities.char` (and `modeChange` when shortcuts are on). |
+| `type` | The key's explicit `text`, inserted once on press, with shortcuts temporarily disabled when they are on (0.9.0, KB-14). Needs `capabilities.char` and `capabilities.modeChange` (with `deps.setShortcutsActive`); otherwise `policy-unavailable` at `enableInput()`/`configureRouting()`. |
 
 ```lua
 local inst = HK.new({ owner = "surface", deps = HK.consoleDeps(_G), config = { requireInteraction = false },
@@ -323,18 +323,47 @@ r, err = inst:configureRouting({ default = "shortcut" })   -- atomic; live holds
 | Call | Effect |
 | --- | --- |
 | `new({ routing })` / `configureRouting(policy)` | `policy = { default = <method>\|nil, keys = { <LOGICAL> = { method, quickkey, prefer, text } } }`. Validation (`policy-invalid`): unknown methods or fields, duplicate names (case-insensitive), `text` empty or with control characters, a digit (`NUM0`–`NUM9`) text that is not exactly one non-space character, and any `text` for `MA`/`MA1`/`MA2`, `PLEASE`, `CLEAR`, `OOPS`/`UNDO`, `ESC`, `EXEC`/`EXECUTOR`/`XKEYS`/`FADER`, `X1`–`X16`, `ENCODER_*`, `DEF_*`. Keyword text is inserted exactly as given, separators included. While a backend is attached, a method it cannot serve is `policy-unavailable`. A refused policy changes nothing; `new()` raises. |
-| `describeRoute(name, { prefer, executor })` | Read-only: `key`, `method`, `methodSource` (`key`, `default`, `module-default`), `effective` (`quickkey`, `shortcut-table`, `fixed`, `native`, `text`), `supported`, `code`, `reason`, `dispatchable`, `unavailable[]` (named requirements, e.g. "no backend attached", the KB-13/KB-14 items), `capabilities` of the attached adapter, `resolution` (the `describeKey()` result), `quickkey`/`codeValue`, `text`. |
+| `describeRoute(name, { prefer, executor })` | Read-only: `key`, `method`, `methodSource` (`key`, `default`, `module-default`), `effective` (`quickkey`, `shortcut-table`, `fixed`, `native`, `text`), `supported`, `code`, `reason`, `dispatchable`, `unavailable[]` (named requirements, e.g. "no backend attached", a missing `char`/`modeChange` capability), `modeChange` (`{ target, reason }` when the route needs a temporary shortcut-mode change), `capabilities` of the attached adapter, `resolution` (the `describeKey()` result), `quickkey`/`codeValue`, `text`. |
 | `routingReport()` / `status().routing` | `default`, `defaultSource`, `keys` (effective method and fields per override), `overrideCount`, `methods[<m>] = { available, missing[] }` for the attached backend, `capabilities`. |
 | `enableInput(adapter)` | Additionally checks every method the policy names against the adapter (`policy-unavailable`, nothing attaches). `attachBackend()` (cleanup-only) does not. |
 
-Adapters advertise `capabilities = { keyboard = bool, quickkey = { tap, hold, chord } \| false, char = bool }`;
-an adapter without the field is a PC-key adapter (`keyboard = true`). Holds report `method` and, for Quickey
+Adapters advertise `capabilities = { keyboard = bool, quickkey = { tap, hold, chord } \| false, char = bool, modeChange = bool }`;
+an adapter without the field is a PC-key adapter (`keyboard = true`, `modeChange = false`). Holds report `method` and, for Quickey
 tuples, `quickkey`; `route.routing` is the stored decision a Quickey hold's route recheck uses (never the current
 policy). Press-time refusals: `unsupported` (with `reason` = the resolution code: `unknown-key`, `no-row`,
 `ambiguous`, `collision`, `unreadable`, `no-mapping`, `shortcuts-inactive`, …) and `unavailable` (the route is
 selected but a named requirement is missing; `effective` and `unavailable[]` are attached). Neither dispatches
 anything, and a refused press is never queued for a later mode or table change. Regressions:
 `test/lua/hardkeys_routing_test.lua`.
+
+## Scoped shortcut-mode changes and text routes (`gma3_mcp_hardkeys` 0.9.0, KB-14)
+
+The `type` route, the text side of `shortcutOrType` and a `shortcut` route whose table is off run through one bounded
+**mode operation** per instance (`status().modeChange`; `lastModeChange` after it ended): the active profile and the
+shortcut state are captured (refused `unreadable` if either cannot be read), the state is written through
+`deps.setShortcutsActive` only when it differs from what the route needs, verified by readback (`mode-change-failed`
+when the console did not apply it: nothing dispatched; a write that raises or cannot be read back leaves the
+restoration **unresolved**), kept for every record that depends on it, and restored by `service()` once no dependent
+is held/releasing/unresolved and `config.modeRestoreDelayMs` (60 ms) passed since the last dependent event. The timing
+probe ([kb-14-timing](probes/kb-14-timing-macos-2.5.1.md)) is the reason it is never restored in the call that
+dispatched a key: a modifier may be consumed on the next frame, and a release in the other mode does not lift it.
+
+| Element | Behaviour |
+| --- | --- |
+| Interference | Before each restore the profile and the state are re-read. A changed profile or an unreadable state → the restoration is `unresolved` (`busy` reason `restoration`; dependents `quarantined`; every new press, KB-05 text step and the bridge's guarded ops are refused) until `recover(sessionId)` by the owner or `recover(nil)` by the operator re-reads it on the original profile and restores it; a replacement profile is never written. A state somebody set back already → resolved as `restoredBy = "operator"` with `interference` recorded, nothing written. The operator disabling shortcuts during a temporarily enabled hold is additionally the KB-04 route change on that hold. |
+| Text records | `kind = "text"`, `tupleKey = "text:<KEY>"`, `route.source = "text"`, `text = { text, chars, typed, outcome (typed\|partial\|uncertain), code, error, readback, focus }`. Inserted on press in chunks of `textCharsPerService` with the mode, the profile, exclusivity and routes rechecked between chunks; partial progress is reported and nothing is replayed. `releaseOutcome = "none"`; `release()` is harmless. Needs no interaction; refuses combos, `exclusive`, and any other instance-owned record (consecutive text records of the same operation excepted). Native/fixed routes never become text. |
+| Record states | `retained`: the key is up (or the text is in), the restoration is pending; not counted as live for capacity, busy or exclusivity. `quarantined`: retained while the restoration is unresolved. Both become `released` when the operation is restored. |
+| Sequences | A step that needs the operator's own mode (a text step) or the opposite temporary mode waits for the pending restoration (bounded by the sequence deadline); a step needing the same mode joins it. |
+| `dispose()` / `adoptMode(record, now)` | `dispose()` restores at once (terminal) and hands an unverifiable restoration back as `result.mode`; `adoptMode()` makes it an unresolved restoration of session `previous-run` for `recover(nil)`. |
+| Capabilities | `capabilities.modeChange`: the keyboard backend advertises it only when `deps.setShortcutsActive` exists; the fake backend simulates it; the owned-Quickey backend never has it. `consoleDeps(_G)` provides the write (`CurrentProfile().KeyboardShortCuts:Set("KeyboardShortcutsActive", v)`). |
+
+Bridge 0.11.0: `input.routing` (`{ policy }` replaces the attached backend's policy, refused `[busy]` while another
+connection owns input; without a policy it reports `routingReport()`), `input.route` (`{ key, prefer, executor }` →
+`describeRoute()`), `prefer` on press specs, `ping.input.modeChange` / `retained` / `quarantined`, `[busy]` reason
+`restoration` on the guarded ops, and an unresolved restoration kept in `state.input.mode` across a restart and adopted
+at the next start (`input recover` restores it). Regressions: `test/lua/hardkeys_mode_test.lua`, the KB-14 section of
+`test/lua/bridge_plugin_test.lua`; live: `node scripts/kb14-probe.mjs timing|run`
+([records](probes/kb-14-run-macos-2.5.1.md)).
 
 ## Quickey bank (`gma3_mcp_hardkeys` 0.7.0, KB-12)
 

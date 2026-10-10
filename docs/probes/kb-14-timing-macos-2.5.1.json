@@ -1,0 +1,164 @@
+{
+  "probe": "kb-14-timing",
+  "date": "2026-10-10T04:15:09.742Z",
+  "bridge": {
+    "version": "0.10.0",
+    "host": "127.0.0.1",
+    "port": 9800,
+    "build": {
+      "version": "2.5.1.0",
+      "codeType": "Release",
+      "hostType": "onPC"
+    },
+    "hostname": "bdsmbpm401",
+    "showfile": "mcp-test-disposable",
+    "input": {
+      "unresolvedFromPreviousRun": 0,
+      "holds": 0,
+      "enabled": true,
+      "sessions": 0,
+      "bank": {
+        "provisioned": false
+      },
+      "note": "ownership records, not physical key state; see input.status. busy: cmd/set/setfader/lua are refused for every connection while it is set",
+      "unresolved": 0,
+      "backend": "keyboard",
+      "moduleInputEnabled": true
+    },
+    "modules": {
+      "hardkeys": {
+        "loaded": true,
+        "version": "0.8.0"
+      },
+      "feedback": {
+        "loaded": true,
+        "version": "0.2.0"
+      }
+    }
+  },
+  "passed": 11,
+  "failed": 0,
+  "steps": [
+    {
+      "name": "initial console state",
+      "pass": null,
+      "detail": {
+        "ma": false,
+        "profile": "Default",
+        "cmd": "",
+        "sc": false
+      }
+    },
+    {
+      "name": "char events while shortcuts are ON reach neither the command line nor the shortcut table (dropped)",
+      "pass": true,
+      "detail": {
+        "sameChunk": "",
+        "nextRequest": ""
+      }
+    },
+    {
+      "name": "a numeric char argument is stringified (115 -> '1'): the backend must pass one character, never a code point number",
+      "pass": true,
+      "detail": {
+        "sameChunk": "1"
+      }
+    },
+    {
+      "name": "with shortcuts OFF, char events land in the same chunk (one character per call, UTF-8) and Escape clears in the same chunk",
+      "pass": true,
+      "detail": {
+        "typed": "s€",
+        "afterEscape": ""
+      }
+    },
+    {
+      "name": "T1: disable -> chars -> re-enable in one chunk: the characters were consumed before the restore",
+      "pass": true,
+      "detail": {
+        "typed": "x5",
+        "restored": true,
+        "nextRequest": "x5"
+      }
+    },
+    {
+      "name": "Escape with shortcuts ON is consumed on a later frame (line unchanged in the chunk, cleared afterwards)",
+      "pass": true,
+      "detail": {
+        "sameChunk": "x5",
+        "clearedAfterMs": 18
+      }
+    },
+    {
+      "name": "S1: enable -> tap S -> disable in one chunk: the shortcut STORE was consumed in the chunk and survives the restore",
+      "pass": true,
+      "detail": {
+        "afterTap": "Store ",
+        "restored": true,
+        "nextRequest": "Store "
+      }
+    },
+    {
+      "name": "H1: enable -> press LeftShift -> disable in one chunk (observation; unstable across runs)",
+      "pass": null,
+      "detail": {
+        "maSameChunk": false,
+        "maAfterDisable": false,
+        "nextRequest": true
+      }
+    },
+    {
+      "name": "H1: a release under the restored OFF mode",
+      "pass": null,
+      "detail": {
+        "sameChunk": true,
+        "liftedWithinMs": null,
+        "stillDown": true
+      }
+    },
+    {
+      "name": "H1: the key is lifted by a press/release pair in the mode it was pressed in (shortcuts ON); the module keeps the mode through the release for this reason",
+      "pass": true,
+      "detail": {
+        "sameChunk": true,
+        "falseAfterMs": 18
+      }
+    },
+    {
+      "name": "H0: with the mode kept ON the MA press registers (in the chunk or on a later frame)",
+      "pass": true,
+      "detail": {
+        "sameChunk": false,
+        "trueAfterMs": 18
+      }
+    },
+    {
+      "name": "disabling shortcuts while MA is held drops MA by itself (restoring the mode ends a modifier hold)",
+      "pass": true,
+      "detail": {
+        "sameChunk": true,
+        "falseAfterMs": 495
+      }
+    },
+    {
+      "name": "the release under OFF leaves MASTATE false",
+      "pass": true
+    },
+    {
+      "name": "console left as found: shortcut mode restored, command line empty, MASTATE false",
+      "pass": true,
+      "detail": {
+        "ma": false,
+        "profile": "Default",
+        "cmd": "",
+        "sc": false
+      }
+    }
+  ],
+  "final": {
+    "ma": false,
+    "profile": "Default",
+    "cmd": "",
+    "sc": false
+  }
+}

@@ -17,7 +17,7 @@
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "test": "node --import tsx --test test/*.test.ts",
-    "test:lua": "lua test/lua/bridge_plugin_test.lua && lua test/lua/modules_test.lua && lua test/lua/hardkeys_sessions_test.lua && lua test/lua/hardkeys_routing_test.lua && lua test/lua/hardkeys_bank_test.lua && lua test/lua/hardkeys_quickey_test.lua",
+    "test:lua": "lua test/lua/bridge_plugin_test.lua && lua test/lua/modules_test.lua && lua test/lua/hardkeys_sessions_test.lua && lua test/lua/hardkeys_routing_test.lua && lua test/lua/hardkeys_bank_test.lua && lua test/lua/hardkeys_quickey_test.lua && lua test/lua/hardkeys_mode_test.lua",
     "coverage": "node --import tsx --enable-source-maps --test --experimental-test-coverage --test-coverage-include='src/**' test/*.test.ts",
     "coverage:lcov": "mkdir -p coverage && node --import tsx --enable-source-maps --test --experimental-test-coverage --test-coverage-include='src/**' --test-reporter=spec --test-reporter-destination=stdout --test-reporter=lcov --test-reporter-destination=coverage/lcov.info test/*.test.ts",
     "install-plugin": "sh scripts/install-plugin.sh",

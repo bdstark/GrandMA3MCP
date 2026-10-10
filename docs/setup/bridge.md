@@ -45,7 +45,11 @@ Plugin "gma3_mcp_bridge" "input recover"
 
 `input=keyboard` (v0.6.0, KB-04) admits the `input.*` bridge ops on the console keyboard backend: **console
 keys are really pressed** through `Keyboard()`, routed through the current user profile's keyboard shortcuts
-(or the native MA/PLEASE routes), so use it on a show you are prepared to have operated. `input=quickey` (v0.10.0,
+(or the native MA/PLEASE routes), so use it on a show you are prepared to have operated. Since v0.11.0 (KB-14) a client may
+replace the routing policy (`input.routing`): the `type`/`shortcutOrType` text routes and a `shortcut` route whose table is off then
+**temporarily change the profile's keyboard-shortcut mode** (ShCuts) for the insertion or the hold and restore it right after; a
+restoration the bridge cannot verify (profile switched, state unreadable) blocks input until `input recover` on that profile.
+`input=quickey` (v0.10.0,
 KB-13) admits them on the **owned-Quickey backend**: logical keys are routed with the `quickkey` method and every tap,
 hold and chord is an executor press of the bank's Quickey for that code (`Assign Quickey N At Page P.E`, `Press` /
 `Unpress Page P.E`), so the Quickey bank below must be provisioned first (or in the same argument); only the nine codes

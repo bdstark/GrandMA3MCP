@@ -1,0 +1,464 @@
+{
+  "probe": "kb-14-run",
+  "date": "2026-10-10T04:19:36.076Z",
+  "bridge": {
+    "version": "0.11.0",
+    "host": "127.0.0.1",
+    "port": 9800,
+    "build": {
+      "version": "2.5.1.0",
+      "codeType": "Release",
+      "hostType": "onPC"
+    },
+    "hostname": "bdsmbpm401",
+    "showfile": "mcp-test-disposable",
+    "input": {
+      "unresolvedFromPreviousRun": 0,
+      "holds": 0,
+      "enabled": true,
+      "sessions": 0,
+      "bank": {
+        "provisioned": false
+      },
+      "backend": "keyboard",
+      "unresolved": 0,
+      "quarantined": 0,
+      "note": "ownership records, not physical key state; see input.status. busy: cmd/set/setfader/lua are refused for every connection while it is set",
+      "retained": 0,
+      "moduleInputEnabled": true
+    },
+    "modules": {
+      "hardkeys": {
+        "loaded": true,
+        "version": "0.9.0"
+      },
+      "feedback": {
+        "loaded": true,
+        "version": "0.2.0"
+      }
+    }
+  },
+  "passed": 32,
+  "failed": 0,
+  "steps": [
+    {
+      "name": "initial console state",
+      "pass": null,
+      "detail": {
+        "ma": false,
+        "profile": "Default",
+        "cmd": "",
+        "sc": false
+      }
+    },
+    {
+      "name": "deferred macro claimed",
+      "pass": null,
+      "detail": {
+        "macro": 116,
+        "name": "MCP kb14 deferred",
+        "lines": 0
+      }
+    },
+    {
+      "name": "session opened",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "input.routing reports the module default with type available on the keyboard backend",
+      "pass": true,
+      "detail": {
+        "quickkey": {
+          "available": false,
+          "missing": [
+            "backend 'keyboard' has no Quickey dispatch (capabilities.quickkey; the owned-Quickey backend is KB-13)"
+          ]
+        },
+        "type": {
+          "available": true
+        },
+        "shortcut": {
+          "available": true
+        },
+        "shortcutOrType": {
+          "available": true
+        }
+      }
+    },
+    {
+      "name": "the KB-14 policy is accepted (NUM5/THRU type, FIXTURE shortcutOrType, STORE shortcut)",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "input.route NUM5 with shortcuts on: text route, mode change to off, dispatchable",
+      "pass": true,
+      "detail": {
+        "method": "type",
+        "dispatchable": true,
+        "backend": "keyboard",
+        "modeChange": {
+          "target": false,
+          "reason": "keyboard shortcuts are on; character events reach the command line only while they are off (temporarily disabled for the insertion, restored afterwards)"
+        },
+        "text": "5",
+        "unavailable": [],
+        "key": "NUM5",
+        "capabilities": {
+          "keyboard": true,
+          "quickkey": false,
+          "char": true,
+          "modeChange": true
+        },
+        "methodSource": "key",
+        "effective": "text",
+        "supported": true,
+        "textChars": 1
+      }
+    },
+    {
+      "name": "input.route STORE with shortcuts on: shortcut-table route, no mode change",
+      "pass": true,
+      "detail": "shortcut-table"
+    },
+    {
+      "name": "type NUM5 (shortcuts on): the mode was changed, '5' inserted, record retained",
+      "pass": true,
+      "detail": {
+        "state": "retained",
+        "modeOp": "m26",
+        "text": {
+          "text": "5",
+          "outcome": "typed",
+          "typed": 1,
+          "chars": 1,
+          "focus": "best-effort: the characters go to whatever the console has focused (command line while shortcuts are off); focus is not observable from Lua, no Enter/Please is added",
+          "readback": {
+            "since": 1791605962.1591,
+            "outcome": "pending",
+            "until_": 1791605963.1591,
+            "expected": "5",
+            "source": "CmdObj().cmdtext",
+            "before": ""
+          }
+        }
+      }
+    },
+    {
+      "name": "input.status reports the active mode change (profile, original on -> target off, dependents)",
+      "pass": true,
+      "detail": {
+        "restoreDelayMs": 60,
+        "restoreInMs": 8,
+        "state": "active",
+        "lastEventAt": 1791605962.1591,
+        "original": true,
+        "id": "m26",
+        "owner": "conn-352",
+        "dependents": [
+          {
+            "hold": "h39",
+            "state": "retained",
+            "logical": "NUM5"
+          }
+        ],
+        "changedAt": 1791605962.1591,
+        "writes": 1,
+        "target": false,
+        "note": "a temporary keyboard-shortcut mode change (KB-14): captured profile and state, restored by service() after the last dependent event; unresolved = the operator's profile/mode changed or could not be read, recover() re-reads and restores (never a replacement profile)",
+        "profile": "Default",
+        "purpose": "text route NUM5"
+      }
+    },
+    {
+      "name": "the loop restored the mode after the delay; the record is released; shortcuts read on again; '5' is on the command line",
+      "pass": true,
+      "detail": {
+        "lastModeChange": "restored",
+        "hold": "released",
+        "console": {
+          "ma": false,
+          "profile": "Default",
+          "cmd": "5",
+          "sc": true
+        }
+      }
+    },
+    {
+      "name": "the text readback observed the command line",
+      "pass": true,
+      "detail": {
+        "actual": "5",
+        "source": "CmdObj().cmdtext",
+        "expected": "5",
+        "note": "the command line shows the inserted text; not executed",
+        "until_": 1791605963.1591,
+        "at": 1791605962.1923,
+        "outcome": "observed",
+        "since": 1791605962.1591,
+        "before": ""
+      }
+    },
+    {
+      "name": "two consecutive text taps each get a mode operation (joined when the second arrives within the restore delay, sequential otherwise)",
+      "pass": true,
+      "detail": {
+        "first": "m27",
+        "second": "m28",
+        "joined": false,
+        "err": ""
+      }
+    },
+    {
+      "name": "after the restore the command line holds the whole insertion and shortcuts are on",
+      "pass": true,
+      "detail": {
+        "ma": false,
+        "profile": "Default",
+        "cmd": "5Thru 5",
+        "sc": true
+      }
+    },
+    {
+      "name": "shortcutOrType FIXTURE with shortcuts on: shortcut route (F), no mode change, 'Fixture ' on the line",
+      "pass": true,
+      "detail": {
+        "route": "shortcut-table",
+        "cmdAfterMs": 16,
+        "err": ""
+      }
+    },
+    {
+      "name": "type NUM5 with shortcuts off: inserted without a mode change, released at once",
+      "pass": true,
+      "detail": "released"
+    },
+    {
+      "name": "shortcutOrType FIXTURE with shortcuts off: the text side ('Fixture '), no mode change",
+      "pass": true,
+      "detail": {
+        "method": "shortcutOrType",
+        "source": "text",
+        "profile": "Default",
+        "logical": "FIXTURE",
+        "text": "Fixture ",
+        "codepoints": [
+          70,
+          105,
+          120,
+          116,
+          117,
+          114,
+          101,
+          32
+        ],
+        "methodSource": "key",
+        "textSelectedBecause": "keyboard shortcuts are positively off",
+        "shortcutsActive": false,
+        "routing": {
+          "method": "shortcutOrType",
+          "methodSource": "key",
+          "text": "Fixture ",
+          "textChars": 8
+        },
+        "focus": "best-effort: the characters go to whatever the console has focused (command line while shortcuts are off); focus is not observable from Lua, no Enter/Please is added",
+        "textChars": 8
+      }
+    },
+    {
+      "name": "the command line shows '5Fixture ' and shortcuts stayed off",
+      "pass": true,
+      "detail": {
+        "ma": false,
+        "profile": "Default",
+        "cmd": "5Fixture ",
+        "sc": false
+      }
+    },
+    {
+      "name": "shortcut STORE with shortcuts off: temporarily enabled, pressed through the row, held",
+      "pass": true,
+      "detail": {
+        "modeOp": "m29",
+        "route": "shortcut-table"
+      }
+    },
+    {
+      "name": "the tap released, the mode was restored to off afterwards, 'Store ' is on the line",
+      "pass": true,
+      "detail": {
+        "hold": "released",
+        "console": {
+          "ma": false,
+          "profile": "Default",
+          "cmd": "Store ",
+          "sc": false
+        }
+      }
+    },
+    {
+      "name": "STORE held with shortcuts off: the mode is enabled for the hold",
+      "pass": true,
+      "detail": "m30"
+    },
+    {
+      "name": "600 ms into the hold the mode change is still active (kept through the hold) and 'Store ' is on the line",
+      "pass": true,
+      "detail": {
+        "mode": "active",
+        "cmd": "Store "
+      }
+    },
+    {
+      "name": "a text route (needs off) during the enabled hold is refused as mode-conflict, nothing typed",
+      "pass": true,
+      "detail": "[mode-conflict] a temporary shortcut-mode change is active (mode m30: shortcuts on for shortcut hold STORE, session 'conn-352'); this route needs them off; wait for the restoration (60 ms after its last event) or release its holds"
+    },
+    {
+      "name": "released: dispatched, record retained for the restoration",
+      "pass": true,
+      "detail": "retained"
+    },
+    {
+      "name": "after the release the mode was restored to off and the record released",
+      "pass": true,
+      "detail": {
+        "hold": "released",
+        "console": {
+          "ma": false,
+          "profile": "Default",
+          "cmd": "Store ",
+          "sc": false
+        }
+      }
+    },
+    {
+      "name": "STORE held with the mode enabled; the operator will disable shortcuts in 2 s",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the operator's disable is seen by the loop: the mode operation resolves to the operator's state (nothing written), the hold stays held",
+      "pass": true,
+      "detail": {
+        "last": "operator",
+        "interference": "the mode was changed back by someone else while the operation was active",
+        "after": 2109
+      }
+    },
+    {
+      "name": "the release under the changed route is a route change (shortcuts now inactive) and stays unresolved: the console did not lift the key",
+      "pass": true,
+      "detail": {
+        "reason": "release was dispatched with the stored tuple, but the route changed during the hold (keyboard shortcuts are now inactive (were active)) and the effect cannot be confirmed",
+        "mismatch": "keyboard shortcuts are now inactive (were active)"
+      }
+    },
+    {
+      "name": "new input is refused while the record is unresolved",
+      "pass": true,
+      "detail": "[conflict] text route NUM5 refused: STORE (hold h47, session 'conn-352') is unresolved; text is inserted only while this instance owns no other record (release, wait for the restoration or recover first)"
+    },
+    {
+      "name": "after the operator restores shortcuts, owner recover releases the record through the stored tuple (route restored)",
+      "pass": true,
+      "detail": {
+        "unresolved": [],
+        "attempted": 1,
+        "released": [
+          {
+            "state": "released",
+            "reason": "recover",
+            "at": 1791605973.9515,
+            "hold": "h47",
+            "outcome": "dispatched",
+            "logical": "STORE",
+            "session": "conn-352",
+            "verified": false,
+            "ok": true,
+            "tupleKey": "S|s0c0a0n0"
+          }
+        ],
+        "scope": "conn-352"
+      }
+    },
+    {
+      "name": "the record reports the route as restored and is released",
+      "pass": true,
+      "detail": {
+        "previous": "keyboard shortcuts are now inactive (were active)"
+      }
+    },
+    {
+      "name": "shortcuts are left in the operator's state (on); the module did not overwrite it",
+      "pass": true,
+      "detail": {
+        "ma": false,
+        "profile": "Default",
+        "cmd": "Store ",
+        "sc": true
+      }
+    },
+    {
+      "name": "routing policy back to the module default",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "console and bridge left clean: no holds, nothing unresolved, no mode change, shortcut mode as found, empty command line, MASTATE false",
+      "pass": true,
+      "detail": {
+        "input": {
+          "unresolvedFromPreviousRun": 0,
+          "holds": 0,
+          "enabled": true,
+          "sessions": 0,
+          "bank": {
+            "provisioned": false
+          },
+          "backend": "keyboard",
+          "unresolved": 0,
+          "quarantined": 0,
+          "note": "ownership records, not physical key state; see input.status. busy: cmd/set/setfader/lua are refused for every connection while it is set",
+          "retained": 0,
+          "moduleInputEnabled": true
+        },
+        "console": {
+          "ma": false,
+          "profile": "Default",
+          "cmd": "",
+          "sc": false
+        }
+      }
+    },
+    {
+      "name": "the deferred macro this run created is verified by contents and removed (an edited one would be preserved)",
+      "pass": true,
+      "detail": {
+        "deleted": true
+      }
+    }
+  ],
+  "final": {
+    "ma": false,
+    "profile": "Default",
+    "cmd": "",
+    "sc": false
+  },
+  "finalInput": {
+    "unresolvedFromPreviousRun": 0,
+    "holds": 0,
+    "enabled": true,
+    "sessions": 0,
+    "bank": {
+      "provisioned": false
+    },
+    "backend": "keyboard",
+    "unresolved": 0,
+    "quarantined": 0,
+    "note": "ownership records, not physical key state; see input.status. busy: cmd/set/setfader/lua are refused for every connection while it is set",
+    "retained": 0,
+    "moduleInputEnabled": true
+  }
+}
