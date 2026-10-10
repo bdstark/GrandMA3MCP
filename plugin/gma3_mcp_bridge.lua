@@ -1519,6 +1519,22 @@ detachHardkeys = function(rec, t, reason)
   if st.state == "ready" then
     local okD, dis = pcall(inst.disableInput, inst, t, reason)
     if okD then logReleaseResult("input: " .. tostring(reason), dis) else logerr("input: disableInput on %s failed: %s", tostring(reason), tostring(dis)) end
+    -- KB-14: a temporary shortcut mode is restored by service() one restore delay after the releases
+    -- above, never in the same call. Where this runs inside the loop's coroutine (a stop) the frames are
+    -- waited for here; from Cleanup (not yieldable) dispose() hands the pending restoration back instead.
+    local okM, stM = pcall(inst.status, inst, t)
+    if okM and type(stM) == "table" and stM.modeChange and stM.modeChange.state == "active" and coroutine.isyieldable() then
+      local deadline = now() + 1.0
+      while now() < deadline do
+        coroutine.yield()
+        t = now()
+        pcall(inst.service, inst, t)
+        local okN, stN = pcall(inst.status, inst, t)
+        if not (okN and type(stN) == "table" and stN.modeChange and stN.modeChange.state == "active") then break end
+      end
+      local okL, stL = pcall(inst.status, inst, t)
+      if okL and type(stL) == "table" and stL.lastModeChange and stL.lastModeChange.restoredAt then log("input: %s: keyboard-shortcut mode restoration %s restored before dispose", tostring(reason), tostring(stL.lastModeChange.id)) end
+    end
   end
   local ok, res = pcall(inst.dispose, inst, t)
   if ok and type(res) == "table" then

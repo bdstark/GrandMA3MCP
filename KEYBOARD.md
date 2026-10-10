@@ -44,7 +44,7 @@ NX-K surface path is not qualified (mtpnxk has not vendored 0.8.0). **KB-14 impl
 0.11.0): the `type` and `shortcutOrType` text routes and the temporary enable of `shortcut` run through a bounded, readback-verified
 change of the operator's keyboard-shortcut mode that is kept through the hold, restored by the loop after the last dependent event and
 never written over a state the operator changed meanwhile (unresolved restorations block input until recovery); the bridge gained
-`input.routing` / `input.route`; harness-tested (88 + 21 bridge checks) and **qualified live on the disposable show (32/32, plus the
+`input.routing` / `input.route`; harness-tested (98 + 21 bridge checks) and **qualified live on the disposable show (32/32, plus the
 11/11 consumption-order probe behind the restore delay)**. Profile switches, failed restores and the kept restoration across a restart
 are harness-only. KB-15 remains planned work.
 
@@ -1229,7 +1229,7 @@ own toggles. MCP/TypeScript changes are needed only for explicit exposure of the
 ### Module change for KB-14 (hardkeys 0.9.0, bridge 0.11.0, 2026-10-09)
 
 Implemented in `plugin/gma3_mcp_hardkeys.lua` 0.9.0 with the regression harness `test/lua/hardkeys_mode_test.lua`
-(88 checks on the fake backend with a fake profile, state and mode writer) and a bridge section of
+(98 checks on the fake backend with a fake profile, state and mode writer) and a bridge section of
 `test/lua/bridge_plugin_test.lua` (21 checks: the ops, a text tap and a mode-changing hold through `Keyboard()`, an
 unresolved restoration refusing the guarded ops, kept across a stop and restored by `input recover`). Live evidence:
 [kb-14-timing-macos-2.5.1.md](docs/probes/kb-14-timing-macos-2.5.1.md) (the consumption-order probe, 11/11) and
@@ -1254,14 +1254,20 @@ contract changed; `gma3_type` keeps the KB-05 text step, which is refused while 
   or an unreadable state makes the restoration **unresolved** (`busy` reason `restoration`, dependents `quarantined`,
   every new press and the bridge's guarded ops refused) until `recover()` (owner, or the operator's `input recover`)
   re-reads it on the original profile and restores it; a replacement profile is never written. A state somebody already
-  set back is left alone (`restoredBy = operator`, `interference` recorded). `dispose()` restores at once and hands an
-  unverifiable restoration back as a record (`adoptMode()`, kept by the bridge like unresolved key records).
+  set back is left alone (`restoredBy = operator`, `interference` recorded). `dispose()` follows the same rules: it
+  restores only when no dependent is still held or unresolved and the delay elapsed since the last release, otherwise it
+  hands the pending restoration back as a record (`adoptMode()`, kept by the bridge like unresolved key records; the
+  operator's `input recover` restores it after the adopted keys are recovered). The bridge's stop path waits the delay
+  on the loop before disposing; a Cleanup from the console cannot wait and keeps the record instead.
 - **Routes.** `shortcut` with a shortcut-table row and shortcuts off enables them for the hold (`route.modeChange`,
   `route.shortcutsActive = true`, so the operator disabling them mid-hold is the KB-04 route change). `type` and the text
   side of `shortcutOrType` insert the key's text once on press through `adapter.char`, in chunks of
   `textCharsPerService`, rechecking the mode, the profile, exclusivity and routes between chunks; partial progress is
-  reported (`text.typed`, `outcome partial|uncertain`, nothing erased or replayed), the command line is read back when
+  reported (`text.typed`, `outcome partial|uncertain`, nothing erased or replayed; in a sequence a partial or uncertain
+  insertion stops the sequence so a following PLEASE never commits it), the command line is read back when
   readable (`text.readback` observed/inconclusive), focus is best-effort and reported as such, no Enter/Please is added.
+  A press refused after the mode was changed (or a first character refused) drops its record as terminal, so the
+  restoration still completes.
   A text record owns no key (`tupleKey = "text:<KEY>"`, `releaseOutcome = "none"`), needs no interaction, refuses combos,
   exclusivity and every other instance-owned record (held, releasing, unresolved, retained, quarantined; consecutive
   text records of the same operation excepted) and is itself `released` at once or `retained` until the restore. Native

@@ -3255,6 +3255,20 @@ function Instance:_startStep(job, st, ev, now)
     if not h then stepError(ev, err); return end
     ev.hold, ev.pressOutcome, ev.tupleKey = h.id, h.pressOutcome, h.tupleKey
     self:_trackHold(job, h.id)
+    if h.kind == "text" then
+      -- KB-14: a text route completes within the press. Partial or uncertain delivery stops the sequence
+      -- (later steps unattempted; what went out is reported, never erased or replayed) so a following
+      -- PLEASE never commits text nobody saw.
+      ev.text = { typed = h.text and h.text.typed, chars = h.text and h.text.chars, outcome = h.text and h.text.outcome, readback = h.text and h.text.readback }
+      ev.releaseOutcome = "none"
+      if h.text and h.text.outcome ~= "typed" then
+        ev.state, ev.code = "uncertain", h.text.code or "text-partial"
+        ev.error = string.format("text route %s: %s", tostring(h.logical), tostring(h.text.error))
+      else
+        ev.state = "completed"
+      end
+      return
+    end
     if st.kind == "tap" then ev.state = "waiting" else ev.state = "completed"; ev.releaseOutcome = "pending" end
   elseif st.kind == "combo" then
     local r, err = self:combo(job.session, now, st.specs, { holdMs = st.holdMs, interaction = job.interaction, fromSequence = true })
@@ -3448,7 +3462,8 @@ function Instance:_eventReport(ev, now)
               hold = ev.hold, holds = ev.holds, group = ev.group, holdMs = ev.holdMs, ms = ev.ms, context = ev.context,
               pressOutcome = ev.pressOutcome, releaseOutcome = ev.releaseOutcome, code = ev.code, error = ev.error, note = ev.note,
               chars = ev.chars, typed = ev.typed, uncertainChar = ev.uncertainChar, pressed = ev.pressed, rollback = ev.rollback,
-              readback = ev.readback, startedAt = ev.startedAt, finishedAt = ev.finishedAt }
+              readback = ev.readback, startedAt = ev.startedAt, finishedAt = ev.finishedAt,
+              text = ev.text }  -- KB-14 text-route progress (typed, chars, outcome, readback)
   if ev.chars then r.remaining = ev.chars - (ev.typed or 0) end
   if ev.state == "readback" then r.readback = { outcome = "pending", source = "CmdObj().cmdtext", expected = ev.expected } end
   -- A hold's aggregate readback (MASTATE) may conclude after the sequence finished: report the live one.
@@ -3673,20 +3688,36 @@ function Instance:dispose(now)
   if self._state == "ready" and self._adapter and type(now) == "number" then
     result = self:_releaseHolds(self:_heldHolds(), now, "dispose")
   end
-  -- KB-14: a temporary mode is restored now (dispose is terminal; the keys above are up or unresolved
-  -- either way). What cannot be restored or verified is handed back as a record for adoptMode().
+  -- KB-14: the temporary mode follows the same rules as in service(): it is restored only when no
+  -- dependent record is still held/releasing/unresolved (a stuck key must keep the mode it was pressed in)
+  -- and the restore delay has elapsed since the last dependent event (the releases above may be that
+  -- event). Anything else is handed back as a record for adoptMode(): the consumer keeps it like an
+  -- unresolved key record, and recover() restores it once the keys are recovered.
   local op = self._mode
   if op and type(now) == "number" then
     if op.state == "active" then
-      local profile = self:_readProfileName()
-      local active = self:_readShortcutsActive()
-      if profile ~= op.profile then self:_modeUnresolved(op, now, string.format("at dispose the active user profile was '%s' (operation ran in '%s'); not written", tostring(profile), op.profile))
-      elseif active == op.original then self:_modeResolved(op, now, "dispose", "the mode already read as the original state")
-      else self:_restoreMode(op, now, "dispose") end
+      local live = 0
+      for _, h in ipairs(op.holds) do
+        if h.state == "held" or h.state == "releasing" or h.state == "unresolved" or h.state == "typing" then live = live + 1 end
+      end
+      local settleAt = op.lastEventAt + self._config.modeRestoreDelayMs / 1000
+      if live > 0 then
+        self:_modeUnresolved(op, now, string.format("%d dependent record(s) still held or unresolved at dispose; the mode is kept until they are recovered (restore pending)", live))
+        op.pending = "dependents"
+      elseif now < settleAt then
+        self:_modeUnresolved(op, now, string.format("disposed %d ms after the last dependent event, before the %d ms restore delay elapsed; restore pending", math.floor((now - op.lastEventAt) * 1000 + 0.5), self._config.modeRestoreDelayMs))
+        op.pending = "delay"
+      else
+        local profile = self:_readProfileName()
+        local active = self:_readShortcutsActive()
+        if profile ~= op.profile then self:_modeUnresolved(op, now, string.format("at dispose the active user profile was '%s' (operation ran in '%s'); not written", tostring(profile), op.profile))
+        elseif active == op.original then self:_modeResolved(op, now, "dispose", "the mode already read as the original state")
+        else self:_restoreMode(op, now, "dispose") end
+      end
     end
     if self._mode and self._mode.state == "unresolved" then
       local m = self._mode
-      result.mode = { id = m.id, profile = m.profile, original = m.original, target = m.target, changedAt = m.changedAt, owner = m.owner, purpose = m.purpose, writes = m.writes, unresolved = m.unresolved }
+      result.mode = { id = m.id, profile = m.profile, original = m.original, target = m.target, changedAt = m.changedAt, lastEventAt = m.lastEventAt, owner = m.owner, purpose = m.purpose, writes = m.writes, unresolved = m.unresolved, pending = m.pending }
     end
   end
   local records = {}
@@ -4150,6 +4181,14 @@ function Instance:_recoverMode(now)
   local active, aerr = self:_readShortcutsActive()
   if active == nil then op.unresolved.reason = "shortcut enablement cannot be read (" .. tostring(aerr) .. ")"; return self:_modeReport(now) end
   if active == op.original then self:_modeResolved(op, now, "recover", "the mode already read as the original state; nothing was written"); return self:_modeReport(now, self._lastMode) end
+  -- An adopted restoration lost its dependency list with the previous instance: every record the
+  -- instance still owns (adopted stuck keys included) stands in for it, so a key that was pressed in the
+  -- temporary mode is recovered before the mode is written back.
+  if op.adopted and self:_liveCount() > 0 then
+    op.unresolved.reason = string.format("%d record(s) are still held or unresolved; the mode is kept until they are recovered (restore pending)", self:_liveCount())
+    op.pending = "dependents"
+    return self:_modeReport(now)
+  end
   -- Still our temporary state on our profile. A dependent that is still held keeps the operation going
   -- (restoring under a held key is the mode change the hold must not see); otherwise restore now.
   for _, h in ipairs(op.holds) do
@@ -4171,7 +4210,7 @@ function Instance:_modeReport(now, op)
   for _, h in ipairs(op.holds) do deps[#deps + 1] = { hold = h.id, state = h.state, logical = h.logical } end
   return { id = op.id, state = op.state, profile = op.profile, original = op.original, target = op.target, owner = op.owner, purpose = op.purpose,
            changedAt = op.changedAt, lastEventAt = op.lastEventAt, restoredAt = op.restoredAt, restoredBy = op.restoredBy, restoreNote = op.restoreNote,
-           writes = op.writes, restoreAttempts = op.restoreAttempts, unresolved = op.unresolved, interference = op.interference, adopted = op.adopted, revalidated = op.revalidated,
+           writes = op.writes, restoreAttempts = op.restoreAttempts, unresolved = op.unresolved, interference = op.interference, adopted = op.adopted, revalidated = op.revalidated, pending = op.pending,
            dependents = deps, restoreDelayMs = self._config.modeRestoreDelayMs,
            restoreInMs = (op.state == "active" and now) and math.max(0, math.floor((op.lastEventAt + self._config.modeRestoreDelayMs / 1000 - now) * 1000 + 0.5)) or nil,
            note = "a temporary keyboard-shortcut mode change (KB-14): captured profile and state, restored by service() after the last dependent event; unresolved = the operator's profile/mode changed or could not be read, recover() re-reads and restores (never a replacement profile)" }
@@ -4187,7 +4226,7 @@ function Instance:adoptMode(record, now)
   if self._mode then return fail("mode-exists", "a mode operation already exists (" .. self._mode.id .. ")") end
   self._modeSeq = (self._modeSeq or 0) + 1
   self._mode = { id = string.format("m%d", self._modeSeq), profile = record.profile, original = record.original, target = record.target, changedAt = record.changedAt or now,
-                 lastEventAt = now, owner = "previous-run", purpose = record.purpose, holds = {}, state = "unresolved", writes = record.writes or 0, adopted = true,
+                 lastEventAt = now, owner = "previous-run", purpose = record.purpose, holds = {}, state = "unresolved", writes = record.writes or 0, adopted = true, pending = record.pending,
                  unresolved = { reason = "adopted from a previous run: " .. tostring(record.unresolved and record.unresolved.reason), since = now } }
   return self:_modeReport(now)
 end
@@ -4568,6 +4607,9 @@ end
 function Instance:_dropHold(hold)
   self._holds[hold.id] = nil
   if self._byTuple[hold.tupleKey] == hold then self._byTuple[hold.tupleKey] = nil end
+  -- Terminal: a dropped record (refused press, nothing typed) may still be listed as a dependent of a
+  -- mode operation; it must never count as live there, or the mode would stay changed for ever.
+  hold.state = "dropped"
 end
 
 function Instance:_setDeadline(hold, at, reason)

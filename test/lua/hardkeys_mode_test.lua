@@ -403,6 +403,39 @@ do
 end
 
 -------------------------------------------------------------------------------
+-- Review fixes: partial text stops a sequence; a refused event never pins the mode
+-------------------------------------------------------------------------------
+do
+  reset()
+  console.shortcutsActive = false
+  for _, kind in ipairs({ "press", "tap" }) do
+    local inst, b = fresh({ routing = TEXT_POLICY })
+    b:failNext("char", { codepoint = string.byte("h") }, "no")  -- "Thru " stops after "T"
+    local steps = { { kind = kind, key = "THRU", holdMs = kind == "tap" and 50 or nil }, { kind = "tap", key = "PLEASE", holdMs = 50 } }
+    local q = inst:startSequence("s", 1, steps)
+    inst:service(1.0); inst:service(1.1)
+    local s2 = inst:sequenceStatus(q.id)
+    check(kind .. " of a partially inserted text route stops the sequence: PLEASE unattempted, progress kept, nothing replayed", s2.state ~= "completed" and s2.state ~= "running" and s2.events[1].state == "uncertain" and s2.events[1].text.typed == 1 and s2.events[2].state == "unattempted" and b:typedText() == "T" and b:eventCount("press") == 0, J(s2))
+  end
+  -- a refused press after the mode was changed
+  console.shortcutsActive = false
+  local inst, b = fresh()
+  b:failNext("press", { pcKey = "S" }, "refused")
+  local x, err = inst:press("s", 2, { key = "STORE" })
+  check("the press was refused after the mode change: no ownership record", x == nil and err.code == "press-failed" and inst:status().capacity.used == 0 and console.shortcutsActive == true, J(err))
+  inst:service(2 + DELAY + 0.001)
+  check("the dropped record does not pin the mode: restored by service()", console.shortcutsActive == false and inst:status().modeChange == nil, J(inst:status().modeChange))
+  -- the first character refused after the mode was changed
+  console.shortcutsActive = true
+  local inst2, b2 = fresh({ routing = TEXT_POLICY })
+  b2:failNext("char", { codepoint = string.byte("5") }, "no")
+  x, err = inst2:press("s", 3, { key = "NUM5" })
+  check("the first character was refused after the mode change: no record, mode still changed", x == nil and err.code == "press-failed" and inst2:status().capacity.used == 0 and console.shortcutsActive == false, J(err))
+  inst2:service(3 + DELAY + 0.001)
+  check("...and restored by service()", console.shortcutsActive == true and inst2:status().modeChange == nil)
+end
+
+-------------------------------------------------------------------------------
 -- Dispose / adopt: restoration across a restart, never a replacement profile
 -------------------------------------------------------------------------------
 do
@@ -410,7 +443,29 @@ do
   local inst = fresh({ routing = TEXT_POLICY })
   local h = inst:press("s", 1, { key = "NUM5" })
   local res = inst:dispose(1.01)
-  check("dispose restores an active mode at once (terminal) and hands back no record", console.shortcutsActive == true and res.mode == nil and #res.records == 0, J(res))
+  check("dispose within the restore delay does not write; the restoration is handed back as pending", console.shortcutsActive == false and res.mode and res.mode.pending == "delay" and res.mode.unresolved.reason:find("restore delay") and #res.records == 0, J(res))
+  console.shortcutsActive = true
+  local instD = fresh({ routing = TEXT_POLICY })
+  h = instD:press("s", 1.5, { key = "NUM5" })
+  res = instD:dispose(1.5 + DELAY + 0.01)
+  check("dispose after the delay with every dependent released restores at once (terminal) and hands back no record", console.shortcutsActive == true and res.mode == nil and #res.records == 0, J(res))
+  -- a dependent whose release failed keeps the mode: the record and the restoration are both handed back
+  console.shortcutsActive = false
+  local instU, bU = fresh()
+  local hu = instU:press("s", 2, { key = "STORE" })
+  bU:failNext("release", { pcKey = "S" }, "console frozen", true)
+  res = instU:dispose(2 + DELAY + 0.5)
+  check("dispose with an unresolved dependent writes nothing (shortcuts stay on for the stuck key) and hands back the key record and a pending restoration", console.shortcutsActive == true and #res.records == 1 and res.records[1].pcKey == "S" and res.mode and res.mode.pending == "dependents" and res.mode.original == false, J({ sc = console.shortcutsActive, mode = res.mode, records = #res.records }))
+  local instA, bA = fresh()
+  instA:adopt(res.records, 3)
+  instA:adoptMode(res.mode, 3)
+  bA:failNext("release", { pcKey = "S" }, "console still frozen", true)
+  local recA = instA:recover(nil, 4)
+  check("operator recover with the adopted key still unresolved keeps the restoration pending (nothing written)", recA.restoration.state == "unresolved" and recA.restoration.pending == "dependents" and console.shortcutsActive == true, J(recA.restoration))
+  bA:clearFailures()
+  recA = instA:recover(nil, 5)
+  check("once the adopted key is released the restoration is restored on the original profile", #recA.released == 1 and recA.restoration.state == "restored" and console.shortcutsActive == false and instA:status().modeChange == nil, J(recA.restoration))
+  console.shortcutsActive = true
   local inst2 = fresh({ routing = TEXT_POLICY })
   h = inst2:press("s", 2, { key = "NUM5" })
   console.name = "Other"
