@@ -5,9 +5,13 @@ docs/probes/kb-18-control-macos-2.5.1.json` ([report](kb-18-control-macos-2.5.1.
 `gma3_mcp_control` 0.1.0 on the **fake backend** (intents recorded, nothing moved on the console), `gma3_mcp_feedback`
 0.3.0, `gma3_mcp_hardkeys` 0.10.0, show `mcp-test-disposable`, user Admin, profile Default, one physical display, Lua
 enabled, bridge started `lua input=keyboard` (Macro 100 after `npm run install-plugin`), control enabled by the operator
-with Macro 118 (`Plugin "gma3_mcp_bridge" "control=fake"`; Macro 119 is `control=off`). Run on 2026-10-10. A first run
-the same day failed 5 of 29 steps because the probe sent `ClearSelection` while its own motion kept the bridge `[busy]`
-(the guard working as designed); the probe now waits for the gesture to lapse and records that refusal as a step.
+with Macro 118 (`Plugin "gma3_mcp_bridge" "control=fake"`; Macro 119 is `control=off`). Run on 2026-10-10, last with
+the module at `9f08f87` (both PR #22 review rounds in). A first run the same day failed 5 of 29 steps because the probe
+sent `ClearSelection` while its own motion kept the bridge `[busy]` (the guard working as designed); the probe now waits
+for the gesture to lapse and records that refusal as a step. The re-run after review round 2 first failed 17 steps with
+`stale-binding`: a `control.bind` issued before the loop had observed every part read revision 0, because the module
+assigned the binding revision only once the generation was known; fixed in `9f08f87` (the revision follows the
+snapshot's key as soon as a snapshot exists), harness check added, re-run 30/30.
 
 ## What the console side answered
 
@@ -16,7 +20,9 @@ the same day failed 5 of 29 steps because the probe sent `ClearSelection` while 
   first) subscribed 12 items and, after 400 ms, the cached snapshot claimed generation 1 with nothing unobserved;
   `display = 0` is `[bad-args]`; with control disabled `control.submit` is `[control-disabled]` naming `control=fake`;
   with it enabled a malformed event (`bad-event`), an event one thousand generations ahead (`stale-generation`, current
-  generation reported) and executor 999999 (`target-unavailable`, "bind it first") were refused in place in one request,
+  generation reported), executor 999999 (`target-unavailable`, "bind it first"), a position for executor 191 without
+  a binding revision (`binding-required`, revision 1 reported) and one with revision 101 (`stale-binding`) were refused
+  in place in one request,
   and on the empty selection slot 1 (`Dimmer`) was `target-unavailable` "no fixture is selected". The session opened on
   demand had nothing queued and no gesture; `control.close` dropped nothing.
 - **Burst and order (`run`, after `Fixture 401`: generation 1 → 2, slot 1 `available`/`Coarse`):** ten relative deltas

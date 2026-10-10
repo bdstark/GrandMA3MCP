@@ -148,7 +148,10 @@ async function main() {
     record("control.submit is [control-disabled] until the operator enables control (nothing was queued)", !off.ok && off.code === "control-disabled" && /control=fake/.test(off.error ?? ""), off);
   } else {
     const ev = eventFactory("probe-verify", gen, brev);
-    const r1 = await A.request("control.submit", { events: [{ type: "wheel", device: "probe-verify", control: "x", seq: 1 }, ev.relative(1, 1, { generation: (gen ?? 0) + 1000 }), { ...ev.relative(99, 1), target: { executor: 999999, element: "fader" }, control: "Strip999999" }, { ...ev.relative(1, 1), binding: undefined }, ev.relative(1, 1, { binding: (brev ?? 0) + 100 })] });
+    // The revision is checked after the target resolves, so the two revision cases use a resolvable target: the
+    // first bound executor with a fader function (191 on the test show).
+    const faderExec = (ctx0.ok ? ctx0.result.executors : []).find((x) => x.available && x.value?.playbackTarget && x.value?.functions?.fader)?.value?.executor ?? execNumbers[0] ?? 1;
+    const r1 = await A.request("control.submit", { events: [{ type: "wheel", device: "probe-verify", control: "x", seq: 1 }, ev.relative(1, 1, { generation: (gen ?? 0) + 1000 }), { ...ev.relative(99, 1), target: { executor: 999999, element: "fader" }, control: "Strip999999" }, { ...ev.absolute(faderExec, 0.5), binding: undefined }, ev.absolute(faderExec, 0.5, { binding: (brev ?? 0) + 100 })] });
     record("verify: a malformed event, a stale generation, an unbound executor, a missing and a wrong binding revision are refused in place; nothing is queued", r1.ok && r1.result.refused === 5 && r1.result.accepted === 0 && r1.result.outcomes[0].refused === "bad-event" && r1.result.outcomes[1].refused === "stale-generation" && r1.result.outcomes[1].generation === gen && r1.result.outcomes[2].refused === "target-unavailable" && r1.result.outcomes[3].refused === "binding-required" && r1.result.outcomes[4].refused === "stale-binding" && r1.result.outcomes[4].binding === brev, outcomesOf(r1));
     const sel = cached.ok ? cached.result.slots?.value?.selection?.count : undefined;
     const slot1 = cached.ok ? cached.result.slots?.value?.slots?.find((s) => s.slot === 1) : undefined;
