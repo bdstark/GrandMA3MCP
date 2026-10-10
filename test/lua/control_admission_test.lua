@@ -27,7 +27,7 @@ local CTL = assert(load(src, "=gma3_mcp_control.lua", "t", env))("test_plugin", 
 -------------------------------------------------------------------------------
 -- Loading contract
 -------------------------------------------------------------------------------
-check("module loads without console API", type(CTL) == "table" and CTL.VERSION == "0.2.0" and CTL.API_VERSION == 1 and type(CTL.new) == "function")
+check("module loads without console API", type(CTL) == "table" and CTL.VERSION == "0.3.0" and CTL.API_VERSION == 1 and type(CTL.new) == "function")
 check("module table is read-only", not pcall(function() CTL.x = 1 end) and CTL.x == nil)
 check("module registers in the signal table", signals.__gma3_mcp_modules.gma3_mcp_control == CTL)
 check("publishes nothing globally", package.loaded.gma3_mcp_control == nil and _G.gma3_mcp_control == nil)
@@ -653,7 +653,7 @@ do
   inst:submit("s", 1, rel(6, 2, 4, { gesture = 4 }))  -- Pan: Physical readout, range 450, Fine resolution -> 0.375 per detent
   local sv = inst:service(1.01)
   check("kb19: three coalesced detents become Attribute \"Dimmer\" At + 3; a negative delta At - 5; fine 2 detents At + 0.2; 4 detents of a Fine Physical slot (450 / 120 / 10 each) At + 1.5",
-    sv.applied == 4 and cmds[1] == 'Attribute "Dimmer" At + 3' and cmds[2] == 'Attribute "Dimmer" At - 5' and cmds[3] == 'Attribute "Dimmer" At + 0.2' and cmds[4] == 'Attribute "Pan" At + 1.5', J({ sv, cmds }))
+    sv.applied == 4 and cmds[1] == 'Attribute "Dimmer" At + 3' and cmds[2] == 'Attribute "Dimmer" At - 5' and cmds[3] == 'Attribute "Dimmer" At + 0.2' and cmds[4] == 'Attribute "Pan" At + 1.5', J(cmds))
   local st = inst:status(1.02)
   check("kb19: lastApplied carries the backend's result (command, amount, step, slot, attribute, physical range) and status carries the backend's counters and last command",
     st.lastApplied.outcome == "applied" and st.lastApplied.result.command == 'Attribute "Pan" At + 1.5' and st.lastApplied.result.slot == 2 and st.lastApplied.result.mixed == true and st.lastApplied.result.physicalRange == 450 and st.lastApplied.result.physicalMixed == true and st.backendStatus.counters.applied == 4 and st.backendStatus.lastCommand.outcome == "applied" and b.counters.applied == 4, J(st.lastApplied))
@@ -682,6 +682,133 @@ do
   inst:submit("s", 1, rel(2, 1, 1, { fine = true, gesture = 2 }))
   inst:service(1.01)
   check("kb19: amounts are plain decimals", cmds[1] == 'Attribute "Dimmer" At + 409.6' and cmds[2] == 'Attribute "Dimmer" At + 0.1', J(cmds))
+end
+
+-------------------------------------------------------------------------------
+-- KB-20: parameter strips on the console backend (touch holds, absolute positions, mixed values)
+-------------------------------------------------------------------------------
+do
+  local cmds, feedback = {}, "OK"
+  local deps = { cmd = function(text) cmds[#cmds + 1] = text; return feedback end }
+  local function freshConsole(config)
+    config = config or {}
+    if config.requireBindingRevision == nil then config.requireBindingRevision = false end
+    local inst = CTL.new({ owner = "test", config = config, deps = { binding = function() return binding end, busy = function() return busyOwner end } }):init()
+    local b = CTL.consoleBackend(deps)
+    inst:enableInput(b)
+    inst:openSession({ id = "s" }, 1)
+    cmds = {}; feedback = "OK"
+    return inst, b
+  end
+  local function stouch(seq, slot, down, extra)
+    local e = { type = "touch", device = "mtouch", control = "Strip" .. tostring(slot), seq = seq, generation = binding.generation, target = { slot = slot }, down = down, gesture = 7 }
+    for k, v in pairs(extra or {}) do e[k] = v end
+    return e
+  end
+  local function sabs(seq, slot, value, extra)
+    local e = { type = "absolute", device = "mtouch", control = "Strip" .. tostring(slot), seq = seq, generation = binding.generation, target = { slot = slot }, value = value, gesture = 7 }
+    for k, v in pairs(extra or {}) do e[k] = v end
+    return e
+  end
+  local function srel(seq, slot, delta, extra)
+    local e = { type = "relative", device = "mtouch", control = "Strip" .. tostring(slot), seq = seq, generation = binding.generation, target = { slot = slot }, delta = delta, gesture = 7 }
+    for k, v in pairs(extra or {}) do e[k] = v end
+    return e
+  end
+  -- position(): the travel's verified range per readout.
+  local dimmer = { kind = "slot", slot = 1, name = "Dimmer", readout = "Percent", resolution = "Coarse", layer = "Absolute", channelFunction = "" }
+  local pan = { kind = "slot", slot = 2, name = "Pan", readout = "Physical", resolution = "Fine", layer = "Absolute", physicalRange = 450, physicalFrom = -225, physicalTo = 225 }
+  local p0, _, pinfo = CTL.position(dimmer, 0.5)
+  check("kb20: a position at the Percent readout spans 0..100 (0.5 = At 50) and reports the travel", p0 == 50 and pinfo.from == 0 and pinfo.to == 100 and CTL.position(dimmer, 0) == 0 and CTL.position(dimmer, 1) == 100
+    and CTL.position({ kind = "slot", slot = 1, name = "Pan", readout = "PercentFine", resolution = "Coarse", layer = "Absolute" }, 0.25) == 25)
+  check("kb20: a position at the Physical readout spans PhysicalFrom..PhysicalTo in physical units (Pan -225..225: 0.5 = At 0, 0.1 = At -180, 1 = At 225)", CTL.position(pan, 0.5) == 0 and CTL.position(pan, 0.1) == -180 and CTL.position(pan, 1) == 225 and select(3, CTL.position(pan, 1)).physicalRange == 450)
+  local _, rM = CTL.position({ kind = "slot", slot = 2, name = "Pan", readout = "Physical", resolution = "Fine", layer = "Absolute", physicalRange = 450, physicalFrom = -225, physicalTo = 225, physicalMixed = true }, 0.5)
+  local _, rF = CTL.position({ kind = "slot", slot = 2, name = "Pan", readout = "Physical", resolution = "Fine", layer = "Absolute", physicalRange = 450 }, 0.5)
+  local _, rD = CTL.position({ kind = "slot", slot = 1, name = "Pan", readout = "Dec8", resolution = "Coarse", layer = "Absolute" }, 0.5)
+  local _, rV = CTL.position(dimmer, 1.5)
+  local _, rX = CTL.position({ kind = "executor", executor = 201 }, 0.5)
+  check("kb20: a mixed physical range, missing PhysicalFrom/To, an uncalibrated readout, a value outside 0..1 and an executor are refused with the reason",
+    rM:find("different physical ranges") and rF:find("PhysicalFrom/PhysicalTo") and rD:find("readout Dec8") and rV:find("0..1") and rX:find("only encoder slots"), J({ rM, rF, rD, rV, rX }))
+  -- Admission: touches and positions are served on slots, still refused on executors; capabilities say so.
+  local inst, b = freshConsole()
+  check("kb20: the console backend declares touch and absolute on slots, no presses, no executors", b.capabilities.touch == true and b.capabilities.absolute == true and b.capabilities.button == false and b.capabilities.targets.executor == false and b.description:find("KB%-20"))
+  local okTX, eTX = inst:submit("s", 1, touch(1, 201, true))
+  local okAX, eAX = inst:submit("s", 1, abs(2, 201, 0.5))
+  check("kb20: a touch or a position on an executor fader stays unsupported (KB-21/22)", okTX == nil and eTX.code == "unsupported" and eTX.reason:find("executor faders") and okAX == nil and eAX.code == "unsupported", J({ eTX, eAX }))
+  -- A strip touch is a hold: busy, owned, applied as a noop, nothing issued.
+  local okT, eT = inst:submit("s", 1, stouch(1, 1, true))
+  local adm = inst:admission(1.001)
+  check("kb20: a strip touch on a slot is admitted as a hold: the instance is busy with it and the slot is this session's", okT and okT.accepted and adm and adm.reason == "touch-down" and inst:status(1.001).sessions.s.gestures == 1, J(adm))
+  local sv = inst:service(1.01)
+  check("kb20: the touch is applied as a noop (nothing moves on the console, no command issued) and counted", sv.applied == 1 and #cmds == 0 and b.counters.noop == 1 and inst:status(1.02).lastApplied.result.note:find("reserved its slot"), J(sv))
+  local okC, eC = inst:submit("other", 1.02, rel(1, 1, 1))
+  inst:openSession({ id = "other" }, 1.02)
+  okC, eC = inst:submit("other", 1.02, rel(1, 1, 1))
+  check("kb20: another session's motion on the touched slot is refused conflict with the owner", okC == nil and eC.code == "conflict" and eC.owner == "s", J(eC))
+  -- The drag: relative motion inside the touch coalesces and applies as the KB-19 adjustment.
+  for i = 2, 4 do inst:submit("s", 1.03, srel(i, 1, 1)) end
+  inst:submit("s", 1.03, srel(5, 1, -1))
+  sv = inst:service(1.04)
+  check("kb20: a touch-anchored drag is the KB-19 adjustment: three detents and one back coalesce into Attribute \"Dimmer\" At + 2", sv.applied == 1 and cmds[1] == 'Attribute "Dimmer" At + 2', J(cmds))
+  -- The binding moves while the strip is touched: the old gesture is stopped until release and re-touch.
+  binding.generation = binding.generation + 1
+  local okR, eR = inst:submit("s", 1.05, srel(6, 1, 1))
+  check("kb20: motion inside a touch after the binding changed is refused gesture-rebound (release and touch again)", okR == nil and eR.code == "gesture-rebound" and eR.heldGeneration == binding.generation - 1, J(eR))
+  local okU = inst:submit("s", 1.06, stouch(7, 1, false))
+  sv = inst:service(1.07)
+  local okT2 = inst:submit("s", 1.08, stouch(8, 1, true, { gesture = 8 }))
+  local okR2 = inst:submit("s", 1.08, srel(9, 1, 2, { gesture = 8 }))
+  sv = inst:service(1.09)
+  check("kb20: the release is a boundary (noop end), a new touch and its motion are served against the new binding", okU and okU.boundary and okT2 and okT2.accepted and okR2 and okR2.accepted and cmds[2] == 'Attribute "Dimmer" At + 2' and b.counters.noop == 3, J(cmds))
+  inst:submit("s", 1.1, stouch(10, 1, false)); inst:service(1.11)
+  check("kb20: after the release the instance is idle again", inst:admission(1.5) == nil and inst:status(1.5).sessions.s.gestures == 0)
+  -- Absolute positions: Attribute "<name>" At <value>, the newest queued position supersedes (slots).
+  inst, b = freshConsole()
+  inst:submit("s", 2, stouch(1, 1, true))
+  inst:submit("s", 2, sabs(2, 1, 0.1))
+  local okA2 = inst:submit("s", 2, sabs(3, 1, 0.25))
+  sv = inst:service(2.01)
+  check("kb20: a position on a Percent slot is Attribute \"Dimmer\" At 25; the newer queued position superseded the older (one command)", okA2 and okA2.superseded and sv.applied == 2 and #cmds == 1 and cmds[1] == 'Attribute "Dimmer" At 25', J(cmds))
+  local st = inst:status(2.02)
+  check("kb20: lastApplied carries the placement (command, value, amount, travel, readout, attribute, slot)", st.lastApplied.result.value == 0.25 and st.lastApplied.result.amount == 25 and st.lastApplied.result.from == 0 and st.lastApplied.result.to == 100 and st.lastApplied.result.readout == "Percent" and st.lastApplied.result.slot == 1 and st.lastApplied.result.attribute == "Dimmer", J(st.lastApplied.result))
+  local okP, eP = inst:submit("s", 2.03, sabs(4, 2, 0.5))
+  check("kb20: a position on a slot whose selection has mixed physical ranges is refused unsupported at admission (relative stays available)", okP == nil and eP.code == "unsupported" and eP.reason:find("different physical ranges") and inst:submit("s", 2.03, srel(5, 2, 1)).accepted, J(eP))
+  binding.slots.value.slots[2].physicalMixed = nil
+  inst:submit("s", 2.04, sabs(6, 2, 0.1, { gesture = 9 }))
+  sv = inst:service(2.05)
+  inst:submit("s", 2.06, sabs(7, 2, 0.5, { gesture = 10 }))
+  sv = inst:service(2.07)
+  binding.slots.value.slots[2].physicalMixed = true
+  check("kb20: positions on a Physical slot are placed in physical units (Pan 0.1 = At -180, 0.5 = At 0)", cmds[#cmds - 1] == 'Attribute "Pan" At -180' and cmds[#cmds] == 'Attribute "Pan" At 0', J(cmds))
+  check("kb20: a stale position is dropped like motion, never placed late", (function()
+    inst:submit("s", 3, sabs(8, 1, 0.9, { gesture = 11 }))
+    local r = inst:service(3.5)
+    return r.dropped.expired == 1 and cmds[#cmds] == 'Attribute "Pan" At 0'
+  end)())
+  -- Mixed values stay mixed unless the operator takes over.
+  inst, b = freshConsole()
+  binding.slots.value.slots[1].valueState = "mixed"; binding.slots.value.slots[1].absolute = 30
+  local resolved = CTL.resolveTarget(binding, { slot = 1 })
+  check("kb20: the resolved slot forwards the binding's value state and last read value", resolved.valueState == "mixed" and resolved.absolute == 30)
+  local okM, eM = inst:submit("s", 4, sabs(1, 1, 0.5))
+  check("kb20: a position on a slot with mixed values is refused mixed-values, nothing queued", okM == nil and eM.code == "mixed-values" and eM.message:find("takeover = true") and inst:status(4).sessions.s.queued == 0, J(eM))
+  check("kb20: relative motion on the same slot is served (the relationship is preserved)", inst:submit("s", 4, srel(2, 1, 1)).accepted)
+  local okK = inst:submit("s", 4, sabs(3, 1, 0.5, { takeover = true, gesture = 12 }))
+  sv = inst:service(4.01)
+  check("kb20: with takeover = true the position is placed and the record says so", okK and okK.accepted and cmds[#cmds] == 'Attribute "Dimmer" At 50' and inst:status(4.02).lastApplied.result.takeover == true and inst:status(4.02).lastApplied.result.valueState == "mixed", J(cmds))
+  local okB, eB = inst:submit("s", 4.03, srel(4, 1, 1, { takeover = true, gesture = 13 }))
+  local okB2, eB2 = inst:submit("s", 4.03, sabs(5, 1, 0.5, { takeover = 1, gesture = 13 }))
+  check("kb20: takeover on a relative event, or a non-boolean takeover, is a bad event", okB == nil and eB.code == "bad-event" and okB2 == nil and eB2.code == "bad-event", J({ eB, eB2 }))
+  binding.slots.value.slots[1].valueState = nil; binding.slots.value.slots[1].absolute = nil
+  -- The fake backend serves strips too; the mixed-values rule is resolution, not the backend.
+  local iF = fresh(); iF:openSession({ id = "s" }, 5)
+  binding.slots.value.slots[1].valueState = "mixed"
+  local okFM, eFM = iF:submit("s", 5, sabs(1, 1, 0.5))
+  binding.slots.value.slots[1].valueState = "value"
+  local okFV = iF:submit("s", 5, sabs(2, 1, 0.5))
+  binding.slots.value.slots[1].valueState = nil
+  check("kb20: the mixed-values refusal applies on the fake backend as well; a single value is served", okFM == nil and eFM.code == "mixed-values" and okFV and okFV.accepted, J(eFM))
+  check("kb20: the limitations name strips, positions and the mixed-values rule", CTL.LIMITATIONS[1]:find("KB%-20") and CTL.LIMITATIONS[1]:find("mixed%-values"))
 end
 
 -------------------------------------------------------------------------------

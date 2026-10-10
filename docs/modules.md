@@ -667,17 +667,46 @@ resolution toggle); resolutions other than Coarse/Fine (Increment, Native), laye
 channel-function selector naming a function other than the attribute's own, a quoted attribute name, phaser/editor
 slots and executor elements are refused. No acceleration is applied: n detents are n steps.
 
-`supports(kind, resolved)` serves `relative` on slots only: `button` (an encoder press: calculator/open/select is not
-qualified, nothing is pressed), `touch` and `absolute` (KB-20/22) and executor targets (KB-21/22) are refused
-`unsupported` at admission. A forced end of a hold reaching this backend (a hold admitted under another backend) is
+`supports(kind, resolved)` served `relative` on slots only in 0.2.0; since 0.3.0 (KB-20, below) `touch` and `absolute`
+on slots are served too, while `button` (an encoder press: calculator/open/select is not qualified, nothing is pressed)
+and executor targets (KB-21/22) are refused `unsupported` at admission. A forced end of a hold reaching this backend (a hold admitted under another backend) is
 a noop. The console's feedback is the verdict: `OK` = applied (`lastApplied.result` carries `command, amount, step,
 fine, resolution, readout, physicalRange, attribute, slot, mixed, feedback`), anything else = `backend-refused` with the
 feedback, a raise = unresolved (a relative intent is never re-attempted). `status()` (in `Instance:status().backendStatus`)
-carries the counters (`applied/refused/raised/noop`), the last command and the calibration table; `capabilities` says
-`{ relative = true, absolute = false, touch = false, button = false, targets = { slot = true, executor = false } }`.
-The module publishes `CALIBRATION` and `backends = { fake, console }`. The bridge enables it with
-`control=console` (0.15.0, [reference](reference.md#continuous-control-plugin-v0140-kb-18)); the live evidence is
-[kb-19-adjust-macos-2.5.1.md](probes/kb-19-adjust-macos-2.5.1.md).
+carries the counters (`applied/refused/raised/noop`), the last command and the calibration table; `capabilities` said
+`{ relative = true, absolute = false, touch = false, button = false, targets = { slot = true, executor = false } }` in
+0.2.0 (`absolute` and `touch` are true since 0.3.0). The module publishes `CALIBRATION` and `backends = { fake, console }`.
+The bridge enables it with `control=console` (0.15.0, [reference](reference.md#continuous-control-plugin-v0140-kb-18));
+the live evidence is [kb-19-adjust-macos-2.5.1.md](probes/kb-19-adjust-macos-2.5.1.md).
+
+## Parameter strips on the console backend (`gma3_mcp_control` 0.3.0, KB-20)
+
+The gesture itself (anchoring a touch, re-anchoring on a retouch, sensitivity, fine, pickup) belongs to the surface
+service; this module serves what a strip produces on an **attribute slot**:
+
+| Event | Served as | Refused when |
+| --- | --- | --- |
+| `touch` down / up | a hold: `admission(now)` reports the instance busy (`touch-down`) while it is down, the slot is the session's until the release, the backend applies it as a **noop** (`lastApplied.result.noop`, nothing is issued) | the slot is not calibrated (the `calibrate()` rules), an executor fader (KB-21/22) |
+| `relative` inside the touch | the KB-19 adjustment `Attribute "<name>" At +/- <detents x step>` | as in KB-19; `gesture-rebound` after the binding changed while the strip stayed touched (release and touch again) |
+| `absolute` (`value` 0..1 of the travel) | `Attribute "<name>" At <value>` over the **verified travel**: `Percent`/`PercentFine` span 0..100 (KB-16 live `At 50` = absolute 50), `Physical` spans the binding's `physicalFrom..physicalTo` in physical units (KB-19 live: `At` takes physical units; `At -180` for 0.1 of Pan -225..225) | `physicalMixed` (fixtures with different ranges: one position would mean different values), a missing `physicalFrom/To`, any readout, layer or channel function `calibrate()` refuses, executor faders |
+
+`position(resolvedSlot, value, config?)` (exported) gives the placed value or nil plus the reason, with `{ from, to,
+readout, physicalRange }`. The newest queued position of a slot supersedes an older one (slots are stateless targets);
+a position older than `maxEventAgeMs` when applied is dropped like motion, never placed late.
+
+**Mixed values stay mixed.** `resolveTarget` forwards the binding's `valueState` (`value | empty | mixed | unavailable`)
+and last read `absolute` on the resolved slot; an `absolute` event on a slot whose fixtures hold different values
+(`valueState == "mixed"`) is refused `mixed-values` at admission, for every backend, unless the event carries
+`takeover = true` (the surface's statement that the operator deliberately chose an absolute operation; `takeover` on a
+relative event or a non-boolean is `bad-event`). Relative motion on such a slot keeps the fixtures' relationship.
+Values are not in the generation digest (a value change never moves the generation), so `valueState`/`absolute` are the
+binding's last read: a hint for the surface's pickup policy, never a guarantee of the console's current value.
+
+`lastApplied.result` for a position carries `command, value, amount, from, to, readout, physicalRange, attribute, slot,
+mixed, valueState, takeover, feedback`; for motion the KB-19 fields (and `delta`). `capabilities` on the console backend
+are `{ relative = true, absolute = true, touch = true, button = false, targets = { slot = true, executor = false } }`.
+The bridge enables it with `control=console` (0.16.0); the live evidence is
+[kb-20-strips-macos-2.5.1.md](probes/kb-20-strips-macos-2.5.1.md).
 
 ## Vendoring into another plugin (mtpnxk)
 
@@ -722,7 +751,7 @@ qualified there; the 0.10.0/0.4.0/0.2.0 set above is what its KB-19 surface half
 ## Verification
 
 `npm test` runs [test/lua/modules_test.lua](../test/lua/modules_test.lua) (modules alone, no console
-API, route resolution including the native/ambiguous cases), [test/lua/control_admission_test.lua](../test/lua/control_admission_test.lua) (KB-18 against a hand-built binding snapshot and the fake backend, KB-19 the console backend over a stub `Cmd`: calibration, admission refusals, command text, feedback verdicts; loading, sessions and leases, event validation, per-device duplicates/out-of-order/loss, binding-unknown and stale generations, every target refusal, coalescing and its boundaries, absolute supersession and stateful functions, queue/eviction/age/rate/holds/gesture/work bounds, generation moves while queued or touched and the rebound rule, conflicts and the busy descriptor, expiry/close/disable/dispose ending gestures, backend refusals and raises, recover/adopt, status), [test/lua/feedback_context_test.lua](../test/lua/feedback_context_test.lua) (KB-17 against a fake console: the registry, bank/page/context on the configured and requested display, slots with definitions, preferences, bands, mixed and empty selections, bounded scans, phaser and empty slots, executor targets including Quickey and reserved exclusions, page executors, live snapshots and every generation rule, cached snapshots through `watchContext()`/`service()`, missing dependencies), [test/lua/hardkeys_sessions_test.lua](../test/lua/hardkeys_sessions_test.lua)
+API, route resolution including the native/ambiguous cases), [test/lua/control_admission_test.lua](../test/lua/control_admission_test.lua) (KB-18 against a hand-built binding snapshot and the fake backend, KB-19 the console backend over a stub `Cmd`: calibration, admission refusals, command text, feedback verdicts; KB-20 strips: touch holds and their busy/ownership/rebound effects, positions per readout, the mixed-values rule and takeover; loading, sessions and leases, event validation, per-device duplicates/out-of-order/loss, binding-unknown and stale generations, every target refusal, coalescing and its boundaries, absolute supersession and stateful functions, queue/eviction/age/rate/holds/gesture/work bounds, generation moves while queued or touched and the rebound rule, conflicts and the busy descriptor, expiry/close/disable/dispose ending gestures, backend refusals and raises, recover/adopt, status), [test/lua/feedback_context_test.lua](../test/lua/feedback_context_test.lua) (KB-17 against a fake console: the registry, bank/page/context on the configured and requested display, slots with definitions, preferences, bands, mixed and empty selections, bounded scans, phaser and empty slots, executor targets including Quickey and reserved exclusions, page executors, live snapshots and every generation rule, cached snapshots through `watchContext()`/`service()`, missing dependencies), [test/lua/hardkeys_sessions_test.lua](../test/lua/hardkeys_sessions_test.lua)
 (the KB-03 session lifecycle on the fake backend: ownership, aliases, leases, taps, bounded deadline servicing, route
 changes, failed releases, disconnect, disable, dispose/adopt; the KB-04 keyboard adapter over stubbed console
 deps: argument passing, pre-dispatch refusals, raising `Keyboard()`, MASTATE readback, exclusive holds, combos,

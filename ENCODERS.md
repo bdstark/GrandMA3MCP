@@ -349,6 +349,48 @@ configured resolution, editor contexts (refused since the PR review) and partial
 - Optional M-Play parameter strips reuse this behavior and clearly indicate their changed role.
 - Test touch jitter, endpoint travel, repeated gestures, missed touch-up, reconnect, and external console edits.
 
+### KB-20 results (console half, 2026-10-10; surface half in mtpnxk)
+
+`gma3_mcp_control` 0.3.0 and bridge 0.16.0 ([modules](docs/modules.md#parameter-strips-on-the-console-backend-gma3_mcp_control-030-kb-20),
+[reference](docs/reference.md#continuous-control-plugin-v0140-kb-18)); the live record is
+[kb-20-strips-macos-2.5.1.md](docs/probes/kb-20-strips-macos-2.5.1.md) with the
+[script report](docs/probes/kb-20-strips-macos-2.5.1.json) (`node scripts/kb20-probe.mjs run`). The feedback module is
+unchanged (0.4.0); no TypeScript changed. The gesture conversion (anchor on touch, re-anchor on retouch, sensitivity,
+fine, pressure ignored, pickup/takeover) is the surface service's half (mtpnxk `KEYBOARD.md` "KB-20"); what the console
+half serves:
+
+- **Relative touch-drag is the default:** a strip's drag travels as the KB-19 relative adjustment inside a served
+  **touch**: the touch is a hold (the bridge is `[busy]` with it, the slot is the session's, another session's motion on
+  it is `conflict`), applied as a noop (nothing is issued, the value does not move), and the lift is a noop boundary.
+- **Lifting and retouching re-anchors:** a new gesture on the same slot after the release is served against the
+  current binding; the anchor itself is the surface's.
+- **Direction, sensitivity, fine:** the same calibration as the rotaries (one detent = one console click, `fine` a
+  tenth); nothing is added here.
+- **Binding changes while touched:** motion inside a touch after the generation moved is refused `gesture-rebound`
+  until the release and a new touch (the KB-18 rule, which a served touch now engages on the console backend).
+- **Absolute mode only with a verified range:** `Attribute "<name>" At <value>` for the Percent/PercentFine readouts
+  (0..100) and the Physical readout (`physicalFrom..physicalTo` in physical units, `At -180` for 0.1 of Pan -225..225);
+  a mixed physical range, a missing range, other readouts, layers and channel functions are refused `unsupported`.
+  The newest queued position supersedes; a stale one is dropped, never placed late.
+- **Mixed values stay mixed:** a position on a slot whose fixtures hold different values is refused `mixed-values`
+  (for every backend) unless the event carries `takeover = true`; relative motion keeps the relationship. The resolved
+  slot forwards the binding's `valueState` and last read `absolute` as a pickup hint (values are not in the digest).
+- **Pressure:** no event type carries it; nothing to ignore here (the surface drops the M-Touch pressure keys).
+- **Bridge:** `control=console` serves the three kinds on slots; `control.status` capabilities say
+  `{ relative, absolute, touch = true, button = false }`; `lastApplied.result` carries the placement (`value, amount,
+  from, to, readout, takeover`).
+- **Harness:** `test/lua/control_admission_test.lua` (189 checks; 24 new: `position()` per readout and its refusals,
+  capabilities, executor refusals kept, the touch hold (busy, ownership, noop, conflict), the drag inside it, rebound
+  after a binding change and the release/re-touch recovery, positions at Percent and Physical, supersession, a stale
+  position dropped, the mixed-values refusal and takeover, bad `takeover`, the fake backend), the bridge harness (487,
+  version only) and `test/kb20-probe.test.ts` (4).
+
+**Limitations:** the console half places and adjusts; it does not know where the finger is. Missed touch-ups are bounded
+by the module's `maxGestureMs` (30 s force-end) and by the surface's own release on disconnect; a binding change cannot
+be driven through the bridge while a strip is touched (the hold keeps it `[busy]`), so the rebound rule is harness
+evidence live, as in KB-18. Absolute positions are an explicitly limited mode (the selection-scoped `At <value>`), not
+native fader equivalence; whether a fixture's value is "current" is the binding's last read.
+
 ## KB-21 — Playback banks and stable executor bindings
 
 **Request:** Select which live-show executors each playback section controls.
