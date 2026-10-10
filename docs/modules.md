@@ -679,8 +679,9 @@ The module publishes `CALIBRATION` and `backends = { fake, console }`. The bridg
 
 ## Vendoring into another plugin (mtpnxk)
 
-Use the immutable upstream revision **`9f08f871f864084afcd670008310b285e8b31bfc`** (KB-18, hardkeys 0.10.0 / feedback 0.3.0 /
-control 0.1.0) for the current module set; the earlier pins were `c8dbb3aa6edf352fc977d5196399bb6daf222d2b` (KB-17,
+Use the immutable upstream revision **`874e7bd2c694f54fc19def7b13de443961696dd5`** (KB-19, hardkeys 0.10.0 / feedback 0.4.0 /
+control 0.2.0) for the current module set; the earlier pins were `9f08f871f864084afcd670008310b285e8b31bfc` (KB-18, hardkeys
+0.10.0 / feedback 0.3.0 / control 0.1.0), `c8dbb3aa6edf352fc977d5196399bb6daf222d2b` (KB-17,
 hardkeys 0.10.0 / feedback 0.3.0), `3960334f295aaa2dcd98beb62beeccfcccbef46e` (KB-15, hardkeys 0.10.0 / feedback 0.2.0), `6e0d9c1918dd22e4703a9a36cf0440b20b4014ee`
 (`main` after PR #12, hardkeys 0.5.0, the pair mtpnxk qualified in KB-08) and `9da14544155f921c5dd4fd1cbb9a1ea4bd6f6e78`
 (the reviewed hardkeys 0.4.0). The machine-readable [modules.lock.json](../plugin/modules.lock.json) records the
@@ -690,8 +691,8 @@ manifest, not an automatic updater or a runtime dependency on GitHub.
 | File | Module version | API version | SHA-256 |
 | --- | --- | --- | --- |
 | `plugin/gma3_mcp_hardkeys.lua` | 0.10.0 | 1 | `a57ebd29af3b2c7e9e06ef3dcd8b7059c775db83b0dc61760f49e75973cc7dc3` |
-| `plugin/gma3_mcp_feedback.lua` | 0.3.0 | 1 | `7949a11282b97cdbf71cf596957f13231807b217c40c315e10623856053938c0` |
-| `plugin/gma3_mcp_control.lua` | 0.1.0 | 1 | `dbeeb8b765c7cbd883532dd03d84e514b90a27358bde13a513af853036bde573` |
+| `plugin/gma3_mcp_feedback.lua` | 0.4.0 | 1 | `2de74c985c77c1c37e3b15666dfc3cb02d4f4279143c42e55e8d753fa8ef03c7` |
+| `plugin/gma3_mcp_control.lua` | 0.2.0 | 1 | `43bda4a4cb026dc0f5e9c80608ee39d5083c88318219d0e1e4b686ab7bd9e4d1` |
 
 1. Obtain the Lua files from that exact revision of `bdstark/GrandMA3MCP`, rather than a moving branch.
    Copy them unchanged with [LICENSE](../LICENSE) and the manifest into the surface package. The manifest's
@@ -713,7 +714,8 @@ See the [tested platform/version matrix](compatibility.md) for the evidence and 
 mtpnxk vendored the 0.5.0 pair (its `tools/ma3/VENDOR.md` records those commits and hashes) and qualified the surface
 consumer against it on macOS in its KB-08 record, then the 0.10.0/0.2.0 pair for KB-15; the 0.10.0/0.3.0 pair for KB-17 (the context snapshot carried as a `context` message); the 0.10.0/0.3.0/0.1.0 set
 above is what its KB-18 surface half vendors (continuous-control events admitted on the console side), to be
-qualified there.
+qualified there; the 0.10.0/0.4.0/0.2.0 set above is what its KB-19 surface half vendors (the console backend behind
+`control=console`).
 
 ## Verification
 
