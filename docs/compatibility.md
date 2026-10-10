@@ -13,11 +13,12 @@ probe was rerun against this exact revision. An installation guide is not qualif
 | Component | Version at the reviewed revision | Consumer contract |
 | --- | --- | --- |
 | Node.js MCP server | 0.1.0 | stdio MCP; tools and results in the [reference](reference.md) |
-| Console bridge | 0.12.0 | Local JSON-lines TCP; loopback only, no authentication; `input.routing` / `input.route` since 0.11.0 (KB-14); `input=mixed` since 0.12.0 (KB-15, harness only) |
+| Console bridge | 0.14.0 | Local JSON-lines TCP; loopback only, no authentication; `input.routing` / `input.route` since 0.11.0 (KB-14); `input=mixed` since 0.12.0 (KB-15, harness only); `feedback.context`/`watch`/`unwatch` since 0.13.0 (KB-17); `control.*` and `control=fake` since 0.14.0 (KB-18, fake backend only) |
 | Hardkeys module | 0.10.0 (the reviewed baseline above shipped 0.4.0; `modules.lock.json` pins the 0.10.0 bytes for the KB-15 vendoring) | Module API 1; owned input, interactions, text and sequences; since 0.5.0 any `Enums.VirtualKeyCode` name and `prefer` for same-target ties (KB-07); routing policy (0.6.0), Quickey bank and backend (0.7.0/0.8.0), scoped shortcut-mode changes and text routes (0.9.0, KB-14) |
-| Feedback module | 0.2.0 | Module API 1; read-only observations and bounded polling |
+| Feedback module | 0.3.0 | Module API 1; read-only observations and bounded polling; control context and binding generations since 0.3.0 (KB-17) |
+| Control module | 0.1.0 | Module API 1; continuous-control admission, ordering, coalescing and bounds over an injected binding; fake backend only (KB-18) |
 
-For independent plugins, use the [pinned module pair](modules.md#vendoring-into-another-plugin-mtpnxk).
+For independent plugins, use the [pinned module set](modules.md#vendoring-into-another-plugin-mtpnxk).
 Do not infer exact source compatibility from version strings alone; retain the commit and file hashes.
 
 ## Live console evidence

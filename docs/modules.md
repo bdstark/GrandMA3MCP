@@ -595,10 +595,53 @@ claimed (`generationUnknown`, `lastGeneration`), exactly as for an unobserved pa
 only for one spec within one instance (a bridge restart is a new instance); the bridge's `feedback.context` op
 exposes them ([reference](reference.md#control-context-plugin-v0130-kb-17)).
 
+## Continuous-control admission (`gma3_mcp_control` 0.1.0, KB-18)
+
+A third module carries encoder motion and strip gestures from a surface to the console without stale input
+affecting a new target. It is loaded like the other two (a ComponentLua that only returns a table), touches no console
+API itself (the binding and the other input owner are injected by the consumer through `deps.binding(now)` and
+`deps.busy(sessionId, now)`), and in this version ships the **fake backend only**: intents are admitted, ordered,
+coalesced, bounded and recorded, and nothing moves on the console (the adjustment backend is KB-19).
+
+| Event | Fields | Meaning |
+| --- | --- | --- |
+| `relative` | `delta` (non-zero integer, `|delta| <= maxDelta`), `gesture`, `fine?` | encoder motion in detents |
+| `absolute` | `value` (0..1 of the control's travel), `gesture` | a strip or fader position |
+| `touch` | `down` (boolean), `gesture` | a strip touched or lifted |
+| `button` | `down` (boolean) | an encoder pressed or released |
+
+Every event carries `device`, `control`, `seq` (strictly increasing per session and device), `generation` (the
+`gma3_mcp_feedback` 0.3.0 `contextSnapshot().generation` the surface produced it against) and `target`: `{ slot = n }`
+(an encoder slot of the bound display) or `{ executor = n, element = "fader" | "key" | "encoder" }`.
+
+| Method | Effect |
+| --- | --- |
+| `openSession(opts, now)` / `renewSession(id, now, leaseMs)` / `closeSession(id, now, reason)` | owned sessions with leases (`defaultLeaseMs` 15000, `maxLeaseMs` 120000); a close or expiry ends the session's gestures through the backend (`forced = true` intents) and drops its queue, never applying anything late |
+| `submit(sessionId, now, event)` | admission in this order: session and lease; shape (`bad-event`); per-device order (`duplicate` for a seen `seq`, `out-of-order` for an older unseen one within `seqWindow`, a gap is accepted and reported as `lost`); per-device rate for motion (`rate`, dropped not deferred; releases are never rate-refused); a **release** (`touch`/`button` with `down = false`) is then admitted without a binding and ahead of the queue bound (`noop` when nothing is down); everything else needs the binding (`binding-unknown` while no generation is claimed), the event's generation (`stale-generation`, the current one reported), a resolvable target (`target-unavailable` with the binding's reason: no selection, unavailable, empty slot, empty executor, not a playback target, no such function; `unsupported` for phaser/editor slots), no rebound touch (`gesture-rebound`), no other input owner (`busy` from `deps.busy` unless it is this session), no other session's gesture on the target (`conflict` with the owner), `capacity` (`maxHolds` touches/buttons down) and room in the queue (`queue-full`: motion is refused; a release evicts the session's oldest motion instead). Returns `{ accepted, queued, coalesced?, superseded?, lost, target, generation, mixed?, stateful?, boundary?, noop? }` |
+| `service(now)` | lease expiries and `maxGestureMs` force-ends first, idle motion gestures lapse (`gestureIdleMs`), then at most `maxWorkPerService` queued intents in order through `adapter.apply(intent, now)`; motion older than `maxEventAgeMs` is dropped `expired`, motion whose generation is no longer the binding's is dropped `staleGeneration` (and marks the touch that produced it `rebound`); returns `{ applied, dropped {expired, staleGeneration, refused}, unresolved[], expired[], ended[], work, pending }` |
+| `admission(now)` | the busy descriptor (`touch-down`, `button-down`, `motion` within `gestureIdleMs`, `queued`) or nil |
+| `enableInput(adapter)` / `disableInput(now, reason)` / `attachBackend(adapter)` / `backendAvailable()` | as for hardkeys; `fakeBackend()` records intents and stages refusals (`failNext`) and raises (`raiseNext`) |
+| `recover(now)` / `adopt(records, now)` / `dispose(now)` | a release the backend raised on is an **unresolved** record (whether the console saw it is unknown); `dispose()` hands the records back, `adopt()` takes them into a new instance, `recover()` re-attempts them |
+| `status(now)` | read-only: sessions (devices with `last/lost/duplicates/reordered/rateDropped`, gestures with `rebound`), counters, the bounded event log, unresolved records, `lastApplied` |
+
+**Coalescing.** Relative deltas merge into the queue's tail only when it is motion of the same session, device, control,
+target, generation, resolution, fine flag and gesture, and nothing else was queued since; a touch or button event, a
+generation change or another target is a boundary. Absolute positions replace a queued position of the same target
+only where the function permits: attribute slots and stateless fader functions (`Master`, `Rate`, ...) do; `X`, `XA`,
+`XB`, crossfades and `Temp` (`STATEFUL_FUNCTIONS`) never do, so every position, including both endpoints, is applied
+in order. Packet loss is reported, never repaired: a lost relative delta is gone, a lost position is superseded by
+the next one.
+
+**Serialisation.** A touched or pressed target belongs to its session until the release (motion keeps it for
+`gestureIdleMs`); the bridge ORs `admission()` into its `[busy]` guard so `cmd`/`set`/`setfader`/`lua` from every
+other writer are refused while a surface gesture is active, and refuses motion while the hardkeys instance reports
+another owner (bridge 0.14.0, [reference](reference.md#continuous-control-plugin-v0140-kb-18)).
+
 ## Vendoring into another plugin (mtpnxk)
 
-Use the immutable upstream revision **`c8dbb3aa6edf352fc977d5196399bb6daf222d2b`** (KB-17, hardkeys 0.10.0 /
-feedback 0.3.0) for the current module pair; the earlier pairs were `3960334f295aaa2dcd98beb62beeccfcccbef46e` (KB-15, hardkeys 0.10.0 / feedback 0.2.0), `6e0d9c1918dd22e4703a9a36cf0440b20b4014ee`
+Use the immutable upstream revision **`PIN_REVISION`** (KB-18, hardkeys 0.10.0 / feedback 0.3.0 /
+control 0.1.0) for the current module set; the earlier pins were `c8dbb3aa6edf352fc977d5196399bb6daf222d2b` (KB-17,
+hardkeys 0.10.0 / feedback 0.3.0), `3960334f295aaa2dcd98beb62beeccfcccbef46e` (KB-15, hardkeys 0.10.0 / feedback 0.2.0), `6e0d9c1918dd22e4703a9a36cf0440b20b4014ee`
 (`main` after PR #12, hardkeys 0.5.0, the pair mtpnxk qualified in KB-08) and `9da14544155f921c5dd4fd1cbb9a1ea4bd6f6e78`
 (the reviewed hardkeys 0.4.0). The machine-readable [modules.lock.json](../plugin/modules.lock.json) records the
 repository, full revision, module versions, API versions and SHA-256 of each file. This is a vendoring
@@ -608,32 +651,34 @@ manifest, not an automatic updater or a runtime dependency on GitHub.
 | --- | --- | --- | --- |
 | `plugin/gma3_mcp_hardkeys.lua` | 0.10.0 | 1 | `a57ebd29af3b2c7e9e06ef3dcd8b7059c775db83b0dc61760f49e75973cc7dc3` |
 | `plugin/gma3_mcp_feedback.lua` | 0.3.0 | 1 | `7949a11282b97cdbf71cf596957f13231807b217c40c315e10623856053938c0` |
+| `plugin/gma3_mcp_control.lua` | 0.1.0 | 1 | `PIN_CONTROL_SHA` |
 
-1. Obtain both Lua files from that exact revision of `bdstark/GrandMA3MCP`, rather than a moving branch.
+1. Obtain the Lua files from that exact revision of `bdstark/GrandMA3MCP`, rather than a moving branch.
    Copy them unchanged with [LICENSE](../LICENSE) and the manifest into the surface package. The manifest's
    `revision` is the commit whose bytes the hashes name (the lock is updated in the commit after it).
 2. Verify each file against its manifest SHA-256 before packaging (for example, `shasum -a 256` on macOS,
    `sha256sum` on Linux, or `Get-FileHash -Algorithm SHA256` in PowerShell). Relative paths in the manifest
    are upstream paths; record the destination paths if your consumer uses a different layout.
-3. Add both as `ComponentLua` entries after your entry component in the plugin XML, and copy the
+3. Add each as a `ComponentLua` entry after your entry component in the plugin XML, and copy the
    `.lua` files next to the XML for import. After import the show carries them. Include the manifest with
    the distributed source/package; it does not need to be a console component.
-4. Validate both modules' `API_VERSION` and expected `VERSION` at startup, as in the example above.
+4. Validate every module's `API_VERSION` and expected `VERSION` at startup, as in the example above.
    Pinning the bytes matters because fixes have shipped without changing those version strings.
-5. Upgrade deliberately: review the upstream changes, replace both files from one selected revision,
+5. Upgrade deliberately: review the upstream changes, replace the files from one selected revision,
    update the manifest and startup checks, then run lifecycle/recovery tests and the relevant live probes
    in the consumer. Submit shared console-semantic fixes upstream and re-vendor them rather than keeping
    a surface-only fork. The pin is reproducible; it does not imply every platform is qualified.
 
 See the [tested platform/version matrix](compatibility.md) for the evidence and remaining gaps.
 mtpnxk vendored the 0.5.0 pair (its `tools/ma3/VENDOR.md` records those commits and hashes) and qualified the surface
-consumer against it on macOS in its KB-08 record, then the 0.10.0/0.2.0 pair for KB-15; the 0.10.0/0.3.0 pin above is
-what its KB-17 surface half vendors (the context snapshot carried as a `context` message), to be qualified there.
+consumer against it on macOS in its KB-08 record, then the 0.10.0/0.2.0 pair for KB-15; the 0.10.0/0.3.0 pair for KB-17 (the context snapshot carried as a `context` message); the 0.10.0/0.3.0/0.1.0 set
+above is what its KB-18 surface half vendors (continuous-control events admitted on the console side), to be
+qualified there.
 
 ## Verification
 
 `npm test` runs [test/lua/modules_test.lua](../test/lua/modules_test.lua) (modules alone, no console
-API, route resolution including the native/ambiguous cases), [test/lua/feedback_context_test.lua](../test/lua/feedback_context_test.lua) (KB-17 against a fake console: the registry, bank/page/context on the configured and requested display, slots with definitions, preferences, bands, mixed and empty selections, bounded scans, phaser and empty slots, executor targets including Quickey and reserved exclusions, page executors, live snapshots and every generation rule, cached snapshots through `watchContext()`/`service()`, missing dependencies), [test/lua/hardkeys_sessions_test.lua](../test/lua/hardkeys_sessions_test.lua)
+API, route resolution including the native/ambiguous cases), [test/lua/control_admission_test.lua](../test/lua/control_admission_test.lua) (KB-18 against a hand-built binding snapshot and the fake backend: loading, sessions and leases, event validation, per-device duplicates/out-of-order/loss, binding-unknown and stale generations, every target refusal, coalescing and its boundaries, absolute supersession and stateful functions, queue/eviction/age/rate/holds/gesture/work bounds, generation moves while queued or touched and the rebound rule, conflicts and the busy descriptor, expiry/close/disable/dispose ending gestures, backend refusals and raises, recover/adopt, status), [test/lua/feedback_context_test.lua](../test/lua/feedback_context_test.lua) (KB-17 against a fake console: the registry, bank/page/context on the configured and requested display, slots with definitions, preferences, bands, mixed and empty selections, bounded scans, phaser and empty slots, executor targets including Quickey and reserved exclusions, page executors, live snapshots and every generation rule, cached snapshots through `watchContext()`/`service()`, missing dependencies), [test/lua/hardkeys_sessions_test.lua](../test/lua/hardkeys_sessions_test.lua)
 (the KB-03 session lifecycle on the fake backend: ownership, aliases, leases, taps, bounded deadline servicing, route
 changes, failed releases, disconnect, disable, dispose/adopt; the KB-04 keyboard adapter over stubbed console
 deps: argument passing, pre-dispatch refusals, raising `Keyboard()`, MASTATE readback, exclusive holds, combos,

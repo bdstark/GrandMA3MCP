@@ -57,7 +57,8 @@ local function runComponent(name, file)
 end
 local hardkeysModule = runComponent("gma3_mcp_hardkeys", here .. "/../../plugin/gma3_mcp_hardkeys.lua")
 local feedbackModule = runComponent("gma3_mcp_feedback", here .. "/../../plugin/gma3_mcp_feedback.lua")
-local componentNames = { "gma3_mcp_bridge", "gma3_mcp_hardkeys", "gma3_mcp_feedback" }
+local controlModule = runComponent("gma3_mcp_control", here .. "/../../plugin/gma3_mcp_control.lua")
+local componentNames = { "gma3_mcp_bridge", "gma3_mcp_hardkeys", "gma3_mcp_feedback", "gma3_mcp_control" }
 local pluginHandle = { name = "gma3_mcp_bridge", Count = function() return #componentNames end,
   Ptr = function(_, i) return componentNames[i] and { name = componentNames[i], Get = function(_, p) if p == "SyntaxError" then return false end end } end }
 local componentHandle = { name = "gma3_mcp_bridge", Parent = function() return pluginHandle end }
@@ -1521,7 +1522,7 @@ do
   r = request("feedback.read", {}, nil, C)
   check("feedback.read without items is refused with a code", r.ok == false and r.code == "no-items", r.error)
   r = request("feedback.read", { readers = { "commandText", "lastCommand", "blind", "solo", "page", "freeze", "selectedSequence", "previewBar", "sequenceActive" }, displays = { 1, 2, 9 }, executors = { 201, 202 }, sequences = { 5, 6 } }, nil, C)
-  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.13.0" and r.result.module.version == "0.3.0" and r.result.identity.showFile == "mcp-test-disposable", J(r))
+  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.14.0" and r.result.module.version == "0.3.0" and r.result.identity.showFile == "mcp-test-disposable", J(r))
   local by = {}
   if r.ok then for _, it in ipairs(r.result.items) do by[it.key] = it end end
   check("feedback.read: command text and last command are raw observations", by.commandText and by.commandText.value == "Store " and by.lastCommand.value == "Go+ Sequence 5 : OK" and by.lastCommand.note:find("not confirmation"), J(by.lastCommand))
@@ -1625,7 +1626,7 @@ do
   GetExecutor = function(n) return execs[n], pageH end
   local C = { id = 71 }
   r = request("feedback.context", { executors = { 201, 202 } }, nil, C)
-  check("feedback.context answers with Lua and input disabled", r.ok and r.result.bridgeVersion == "0.13.0" and r.result.module.version == "0.3.0" and r.result.atomic == false and r.result.generation == 1 and r.result.generationChanged == false and r.result.identity.showFile == "mcp-test-disposable" and r.result.identity.dataPool.name == "Default", J(r))
+  check("feedback.context answers with Lua and input disabled", r.ok and r.result.bridgeVersion == "0.14.0" and r.result.module.version == "0.3.0" and r.result.atomic == false and r.result.generation == 1 and r.result.generationChanged == false and r.result.identity.showFile == "mcp-test-disposable" and r.result.identity.dataPool.name == "Default", J(r))
   check("feedback.context: authoritative display, bank/page, slots with availability and value", r.ok and r.result.authoritativeDisplay.rule == "configured" and r.result.encoder.value.bank.name == "Color" and r.result.encoder.value.page.name == "RGB" and r.result.slots.value.slots[1].name == "ColorRGB_R" and r.result.slots.value.slots[1].availability == "available" and r.result.slots.value.slots[1].absolute == 50 and r.result.slots.value.slots[1].unit == "None" and r.result.slots.value.slots[2].valueState == "empty" and r.result.executorPage.no == 1, J(r.result.slots))
   check("feedback.context: executor targets with functions, level and playback-target status", r.ok and #r.result.executors == 2 and r.result.executors[1].value.functions.keyPress == "Temp" and r.result.executors[1].value.level.value == 100 and r.result.executors[1].value.playbackTarget == true and r.result.executors[2].value.empty == true and r.result.executors[2].value.reserved == nil, J(r.result.executors))
   check("feedback.context: nested fields survive the serialiser depth bound", r.ok and type(r.result.slots.value.slots[1].feature) == "string" and type(r.result.executors[1].value.assigned.name) == "string")
@@ -1665,6 +1666,134 @@ do
   state.running = false
 end
 
+
+-------------------------------------------------------------------------------
+-- KB-18: control.* ops (continuous-control admission) over a fake binding
+-------------------------------------------------------------------------------
+do
+  start("")
+  state._loadModules(); state.running = true; state.stopRequested = false; state.ignoreNextCleanup = false
+  check("kb18: the control module loads with the pair", state.modules.control and state.modules.control.loaded and state.modules.control.version == "0.1.0", state.modules.control and state.modules.control.error)
+  check("kb18: control is disabled at a plain start", state.control.enabled == false and state.control.backend == nil)
+  -- The binding source is this bridge's feedback instance; replace it with a controllable fake snapshot
+  -- (the module's own harness covers the real readers; here the wiring is what is tested).
+  local gen = 1
+  local snapshot = function()
+    return { generation = gen, slots = { available = true, value = { selection = { count = 1, fixtures = { 401 }, identityComplete = true }, slots = {
+      { slot = 1, kind = "attribute", ref = "Attribute 1 'Dimmer'", name = "Dimmer", layer = "Absolute", resolution = "Coarse", readout = "Percent", channelFunction = "Dimmer", availability = "available" } } } },
+      executors = { { available = true, value = { executor = 201, page = 1, empty = false, playbackTarget = true, assigned = { addr = "Sequence 1" }, functions = { keyPress = "Go+", fader = "Master" }, level = { token = "FaderMaster", value = 0 } } } } }
+  end
+  local fbRec = state.modules.feedback
+  local watched
+  state.modules.feedback = { component = "gma3_mcp_feedback", loaded = true, version = "0.3.0", module = fbRec.module,
+    instance = { contextSnapshot = function() return snapshot() end, watchContext = function(_, spec) watched = spec; return { watched = 5, limitations = {} } end,
+                 status = function() return { config = {} } end, service = function() return {} end, dispose = function() end, unwatch = function() end } }
+  Cmd = function() return "OK" end
+  local C, D = { id = 81 }, { id = 82 }
+  local function tnow() return os.clock() + (_G.FAKE_CLOCK_OFFSET or 0) end
+  local ev = function(seq, extra)
+    local e = { type = "relative", device = "nxk", control = "Rotary1", seq = seq, generation = gen, target = { slot = 1 }, delta = 1, gesture = 1 }
+    for k, v in pairs(extra or {}) do e[k] = v end
+    return e
+  end
+  local r = request("control.submit", { events = { ev(1) } }, nil, C)
+  check("control.submit is refused while control is disabled", r.ok == false and r.code == "control-disabled" and r.error:find("control=fake"), r.error)
+  r = request("control.status", {}, nil, C)
+  check("control.status answers while disabled, with the limitations", r.ok and r.result.controlEnabled == false and #r.result.limitations == 3 and r.result.inputEnabled == false, J(r))
+  r = request("ping", {}, nil, C)
+  check("ping carries the control summary", r.ok and r.result.control.enabled == false and r.result.control.sessions == 0, J(r.result.control))
+  Main(nil, "control"); Cleanup()
+  check("'control' alone is refused", lastLog():find("refusing argument") and lastLog():find("control=fake"), lastLog())
+  Main(nil, "control=keyboard"); Cleanup()
+  check("an unknown control backend is refused", lastLog():find("control=fake or control=off"), lastLog())
+  Main(nil, "control=fake"); Cleanup()
+  check("'control=fake' while running enables the fake backend", state.control.enabled == true and state.control.backend == "fake" and logFound("control now enabled on the fake backend") ~= nil, lastLog())
+  r = request("control.submit", { events = { ev(1) } }, nil, C)
+  check("without a binding motion is binding-unknown (bind first)", r.ok and r.result.refused == 1 and r.result.outcomes[1].refused == "binding-unknown" and r.result.outcomes[1].message:find("bind"), J(r))
+  r = request("control.bind", { executors = { 201 } }, nil, C)
+  check("control.bind watches the context and reports the generation", r.ok and r.result.generation == 1 and r.result.watched == 5 and watched.executors[1] == 201 and state.control.spec.executors[1] == 201, J(r))
+  r = request("control.bind", { display = 0 }, nil, C)
+  check("control.bind validates its arguments", r.ok == false and r.code == "bad-args", r.error)
+  r = request("control.submit", { events = { ev(1), ev(2), ev(3, { delta = -1 }), ev(4, { generation = 9 }), ev(5) } }, nil, C)
+  check("a batch is admitted in order: coalesced, a stale generation refused in place, the rest admitted", r.ok and r.result.accepted == 4 and r.result.refused == 1 and r.result.outcomes[2].coalesced == true and r.result.outcomes[4].refused == "stale-generation" and r.result.outcomes[4].generation == 1 and r.result.outcomes[5].coalesced == true and r.result.session == "conn-81", J(r))
+  r = request("control.status", {}, nil, C)
+  check("the session was opened on demand with one coalesced intent queued", r.ok and r.result.yourSession == "conn-81" and r.result.sessions["conn-81"].queued == 1 and r.result.busy and r.result.busy.reason == "motion", J(r.result.sessions))
+  r = request("cmd", { command = "Clear" }, nil, D)
+  check("a queued/moving gesture makes cmd [busy] for every connection", r.ok == false and r.code == "busy" and r.error:find("input ownership is active") and r.detail.reason == "motion", J(r))
+  r = request("control.submit", { events = { { type = "touch", device = "mtouch", control = "Strip1", seq = 1, generation = gen, target = { executor = 201, element = "fader" }, down = true, gesture = 2 } } }, nil, C)
+  check("a touch down is admitted", r.ok and r.result.accepted == 1, J(r))
+  state._serviceModules(tnow() + 0.1)
+  r = request("control.status", {}, nil, C)
+  check("the loop applied the queued intents through the fake backend", r.ok and r.result.counters.applied == 2 and r.result.lastApplied.kind == "touch" and r.result.sessions["conn-81"].queued == 0, J(r.result.counters))
+  check("the fake backend recorded the merged delta", state.modules.control.instance._adapter.intents[1].delta == 2 and state.modules.control.instance._adapter.intents[1].events == 4 and state.modules.control.instance._adapter.intents[1].lost == 1, J(state.modules.control.instance._adapter.intents))
+  _G.FAKE_CLOCK_OFFSET = (_G.FAKE_CLOCK_OFFSET or 0) + 1
+  r = request("cmd", { command = "Clear" }, nil, D)
+  check("while the touch is down cmd stays [busy] with the gesture", r.ok == false and r.code == "busy" and r.detail.reason == "touch-down", J(r))
+  r = request("control.submit", { events = { { type = "absolute", device = "mtouch", control = "Strip1", seq = 2, generation = gen, target = { executor = 201, element = "fader" }, value = 0.5, gesture = 2 } } }, nil, D)
+  check("another connection is refused the touched target (conflict)", r.ok and r.result.outcomes[1].refused == "conflict" and r.result.outcomes[1].owner == "conn-81", J(r))
+  -- The hardkeys owner blocks motion from other sessions.
+  Main(nil, "input=fake"); Cleanup()
+  r = request("input.begin", {}, nil, D)
+  check("kb18: an input interaction of another connection is open", r.ok, J(r))
+  r = request("control.submit", { events = { ev(6, { device = "nxk2" }) } }, nil, C)
+  check("motion is refused while another input owner is busy", r.ok and r.result.outcomes[1].refused == "busy" and r.result.outcomes[1].owner == "conn-82", J(r))
+  r = request("control.submit", { events = { { type = "touch", device = "mtouch", control = "Strip1", seq = 3, generation = gen, target = { executor = 201, element = "fader" }, down = false, gesture = 2 } } }, nil, C)
+  check("the release is admitted regardless", r.ok and r.result.outcomes[1].accepted and r.result.outcomes[1].boundary, J(r))
+  request("input.end", { interaction = r.ok and "i1" or nil }, nil, D); request("input.close", {}, nil, D)
+  -- A generation move drops queued motion before it is applied.
+  r = request("control.submit", { events = { ev(7, { gesture = 3 }) } }, nil, C)
+  gen = 2
+  state._serviceModules(tnow() + 0.01)
+  r = request("control.status", {}, nil, C)
+  check("queued motion from the old generation is dropped by the loop, never applied", r.ok and r.result.counters.staleDropped == 1 and r.result.counters.applied == 3, J(r.result.counters))
+  r = request("control.submit", { events = { ev(8, { gesture = 4, generation = 1 }) } }, nil, C)
+  check("a stale event is refused with the current generation", r.ok and r.result.outcomes[1].refused == "stale-generation" and r.result.outcomes[1].generation == 2, J(r))
+  r = request("control.submit", { events = { ev(9, { gesture = 4, generation = 2 }) } }, nil, C)
+  check("the rebound event is admitted", r.ok and r.result.accepted == 1, J(r))
+  state._serviceModules(tnow() + 0.01)
+  -- Disconnect ends the connection's gestures.
+  r = request("control.submit", { events = { { type = "button", device = "nxk", control = "Rotary1", seq = 10, generation = 2, target = { slot = 1 }, down = true } } }, nil, C)
+  state._serviceModules(tnow() + 0.01)
+  state.clients = { C }
+  state._closeClient(1, "disconnect")
+  r = request("control.status", {}, nil, D)
+  check("a disconnect ends the connection's button through the backend and forgets the session", r.ok and r.result.sessions["conn-81"] == nil and state.modules.control.instance._adapter:last().kind == "button" and state.modules.control.instance._adapter:last().down == false and state.modules.control.instance._adapter:last().reason == "disconnect" and logFound("control: disconnect conn%-81: button on nxk/Rotary1 ended") ~= nil, lastLog())
+  check("kb18: an idle instance is not busy", request("cmd", { command = "Clear" }, nil, D).ok == true)
+  r = request("control.submit", { events = { { type = "x" } } }, nil, D)
+  check("a malformed event is refused in place, the request succeeds", r.ok and r.result.outcomes[1].refused == "bad-event", J(r))
+  local many = {}
+  for i = 1, 33 do many[i] = ev(i, { device = "flood" }) end
+  r = request("control.submit", { events = many }, nil, D)
+  check("more than 32 events per request is bad-args", r.ok == false and r.code == "bad-args" and r.error:find("at most 32"), r.error)
+  r = request("control.open", {}, nil, D)
+  check("control.open on a connection with a session is session-exists", r.ok == false and r.code == "session-exists", r.error)
+  r = request("control.close", {}, nil, D)
+  check("control.close ends the session", r.ok and r.result.session == "conn-82" and request("control.renew", {}, nil, D).code == "no-session", J(r))
+  Main(nil, "control status"); Cleanup()
+  check("'control status' prints the summary", logFound("control=fake enabled sessions=0") ~= nil, lastLog())
+  -- An unresolved release survives a stop and is adopted at the next control=fake start.
+  r = request("control.submit", { events = { { type = "touch", device = "mtouch", control = "Strip1", seq = 20, generation = 2, target = { executor = 201, element = "fader" }, down = true, gesture = 9 } } }, nil, D)
+  state._serviceModules(tnow() + 0.01)
+  state.modules.control.instance._adapter:raiseNext("touch", "Keyboard() raised")
+  Main(nil, "control=off"); Cleanup()
+  r = request("control.status", {}, nil, D)
+  check("'control=off' ends the touch; a release the backend raised on stays unresolved on the instance", state.control.enabled == false and r.ok and #r.result.unresolved == 1 and logFound("control: disable: touch on mtouch/Strip1 ended: unresolved") ~= nil, J(r.result.unresolved))
+  check("control.submit after control=off is refused", request("control.submit", { events = { ev(1) } }, nil, D).code == "control-disabled")
+  state.clients = {}
+  Cleanup()  -- the owning call's Cleanup: what the loop's end does on the console
+  check("the stop keeps the unresolved release for the next run", #state.control.unresolved == 1 and state.control.unresolved[1].kind == "touch", J(state.control.unresolved))
+  state.modules.feedback = fbRec
+  start("control=fake")
+  check("control=fake at start adopts the kept record; the failed bind keeps it again", logFound("adopted 1 unresolved release") ~= nil and #state.control.unresolved == 1 and logFound("kept for 'control recover'") ~= nil, lastLog())
+  state._loadModules(); state.running = true; state.stopRequested = false; state.ignoreNextCleanup = false
+  Main(nil, "control=fake"); Cleanup()
+  check("the kept record is adopted again by the next control=fake", #state.control.unresolved == 0 and #request("control.status", {}, nil, D).result.unresolved == 1)
+  r = request("control.recover", {}, nil, D)
+  check("control.recover re-attempts adopted releases through the backend", r.ok and #r.result.resolved == 1 and #request("control.status", {}, nil, D).result.unresolved == 0 and state.modules.control.instance._adapter:last().reason == "recover", J(r))
+  Cmd = nil
+  for _, rec in pairs(state.modules) do if rec.instance then rec.instance:dispose(0) end end
+  state.running = false
+end
 
 -------------------------------------------------------------------------------
 -- Quickey bank (KB-12): operator-only provisioning through the plugin argument
