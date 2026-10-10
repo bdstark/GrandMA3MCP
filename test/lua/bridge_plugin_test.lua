@@ -1577,13 +1577,15 @@ do
   Enums.VirtualKeyCode = { [""] = 0, UNKNOWN = 0, MA1 = 1, STORE = 66, NUM5 = 72, THRU = 78, PLEASE = 84, OOPS = 86, UNDO = 86, CLEAR = 87, X1 = 19 }
   local function quickeyHandle(i)
     local q = pool[i]
-    return { name = q.name, GetClass = function() return "Quickey" end,
+    return { name = q.name, index = i, GetClass = function() return "Quickey" end,
              Get = function(_, k) if k == "Code" then return q.code elseif k == "Note" then return q.note elseif k == "Lock" then return false end end,
              Set = function(_, k, v) if k == "Code" then q.code = v elseif k == "Name" then q.name = v elseif k == "Note" then q.note = v end end }
   end
   local function execHandle(i)
     local x = execs[i]
-    return { GetClass = function() return "Executor" end, Get = function(_, k) if k == "Object" then return x.object end end }
+    return { GetClass = function() return "Executor" end, Get = function(_, k) if k == "Object" then
+      if type(x.object) == "number" then return pool[x.object] and quickeyHandle(x.object) or nil end
+      return x.object end end }
   end
   ObjectList = function(ref)
     local qi = tostring(ref):match("^Quickey (%d+)$")
@@ -1600,6 +1602,8 @@ do
     if di then pool[tonumber(di)] = nil; return "OK" end
     local dp, de = c:match("^Delete Page (%d+)%.(%d+) /NoConfirmation$")
     if dp then execs[tonumber(de)].object = nil; return "OK" end
+    local aq, ap, ae = c:match("^Assign Quickey (%d+) At Page (%d+)%.(%d+)$")
+    if aq then execs[tonumber(ae)].object = tonumber(aq); return "OK" end
     return "OK"
   end
   DataPool = function() return { name = "Default" } end
@@ -1617,12 +1621,12 @@ do
   local before = #logs
   start("9800 input=fake bank=900/1.190-197")
   -- The start provisioned the bank, then the failed bind disposed the modules: the record is kept.
-  check("bank provisioned at start from the plugin argument", logFound("bank provision: 7 Quickey%(s%) created, 0 reused", before) and countPool() == 7 and pool[900].code == "MA1" and pool[900].name == "MCP MA1" and pool[900].note:find("gma3_mcp_hardkeys%-bank v1 owner=gma3_mcp_bridge"), lastLog())
+  check("bank provisioned at start from the plugin argument", logFound("bank provision: 8 Quickey%(s%) created, 0 reused", before) and countPool() == 8 and pool[907].code == "" and pool[907].name == "MCP RESERVED" and execs[190].object == 907 and execs[197].object == 907 and pool[900].code == "MA1" and pool[900].name == "MCP MA1" and pool[900].note:find("gma3_mcp_hardkeys%-bank v1 owner=gma3_mcp_bridge"), lastLog())
   check("the bank record is kept across the dispose", type(state.input.bank) == "table" and state.input.bank.id == "gma3_mcp_bridge@q900.e1.190-197" and logFound("bank record .* kept for the next start", before), J(state.input.bank and state.input.bank.id))
   before = #logs
   state._loadModules(); state.running = true; state.stopRequested = false; state.ignoreNextCleanup = false
   local hk = state.modules.hardkeys
-  check("the kept record is adopted and re-verified at the next load, creating nothing", logFound("bank adopt: bank gma3_mcp_bridge@q900.e1.190%-197 state=ready codes=7", before) and hk.instance:bankStatus().state == "ready" and countPool() == 7, lastLog())
+  check("the kept record is adopted and re-verified at the next load, creating nothing", logFound("bank adopt: bank gma3_mcp_bridge@q900.e1.190%-197 state=ready codes=7", before) and hk.instance:bankStatus().state == "ready" and countPool() == 8, lastLog())
   local A = { id = 31 }
   local r = request("input.status", {}, nil, A)
   check("input.status reports the bank", r.ok and r.result.status.bank.provisioned == true and r.result.status.bank.codeCount == 7 and r.result.policy.bank.state == "ready" and r.result.policy.bank.qualified == 7, J(r.result.policy.bank))
@@ -1648,17 +1652,18 @@ do
   local press = request("input.press", { key = "NUM5", interaction = r.result.interaction.id }, nil, A)
   before = #logs
   Main(nil, "bank teardown"); Cleanup()
-  check("'bank teardown' is refused while a Quickey hold is live", press.ok and logFound("bank teardown refused %[bank%-in%-use%]", before) and countPool() == 7, lastLog())
+  check("'bank teardown' is refused while a Quickey hold is live", press.ok and logFound("bank teardown refused %[bank%-in%-use%]", before) and countPool() == 8, lastLog())
   request("input.releaseAll", {}, nil, A)
   pool[906].name = "renamed by operator"
-  execs[190].object = { name = "MCP STORE", GetClass = function() return "Quickey" end }
+  execs[190].object = { name = "MCP STORE", index = 55, GetClass = function() return "Quickey" end, Get = function() return "" end }  -- a same-named Quickey that is not ours
   before = #logs
   Main(nil, "bank teardown"); Cleanup()
-  check("'bank teardown' removes verified Quickeys, clears our executor and skips the edited object", logFound("bank teardown: 6 Quickey%(s%) removed, 1 executor%(s%) cleared, 1 object%(s%) skipped; the bank is PARTIAL", before) and countPool() == 1 and pool[906] ~= nil and execs[190].object == nil and state.input.bank ~= nil, lastLog())
+  check("'bank teardown' removes verified Quickeys, clears our reserved executors, skips the edited object and the look-alike", logFound("bank teardown: 7 Quickey%(s%) removed, 7 executor%(s%) cleared, 2 object%(s%) skipped; the bank is PARTIAL", before) and countPool() == 1 and pool[906] ~= nil and execs[190].object ~= nil and execs[191].object == nil and state.input.bank ~= nil, lastLog())
   pool[906].name = "MCP CLEAR"
   before = #logs
   Main(nil, "bank teardown"); Cleanup()
   check("the second teardown completes and drops the record", logFound("the bank is gone", before) and countPool() == 0 and state.input.bank == nil, lastLog())
+  execs[190].object = nil
   -- An unowned object in the range refuses the whole setup; nothing is created.
   pool[903] = { name = "Operator thing", code = "GO", note = "" }
   before = #logs

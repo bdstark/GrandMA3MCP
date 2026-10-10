@@ -68,8 +68,9 @@ Plugin "gma3_mcp_bridge" "bank teardown"
 ```
 
 `bank=<quickey>/<page>.<first>[-<last>]` creates one Quickey per command-area hardkey code from the given pool index
-upwards (named `MCP <CODE>`, with an ownership marker in the Note) and reserves the executor range for holds (the range
-must cover the hold capacity of 8; without `-<last>` it reserves 8). Every slot and executor is checked before anything
+upwards (named `MCP <CODE>`, with an ownership marker in the Note) and reserves the executor range for holds by assigning
+the bank's code-less `MCP RESERVED` Quickey to each executor, so the claim is visible to any other plugin (the range must
+cover the hold capacity of 8; without `-<last>` it reserves 8). Every slot and executor is checked before anything
 is written: an unowned object in the range, another plugin's bank or an occupied executor refuses the whole setup and
 nothing is created. A bank of this bridge with the same ranges is verified and reused. `bank status` prints the codes
 (qualified by the KB-10 evidence, or discovered only), problems and exclusions; `bank verify` re-reads every object;

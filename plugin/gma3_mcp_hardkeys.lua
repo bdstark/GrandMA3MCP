@@ -564,6 +564,7 @@ end
 local BANK_MARKER         = "gma3_mcp_hardkeys-bank"
 local BANK_MARKER_VERSION = 1
 local BANK_NAME_PREFIX    = "MCP "        -- Quickey Name "MCP NUM5"; the Note carries the marker
+local BANK_PLACEHOLDER    = "RESERVED"    -- the code-less Quickey assigned to every reserved executor (its marker says code=RESERVED)
 local BANK_MAX_CODES      = 512           -- sanity bound on the discovered enum
 
 -- Codes that are not command-area hardkeys (KB-10 "Exclusions to decide at provisioning time").
@@ -848,9 +849,18 @@ local function consoleDeps(env)
           local okN, n = pcall(function() return tostring(obj.name) end)
           local okC, c = pcall(function() return tostring(obj:GetClass()) end)
           o = { name = okN and n or nil, class = okC and c or nil }
+          if c == "Quickey" then
+            -- Identity of an assigned Quickey: its pool index, marker and code (the name proves nothing).
+            local okI, i = pcall(function() return tonumber(obj.index) end)
+            local okNo, note = pcall(function() return tostring(obj:Get("Note")) end)
+            local okCo, code = pcall(function() return tostring(obj:Get("Code")) end)
+            o.index, o.note, o.code = okI and i or nil, okNo and note or nil, okCo and code or nil
+          end
         end
         return { exists = true, class = cls, empty = o == nil, object = o }
       end,
+      -- Reserves/uses an executor: the paged form of the KB-10 assignment (confirmed live, KB-12 record).
+      assign = function(page, index, quickeyIndex) env.Cmd(string.format("Assign Quickey %d At Page %d.%d", quickeyIndex, page, index)); return true end,
       -- Clears an executor's assignment ("Delete Page P.N" is the paged form of the "Delete Executor N"
       -- the KB-10 probe used); the module only calls it for an executor it verified holds a bank Quickey.
       clear = function(page, index) env.Cmd(string.format("Delete Page %d.%d /NoConfirmation", page, index)); return true end,
@@ -1401,9 +1411,18 @@ end
 -- guess. Contract:
 --   quickeys.read(index)  -> nil (empty slot) | { name, code, note, lock, class }
 --   quickeys.create(index) / set(index, { Note, Code, Name }) / delete(index) -> true | false, err
---   executors.read(page, index) -> { exists, class, empty, object = { class, name } | nil }
---   executors.clear(page, index) -> true | false, err
---   showIdentity() -> string identifying the show and data pool the objects live in
+--   executors.read(page, index) -> { exists, class, empty, object = { class, name, index, note, code } | nil }
+--                                  (index/note/code of the assigned object when it is a Quickey)
+--   executors.assign(page, index, quickeyIndex) / clear(page, index) -> true | false, err
+--   showIdentity() -> string identifying the show file and data pool the objects live in
+--
+-- Reservation (review finding 3): an executor is reserved by assigning the bank's code-less PLACEHOLDER
+-- Quickey ("MCP RESERVED", marker code=RESERVED, slot right after the codes) to it, so the claim is an
+-- object on the console that any other consumer reads as a foreign marker; an empty executor is not a
+-- reservation. Ownership of an assigned executor (finding 2) is the assigned Quickey's pool index, marker
+-- (owner, bank id, code) and Code matching one of this bank's entries, never its name. Every target,
+-- executor and teardown access (finding 1) re-reads the show identity first; a mismatch makes the bank
+-- stale and refuses, and verifyBank() keeps it stale until the identity matches again.
 
 function Instance:_bankDeps()
   local d = self._deps
@@ -1411,6 +1430,7 @@ function Instance:_bankDeps()
   if type(d.quickeys) ~= "table" or type(d.quickeys.read) ~= "function" then missing[#missing + 1] = "quickeys.read" end
   if type(d.executors) ~= "table" or type(d.executors.read) ~= "function" then missing[#missing + 1] = "executors.read" end
   if type(d.virtualKeyCodes) ~= "function" then missing[#missing + 1] = "virtualKeyCodes" end
+  if type(d.showIdentity) ~= "function" then missing[#missing + 1] = "showIdentity" end
   if #missing > 0 then return nil, { code = "unavailable", message = "the Quickey bank needs console deps " .. table.concat(missing, ", ") .. " (consoleDeps(_G) provides them)" } end
   return d
 end
@@ -1437,6 +1457,25 @@ function Instance:_readShowIdentity()
   return tostring(v)
 end
 
+-- Fresh show-identity gate before any target access, executor access or teardown. A mismatch or an
+-- unreadable identity marks the bank stale (cached reads dropped) and returns the refusal.
+function Instance:_bankShowGate(bank)
+  local show, serr = self:_readShowIdentity()
+  if show and show == bank.show then
+    if bank.state == "stale" then bank.state, bank.staleReason = "degraded", nil end  -- back on the right show: still needs verifyBank()
+    return true
+  end
+  self:_markBankStale(bank, show and ("show/data pool is '" .. show .. "', the bank belongs to '" .. bank.show .. "'") or ("show identity unreadable: " .. tostring(serr)))
+  local _, e = fail("bank-stale", "the show or data pool differs from the one the bank was provisioned in (" .. tostring(bank.staleReason) .. "); the objects at these indices are not this bank's; load the bank's show (or tear down from there) and run verifyBank()", { bank = bank.id, show = show, bankShow = bank.show })
+  return nil, e
+end
+
+function Instance:_markBankStale(bank, reason)
+  bank.state, bank.staleReason = "stale", reason
+  for _, e in ipairs(bank.codes) do e.lastRead, e.state = nil, "unverified" end
+  for _, x in ipairs(bank.executors) do x.state, x.assigned = "unverified", nil end
+end
+
 -- Reads one Quickey slot and classifies it against an expected entry: "empty", "owned" (marker, code
 -- and name all match), "owned-changed" (our marker but Code or Name differ: an operator edit), "foreign"
 -- (another owner's marker), "other-bank" (our owner, another bank id), "occupied" (no marker).
@@ -1453,13 +1492,14 @@ function Instance:_classifySlot(index, expect, owner, id)
   if m.owner ~= owner then r.state = "foreign"; return r end
   if m.bank ~= id then r.state = "other-bank"; return r end
   if expect then
-    local codeOk = tostring(obj.code) == expect.name and m.code == expect.name
+    local wantCode = expect.placeholder and "" or expect.name
+    local codeOk = tostring(obj.code or "") == wantCode and m.code == expect.name
     local nameOk = tostring(obj.name) == BANK_NAME_PREFIX .. expect.name
     if codeOk and nameOk then r.state = "owned"
     else
       r.state = "owned-changed"
       r.changed = {}
-      if not codeOk then r.changed[#r.changed + 1] = string.format("Code is %s (marker %s), expected %s", tostring(obj.code), tostring(m.code), expect.name) end
+      if not codeOk then r.changed[#r.changed + 1] = string.format("Code is %s (marker %s), expected %s", tostring(obj.code), tostring(m.code), wantCode == "" and "<empty>" or wantCode) end
       if not nameOk then r.changed[#r.changed + 1] = string.format("Name is '%s', expected '%s'", tostring(obj.name), BANK_NAME_PREFIX .. expect.name) end
     end
   else
@@ -1468,27 +1508,40 @@ function Instance:_classifySlot(index, expect, owner, id)
   return r
 end
 
--- Reads one executor and classifies it: "empty", "owned" (assigned to a Quickey named like one of this
--- bank's), "occupied" (something else), "missing" (no such executor), "error".
-function Instance:_classifyExecutor(page, index, bankNames)
+-- Reads one executor and classifies it: "reserved" (holds this bank's placeholder), "assigned" (holds
+-- one of this bank's code Quickeys), "empty", "foreign" (holds a Quickey carrying another bank's or
+-- owner's marker), "occupied" (anything else), "missing", "error". Ownership is the assigned object's
+-- pool index, marker and Code against the bank's entries; the name proves nothing.
+function Instance:_classifyExecutor(page, index, bank)
   local ok, ex, err = bankCall(self._deps.executors.read, page, index)
   if not ok then return { state = "error", error = err } end
   if type(ex) ~= "table" then return { state = "error", error = "executors.read returned " .. type(ex) } end
-  if ex.exists == false then return { state = "missing" } end
+  if ex.exists == false then return { state = "missing", error = ex.reason } end
   if ex.class ~= nil and tostring(ex.class) ~= "Executor" then return { state = "error", error = string.format("Page %d.%d is a %s, not an Executor", page, index, tostring(ex.class)) } end
   if ex.empty or ex.object == nil then return { state = "empty" } end
   local o = ex.object
-  local r = { state = "occupied", object = { class = o.class, name = o.name } }
-  if tostring(o.class) == "Quickey" and type(o.name) == "string" and bankNames and bankNames[o.name] then
-    r.state, r.code = "owned", bankNames[o.name]
+  local r = { state = "occupied", object = { class = o.class, name = o.name, index = o.index } }
+  if tostring(o.class) ~= "Quickey" then return r end
+  local m = parseBankMarker(o.note)
+  if not m then return r end
+  r.marker = m
+  if m.owner ~= bank.owner or m.bank ~= bank.id then r.state = "foreign"; return r end
+  local e = bank.byName[m.code]
+  if not e then r.state, r.error = "foreign", "marker names code " .. tostring(m.code) .. ", which is not in this bank"; return r end
+  local wantCode = e.placeholder and "" or e.name
+  if tonumber(o.index) ~= e.index or tostring(o.code or "") ~= wantCode then
+    r.state, r.error = "occupied", string.format("assigned Quickey has our marker for %s but index %s / Code '%s' do not match the bank's Quickey %d; not treated as ours", tostring(m.code), tostring(o.index), tostring(o.code), e.index)
+    return r
   end
+  if e.placeholder then r.state = "reserved" else r.state, r.code = "assigned", e.name end
   return r
 end
 
 -- Provisions the bank: discovers the codes, preflights every Quickey slot and executor, then creates
--- what is missing. Nothing is mutated unless the whole preflight passes; every target is re-read right
--- before it is written; a failure rolls back only the objects this call created and can still prove it
--- owns. An existing bank of the same owner and spec is reused after verification (nothing written).
+-- what is missing and assigns the placeholder to every empty reserved executor. Nothing is mutated
+-- unless the whole preflight passes; every target is re-read right before it is written; a failure
+-- rolls back only the assignments and objects this call made and can still prove it owns. An existing
+-- bank of the same owner and spec is reused after verification (nothing written).
 function Instance:provisionBank(spec, now)
   checkReady(self, "provisionBank")
   checkNow(now, "provisionBank")
@@ -1511,41 +1564,54 @@ function Instance:provisionBank(spec, now)
   if not bankIsToken(owner) then return fail("bank-invalid", "the instance owner '" .. tostring(owner) .. "' cannot be written into a marker (no whitespace or '=' allowed)") end
   local show, serr = self:_readShowIdentity()
   if not show then return fail("unreadable", "the show identity cannot be read (" .. tostring(serr) .. "); cached handles could not be invalidated on a show change") end
+  -- The bank skeleton the classifiers verify against (byName/byIndex filled below; nothing read from it yet).
+  local bank = { id = id, owner = owner, label = s.label, spec = s, state = "ready", show = show, createdAt = now, verifiedAt = now, checkedAt = now,
+                 codes = {}, byName = {}, byIndex = {}, executors = {}, exclusions = disc.exclusions, aliases = disc.aliases,
+                 unresolvedAliases = disc.unresolvedAliases, enumEntries = disc.enumEntries, counters = { created = 0, reused = 0, verifications = 0, targetChecks = 0, refusedTargets = 0 } }
+  local plan, refusals = {}, {}
+  local function addEntry(c, index)
+    local e = { name = c.name, value = c.value, index = index, qualified = c.qualified, note = c.note, placeholder = c.placeholder, state = "unverified" }
+    bank.codes[#bank.codes + 1] = e; bank.byName[e.name], bank.byIndex[e.index] = e, e
+    return e
+  end
+  for rank, c in ipairs(disc.codes) do addEntry(c, s.quickeys.first + rank - 1) end
+  addEntry({ name = BANK_PLACEHOLDER, value = nil, qualified = false, placeholder = true, note = "code-less reservation Quickey assigned to every reserved executor; pressing it does nothing" }, s.quickeys.first + #disc.codes)
   -- Preflight: the complete reservation, no writes.
-  local plan, refusals, bankNames = {}, {}, {}
-  for rank, c in ipairs(disc.codes) do
-    local index = s.quickeys.first + rank - 1
-    bankNames[BANK_NAME_PREFIX .. c.name] = c.name
-    local cls = self:_classifySlot(index, c, owner, id)
-    local p = { name = c.name, value = c.value, index = index, qualified = c.qualified, note = c.note, slot = cls }
+  for _, e in ipairs(bank.codes) do
+    local cls = self:_classifySlot(e.index, e, owner, id)
+    local p = { name = e.name, value = e.value, index = e.index, qualified = e.qualified, note = e.note, placeholder = e.placeholder, slot = cls }
     if cls.state == "empty" then p.action = "create"
     elseif cls.state == "owned" then p.action = "reuse"
-    elseif cls.state == "owned-changed" then refusals[#refusals + 1] = { index = index, code = c.name, reason = "bank-mismatch", detail = "owned Quickey was modified: " .. table.concat(cls.changed or {}, "; ") .. " (not repaired; tear the bank down or restore the object)" }
-    elseif cls.state == "foreign" then refusals[#refusals + 1] = { index = index, code = c.name, reason = "bank-foreign-owner", detail = "Quickey " .. index .. " belongs to bank " .. tostring(cls.marker.bank) .. " of owner '" .. tostring(cls.marker.owner) .. "'; a second owner is rejected (no shared arbitration)" }
-    elseif cls.state == "other-bank" then refusals[#refusals + 1] = { index = index, code = c.name, reason = "bank-mismatch", detail = "Quickey " .. index .. " belongs to another bank of this owner (" .. tostring(cls.marker.bank) .. "); tear that bank down first" }
-    elseif cls.state == "occupied" then refusals[#refusals + 1] = { index = index, code = c.name, reason = "slot-occupied", detail = "Quickey " .. index .. " exists and carries no marker of this module ('" .. tostring(cls.read and cls.read.name) .. "'); unowned objects are never overwritten" }
-    else refusals[#refusals + 1] = { index = index, code = c.name, reason = "unreadable", detail = tostring(cls.error) } end
+    elseif cls.state == "owned-changed" then refusals[#refusals + 1] = { index = e.index, code = e.name, reason = "bank-mismatch", detail = "owned Quickey was modified: " .. table.concat(cls.changed or {}, "; ") .. " (not repaired; tear the bank down or restore the object)" }
+    elseif cls.state == "foreign" then refusals[#refusals + 1] = { index = e.index, code = e.name, reason = "bank-foreign-owner", detail = "Quickey " .. e.index .. " belongs to bank " .. tostring(cls.marker.bank) .. " of owner '" .. tostring(cls.marker.owner) .. "'; a second owner is rejected (no shared arbitration)" }
+    elseif cls.state == "other-bank" then refusals[#refusals + 1] = { index = e.index, code = e.name, reason = "bank-mismatch", detail = "Quickey " .. e.index .. " belongs to another bank of this owner (" .. tostring(cls.marker.bank) .. "); tear that bank down first" }
+    elseif cls.state == "occupied" then refusals[#refusals + 1] = { index = e.index, code = e.name, reason = "slot-occupied", detail = "Quickey " .. e.index .. " exists and carries no marker of this module ('" .. tostring(cls.read and cls.read.name) .. "'); unowned objects are never overwritten" }
+    else refusals[#refusals + 1] = { index = e.index, code = e.name, reason = "unreadable", detail = tostring(cls.error) } end
     plan[#plan + 1] = p
   end
-  local executors = {}
   for i = 0, s.executors.count - 1 do
     local index = s.executors.first + i
-    local cls = self:_classifyExecutor(s.executors.page, index, bankNames)
-    local e = { page = s.executors.page, index = index, state = cls.state == "owned" and "assigned" or "reserved", assigned = cls.code }
-    if cls.state == "occupied" then refusals[#refusals + 1] = { executor = string.format("%d.%d", s.executors.page, index), reason = "executor-occupied", detail = string.format("Page %d.%d holds %s '%s'; the bank reserves only empty executors", s.executors.page, index, tostring(cls.object and cls.object.class), tostring(cls.object and cls.object.name)) }
-    elseif cls.state == "missing" then refusals[#refusals + 1] = { executor = string.format("%d.%d", s.executors.page, index), reason = "executor-missing", detail = string.format("Page %d.%d does not exist", s.executors.page, index) }
-    elseif cls.state == "error" then refusals[#refusals + 1] = { executor = string.format("%d.%d", s.executors.page, index), reason = "unreadable", detail = tostring(cls.error) } end
-    executors[#executors + 1] = e
+    local cls = self:_classifyExecutor(s.executors.page, index, bank)
+    local x = { page = s.executors.page, index = index, state = "unverified" }
+    local ref = string.format("%d.%d", s.executors.page, index)
+    if cls.state == "empty" then x.action = "reserve"
+    elseif cls.state == "reserved" then x.action, x.state = "reuse", "reserved"
+    elseif cls.state == "assigned" then x.action, x.state, x.assigned = "reuse", "assigned", cls.code
+    elseif cls.state == "foreign" then refusals[#refusals + 1] = { executor = ref, reason = "executor-foreign-owner", detail = string.format("Page %s holds Quickey '%s' reserved by bank %s of owner '%s'; executors are never shared", ref, tostring(cls.object and cls.object.name), tostring(cls.marker and cls.marker.bank), tostring(cls.marker and cls.marker.owner)) }
+    elseif cls.state == "occupied" then refusals[#refusals + 1] = { executor = ref, reason = "executor-occupied", detail = cls.error or string.format("Page %s holds %s '%s'; the bank reserves only empty executors", ref, tostring(cls.object and cls.object.class), tostring(cls.object and cls.object.name)) }
+    elseif cls.state == "missing" then refusals[#refusals + 1] = { executor = ref, reason = "executor-missing", detail = cls.error or string.format("Page %s does not exist", ref) }
+    else refusals[#refusals + 1] = { executor = ref, reason = "unreadable", detail = tostring(cls.error) } end
+    bank.executors[#bank.executors + 1] = x
   end
   if #refusals > 0 then
-    return fail("bank-preflight", string.format("%d of %d Quickey slots / %d executors cannot be reserved; nothing was created (%s)", #refusals, #plan, #executors, refusals[1].reason .. ": " .. refusals[1].detail),
-      { refusals = refusals, plan = plan, executors = executors, exclusions = disc.exclusions })
+    return fail("bank-preflight", string.format("%d of %d Quickey slots / %d executors cannot be reserved; nothing was created (%s)", #refusals, #plan, #bank.executors, refusals[1].reason .. ": " .. refusals[1].detail),
+      { refusals = refusals, plan = plan, executors = bank.executors, exclusions = disc.exclusions })
   end
-  -- Mutation: create the missing objects one by one, re-reading each slot right before it is written.
-  local created, failure = {}, nil
-  if type(d.quickeys.create) ~= "function" or type(d.quickeys.set) ~= "function" then
-    return fail("unavailable", "deps.quickeys.create/set are missing; the bank can only be reused, not created")
+  if type(d.quickeys.create) ~= "function" or type(d.quickeys.set) ~= "function" or type(d.executors.assign) ~= "function" then
+    return fail("unavailable", "deps.quickeys.create/set or deps.executors.assign are missing; the bank can only be reused, not created")
   end
+  -- Mutation 1: create the missing Quickeys one by one, re-reading each slot right before it is written.
+  local created, assigned, failure = {}, {}, nil
   local marker = function(code) return bankMarkerText(owner, id, code, s.executors) end
   for _, p in ipairs(plan) do
     if p.action == "create" then
@@ -1558,8 +1624,10 @@ function Instance:provisionBank(spec, now)
       if verify.state == "empty" then failure = { index = p.index, code = p.name, error = "create returned but the slot is still empty" }; break end
       local rec = { index = p.index, name = p.name, written = {} }
       created[#created + 1] = rec
-      -- Note first (the ownership marker), then Code, then Name, each verified by readback.
-      local props = { { "Note", marker(p.name) }, { "Code", p.name }, { "Name", BANK_NAME_PREFIX .. p.name } }
+      -- Note first (the ownership marker), then Code (not for the placeholder), then Name, each verified by readback.
+      local props = { { "Note", marker(p.name) } }
+      if not p.placeholder then props[#props + 1] = { "Code", p.name } end
+      props[#props + 1] = { "Name", BANK_NAME_PREFIX .. p.name }
       for _, pv in ipairs(props) do
         local okS, serr2 = bankOp(d.quickeys.set, p.index, { [pv[1]] = pv[2] })
         if not okS then failure = { index = p.index, code = p.name, error = "set " .. pv[1] .. " failed: " .. tostring(serr2) }; break end
@@ -1575,40 +1643,68 @@ function Instance:provisionBank(spec, now)
       p.action, p.slot = "created", final
     end
   end
-  if failure then
-    local rb = self:_rollbackCreated(created, owner, id)
-    return fail("bank-partial", string.format("provisioning stopped at Quickey %d (%s): %s; %d object(s) created in this call were removed, %d kept", failure.index, failure.code, failure.error, #rb.removed, #rb.kept),
-      { failed = failure, removed = rb.removed, kept = rb.kept, plan = plan })
+  -- Mutation 2: reserve the empty executors by assigning the placeholder, each re-read right before.
+  local placeholder = bank.byName[BANK_PLACEHOLDER]
+  if not failure then
+    for _, x in ipairs(bank.executors) do
+      if x.action == "reserve" then
+        local again = self:_classifyExecutor(x.page, x.index, bank)
+        if again.state ~= "empty" then failure = { executor = string.format("%d.%d", x.page, x.index), error = "executor was " .. again.state .. " at the recheck right before the reservation; it was empty at preflight (another writer?)" }; break end
+        local okA, aerr = bankOp(d.executors.assign, x.page, x.index, placeholder.index)
+        if not okA then failure = { executor = string.format("%d.%d", x.page, x.index), error = "assign failed: " .. tostring(aerr) }; break end
+        assigned[#assigned + 1] = x
+        local verify = self:_classifyExecutor(x.page, x.index, bank)
+        if verify.state ~= "reserved" then failure = { executor = string.format("%d.%d", x.page, x.index), error = "readback after the assignment: " .. verify.state .. (verify.error and (": " .. verify.error) or "") .. "; the executor does not hold the placeholder as expected" }; break end
+        x.action, x.state = "reserved-now", "reserved"
+      end
+    end
   end
-  local bank = { id = id, owner = owner, label = s.label, spec = s, state = "ready", show = show, createdAt = now, verifiedAt = now, checkedAt = now,
-                 codes = {}, byName = {}, byIndex = {}, executors = executors, exclusions = disc.exclusions, aliases = disc.aliases,
-                 unresolvedAliases = disc.unresolvedAliases, enumEntries = disc.enumEntries, counters = { created = 0, reused = 0, verifications = 0, targetChecks = 0, refusedTargets = 0 } }
+  if failure then
+    local rb = self:_rollbackCreated(created, assigned, bank)
+    return fail("bank-partial", string.format("provisioning stopped at %s: %s; %d object(s) created in this call were removed, %d kept, %d executor reservation(s) cleared",
+        failure.index and ("Quickey " .. failure.index .. " (" .. tostring(failure.code) .. ")") or ("Page " .. tostring(failure.executor)), failure.error, #rb.removed, #rb.kept, #rb.cleared),
+      { failed = failure, removed = rb.removed, kept = rb.kept, cleared = rb.cleared, plan = plan })
+  end
   for _, p in ipairs(plan) do
-    local e = { name = p.name, value = p.value, index = p.index, qualified = p.qualified, note = p.note, state = "ok", created = p.action == "created", lastRead = p.slot.read, lastReadAt = now }
-    bank.codes[#bank.codes + 1] = e
-    bank.byName[e.name], bank.byIndex[e.index] = e, e
+    local e = bank.byIndex[p.index]
+    e.state, e.created, e.lastRead, e.lastReadAt = "ok", p.action == "created", p.slot.read, now
     if e.created then bank.counters.created = bank.counters.created + 1 else bank.counters.reused = bank.counters.reused + 1 end
   end
+  for _, x in ipairs(bank.executors) do x.reservedNow = x.action == "reserved-now"; x.action = nil; x.lastReadAt = now end
   self._bank = bank
   return self:_bankSummary(now, { created = bank.counters.created, reused = bank.counters.reused })
 end
 
--- Removes objects created by the current provisionBank() call after a failure: only those that still
--- read back as ours (marker written, or still exactly as created with nothing else written) and unchanged.
-function Instance:_rollbackCreated(created, owner, id)
-  local out = { removed = {}, kept = {} }
+-- Undoes what the current provisionBank() call did after a failure: clears executors it assigned (only
+-- while they still hold the placeholder) and deletes objects it created that still read back as ours
+-- (marker written, or still exactly as created with nothing else written) and unchanged.
+function Instance:_rollbackCreated(created, assigned, bank)
+  local out = { removed = {}, kept = {}, cleared = {} }
   local d = self._deps
+  for i = #assigned, 1, -1 do
+    local x = assigned[i]
+    local ref = string.format("%d.%d", x.page, x.index)
+    local cls = self:_classifyExecutor(x.page, x.index, bank)
+    if cls.state == "reserved" and type(d.executors.clear) == "function" then
+      local okC, cerr = bankOp(d.executors.clear, x.page, x.index)
+      local after = okC and self:_classifyExecutor(x.page, x.index, bank) or nil
+      if okC and after and after.state == "empty" then out.cleared[#out.cleared + 1] = { executor = ref }
+      else out.kept[#out.kept + 1] = { executor = ref, reason = okC and ("clear returned but the executor reads back " .. tostring(after and after.state)) or ("clear failed: " .. tostring(cerr)) } end
+    elseif cls.state ~= "empty" then
+      out.kept[#out.kept + 1] = { executor = ref, reason = "no longer holds the placeholder (" .. cls.state .. "); left alone" }
+    end
+  end
   for i = #created, 1, -1 do
     local rec = created[i]
     local ok, obj, err = bankCall(d.quickeys.read, rec.index)
     local why
     if not ok then why = "unreadable: " .. tostring(err)
-    elseif obj == nil then why = nil; out.removed[#out.removed + 1] = { index = rec.index, code = rec.name, note = "already gone" }
+    elseif obj == nil then out.removed[#out.removed + 1] = { index = rec.index, code = rec.name, note = "already gone" }
     else
       local m = parseBankMarker(obj.note)
       local ours
       if rec.written.Note then
-        ours = m ~= nil and m.owner == owner and m.bank == id and m.code == rec.name
+        ours = m ~= nil and m.owner == bank.owner and m.bank == bank.id and m.code == rec.name
           and (rec.written.Code == nil or tostring(obj.code) == rec.written.Code) and (rec.written.Name == nil or tostring(obj.name) == rec.written.Name)
         if not ours then why = "the object no longer reads back as written (marker/code/name differ); kept" end
       else
@@ -1634,7 +1730,9 @@ function Instance:_rollbackCreated(created, owner, id)
   return out
 end
 
--- Re-reads every Quickey and executor of the bank and records what changed. Nothing is written.
+-- Re-reads the show identity, then every Quickey and executor of the bank, and records what changed.
+-- Nothing is written. On another show the bank stays STALE (the objects there are not inspected: they
+-- are not this bank's) and target access stays refused.
 function Instance:verifyBank(now)
   checkReady(self, "verifyBank")
   checkNow(now, "verifyBank")
@@ -1643,10 +1741,14 @@ function Instance:verifyBank(now)
   local d, err = self:_bankDeps()
   if not d then return nil, err end
   bank.counters.verifications = bank.counters.verifications + 1
-  local problems = {}
+  bank.checkedAt = now
   local show, serr = self:_readShowIdentity()
-  if not show then problems[#problems + 1] = { kind = "show", detail = "show identity unreadable: " .. tostring(serr) }
-  elseif show ~= bank.show then problems[#problems + 1] = { kind = "show", detail = "show/data pool changed from '" .. bank.show .. "' to '" .. show .. "'; the bank's objects belong to another show" } end
+  if not show or show ~= bank.show then
+    self:_markBankStale(bank, show and ("show/data pool is '" .. show .. "', the bank belongs to '" .. bank.show .. "'") or ("show identity unreadable: " .. tostring(serr)))
+    bank.problems = { { kind = "show", detail = bank.staleReason .. "; objects were not inspected and dispatch stays refused" } }
+    return self:_bankSummary(now, { problems = bank.problems })
+  end
+  local problems = {}
   for _, e in ipairs(bank.codes) do
     local cls = self:_classifySlot(e.index, e, bank.owner, bank.id)
     e.lastReadAt = now
@@ -1657,27 +1759,34 @@ function Instance:verifyBank(now)
     else e.state, e.problem, e.lastRead = "replaced", "Quickey " .. e.index .. " is now " .. cls.state .. " ('" .. tostring(cls.read and cls.read.name) .. "')", cls.read end
     if e.state ~= "ok" then problems[#problems + 1] = { kind = "quickey", index = e.index, code = e.name, state = e.state, detail = e.problem } end
   end
-  local bankNames = {}
-  for _, e in ipairs(bank.codes) do bankNames[BANK_NAME_PREFIX .. e.name] = e.name end
   for _, x in ipairs(bank.executors) do
-    local cls = self:_classifyExecutor(x.page, x.index, bankNames)
-    x.lastReadAt = now
-    if cls.state == "empty" then x.state, x.assigned, x.problem = "reserved", nil, nil
-    elseif cls.state == "owned" then x.state, x.assigned, x.problem = "assigned", cls.code, nil
-    elseif cls.state == "missing" then x.state, x.problem = "missing", string.format("Page %d.%d no longer exists", x.page, x.index)
-    elseif cls.state == "error" then x.state, x.problem = "unreadable", tostring(cls.error)
-    else x.state, x.problem = "occupied", string.format("Page %d.%d now holds %s '%s' (not ours)", x.page, x.index, tostring(cls.object and cls.object.class), tostring(cls.object and cls.object.name)) end
+    self:_applyExecutorClass(x, self:_classifyExecutor(x.page, x.index, bank), now)
     if x.problem then problems[#problems + 1] = { kind = "executor", executor = string.format("%d.%d", x.page, x.index), state = x.state, detail = x.problem } end
   end
-  bank.verifiedAt, bank.checkedAt, bank.problems = now, now, problems
+  bank.verifiedAt, bank.problems = now, problems
   bank.state = #problems == 0 and "ready" or "degraded"
-  if #problems == 0 and show then bank.show = show end
+  bank.staleReason = nil
   return self:_bankSummary(now, { problems = problems })
 end
 
--- Dispatch-time check of one code (KB-13 calls it before every press): the Quickey must still read back
--- as this bank's object with this code. A missing, changed or replaced object is refused; nothing is
--- repaired. Returns { index, value, name, qualified, note, executors } or nil, err.
+-- Records an executor classification on the bank entry. Only "reserved" and "assigned" are healthy: an
+-- empty reserved executor lost its visible claim (another consumer could take it) and is a problem too.
+function Instance:_applyExecutorClass(x, cls, now)
+  if type(now) == "number" then x.lastReadAt = now end
+  x.problem = nil
+  if cls.state == "reserved" then x.state, x.assigned = "reserved", nil
+  elseif cls.state == "assigned" then x.state, x.assigned = "assigned", cls.code
+  elseif cls.state == "empty" then x.state, x.assigned, x.problem = "unreserved", nil, string.format("Page %d.%d is empty: the placeholder reservation was removed (not re-assigned here; tear down and provision again)", x.page, x.index)
+  elseif cls.state == "foreign" then x.state, x.assigned, x.problem = "foreign", nil, string.format("Page %d.%d holds Quickey '%s' of bank %s (owner '%s'); not ours", x.page, x.index, tostring(cls.object and cls.object.name), tostring(cls.marker and cls.marker.bank), tostring(cls.marker and cls.marker.owner))
+  elseif cls.state == "missing" then x.state, x.assigned, x.problem = "missing", nil, cls.error or string.format("Page %d.%d no longer exists", x.page, x.index)
+  elseif cls.state == "error" then x.state, x.assigned, x.problem = "unreadable", nil, tostring(cls.error)
+  else x.state, x.assigned, x.problem = "occupied", nil, cls.error or string.format("Page %d.%d now holds %s '%s' (not ours)", x.page, x.index, tostring(cls.object and cls.object.class), tostring(cls.object and cls.object.name)) end
+  return x
+end
+
+-- Dispatch-time check of one code (KB-13 calls it before every press): the show must be the bank's and
+-- the Quickey must still read back as this bank's object with this code. A missing, changed or replaced
+-- object is refused; nothing is repaired. Returns { index, value, name, qualified, note, executors } or nil, err.
 function Instance:bankTarget(codeName, now)
   checkReady(self, "bankTarget")
   local bank = self._bank
@@ -1685,10 +1794,11 @@ function Instance:bankTarget(codeName, now)
   local key = type(codeName) == "string" and codeName:upper() or tostring(codeName)
   local canonical = BANK_ALIASES[key] or key
   local e = bank.byName[canonical]
-  if not e then return fail("code-not-in-bank", "code " .. key .. " is not in bank " .. bank.id .. (bank.spec.codes == "qualified" and " (codes = \"qualified\")" or ""), { bank = bank.id }) end
-  if bank.state == "stale" then return fail("bank-stale", "the show or data pool changed since the bank was verified (" .. tostring(bank.staleReason) .. "); verify the bank before dispatching through it", { bank = bank.id }) end
+  if not e or e.placeholder then return fail("code-not-in-bank", "code " .. key .. " is not in bank " .. bank.id .. (bank.spec.codes == "qualified" and " (codes = \"qualified\")" or ""), { bank = bank.id }) end
   local d, err = self:_bankDeps()
   if not d then return nil, err end
+  local okShow, serr2 = self:_bankShowGate(bank)
+  if not okShow then return nil, serr2 end
   bank.counters.targetChecks = bank.counters.targetChecks + 1
   local cls = self:_classifySlot(e.index, e, bank.owner, bank.id)
   if type(now) == "number" then e.lastReadAt = now end
@@ -1708,8 +1818,9 @@ function Instance:bankTarget(codeName, now)
            executors = { page = bank.spec.executors.page, first = bank.spec.executors.first, count = bank.spec.executors.count } }
 end
 
--- Dispatch-time check of one reserved executor (KB-13): it must still be empty or hold one of this
--- bank's Quickeys. Returns the executor record or nil, err.
+-- Dispatch-time check of one reserved executor (KB-13): the show must be the bank's and the executor
+-- must hold this bank's placeholder or one of its code Quickeys (verified by index, marker and code).
+-- Returns the executor record or nil, err.
 function Instance:bankExecutor(index, now)
   checkReady(self, "bankExecutor")
   local bank = self._bank
@@ -1717,27 +1828,22 @@ function Instance:bankExecutor(index, now)
   local x
   for _, cand in ipairs(bank.executors) do if cand.index == index then x = cand; break end end
   if not x then return fail("executor-not-in-bank", string.format("Page %d.%d is not one of the bank's reserved executors", bank.spec.executors.page, tonumber(index) or -1)) end
-  if bank.state == "stale" then return fail("bank-stale", "the show or data pool changed since the bank was verified (" .. tostring(bank.staleReason) .. "); verify the bank first") end
   local d, err = self:_bankDeps()
   if not d then return nil, err end
-  local bankNames = {}
-  for _, e in ipairs(bank.codes) do bankNames[BANK_NAME_PREFIX .. e.name] = e.name end
-  local cls = self:_classifyExecutor(x.page, x.index, bankNames)
-  if type(now) == "number" then x.lastReadAt = now end
-  if cls.state == "empty" then x.state, x.assigned, x.problem = "reserved", nil, nil
-  elseif cls.state == "owned" then x.state, x.assigned, x.problem = "assigned", cls.code, nil
-  else
-    x.state = cls.state == "missing" and "missing" or (cls.state == "error" and "unreadable" or "occupied")
-    x.problem = cls.error or string.format("Page %d.%d holds %s '%s' (not ours)", x.page, x.index, tostring(cls.object and cls.object.class), tostring(cls.object and cls.object.name))
+  local okShow, serr2 = self:_bankShowGate(bank)
+  if not okShow then return nil, serr2 end
+  self:_applyExecutorClass(x, self:_classifyExecutor(x.page, x.index, bank), now)
+  if x.problem then
     bank.state = "degraded"
     return fail("bank-executor-" .. x.state, x.problem .. "; the executor is not used and nothing is repaired", { page = x.page, index = x.index, state = x.state })
   end
-  return { page = x.page, index = x.index, state = x.state, assigned = x.assigned }
+  return { page = x.page, index = x.index, state = x.state, assigned = x.assigned, placeholder = bank.byName[BANK_PLACEHOLDER] and bank.byName[BANK_PLACEHOLDER].index or nil }
 end
 
--- Explicit teardown: deletes only Quickeys that still verify as this bank's and clears only executors
--- that hold one of them. Refused while any Quickey ownership record is live (release-all is a separate
--- operation and comes first). Objects that fail verification are skipped and reported, never deleted.
+-- Explicit teardown: on the bank's show only, clears only executors that hold a verified bank Quickey
+-- (placeholder or code) and deletes only Quickeys that still verify as this bank's. Refused while any
+-- Quickey ownership record is live (release-all is a separate operation and comes first). Objects that
+-- fail verification are skipped and reported, never deleted.
 function Instance:teardownBank(now, opts)
   checkReady(self, "teardownBank")
   checkNow(now, "teardownBank")
@@ -1751,22 +1857,23 @@ function Instance:teardownBank(now, opts)
   local d, err = self:_bankDeps()
   if not d then return nil, err end
   if type(d.quickeys.delete) ~= "function" then return fail("unavailable", "deps.quickeys.delete is missing") end
+  local okShow, serr2 = self:_bankShowGate(bank)
+  if not okShow then return nil, serr2 end
   local removed, skipped, cleared = {}, {}, {}
-  local bankNames = {}
-  for _, e in ipairs(bank.codes) do bankNames[BANK_NAME_PREFIX .. e.name] = e.name end
   -- Executors first: an assignment to a Quickey that is about to be deleted would dangle.
   for _, x in ipairs(bank.executors) do
-    local cls = self:_classifyExecutor(x.page, x.index, bankNames)
-    if cls.state == "owned" then
-      if type(d.executors.clear) ~= "function" then skipped[#skipped + 1] = { executor = string.format("%d.%d", x.page, x.index), reason = "deps.executors.clear missing" }
+    local ref = string.format("%d.%d", x.page, x.index)
+    local cls = self:_classifyExecutor(x.page, x.index, bank)
+    if cls.state == "reserved" or cls.state == "assigned" then
+      if type(d.executors.clear) ~= "function" then skipped[#skipped + 1] = { executor = ref, reason = "deps.executors.clear missing" }
       else
         local okC, cerr = bankOp(d.executors.clear, x.page, x.index)
-        local after = okC and self:_classifyExecutor(x.page, x.index, bankNames) or nil
-        if okC and after and after.state == "empty" then cleared[#cleared + 1] = { executor = string.format("%d.%d", x.page, x.index), hadCode = cls.code }; x.state, x.assigned = "reserved", nil
-        else skipped[#skipped + 1] = { executor = string.format("%d.%d", x.page, x.index), reason = okC and ("clear returned but the executor reads back " .. tostring(after and after.state)) or ("clear failed: " .. tostring(cerr)) } end
+        local after = okC and self:_classifyExecutor(x.page, x.index, bank) or nil
+        if okC and after and after.state == "empty" then cleared[#cleared + 1] = { executor = ref, held = cls.state == "assigned" and cls.code or BANK_PLACEHOLDER }; x.state, x.assigned, x.problem = "released", nil, nil
+        else skipped[#skipped + 1] = { executor = ref, reason = okC and ("clear returned but the executor reads back " .. tostring(after and after.state)) or ("clear failed: " .. tostring(cerr)) } end
       end
     elseif cls.state ~= "empty" and cls.state ~= "missing" then
-      skipped[#skipped + 1] = { executor = string.format("%d.%d", x.page, x.index), reason = cls.error or ("holds " .. tostring(cls.object and cls.object.class) .. " '" .. tostring(cls.object and cls.object.name) .. "', not ours; left alone") }
+      skipped[#skipped + 1] = { executor = ref, reason = cls.error or (cls.state == "foreign" and "holds another bank's Quickey; left alone" or ("holds " .. tostring(cls.object and cls.object.class) .. " '" .. tostring(cls.object and cls.object.name) .. "', not ours; left alone")) }
     end
   end
   local remaining = {}
@@ -1820,18 +1927,21 @@ function Instance:adoptBank(record, now)
   local bank = { id = record.id, owner = self._owner, label = s.label, spec = s, state = "degraded", show = record.show or "", createdAt = record.createdAt, adoptedAt = now, verifiedAt = nil, checkedAt = now,
                  codes = {}, byName = {}, byIndex = {}, executors = {}, exclusions = record.exclusions or {}, aliases = record.aliases or {}, unresolvedAliases = record.unresolvedAliases or {},
                  enumEntries = record.enumEntries, counters = { created = 0, reused = 0, verifications = 0, targetChecks = 0, refusedTargets = 0 } }
+  local hasPlaceholder = false
   for _, c in ipairs(record.codes) do
     if type(c) == "table" and type(c.name) == "string" and type(c.index) == "number" then
-      local e = { name = c.name, value = c.value, index = c.index, qualified = c.qualified, note = c.note, state = "unverified" }
+      local e = { name = c.name, value = c.value, index = c.index, qualified = c.qualified, note = c.note, placeholder = c.placeholder and true or nil, state = "unverified" }
+      if e.placeholder then hasPlaceholder = true end
       bank.codes[#bank.codes + 1] = e; bank.byName[e.name], bank.byIndex[e.index] = e, e
     end
   end
-  for i = 0, s.executors.count - 1 do bank.executors[#bank.executors + 1] = { page = s.executors.page, index = s.executors.first + i, state = "unverified" } end
   if #bank.codes == 0 then return fail("bad-argument", "the record lists no codes") end
+  if not hasPlaceholder then return fail("bad-argument", "the record has no reservation placeholder entry; it predates the executor reservation and cannot be adopted (tear down from its own version, or delete the objects by hand)") end
+  for i = 0, s.executors.count - 1 do bank.executors[#bank.executors + 1] = { page = s.executors.page, index = s.executors.first + i, state = "unverified" } end
+  if not record.show or record.show == "" then return fail("bad-argument", "the record carries no show identity") end
   self._bank = bank
   local v, verr = self:verifyBank(now)
   if not v then self._bank = nil; return nil, verr end
-  if not record.show or record.show == "" then bank.show = select(1, self:_readShowIdentity()) or "" end
   v.adopted = true
   return v
 end
@@ -1841,7 +1951,7 @@ function Instance:_bankRecord()
   local bank = self._bank
   if not bank then return nil end
   local codes = {}
-  for _, e in ipairs(bank.codes) do codes[#codes + 1] = { name = e.name, value = e.value, index = e.index, qualified = e.qualified, note = e.note } end
+  for _, e in ipairs(bank.codes) do codes[#codes + 1] = { name = e.name, value = e.value, index = e.index, qualified = e.qualified, note = e.note, placeholder = e.placeholder } end
   return { id = bank.id, owner = bank.owner, spec = { quickeys = bank.spec.quickeys, executors = bank.spec.executors, codes = bank.spec.codes, label = bank.spec.label },
            show = bank.show, createdAt = bank.createdAt, codes = codes, exclusions = bank.exclusions, aliases = bank.aliases, unresolvedAliases = bank.unresolvedAliases, enumEntries = bank.enumEntries }
 end
@@ -1856,11 +1966,9 @@ function Instance:_serviceBank(now)
   bank.checkedAt = now
   local show, serr = self:_readShowIdentity()
   if not show then
-    bank.state, bank.staleReason = "stale", "show identity unreadable: " .. tostring(serr)
+    self:_markBankStale(bank, "show identity unreadable: " .. tostring(serr))
   elseif show ~= bank.show and bank.state ~= "stale" then
-    bank.state, bank.staleReason = "stale", "show/data pool changed from '" .. bank.show .. "' to '" .. show .. "'"
-    for _, e in ipairs(bank.codes) do e.lastRead, e.state = nil, "unverified" end
-    for _, x in ipairs(bank.executors) do x.state = "unverified" end
+    self:_markBankStale(bank, "show/data pool changed from '" .. bank.show .. "' to '" .. show .. "'")
   end
   return { state = bank.state, staleReason = bank.staleReason }
 end
@@ -1873,21 +1981,24 @@ end
 function Instance:_bankSummary(now, extra)
   local bank = self._bank
   if not bank then return { provisioned = false, note = "no Quickey bank; provisionBank({ authorized = true, quickeys = { first }, executors = { page, first, count } }) is the operator's explicit setup" } end
-  local codes, qualified, discovered, problems = {}, 0, 0, 0
+  local codes, qualified, discovered, problems, placeholder = {}, 0, 0, 0, nil
   for _, e in ipairs(bank.codes) do
-    codes[#codes + 1] = { name = e.name, value = e.value, index = e.index, qualified = e.qualified, note = e.note, state = e.state, problem = e.problem, created = e.created, lastReadAt = e.lastReadAt }
-    if e.qualified then qualified = qualified + 1 else discovered = discovered + 1 end
+    local c = { name = e.name, value = e.value, index = e.index, qualified = e.qualified, note = e.note, state = e.state, problem = e.problem, created = e.created, lastReadAt = e.lastReadAt, placeholder = e.placeholder }
+    if e.placeholder then placeholder = c else
+      codes[#codes + 1] = c
+      if e.qualified then qualified = qualified + 1 else discovered = discovered + 1 end
+    end
     if e.state ~= "ok" then problems = problems + 1 end
   end
   local executors = {}
-  for _, x in ipairs(bank.executors) do executors[#executors + 1] = { page = x.page, index = x.index, state = x.state, assigned = x.assigned, problem = x.problem } end
+  for _, x in ipairs(bank.executors) do executors[#executors + 1] = { page = x.page, index = x.index, state = x.state, assigned = x.assigned, problem = x.problem, reservedNow = x.reservedNow } end
   local out = { provisioned = true, id = bank.id, owner = bank.owner, label = bank.label, state = bank.state, staleReason = bank.staleReason, show = bank.show,
                 spec = { quickeys = bank.spec.quickeys, executors = bank.spec.executors, codes = bank.spec.codes },
-                codeCount = #bank.codes, qualifiedCount = qualified, discoveredCount = discovered, problemCount = problems,
-                codes = codes, executors = executors, exclusions = bank.exclusions, aliases = bank.aliases, unresolvedAliases = bank.unresolvedAliases, enumEntries = bank.enumEntries,
+                codeCount = #codes, qualifiedCount = qualified, discoveredCount = discovered, problemCount = problems,
+                codes = codes, placeholder = placeholder, executors = executors, exclusions = bank.exclusions, aliases = bank.aliases, unresolvedAliases = bank.unresolvedAliases, enumEntries = bank.enumEntries,
                 createdAt = bank.createdAt, adoptedAt = bank.adoptedAt, verifiedAt = bank.verifiedAt, checkedAt = bank.checkedAt, counters = shallowCopy(bank.counters), problems = bank.problems,
                 record = self:_bankRecord(),
-                note = "qualified = KB-10 evidence per code (tap/hold/chord); discovered codes are provisioned but a backend must not advertise them; every dispatch re-reads its Quickey (bankTarget) and nothing is ever repaired" }
+                note = "qualified = KB-10 evidence per code (tap/hold/chord); discovered codes are provisioned but a backend must not advertise them; reserved executors hold the bank's code-less placeholder Quickey so the claim is visible to other consumers; every dispatch re-reads the show identity and its Quickey (bankTarget) and nothing is ever repaired" }
   if extra then for k, v in pairs(extra) do out[k] = v end end
   return out
 end
@@ -3794,7 +3905,7 @@ local M = {
   METHODS = { "quickkey", "shortcutOrType", "shortcut", "type" }, DEFAULT_METHOD = DEFAULT_METHOD,
   validateRoutingPolicy = validateRoutingPolicy, adapterCapabilities = adapterCapabilities, textForbidden = textForbidden,
   -- KB-12 Quickey bank
-  BANK_MARKER = BANK_MARKER, BANK_NAME_PREFIX = BANK_NAME_PREFIX, BANK_ALIASES = shallowCopy(BANK_ALIASES),
+  BANK_MARKER = BANK_MARKER, BANK_NAME_PREFIX = BANK_NAME_PREFIX, BANK_PLACEHOLDER = BANK_PLACEHOLDER, BANK_ALIASES = shallowCopy(BANK_ALIASES),
   BANK_QUALIFIED = (function() local o = {} for k, v in pairs(BANK_QUALIFIED) do o[k] = shallowCopy(v) end return o end)(),
   validateBankSpec = validateBankSpec, discoverBankCodes = discoverBankCodes, parseBankMarker = parseBankMarker, bankMarkerText = bankMarkerText, bankId = bankId,
   SEQUENCE_STEP_KINDS = { "tap", "press", "release", "combo", "text", "wait" },
