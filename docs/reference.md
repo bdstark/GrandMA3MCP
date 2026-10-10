@@ -301,9 +301,15 @@ admission, usable with Lua disabled; malformed arguments are `[bad-args]`, a fee
 ### Continuous control (plugin v0.14.0, KB-18)
 
 The `gma3_mcp_control` module ([modules](modules.md#continuous-control-admission-gma3_mcp_control-010-kb-18)) behind
-the `control.*` ops is OFF until the operator enables it (`Plugin "gma3_mcp_bridge" "control=fake"`; `control=off`,
-`control status`, `control recover` as for input). KB-18 ships the fake backend only: intents are recorded and nothing
-moves on the console. `control.bind {display?, executors?}` names what this bridge's events mean (the same spec
+the `control.*` ops is OFF until the operator enables it (`Plugin "gma3_mcp_bridge" "control=fake"` or, since v0.15.0,
+`"control=console"`; `control=off`, `control status`, `control recover` as for input). On the fake backend intents are
+recorded and nothing moves on the console; on the console backend (KB-19, control 0.2.0, feedback 0.4.0) relative
+motion on an attribute slot is applied as `Attribute "<name>" At +/- <detents x step>` for the selection (Percent /
+PercentFine readout: 1 per Coarse detent; Physical: the attribute's range / 120 in physical units; Fine a tenth; a
+`fine` event a tenth again) and presses, touches, positions and executor elements are refused `unsupported` (with
+`backend` and `reason`); switching backends while running ends the gestures through the previous one. `control.status`
+then also carries `capabilities` and `backendStatus` (counters, the last command, the calibration table), `lastApplied.result`
+the command issued, and the ping summary the backend name. `control.bind {display?, executors?}` names what this bridge's events mean (the same spec
 `feedback.watch` takes; the loop keeps it observed and the cached generation is what events are checked against) and
 returns the current `generation` or why none is claimed, plus the `binding` revision: generations are per spec, so a
 replaced spec is a new revision (queued motion dropped, holds rebound) and events must carry `binding` as well as

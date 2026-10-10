@@ -50,11 +50,45 @@
 --     owner (the hardkeys module's interactions and holds) is active.
 --   * a BACKEND adapter applies intents: apply(intent, now) returns true (applied), or nil, err
 --     (refused: the intent is dropped and reported) or raises (UNRESOLVED: whether the console changed
---     is unknown; a release that raises is kept as a record until recover() or dispose()). This
---     version ships fakeBackend() only (records intents, applies nothing on the console); the console
---     adjustment backend is KB-19.
+--     is unknown; a release that raises is kept as a record until recover() or dispose()). An adapter
+--     may also declare supports(kind, resolvedTarget) -> true | false, reason: an event whose kind or
+--     target the backend does not serve is refused "unsupported" at admission, before any gesture or
+--     queue entry exists (the fake backend serves everything).
 --   * service(now): lease and gesture expiries first, then at most maxWorkPerService queued intents in
 --     order. status(now) is read-only.
+--
+-- What 0.2.0 adds (KB-19, the console ADJUSTMENT backend, consoleBackend(deps, opts)):
+--   * relative motion on an ATTRIBUTE SLOT is applied as the selection-scoped adjustment KB-16
+--     qualified live:  Attribute "<name>" At + <amount>  (At - for a negative delta). The slot's
+--     attribute name, layer, resolution, readout and channel function come from the binding (the
+--     feedback snapshot), never from the surface: the four physical encoders mean whatever the four
+--     reported slots mean. The command is selection-scoped and relative, so every selected fixture
+--     moves by the same amount and their relationship is preserved; a fixture without the attribute is
+--     untouched (the console answers OK and does nothing for it: a "mixed" slot is reported as such).
+--   * CALIBRATION: one physical detent = one console encoder click. The grandMA3 manual (Encoder
+--     resolution): an encoder has 24 clicks per turn and 5 turns cross the attribute's range; at the
+--     Percent and PercentFine readouts one Coarse click changes the value by 1; Fine is ten times finer.
+--     KB-16 measured `At + 1` = one Coarse click at Percent live; for the Physical readout one click
+--     is (PhysicalTo - PhysicalFrom) / 120 of the attribute's channel function and `At` takes physical
+--     units (KB-19 live: Pan `At 10` = 10 degrees), the range coming from the binding (feedback 0.4.0
+--     physicalRange: the smallest over the selection, as the console does). This version therefore
+--     calibrates readouts Percent/PercentFine (1 per Coarse detent) and Physical (range/120 per Coarse
+--     detent), resolution Fine at a tenth of that, and REFUSES every other readout (Dec8, Dec16,
+--     Hex ...: not measured), every other resolution (Increment, Native), every layer but Absolute and every
+--     slot whose channel-function selector names a function other than the attribute's own
+--     (multi-function attributes are not qualified). No acceleration is applied here: a delta of n detents is n steps, whatever the
+--     surface or its service did before (the consumer documents its own acceleration policy).
+--   * FINE gesture: an event with fine = true uses the step divided by config.fineDivisor (10, the
+--     manual's Coarse-to-Fine ratio). It is an explicitly smaller adjustment, qualified as such; it is
+--     not a claim that the console's own resolution toggle was pressed.
+--   * encoder PRESSES (button), touches, absolute positions and executor targets (fader, key, encoder
+--     elements) are NOT served by this backend: they are refused "unsupported" at admission with the
+--     reason (calculator / open / select behaviour of an encoder press is not qualified; strips are
+--     KB-20, executors KB-21/22). Nothing is pressed on the console for them.
+--   * the console's feedback is the verdict: "OK" = applied; anything else = refused (the command was
+--     not dispatched, nothing changed); a raise = unresolved. The backend keeps a bounded log of the
+--     commands it issued and counters per outcome (status()).
+--   * contract: a backend never reads the console; the binding is the only source of what a slot is.
 --
 -- Rules every consumer must keep (as for the other modules):
 --   * One instance per consumer; the module table is read-only; nothing is published through
@@ -64,7 +98,7 @@
 --   * Input is disabled on a new instance. enableInput(adapter) is the operator's explicit decision.
 
 local NAME        = "gma3_mcp_control"
-local VERSION     = "0.1.0"
+local VERSION     = "0.2.0"
 local API_VERSION = 1
 
 local EVENT_TYPES = { relative = true, absolute = true, touch = true, button = true }
@@ -90,7 +124,19 @@ local DEFAULT_CONFIG = {
   seqWindow          = 64,     -- per device: sequence numbers behind the newest that are remembered as seen
   maxDelta           = 4096,   -- |delta| of one relative event (detents)
   requireBindingRevision = true, -- motion and downs must carry `binding`; a consumer whose spec never changes sets false
+  fineDivisor        = 10,     -- KB-19: a fine gesture is the calibrated step divided by this (the manual's Coarse:Fine ratio)
 }
+
+-- KB-19 calibration (grandMA3 manual "Encoder resolution", KB-16 live): one detent at the Percent and
+-- PercentFine readouts is 1 at Coarse and 0.1 at Fine. Everything else is unqualified and refused.
+local CALIBRATION = {
+  readouts = { Percent = 1, PercentFine = 1, Physical = "range/120" },  -- one Coarse click in the readout's unit (Physical: the attribute's range over 24 clicks x 5 turns)
+  resolutions = { Coarse = 1, Fine = 0.1 },          -- multiplier per resolution
+  layers = { Absolute = true },                      -- value layers the adjustment is qualified on
+  clicksPerRange = 120,                              -- manual: 24 clicks per turn, 5 turns across the range
+}
+local CALIBRATION_NOTE = "one physical detent = one console encoder click: 1 at Coarse and 0.1 at Fine for the Percent/PercentFine readouts, the attribute's physical range / 120 (x 0.1 at Fine) in physical units for the Physical readout, where At takes physical units (manual: 24 clicks per turn, 5 turns per range, Fine ten times finer; KB-16 measured At + 1 = one Coarse click at Percent, KB-19 At 10 = 10 degrees of Pan); other readouts, Increment/Native, non-Absolute layers and channel functions other than the attribute's own are refused"
+
 
 local function shallowCopy(t) local o = {} for k, v in pairs(t or {}) do o[k] = v end return o end
 local function fail(code, message, extra)
@@ -137,6 +183,135 @@ end
 function FakeBackend:failNext(kind, text) self.failures[kind] = text or "staged refusal" end
 function FakeBackend:raiseNext(kind, text) self.raises[kind] = text or "staged raise" end
 function FakeBackend:last() return self.intents[#self.intents] end
+
+-------------------------------------------------------------------------------
+-- Console adjustment backend (KB-19): relative motion on attribute slots becomes
+--   Attribute "<name>" At + <amount>
+-- through deps.cmd(text) -> feedback string. Nothing else is served (see the header).
+-------------------------------------------------------------------------------
+local ConsoleBackend = {}
+ConsoleBackend.__index = ConsoleBackend
+
+-- The calibrated step of one detent for a resolved slot target, or nil plus the reason it is not
+-- qualified. fine divides the step by fineDivisor. Exported as calibrate() for consumers and tests.
+local function calibrate(resolved, fine, config)
+  if type(resolved) ~= "table" or resolved.kind ~= "slot" then return nil, "only encoder slots are calibrated" end
+  if type(resolved.name) ~= "string" or resolved.name == "" then return nil, "the slot has no attribute name in the binding" end
+  if resolved.name:find('"') then return nil, "the attribute name contains a quote and cannot be addressed safely" end
+  local unit = CALIBRATION.readouts[resolved.readout or ""]
+  if unit == nil then return nil, string.format("readout %s is not calibrated (Percent, PercentFine and Physical are; the step of other readouts was not measured)", tostring(resolved.readout)) end
+  if resolved.readout == "Physical" then
+    local range = tonumber(resolved.physicalRange)
+    if range == nil then return nil, "readout Physical: the attribute's physical range is not in the binding (" .. tostring(resolved.physicalUnavailable or "feedback 0.4.0 or newer reports it") .. "), so the click size (range / 120) cannot be derived" end
+    if range <= 0 then return nil, string.format("readout Physical: the attribute's physical range %s..%s is empty; no click size can be derived", tostring(resolved.physicalFrom), tostring(resolved.physicalTo)) end
+    unit = range / CALIBRATION.clicksPerRange
+  end
+  local mult = CALIBRATION.resolutions[resolved.resolution or ""]
+  if mult == nil then return nil, string.format("resolution %s is not calibrated (Coarse and Fine are; Increment and Native were not qualified)", tostring(resolved.resolution)) end
+  if not CALIBRATION.layers[resolved.layer or ""] then return nil, string.format("value layer %s is not qualified (Absolute is)", tostring(resolved.layer)) end
+  -- The on-screen channel-function selector is empty for a single-function attribute (KB-17 live) and
+  -- names the selected function otherwise; a function other than the attribute's own is not qualified.
+  local cf = resolved.channelFunction
+  if type(cf) == "string" and cf ~= "" and cf ~= resolved.name then
+    return nil, string.format("the slot's channel-function selector names '%s'; adjusting a channel function other than the attribute's own is not qualified", cf)
+  end
+  local step = unit * mult
+  local divisor = (config and config.fineDivisor) or DEFAULT_CONFIG.fineDivisor
+  if fine then step = step / divisor end
+  return step, nil, { unit = unit, resolution = resolved.resolution, readout = resolved.readout, fine = fine and true or false, divisor = fine and divisor or nil,
+                      physicalRange = resolved.readout == "Physical" and resolved.physicalRange or nil, physicalMixed = resolved.physicalMixed }
+end
+
+-- Formats an amount for the command line: at most 4 decimals, no trailing zeros, no exponent.
+local function formatAmount(v)
+  local s = string.format("%.4f", math.abs(v))
+  s = s:gsub("0+$", ""):gsub("%.$", "")
+  if s == "" then s = "0" end
+  return s
+end
+
+local function consoleBackend(deps, opts)
+  if type(deps) ~= "table" or type(deps.cmd) ~= "function" then error(NAME .. ".consoleBackend: deps.cmd(text) is required (consoleDeps(_G))", 2) end
+  opts = opts or {}
+  local divisor = tonumber(opts.fineDivisor) or DEFAULT_CONFIG.fineDivisor
+  if divisor <= 0 then error(NAME .. ".consoleBackend: opts.fineDivisor must be positive", 2) end
+  return setmetatable({
+    name = "console", description = "selection-scoped attribute adjustment (Attribute \"<name>\" At + <detents x step>) for encoder slots; presses, touches, positions and executors are not served",
+    capabilities = { relative = true, absolute = false, touch = false, button = false, targets = { slot = true, executor = false } },
+    calibration = { note = CALIBRATION_NOTE, readouts = shallowCopy(CALIBRATION.readouts), resolutions = shallowCopy(CALIBRATION.resolutions), layers = shallowCopy(CALIBRATION.layers), fineDivisor = divisor },
+    _deps = deps, _config = { fineDivisor = divisor }, log = tonumber(opts.eventLog) or DEFAULT_CONFIG.eventLog,
+    commands = {}, counters = { applied = 0, refused = 0, raised = 0, noop = 0 }, lastCommand = nil,
+  }, ConsoleBackend)
+end
+
+-- Admission-time verdict: only relative motion on a calibrated attribute slot is served.
+function ConsoleBackend:supports(kind, resolved)
+  if kind ~= "relative" then
+    if kind == "button" then return false, "an encoder press is not served by the console backend: calculator/open/select behaviour is not qualified (nothing is pressed)" end
+    if kind == "touch" then return false, "touches are not served by the console backend (parameter strips are KB-20)" end
+    return false, "absolute positions are not served by the console backend (strips are KB-20, executor faders KB-22)"
+  end
+  if type(resolved) ~= "table" or resolved.kind ~= "slot" then return false, "executor elements are not served by the console backend (KB-21/KB-22)" end
+  local step, reason = calibrate(resolved, false, self._config)
+  if not step then return false, reason end
+  return true
+end
+
+function ConsoleBackend:_record(rec)
+  self.commands[#self.commands + 1] = rec
+  while #self.commands > self.log do table.remove(self.commands, 1) end
+  self.lastCommand = rec
+end
+
+function ConsoleBackend:apply(intent, now)
+  local kind = intent.kind
+  if kind == "touch" or kind == "button" then
+    -- Only a forced end of a hold that was admitted under another backend can reach here (the
+    -- adapter refuses downs at admission). Nothing was pressed, so nothing is released.
+    self.counters.noop = self.counters.noop + 1
+    return true, { noop = true, note = "the console backend presses nothing; the hold had no console effect" }
+  end
+  if kind ~= "relative" then
+    self.counters.refused = self.counters.refused + 1
+    return nil, { code = "backend-refused", message = "absolute positions are not served by the console backend" }
+  end
+  local step, reason, cal = calibrate(intent.resolved, intent.fine, self._config)
+  if not step then
+    self.counters.refused = self.counters.refused + 1
+    return nil, { code = "backend-refused", message = reason }
+  end
+  local delta = intent.delta
+  if not isInt(delta) or delta == 0 then
+    self.counters.refused = self.counters.refused + 1
+    return nil, { code = "backend-refused", message = "a relative intent needs a non-zero integer delta" }
+  end
+  local amount = delta * step
+  local command = string.format('Attribute "%s" At %s %s', intent.resolved.name, delta < 0 and "-" or "+", formatAmount(amount))
+  local rec = { at = now, command = command, delta = delta, step = step, amount = amount, fine = cal.fine, resolution = cal.resolution, readout = cal.readout, physicalRange = cal.physicalRange, physicalMixed = cal.physicalMixed,
+                slot = intent.resolved.slot, attribute = intent.resolved.name, mixed = intent.resolved.mixed or nil, events = intent.events, lost = intent.lost, session = intent.session }
+  local ok, fb = pcall(self._deps.cmd, command)
+  if not ok then
+    self.counters.raised = self.counters.raised + 1
+    rec.outcome, rec.error = "raised", tostring(fb)
+    self:_record(rec)
+    error({ message = "Cmd raised for " .. command .. ": " .. tostring(fb), command = command }, 0)
+  end
+  rec.feedback = fb
+  if type(fb) == "string" and fb:sub(1, 2) == "OK" then
+    self.counters.applied = self.counters.applied + 1
+    rec.outcome = "applied"
+    self:_record(rec)
+    return true, { command = command, amount = amount, step = step, fine = cal.fine, resolution = cal.resolution, readout = cal.readout, physicalRange = cal.physicalRange, physicalMixed = cal.physicalMixed, attribute = intent.resolved.name, slot = intent.resolved.slot, mixed = rec.mixed, feedback = fb }
+  end
+  self.counters.refused = self.counters.refused + 1
+  rec.outcome = "refused"
+  self:_record(rec)
+  return nil, { code = "backend-refused", message = string.format("the console did not accept %s: %s", command, tostring(fb)), command = command, feedback = fb }
+end
+
+function ConsoleBackend:status()
+  return { name = self.name, counters = shallowCopy(self.counters), lastCommand = self.lastCommand and shallowCopy(self.lastCommand) or nil, commands = #self.commands, calibration = self.calibration }
+end
 
 -------------------------------------------------------------------------------
 -- Instance
@@ -302,6 +477,14 @@ local function resolveTarget(snap, target)
   if type(target) ~= "table" then return fail("bad-event", "target must be { slot = n } or { executor = n, element = ... }") end
   if target.slot ~= nil then
     if not isInt(target.slot) or target.slot < 1 then return fail("bad-event", "target.slot must be a positive integer") end
+    -- Review (PR #23): the slot's meaning depends on the encoder bar's context. Only an explicitly supported
+    -- attribute-editing context (feedback's attributeEditing == true, preset-bar context "Default") is served;
+    -- editors, timing, phasers and an unreadable context are refused, whatever the slot record says.
+    local e = snap.encoder
+    if not (e and e.available and type(e.value) == "table") then return fail("target-unavailable", "the encoder bar context is unavailable: " .. tostring(e and (e.reason or e.error) or "not in the binding"), { target = target }) end
+    if e.value.attributeEditing ~= true then
+      return fail("unsupported", string.format("the encoder bar is not in attribute editing (preset-bar context %s): slots are not qualified in this context", e.value.context == nil and "unreadable" or ("'" .. tostring(e.value.context) .. "'")), { target = target, context = e.value.context })
+    end
     local s = snap.slots
     if not (s and s.available) then return fail("target-unavailable", "encoder slots are unavailable: " .. tostring(s and (s.reason or s.error) or "not in the binding"), { target = target }) end
     local sl
@@ -316,6 +499,7 @@ local function resolveTarget(snap, target)
     if sl.resolution == nil then return fail("target-unavailable", string.format("slot %d (%s) has no readable resolution", target.slot, tostring(sl.name)), { target = target }) end
     return { kind = "slot", slot = target.slot, ref = sl.ref, name = sl.name, layer = sl.layer, resolution = sl.resolution, readout = sl.readout,
              channelFunction = sl.channelFunction, availability = sl.availability, mixed = sl.availability == "mixed" or nil,
+             physicalRange = sl.physicalRange, physicalFrom = sl.physicalFrom, physicalTo = sl.physicalTo, physicalMixed = sl.physicalMixed, physicalUnavailable = sl.physicalUnavailable,
              key = string.format("slot%d|%s|%s|%s", target.slot, tostring(sl.ref), tostring(sl.layer), tostring(sl.resolution)), supersedes = true }
   elseif target.executor ~= nil then
     if not isInt(target.executor) or target.executor < 1 then return fail("bad-event", "target.executor must be a positive integer") end
@@ -568,6 +752,14 @@ function Instance:submit(sessionId, now, ev)
   end
   local target, terr = resolveTarget(snap, ev.target)
   if not target then return refuse(terr) end
+  -- KB-19: the attached backend may serve only some kinds and targets; what it does not serve is
+  -- refused here, before any gesture record or queue entry exists.
+  local adapter = self._adapter
+  if adapter and type(adapter.supports) == "function" then
+    local okS, served, why = pcall(adapter.supports, adapter, ev.type, target)
+    if not okS then return refuse(errOf("unsupported", "the backend's supports() raised: " .. tostring(served), { target = ev.target, backend = adapter.name })) end
+    if not served then return refuse(errOf("unsupported", string.format("%s on %s is not served by the %s backend: %s", ev.type, target.key, tostring(adapter.name), tostring(why)), { target = ev.target, backend = adapter.name, reason = why })) end
+  end
   if ev.binding == nil and self._config.requireBindingRevision then
     return refuse(errOf("binding-required", string.format("the event carries no binding revision; this consumer's binding can be replaced, so motion and downs must carry binding = %d (bindingInfo())", snap.bindingRevision),
                         { binding = snap.bindingRevision, generation = snap.generation }))
@@ -865,6 +1057,7 @@ function Instance:status(now)
   return { module = NAME, version = VERSION, apiVersion = API_VERSION, owner = self._owner, state = self._state,
            inputEnabled = self._inputEnabled, backend = self._adapter and self._adapter.name or nil,
            capabilities = self._adapter and shallowCopy(self._adapter.capabilities or {}) or nil,
+           backendStatus = (self._adapter and type(self._adapter.status) == "function") and select(2, pcall(self._adapter.status, self._adapter)) or nil,
            sessions = sessions, counters = shallowCopy(self._counters), events = events, unresolved = unresolved,
            lastApplied = self._lastApplied and shallowCopy(self._lastApplied) or nil, serviced = self._serviced, lastServiced = self._lastServiced,
            expiredSessions = #self._expired, config = shallowCopy(self._config), binding = { revision = self._bindingRevision, key = self._bindingKey } }
@@ -916,17 +1109,27 @@ local function new(opts)
   }, Instance)
 end
 
--- No console API is needed by this version: the binding and busy sources are injected by the consumer.
-local function consoleDeps(_) return {} end
+-- Console dependencies of the console backend (KB-19): Cmd() only. The binding and busy sources are
+-- injected by the consumer.
+local function consoleDeps(env)
+  if type(env) ~= "table" then error(NAME .. ".consoleDeps: env table required (consoleDeps(_G))", 2) end
+  -- Cmd is looked up at call time: consumers build the deps when they load the module, which on the
+  -- console happens before anything is applied (and in harnesses before Cmd is stubbed).
+  return { cmd = function(text)
+    if type(env.Cmd) ~= "function" then error("Cmd is not available in this environment", 0) end
+    return env.Cmd(text)
+  end }
+end
 
 local M = {
   NAME = NAME, VERSION = VERSION, API_VERSION = API_VERSION,
   EVENT_TYPES = { "relative", "absolute", "touch", "button" }, ELEMENTS = { "fader", "key", "encoder" },
   STATEFUL_FUNCTIONS = shallowCopy(STATEFUL_FUNCTIONS),
-  new = new, consoleDeps = consoleDeps, fakeBackend = fakeBackend, resolveTarget = resolveTarget,
-  backends = { fake = "fake" },
+  new = new, consoleDeps = consoleDeps, fakeBackend = fakeBackend, consoleBackend = consoleBackend, calibrate = calibrate, resolveTarget = resolveTarget,
+  backends = { fake = "fake", console = "console" },
+  CALIBRATION = { readouts = shallowCopy(CALIBRATION.readouts), resolutions = shallowCopy(CALIBRATION.resolutions), layers = shallowCopy(CALIBRATION.layers), note = CALIBRATION_NOTE },
   LIMITATIONS = {
-    "KB-18 ships the fake backend only: intents are admitted, ordered, coalesced and bounded, and recorded; nothing moves on the console (the adjustment backend is KB-19)",
+    "the console backend (KB-19) serves relative motion on attribute slots only, as the selection-scoped Attribute \"<name>\" At +/- <amount> adjustment (an explicitly limited mode, not native encoder equivalence): calibrated for the Percent/PercentFine readouts (1 per Coarse detent) and the Physical readout (the attribute's range / 120 per Coarse detent, in physical units) with Fine at a tenth, on the Absolute layer; other readouts, Increment/Native, other layers, named channel functions, encoder presses, touches, positions and executor elements are refused unsupported",
     "generations are those of the consumer's binding source (one gma3_mcp_feedback instance and spec); events from a surface bound to another instance are refused as stale",
     "packet loss is reported, never repaired: a lost relative delta is gone, a lost absolute position is superseded by the next one",
   },

@@ -21,7 +21,7 @@ local function loadModule(file)
   return chunk("test_plugin", (file:gsub("%.lua$", "")), {}, nil)
 end
 local FB = loadModule("gma3_mcp_feedback.lua")
-check("feedback 0.3.0 loads", FB.VERSION == "0.3.0" and FB.API_VERSION == 1)
+check("feedback 0.4.0 loads", FB.VERSION == "0.4.0" and FB.API_VERSION == 1)
 
 -------------------------------------------------------------------------------
 -- Fake console
@@ -85,6 +85,15 @@ local selection = { list = { 63, 64 } }
 local uiOf = { [63] = { 320, 321, 322, 1 }, [64] = { 420, 421, 2 }, [65] = { 520, 521, 522, 3 } }
 local attrOfUi = { [320] = "ColorRGB_R", [321] = "ColorRGB_G", [322] = "ColorRGB_B", [1] = "Dimmer", [420] = "ColorRGB_R", [421] = "ColorRGB_G", [2] = "Dimmer",
                    [520] = "ColorRGB_R", [521] = "ColorRGB_G", [522] = "ColorRGB_B", [3] = "Dimmer" }
+-- KB-19: logical channels (channel functions with physical ranges) per UI channel. Fixture 64's R has a
+-- smaller range than 63's; Dimmer on fixture 63 names no function for the attribute (fallback).
+local function cf(name, attr, from, to) local h = H({ Attribute = attr }); h.name = name; h.PhysicalFrom = from; h.PhysicalTo = to; return h end
+local logical = {
+  [320] = H({}, { cf("ColorRGB_R 1", "ColorRGB_R", 0, 1) }), [420] = H({}, { cf("ColorRGB_R 1", "ColorRGB_R", 0, 0.5) }), [520] = H({}, { cf("ColorRGB_R 1", "ColorRGB_R", 0, 1) }),
+  [321] = H({}, { cf("ColorRGB_G 1", "ColorRGB_G", 0, 1) }), [421] = H({}, { cf("ColorRGB_G 1", "ColorRGB_G", 0, 1) }), [521] = H({}, { cf("ColorRGB_G 1", "ColorRGB_G", 0, 1) }),
+  [322] = H({}, { cf("Gobo 1", "Gobo1", 0, 15), cf("ColorRGB_B 2", "ColorRGB_B", 0, 1) }), [522] = H({}, { cf("ColorRGB_B 1", "ColorRGB_B", 0, 1) }),
+  [1] = H({}, { cf("Dimmer 1", "Other", 0, 1) }), [2] = H({}, {}), [3] = H({}, { cf("Dimmer 1", "Dimmer", 0, 1) }),
+}
 local programmer = { [320] = { { absolute = 50, absolute_value = 8388608, channel_function = 0 } }, [420] = { { absolute = 50, channel_function = 0 } },
                      [321] = { { absolute = 50, channel_function = 0 } }, [421] = { { absolute = 60, channel_function = 0 } },
                      [322] = nil, [1] = { { absolute = 100 } }, [2] = { { absolute = 100 } },
@@ -135,6 +144,7 @@ local function deps(overrides)
     uiChannels = function(i) calls.ui = (calls.ui or 0) + 1; return uiOf[i] or {} end,
     attributeByUIChannel = function(ui) local n = attrOfUi[ui]; return n and { name = n } or nil end,
     progPhaser = function(ui) return programmer[ui] end,
+    logicalChannel = function(ui) if ui == 421 then error("GetUIChannel exploded") end return logical[ui] end,
     subfixtureCount = function() return 0 end,
     attributeDefinitions = function() return defs end,
     attributeIndex = function(n) return attrIndex[n] end,
@@ -209,6 +219,15 @@ check("slot 2: fixtures disagree -> mixed value with the first fixture's", s[2].
 check("slot 3: only one fixture has it -> mixed availability; nil from GetProgPhaser (nothing in the programmer, KB-17 live) -> empty value", s[3].name == "ColorRGB_B" and s[3].availability == "mixed" and s[3].with == 1 and s[3].valueState == "empty" and s[3].absolute == nil and s[3].valueNote:find("holds no value") and s[3].label == nil, json.encode(s[3]))
 check("slot 4: attribute missing from the definitions and from the selection is explicit", s[4].name == "ColorRGB_RY" and s[4].attributeUnavailable:find("not in the show's attribute definitions") and s[4].availability == "unavailable" and s[4].valueState == "none" and s[4].unit == nil and s[4].readoutUnavailable ~= nil and s[4].attributeIndex == 110, json.encode(s[4]))
 check("slot 5: empty slot", s[5].kind == "empty" and s[5].ref == nil and s[5].availability == "empty" and s[5].valueState == "none", json.encode(s[5]))
+check("kb19: slot 1 physical range is the smallest across the scanned fixtures and says they differ (flat fields)", s[1].physicalFrom == 0 and s[1].physicalTo == 0.5 and s[1].physicalRange == 0.5 and s[1].physicalFunction == "ColorRGB_R 1" and s[1].physicalFixtures == 2 and s[1].physicalMixed == true and s[1].physicalNote:find("smallest"), json.encode(s[1]))
+check("kb19 review: slot 2: one fixture's logical channel raised, so no range is reported (a partial set never sizes a click); the reason names the failure", s[2].physicalRange == nil and s[2].physicalFrom == nil and s[2].physicalUnavailable:find("could not be read for every fixture") and s[2].physicalUnavailable:find("GetUIChannel exploded"), json.encode(s[2].physicalUnavailable))
+check("kb19: slot 3 picks the channel function that names the attribute, not the first one", s[3].physicalFunction == "ColorRGB_B 2" and s[3].physicalFunctionIndex == 2 and s[3].physicalFunctions == 2 and s[3].physicalTo == 1, json.encode(s[3]))
+check("kb19: slot 4 (no fixture has it) carries no physical range", s[4].physicalRange == nil and s[4].physicalUnavailable == nil)
+check("kb19 review: Dimmer bank: a function that does not name the attribute is NOT used as its range (no fallback); the slot is physicalUnavailable with the reason", (function()
+  console.bank = 0
+  local rd = f:read("encoderSlots", nil, 2).value.slots[1]
+  console.bank = 3
+  return rd.name == "Dimmer" and rd.physicalRange == nil and rd.physicalFunction == nil and rd.physicalUnavailable:find("no channel function of the logical channel names attribute 'Dimmer'") ~= nil end)(), "see Dimmer slot")
 local flat = true
 for _, sl in ipairs(s) do for k, v in pairs(sl) do if type(v) == "table" then flat = false end end end
 check("slots are flat records (serialisable within the bridge's depth bound)", flat)
@@ -320,12 +339,63 @@ check("back to the two-fixture selection: moved again", snap.generation == 8)
 -- Review: the identity covers the whole selection, not only the scanned fixtures.
 local big = {}
 for i = 1, 9 do big[i] = 100 + i end
+-- KB-19 review: the nine fixtures all have R (ui 1010+i); the ninth has a ten times smaller physical range than the
+-- first eight, so a range taken from the bounded scan alone would be wrong by a factor of ten.
+for i = 1, 9 do uiOf[100 + i] = { 1010 + i }; attrOfUi[1010 + i] = "ColorRGB_R"; logical[1010 + i] = H({}, { cf("ColorRGB_R 1", "ColorRGB_R", 0, i == 9 and 0.1 or 1) }) end
 selection.list = big
 local s9 = f:contextSnapshot(spec, 16.8)
+check("kb19 review: with a partial scan no physical range is reported (the ninth fixture's smaller range is outside the scan); the reason says the scan is bounded", s9.slots.value.slots[1].availability == "available" and s9.slots.value.slots[1].physicalRange == nil and s9.slots.value.slots[1].physicalUnavailable:find("scan is bounded %(8 of 9 fixtures%)") ~= nil, json.encode({ range = s9.slots.value.slots[1].physicalRange, why = s9.slots.value.slots[1].physicalUnavailable }))
 check("nine fixtures with maxSelectionScan 8: the scan is partial but the identity is complete and the generation moves", s9.slots.value.selection.scanned == 8 and s9.slots.value.selection.partial == true and s9.slots.value.selection.identityComplete == true and #s9.slots.value.selection.fixtures == 9 and s9.slots.value.selection.fixtures[9] == 109 and s9.generation == 9 and s9.generationUnknown == nil, json.encode(s9.slots.value.selection))
 big[9] = 999
 local s9b = f:contextSnapshot(spec, 16.9)
 check("replacing only the ninth fixture (same count, same first eight) moves the generation (review)", s9b.generation == 10 and s9b.generationChanged == true and s9b.slots.value.selection.fixtures[9] == 999, json.encode({ s9b.generation, s9b.slots.value.selection.fixtures }))
+-- KB-19 review 2: a fixture whose channels cannot be enumerated or mapped is not a confirmed "lacks the attribute":
+-- the scan is partial, every slot says its discovery is incomplete and no physical range is established.
+do
+  local fx = FB.new({ owner = "kb19x", deps = deps({ uiChannels = function(i) if i == 64 then error("GetUIChannels exploded") end return uiOf[i] or {} end }) }):init()
+  selection.list = { 63, 64 }
+  local rx = fx:read("encoderSlots", nil, 19)
+  local sl = rx.value.slots[1]
+  check("kb19 review 2: GetUIChannels raising for one fixture: scan partial, one discovery failure listed, slot 1 has no physical range and says why", rx.value.selection.partial == true and rx.value.selection.discoveryFailures == 1 and rx.value.selection.limitations[1]:find("channel discovery failed") and sl.physicalRange == nil and sl.physicalUnavailable:find("GetUIChannels exploded") and sl.discoveryIncomplete ~= nil and sl.partial == true, json.encode({ sl.physicalUnavailable, rx.value.selection }))
+  local fy = FB.new({ owner = "kb19y", deps = deps({ attributeByUIChannel = function(ui) if ui == 420 then error("map exploded") end local n = attrOfUi[ui]; return n and { name = n } or nil end }) }):init()
+  local ry = fy:read("encoderSlots", nil, 19.1)
+  check("kb19 review 2: GetAttributeByUIChannel raising is a discovery failure too (no range, incomplete)", ry.value.selection.discoveryFailures == 1 and ry.value.slots[1].physicalRange == nil and ry.value.slots[1].physicalUnavailable:find("map exploded"), json.encode(ry.value.slots[1].physicalUnavailable))
+  local fn = FB.new({ owner = "kb19n", deps = deps({ attributeByUIChannel = function(ui) if ui == 420 then return nil end local n = attrOfUi[ui]; return n and { name = n } or nil end }) }):init()
+  local rn = fn:read("encoderSlots", nil, 19.15)
+  check("kb19 review 3: a nil attribute lookup for an enumerated channel is a discovery failure (no range, incomplete), not a confirmed absence", rn.value.selection.discoveryFailures == 1 and rn.value.selection.partial == true and rn.value.slots[1].physicalRange == nil and rn.value.slots[1].physicalUnavailable:find("gave nothing for an enumerated channel") and rn.value.slots[1].discoveryIncomplete ~= nil, json.encode({ rn.value.slots[1].physicalUnavailable, rn.value.selection }))
+  local fu = FB.new({ owner = "kb19u", deps = deps({ attributeByUIChannel = function(ui) if ui == 420 then return setmetatable({}, { __index = function(_, k) if k == "name" then error("name unreadable") end end }) end local n = attrOfUi[ui]; return n and { name = n } or nil end }) }):init()
+  local ru = fu:read("encoderSlots", nil, 19.16)
+  local fe = FB.new({ owner = "kb19e", deps = deps({ attributeByUIChannel = function(ui) if ui == 420 then return { name = "" } end local n = attrOfUi[ui]; return n and { name = n } or nil end }) }):init()
+  local re = fe:read("encoderSlots", nil, 19.17)
+  check("kb19 review 3: an attribute handle whose name raises or is empty is a discovery failure (no range, incomplete)", ru.value.selection.discoveryFailures == 1 and ru.value.slots[1].physicalRange == nil and ru.value.slots[1].physicalUnavailable:find("no readable name") and re.value.selection.discoveryFailures == 1 and re.value.slots[1].physicalRange == nil and re.value.slots[1].physicalUnavailable:find("no readable name"), json.encode({ ru.value.slots[1].physicalUnavailable, re.value.slots[1].physicalUnavailable }))
+  local fz = FB.new({ owner = "kb19z", deps = deps({ uiChannels = function(i) if i == 64 then return {} end return uiOf[i] end, subfixtureCount = function(i) if i == 64 then error("count exploded") end return 0 end }) }):init()
+  local rz = fz:read("encoderSlots", nil, 19.2)
+  check("kb19 review 2: a raising subfixture discovery is a discovery failure (no range, incomplete)", rz.value.selection.discoveryFailures == 1 and rz.value.slots[1].physicalRange == nil and rz.value.slots[1].physicalUnavailable:find("count exploded"), json.encode(rz.value.slots[1].physicalUnavailable))
+  local sOk = f:read("encoderSlots", nil, 19.3).value
+  check("kb19 review 2: a confirmed missing attribute (fixture 64 has no B) is not a discovery failure: no limitation, range from the fixture that has it", sOk.selection.discoveryFailures == 0 and sOk.selection.partial == false and sOk.slots[3].availability == "mixed" and sOk.slots[3].physicalRange == 1 and sOk.slots[3].discoveryIncomplete == nil, json.encode(sOk.slots[3]))
+  local fail64 = false
+  local fw = FB.new({ owner = "kb19w", deps = deps({ uiChannels = function(i) if i == 64 and fail64 then error("GetUIChannels exploded") end return uiOf[i] or {} end }) }):init()
+  local w1 = fw:contextSnapshot(spec, 19.4)
+  fail64 = true
+  local w2 = fw:contextSnapshot(spec, 19.5)
+  fail64 = false
+  local w3 = fw:contextSnapshot(spec, 19.6)
+  check("kb19 review 2: discovery failing and recovering moves the generation each time (incomplete coverage is part of the digest), so queued motion against the earlier calibration is dropped", w1.generation == 1 and w1.slots.value.slots[1].physicalRange == 0.5 and w2.generation == 2 and w2.slots.value.slots[1].physicalRange == nil and w2.slots.value.slots[1].discoveryIncomplete ~= nil and w3.generation == 3 and w3.slots.value.slots[1].physicalRange == 0.5, json.encode({ w1.generation, w2.generation, w3.generation }))
+end
+-- KB-19 review: the physical range and its availability are calibration inputs, so they are part of the digest.
+selection.list = { 63, 64 }
+local fD = FB.new({ owner = "kb19d", deps = deps() }):init()
+local d1 = fD:contextSnapshot(spec, 18)
+logical[420] = H({}, { cf("ColorRGB_R 1", "ColorRGB_R", 0, 0.25) })
+local d2 = fD:contextSnapshot(spec, 18.1)
+logical[420] = H({}, { cf("ColorRGB_R 1", "ColorRGB_R", 0, 0.5) })
+local d3 = fD:contextSnapshot(spec, 18.2)
+logical[420] = H({}, {})
+local d4 = fD:contextSnapshot(spec, 18.3)
+logical[420] = H({}, { cf("ColorRGB_R 1", "ColorRGB_R", 0, 0.5) })
+local d5 = fD:contextSnapshot(spec, 18.4)
+check("kb19 review: a changed physical range moves the generation (1 -> 0.25 -> back), and so does the range becoming unreadable and readable again", d1.generation == 1 and d1.slots.value.slots[1].physicalRange == 0.5 and d2.generation == 2 and d2.slots.value.slots[1].physicalRange == 0.25 and d3.generation == 3 and d4.generation == 4 and d4.slots.value.slots[1].physicalUnavailable ~= nil and d5.generation == 5 and d5.slots.value.slots[1].physicalRange == 0.5, json.encode({ d1.generation, d2.generation, d3.generation, d4.generation, d5.generation }))
+selection.list = big  -- the identity-bound checks below expect the nine-fixture selection
 local fBig = FB.new({ owner = "kb17big", deps = deps(), config = { maxSelectionScan = 2, maxSelectionIdentity = 5 } }):init()
 local sb = fBig:contextSnapshot(spec, 17)
 check("beyond maxSelectionIdentity the identity is incomplete and no generation is claimed", sb.generation == nil and sb.generationUnknown == true and sb.slots.value.selection.identityComplete == false and #sb.slots.value.selection.fixtures == 5 and sb.generationNote:find("selection identity is incomplete") and sb.slots.value.selection.limitations[#sb.slots.value.selection.limitations]:find("bounded to 5 of 9"), tostring(sb.generation) .. " " .. tostring(sb.generationNote))

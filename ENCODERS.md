@@ -256,6 +256,78 @@ the service) is the mtpnxk half.
 - Test Pan/Tilt, multiple color pages, non-color attributes, mixed fixtures, empty selection, and unsupported editors.
 - Verify that adjustment preserves the intended relationship between selected fixtures rather than flattening them to one value.
 
+### KB-19 results (console half, 2026-10-10; surface half in mtpnxk)
+
+`gma3_mcp_control` 0.2.0 (the console backend), `gma3_mcp_feedback` 0.4.0 (physical ranges per slot) and bridge 0.15.0
+(`control=console`) ([modules](docs/modules.md#console-adjustment-backend-gma3_mcp_control-020-kb-19),
+[reference](docs/reference.md#continuous-control-plugin-v0140-kb-18)); live on macOS, onPC 2.5.1.0:
+[record](docs/probes/kb-19-adjust-macos-2.5.1.md), [script report](docs/probes/kb-19-adjust-macos-2.5.1.json)
+(`scripts/kb19-probe.mjs run`, 39/39). Existing MCP tools and ops are unchanged; no TypeScript changed.
+
+- **Slots, not names:** a relative event names `{ slot = n }`; the backend applies `Attribute "<name>" At +/- <amount>`
+  with the name, layer, resolution, readout, channel function and physical range of that slot in the binding
+  (feedback snapshot). Live: slot 2 of the colour bank was `ColorRGB_G`, slot 1 of its page 2 `ColorRGB_W`, slot 1 of
+  the position bank `Pan`; the command named each one.
+- **Calibration (one detent = one console click):** the manual's rule (24 clicks per turn, 5 turns per range): Percent
+  and PercentFine readouts 1 per Coarse click (KB-16 measured), Physical readout `(PhysicalTo - PhysicalFrom) / 120`
+  in physical units (KB-19 measured `At 10` = 10 degrees of Pan; the range comes from `GetUIChannel(ui).logical_channel`'s
+  channel function that names the attribute, the smallest over the selection, now in every slot as `physicalRange`),
+  Fine a tenth. No acceleration is applied in the module or the bridge: n detents are n steps; the surface documents
+  its own. Live: Dimmer `At + 1`, Pan `At + 15` for four detents (450 / 120 each), Tilt `At + 5.25` for three (210 / 120),
+  Gobo1 `At + 0.25` for two (15 / 120).
+- **Fine gesture:** `fine = true` (Bank held on the NX-K) divides the step by 10 (the manual's Coarse-to-Fine ratio):
+  two fine detents were `At + 0.2` on Dimmer and `At - 0.75` on Pan. It is an explicitly smaller adjustment, not the
+  console's resolution toggle.
+- **Qualified only:** readouts other than Percent/PercentFine/Physical, resolutions other than Coarse/Fine, layers
+  other than Absolute, a channel-function selector naming a function other than the attribute's own, phaser/editor
+  slots and an unreadable range are refused `unsupported` with the reason at admission, before any gesture or queue
+  entry exists (`adapter.supports()`), so nothing is owned or applied for them. Review (PR #23): a slot is served only
+  while the encoder bar is in attribute editing (`attributeEditing == true`, preset-bar context `Default`); an editor,
+  phaser or unreadable context refuses every slot event in target resolution, whatever the slot record says.
+- **Calibration coverage (review):** a physical range is reported only when it is complete and verified: every
+  scanned fixture with the channel contributed the range of the channel function that names the attribute (no
+  fallback to another function), the bounded scan covered the whole selection and every scanned fixture's channels
+  were enumerated and mapped (review rounds 2 and 3: a raising `GetUIChannels` or subfixture discovery, and an
+  enumerated channel that cannot be mapped to a readable attribute name, whether `GetAttributeByUIChannel` raises,
+  returns nil or the name is unreadable, mark the scan partial and the slot `discoveryIncomplete`; that fixture is not a confirmed "lacks the
+  attribute"); otherwise `physicalUnavailable` carries the reason and the Physical readout is refused. The range, its
+  availability and the discovery state are part of the binding digest, so a range or coverage change moves the
+  generation and queued motion calibrated against the old range is dropped.
+- **Presses separate from rotation:** a `button` event is refused `unsupported` on the console backend (calculator /
+  open / select behaviour is not qualified; nothing is pressed); touches, positions and executor elements likewise
+  (KB-20/21/22). The target still resolves first: a press on a slot with nothing selected is `target-unavailable`.
+- **Unavailable slots:** `target-unavailable` with the binding's reason (no selection, unavailable for the selection,
+  empty slot); a `mixed` slot (some fixtures lack the attribute) is admitted and reported `mixed`: the console applies
+  the adjustment to the fixtures that have it and leaves the others untouched (live: 401's `ColorRGB_R` 30 -> 35, 601
+  no channel).
+- **Additional slots / dual-encoder functions:** a fifth pool slot and the outer ring are reported by the feedback
+  module and refused here; the surface's explicit slot-window mode (mtpnxk `--rotary-slots`) is how a 4-encoder surface
+  reaches slot 5; nothing is discarded silently.
+- **Context changes:** queued motion is dropped by the loop when the generation moves (KB-18); live, motion keeps the
+  bridge `[busy]` so the page change waited for the gesture to lapse, after which the old-generation event was
+  `stale-generation` and a fresh gesture used the new binding.
+- **Relationship preserved:** `At +` is relative per fixture: 401 at 20 and 402 at 50 became 25 and 55 after five
+  detents on the shared Dimmer slot; the same six detents moved two fixture types by 6.
+- **Bridge:** `control=console` (Macro 120 on the test show) next to `control=fake|off`; switching backends ends the
+  gestures through the previous one; `control.status` carries the backend's capabilities, calibration, counters and
+  last command; `lastApplied.result` carries the command issued.
+- **Harness:** `test/lua/control_admission_test.lua` (165 checks; 25 new, including the review's context refusals and the
+  range-change drop: calibration per readout/resolution/layer/
+  channel function/range, admission refusals for presses, touches, positions, executor elements and unqualified slots,
+  the command text, coalesced and negative deltas, fine, Physical steps, feedback verdicts, a raising `Cmd`, a hold
+  ended as a noop, backend switching, amount formatting), `test/lua/feedback_context_test.lua` (116; physical ranges:
+  smallest over the selection, mixed ranges, the function that names the attribute, a raising `GetUIChannel`, a function
+  that does not name the attribute, a bounded scan, channel-discovery failures and a range change each refusing or moving the generation), the bridge harness block (`control=console`, the commands through
+  `Cmd()`, status, switching) and `test/kb19-probe.test.ts` (4).
+
+**Limitations:** the adjustment is the explicitly limited mode KB-16 allowed (a selection-scoped relative `At`), not native
+encoder equivalence: the console's own encoder modifiers (press factor, dual-encoder factor, link resolution) are read
+but not reproduced; editor contexts, Increment/Native, non-Absolute layers, Dec8/Dec16/Hex readouts and multi-function
+selection are refused, not served; a relative step from an empty programmer starts at the output value (a colour
+component's default is 100 on the test fixture, so it clamps at once); mixed physical ranges on one slot, Fine as the
+configured resolution, editor contexts (refused since the PR review) and partial range coverage were exercised in the harness only; the NX-K hardware and the surface's
+`--rotary-slots` mode are the mtpnxk half.
+
 ## KB-20 — M-Touch parameter strips act as encoders
 
 **Request:** Use the four right-hand M-Touch strips for the same parameter assignments as the NX-K encoders.
