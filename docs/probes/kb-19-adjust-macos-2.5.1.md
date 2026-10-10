@@ -6,7 +6,8 @@ docs/probes/kb-19-adjust-macos-2.5.1.json` ([report](kb-19-adjust-macos-2.5.1.js
 `gma3_mcp_hardkeys` 0.10.0, show `mcp-test-disposable`, user Admin, profile Default, one physical display, Lua
 enabled, bridge started `lua input=keyboard` (Macro 100 after `npm run install-plugin`), control enabled by the
 operator with Macro 120 (`Plugin "gma3_mcp_bridge" "control=console"`; 118 is `control=fake`, 119 `control=off`). Run
-on 2026-10-10. Test fixtures: 401/402 (Mega Hex Par: Dimmer, ColorRGB_R/G/B/W/RY/UV, Shutter1), 601 (180W Beam Moving
+on 2026-10-10, last with the modules at `e142672` (the PR #23 review fixes in: attribute-editing context required, complete
+physical ranges only, calibration in the binding digest), 39/39 again. Test fixtures: 401/402 (Mega Hex Par: Dimmer, ColorRGB_R/G/B/W/RY/UV, Shutter1), 601 (180W Beam Moving
 Head: Dimmer, Pan, Tilt, Gobo1, Color1, Focus1 ...). Two earlier runs the same day failed on the probe's own account
 (a fresh event factory per rebind replayed sequence numbers, so everything after the first rebind was `duplicate`; a
 colour component adjusted from an empty programmer started at its output default 100 and clamped), not on the console's.
