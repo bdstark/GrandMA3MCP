@@ -349,18 +349,20 @@ function Instance:_binding(now)
   local ok, snap = pcall(b, now)
   if not ok then return nil, errOf("binding-unknown", "the binding source raised: " .. tostring(snap)) end
   if type(snap) ~= "table" then return nil, errOf("binding-unknown", "no binding snapshot yet (bind a display and executors first)") end
+  -- Binding identity (review): generations are per spec, so a different spec can carry the same number.
+  -- The key is tracked as soon as a snapshot exists (its generation may still be unknown), so the revision
+  -- a consumer reads right after binding is the one its events are checked against. A changed key is a
+  -- new binding revision: queued motion is dropped and every hold is rebound.
+  if snap.bindingKey ~= nil and snap.bindingKey ~= self._bindingKey then
+    if self._bindingKey ~= nil then self:_rebindAll(now, "binding changed from " .. tostring(self._bindingKey) .. " to " .. tostring(snap.bindingKey)) end
+    self._bindingKey = snap.bindingKey
+    self._bindingRevision = self._bindingRevision + 1
+  end
   if snap.generation == nil then
     return nil, errOf("binding-unknown", "the binding claims no generation: " .. tostring(snap.generationNote or "unknown"), { lastGeneration = snap.lastGeneration })
   end
   if snap.stale == true then
     return nil, errOf("binding-unknown", "the binding is built from stale observations (its generation may lag the console); wait for the loop to observe it again", { generation = snap.generation, stale = true })
-  end
-  -- Binding identity (review): generations are per spec, so a different spec can carry the same number.
-  -- A changed key is a new binding revision: queued motion is dropped and every hold is rebound.
-  if snap.bindingKey ~= nil and snap.bindingKey ~= self._bindingKey then
-    if self._bindingKey ~= nil then self:_rebindAll(now, "binding changed from " .. tostring(self._bindingKey) .. " to " .. tostring(snap.bindingKey)) end
-    self._bindingKey = snap.bindingKey
-    self._bindingRevision = self._bindingRevision + 1
   end
   snap.bindingRevision = self._bindingRevision
   return snap

@@ -222,7 +222,7 @@ them on this onPC; if a console shows an encoder bar on several displays, the co
 - **Bridge:** `control=fake|off`, `control status`, `control recover` arguments (Macros 118/119 on the test show);
   `control.bind/open/renew/close/submit/status/recover` ops (32 events per request), binding = the bridge's feedback
   instance cached for the bound spec.
-- **Harness:** `test/lua/control_admission_test.lua` (138 checks, including the PR review's late releases (beyond the
+- **Harness:** `test/lua/control_admission_test.lua` (139 checks, including the PR review's late releases (beyond the
   sequence window too), release capacity, recovery batches, rebound holds, stale and replaced bindings, releases kept
   across a rebind, the required binding revision: loss, duplicates, reordering, bursts, reconnect/
   expiry/close/dispose, stale generations and rebound touches, context changes while queued, every bound, conflicts,

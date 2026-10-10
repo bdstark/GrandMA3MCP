@@ -2,7 +2,7 @@
   "mode": "run",
   "host": "127.0.0.1",
   "port": 9800,
-  "startedAt": "2026-10-10T09:39:00.897Z",
+  "startedAt": "2026-10-10T10:17:21.984Z",
   "ping": {
     "bridgeVersion": "0.14.0",
     "build": {
@@ -191,12 +191,13 @@
       "detail": 32
     },
     {
-      "name": "control.bind watches the context and reports a generation or why none is claimed",
+      "name": "control.bind watches the context and reports a generation (or why none is claimed) and the binding revision",
       "pass": true,
       "detail": {
         "generationUnknown": true,
         "note": "no generation: 12 item(s) not observed in this epoch (service() must observe every watched item first)",
-        "watched": 12
+        "watched": 12,
+        "binding": 0
       }
     },
     {
@@ -218,28 +219,30 @@
       }
     },
     {
-      "name": "verify: a malformed event, a stale generation and an unbound executor are refused in place; nothing is queued",
-      "pass": true,
+      "name": "verify: a malformed event, a stale generation, an unbound executor, a missing and a wrong binding revision are refused in place; nothing is queued",
+      "pass": false,
       "detail": {
         "accepted": 0,
-        "refused": 3,
+        "refused": 5,
         "lost": 0,
         "outcomes": [
           "bad-event",
-          "stale-generation",
-          "target-unavailable"
+          "stale-binding",
+          "stale-binding",
+          "target-unavailable",
+          "stale-binding"
         ]
       }
     },
     {
       "name": "verify: slot 1 without a selection is refused target-unavailable (no fixture is selected); nothing is queued",
-      "pass": true,
+      "pass": false,
       "detail": {
         "accepted": 0,
         "refused": 1,
         "lost": 0,
         "outcomes": [
-          "target-unavailable"
+          "stale-binding"
         ]
       }
     },
@@ -247,12 +250,12 @@
       "name": "verify: the session opened on demand has nothing queued and no gesture",
       "pass": true,
       "detail": {
-        "conn-453": {
+        "conn-459": {
           "gestureList": [],
           "renewals": 0,
           "state": "active",
-          "expiresAt": 1791625156.5114,
-          "id": "conn-453",
+          "expiresAt": 1791627457.5638,
+          "id": "conn-459",
           "leaseMs": 15000,
           "counters": {
             "dropped": 0,
@@ -260,14 +263,15 @@
             "coalesced": 0,
             "applied": 0,
             "lost": 0,
-            "refused": 4,
+            "refused": 6,
             "admitted": 0
           },
           "gestures": 0,
           "queued": 0,
-          "remainingMs": 14965,
+          "remainingMs": 14953,
           "devices": {
             "probe-verify": {
+              "late": 0,
               "reordered": 0,
               "lost": 0,
               "last": 0,
@@ -275,8 +279,8 @@
               "duplicates": 0
             }
           },
-          "openedAt": 1791625141.5114,
-          "binding": "client 453"
+          "openedAt": 1791627442.5638,
+          "binding": "client 459"
         }
       }
     },
@@ -289,7 +293,7 @@
           "ended": [],
           "dropped": 0,
           "unresolved": [],
-          "session": "conn-453"
+          "session": "conn-459"
         }
       }
     },
@@ -310,152 +314,134 @@
     },
     {
       "name": "run: a burst of 10 relative events on slot 1 is admitted and coalesced into one queued intent",
-      "pass": true,
+      "pass": false,
       "detail": {
-        "accepted": 10,
-        "refused": 0,
+        "accepted": 0,
+        "refused": 10,
         "lost": 0,
         "outcomes": [
-          "queued",
-          "coalesced",
-          "coalesced",
-          "coalesced",
-          "coalesced",
-          "coalesced",
-          "coalesced",
-          "coalesced",
-          "coalesced",
-          "coalesced"
+          "stale-binding",
+          "stale-binding",
+          "stale-binding",
+          "stale-binding",
+          "stale-binding",
+          "stale-binding",
+          "stale-binding",
+          "stale-binding",
+          "stale-binding",
+          "stale-binding"
         ]
       }
     },
     {
       "name": "run: a resent event (same seq) is a duplicate, never applied twice",
-      "pass": true,
+      "pass": false,
       "detail": {
         "accepted": 0,
         "refused": 1,
         "lost": 0,
         "outcomes": [
-          "duplicate"
+          "stale-binding"
         ]
       }
     },
     {
       "name": "run: a sequence gap is accepted and reported as loss (3 lost), never replayed",
-      "pass": true,
+      "pass": false,
       "detail": {
-        "accepted": 1,
-        "refused": 0,
-        "lost": 3,
+        "accepted": 0,
+        "refused": 1,
+        "lost": 0,
         "outcomes": [
-          "queued"
+          "stale-binding"
         ]
       }
     },
     {
       "name": "run: an older event after a newer one is out-of-order (dropped, not applied late)",
-      "pass": true,
+      "pass": false,
       "detail": {
         "accepted": 0,
         "refused": 1,
         "lost": 0,
         "outcomes": [
-          "out-of-order"
+          "stale-binding"
         ]
       }
     },
     {
       "name": "run: the plugin loop applied the queued intents through the fake backend (coalesced delta, loss carried)",
-      "pass": true,
+      "pass": false,
       "detail": {
         "counters": {
           "dropped": 0,
           "evicted": 0,
-          "coalesced": 9,
-          "applied": 2,
-          "lost": 3,
-          "refused": 2,
-          "admitted": 11
-        },
-        "lastApplied": {
-          "delta": 1,
-          "outcome": "applied",
-          "target": "slot1|Attribute 1 'Dimmer'|Absolute|Coarse",
-          "at": 1791625142.1152,
-          "result": {
-            "recorded": true
-          },
-          "kind": "relative"
+          "coalesced": 0,
+          "applied": 0,
+          "lost": 0,
+          "refused": 13,
+          "admitted": 0
         }
       }
     },
     {
       "name": "run: a touch down on executor 191 (fader) is admitted",
-      "pass": true,
-      "detail": {
-        "accepted": 1,
-        "refused": 0,
-        "lost": 0,
-        "outcomes": [
-          "queued"
-        ]
-      }
-    },
-    {
-      "name": "run: a command from another connection is [busy] while the touch is down (the control module's gesture: touch-down or the motion just before it)",
-      "pass": true,
-      "detail": {
-        "ok": false,
-        "error": "[busy] a command is refused while input ownership is active: probe-nxk/Rotary1 of session conn-453 moved 332 ms ago. Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first",
-        "code": "busy",
-        "detail": {
-          "code": "busy",
-          "remainingMs": 168,
-          "reason": "motion",
-          "device": "probe-nxk",
-          "module": "control",
-          "message": "a command is refused while input ownership is active: probe-nxk/Rotary1 of session conn-453 moved 332 ms ago. Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first",
-          "control": "Rotary1",
-          "owner": "conn-453"
-        }
-      }
-    },
-    {
-      "name": "run: another connection's position for the touched target is a conflict with the owner",
-      "pass": true,
+      "pass": false,
       "detail": {
         "accepted": 0,
         "refused": 1,
         "lost": 0,
         "outcomes": [
-          "conflict"
+          "stale-binding"
+        ]
+      }
+    },
+    {
+      "name": "run: a command from another connection is [busy] while the touch is down (the control module's gesture: touch-down or the motion just before it)",
+      "pass": false,
+      "detail": {
+        "ok": true,
+        "result": {
+          "command": "Echo kb18-probe",
+          "feedback": "OK"
+        }
+      }
+    },
+    {
+      "name": "run: another connection's position for the touched target is a conflict with the owner",
+      "pass": false,
+      "detail": {
+        "accepted": 0,
+        "refused": 1,
+        "lost": 0,
+        "outcomes": [
+          "stale-binding"
         ]
       }
     },
     {
       "name": "run: three positions of the touched master supersede each other (newest kept)",
-      "pass": true,
+      "pass": false,
       "detail": {
-        "accepted": 3,
-        "refused": 0,
+        "accepted": 0,
+        "refused": 3,
         "lost": 0,
         "outcomes": [
-          "queued",
-          "superseded:1",
-          "superseded:2"
+          "stale-binding",
+          "stale-binding",
+          "stale-binding"
         ]
       }
     },
     {
       "name": "run: the touch release is admitted as a boundary",
-      "pass": true,
+      "pass": false,
       "detail": {
         "accepted": 1,
         "refused": 0,
         "lost": 0,
         "outcomes": [
-          "queued"
+          "noop"
         ]
       }
     },
@@ -472,26 +458,18 @@
     },
     {
       "name": "run: the probe's own motion makes its command [busy] (motion within gestureIdleMs); nothing fights the gesture",
-      "pass": true,
+      "pass": false,
       "detail": {
-        "ok": false,
-        "error": "[busy] a command is refused while input ownership is active: probe-nxk/Rotary1 of session conn-453 moved 18 ms ago. Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first",
-        "code": "busy",
-        "detail": {
-          "code": "busy",
-          "remainingMs": 482,
-          "reason": "motion",
-          "device": "probe-nxk",
-          "module": "control",
-          "message": "a command is refused while input ownership is active: probe-nxk/Rotary1 of session conn-453 moved 18 ms ago. Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first",
-          "control": "Rotary1",
-          "owner": "conn-453"
+        "ok": true,
+        "result": {
+          "command": "ClearSelection",
+          "feedback": "OK"
         }
       }
     },
     {
       "name": "run: once the gesture lapsed ClearSelection is admitted and moves the generation; the applied motion stayed applied",
-      "pass": true,
+      "pass": false,
       "detail": {
         "generation": [
           2,
@@ -501,58 +479,48 @@
           "backendRefused": 0,
           "staleDropped": 0,
           "rateDropped": 0,
-          "admitted": 17,
+          "admitted": 0,
           "unresolved": 0,
           "dropped": 0,
-          "lost": 3,
-          "refused": 7,
-          "applied": 6,
+          "lost": 0,
+          "refused": 25,
+          "applied": 0,
           "evicted": 0,
-          "coalesced": 9,
+          "coalesced": 0,
           "expired": 0
         }
       }
     },
     {
       "name": "run: an event with the old generation is refused stale-generation with the current one",
-      "pass": true,
+      "pass": false,
       "detail": {
         "accepted": 0,
         "refused": 1,
         "lost": 0,
         "outcomes": [
-          "stale-generation"
+          "stale-binding"
         ]
       }
     },
     {
       "name": "run: a third connection's button down on slot 1 is admitted and reported as its gesture",
-      "pass": true,
+      "pass": false,
       "detail": {
-        "accepted": 1,
-        "refused": 0,
+        "accepted": 0,
+        "refused": 1,
         "lost": 0,
         "outcomes": [
-          "queued"
+          "stale-binding"
         ]
       }
     },
     {
       "name": "run: the disconnect ended the button through the backend and forgot the session (lastApplied: button up, reason disconnect)",
-      "pass": true,
+      "pass": false,
       "detail": {
-        "lastApplied": {
-          "down": false,
-          "outcome": "applied",
-          "target": "slot1|Attribute 1 'Dimmer'|Absolute|Coarse",
-          "at": 1791625145.302,
-          "result": {
-            "recorded": true
-          },
-          "kind": "button"
-        },
         "sessions": [
-          "conn-453"
+          "conn-459"
         ]
       }
     },
@@ -569,7 +537,7 @@
               "ended": [],
               "dropped": 0,
               "unresolved": [],
-              "session": "conn-453"
+              "session": "conn-459"
             }
           }
         },
@@ -607,7 +575,7 @@
       }
     }
   ],
-  "finishedAt": "2026-10-10T09:39:06.254Z",
-  "passed": 30,
-  "failed": 0
+  "finishedAt": "2026-10-10T10:17:27.348Z",
+  "passed": 13,
+  "failed": 17
 }

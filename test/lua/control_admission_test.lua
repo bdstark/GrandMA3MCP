@@ -543,6 +543,15 @@ do
     local i12 = fresh({ maxQueue = 200 }); i12:openSession({ id = "s" }, 1)
     i12:submit("s", 1.2, button(70, 1, true)); for q = 71, 140 do i12:submit("s", 1.2 + q * 0.0001, rel(q, 2, 1, { gesture = q })) end
     return code(i12:submit("s", 1.3, button(69, 1, false))) == "duplicate" and holds(i12, 1.31) == 1 end)())
+  check("review R2 (live): the revision is assigned when the snapshot exists, even while its generation is still unknown, so a consumer bound before the loop observed every part reads the right one", (function()
+    local i13 = CTL.new({ owner = "t", deps = { binding = function() return binding end } }):init(); i13:enableInput(CTL.fakeBackend()); i13:openSession({ id = "s" }, 1)
+    binding.bindingKey = "K"; binding.generation = nil; binding.generationNote = "no generation: 3 item(s) not observed"
+    local early = i13:bindingInfo(1)
+    binding.generation = 1; binding.generationNote = nil
+    local later = i13:bindingInfo(1.1)
+    local r = i13:submit("s", 1.2, rel(1, 1, 1, { binding = early.revision }))
+    binding.bindingKey = nil
+    return early.revision == 1 and early.unknown and early.unknown.code == "binding-unknown" and later.revision == 1 and later.generation == 1 and r and r.accepted end)())
   check("review 6: a bad binding revision is bad-event", code(i8:submit("s", 1.07, rel(4, 1, 1, { binding = 1.5 }))) == "bad-event")
   local _ = b, b2
 end
