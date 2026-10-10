@@ -784,8 +784,8 @@ the fresh down reaching the new mapping, a forced end, the strip gesture cancell
 
 ## Vendoring into another plugin (mtpnxk)
 
-Use the immutable upstream revision **`597ba47f7e28c0c50673e8c405b555b942c9b984`** (KB-20 after the PR #24 review, hardkeys 0.10.0 /
-feedback 0.4.0 / control 0.3.0) for the current module set; the earlier pins were `01e1561490fc39ce4e2d510e2d170c9c09e4bc53`
+Use the immutable upstream revision **`14464edebed2ebe2fef0cbfd623e8fbaa903a117`** (KB-21, hardkeys 0.10.0 /
+feedback 0.5.0 / control 0.4.0) for the current module set; the earlier pins were `597ba47f7e28c0c50673e8c405b555b942c9b984` (KB-20 after the PR #24 review, hardkeys 0.10.0 / feedback 0.4.0 / control 0.3.0), `01e1561490fc39ce4e2d510e2d170c9c09e4bc53`
 (KB-20 before the review), `107f54804a9f7183e8bbedee2ebbac70e38e06fd` (KB-19, hardkeys
 0.10.0 / feedback 0.4.0 / control 0.2.0), `9f08f871f864084afcd670008310b285e8b31bfc` (KB-18, hardkeys
 0.10.0 / feedback 0.3.0 / control 0.1.0), `c8dbb3aa6edf352fc977d5196399bb6daf222d2b` (KB-17,
@@ -798,8 +798,8 @@ manifest, not an automatic updater or a runtime dependency on GitHub.
 | File | Module version | API version | SHA-256 |
 | --- | --- | --- | --- |
 | `plugin/gma3_mcp_hardkeys.lua` | 0.10.0 | 1 | `a57ebd29af3b2c7e9e06ef3dcd8b7059c775db83b0dc61760f49e75973cc7dc3` |
-| `plugin/gma3_mcp_feedback.lua` | 0.4.0 | 1 | `739eb9fe996e9c84f8930fb0532baee6e84895cf8b93c99f05fbd2579910bca4` |
-| `plugin/gma3_mcp_control.lua` | 0.3.0 | 1 | `4b2637d02cba019360921f87b756c2504d0b89a0b286ee98f7a616097fa9358b` |
+| `plugin/gma3_mcp_feedback.lua` | 0.5.0 | 1 | `d804e41dd92065f2b876d74c4f17c7f3f3f65126a366c1f189d01a2991e44b13` |
+| `plugin/gma3_mcp_control.lua` | 0.4.0 | 1 | `f905493a5820e5a4ae3c1d7ed6dfb770a1ed1dcd3c9d4d94f77d25c82f4e31aa` |
 
 1. Obtain the Lua files from that exact revision of `bdstark/GrandMA3MCP`, rather than a moving branch.
    Copy them unchanged with [LICENSE](../LICENSE) and the manifest into the surface package. The manifest's
@@ -821,8 +821,8 @@ See the [tested platform/version matrix](compatibility.md) for the evidence and 
 mtpnxk vendored the 0.5.0 pair (its `tools/ma3/VENDOR.md` records those commits and hashes) and qualified the surface
 consumer against it on macOS in its KB-08 record, then the 0.10.0/0.2.0 pair for KB-15; the 0.10.0/0.3.0 pair for KB-17 (the context snapshot carried as a `context` message); the 0.10.0/0.3.0/0.1.0 set
 above is what its KB-18 surface half vendors (continuous-control events admitted on the console side), to be
-qualified there; the 0.10.0/0.4.0/0.2.0 set above is what its KB-19 surface half vendors (the console backend behind
-`control=console`).
+qualified there; the 0.10.0/0.4.0/0.2.0 set is what its KB-19 surface half vendors (the console backend behind
+`control=console`); the 0.10.0/0.5.0/0.4.0 set above is what its KB-21 surface half vendors (explicit executor targets and frozen holds).
 
 ## Verification
 
