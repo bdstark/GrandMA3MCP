@@ -38,7 +38,7 @@ end
 local HK = loadModule("gma3_mcp_hardkeys.lua")
 local FB = loadModule("gma3_mcp_feedback.lua")
 check("hardkeys loads without console API", type(HK) == "table" and HK.API_VERSION == 1 and HK.VERSION == "0.10.0" and type(HK.new) == "function")
-check("feedback loads without console API", type(FB) == "table" and FB.API_VERSION == 1 and FB.VERSION == "0.2.0" and type(FB.new) == "function")
+check("feedback loads without console API", type(FB) == "table" and FB.API_VERSION == 1 and FB.VERSION == "0.3.0" and type(FB.new) == "function")
 check("module tables are read-only", not pcall(function() HK.state = {} end) and not pcall(function() FB.cache = {} end) and HK.state == nil)
 check("modules publish nothing globally", package.loaded["gma3_mcp_hardkeys"] == nil and _G.gma3_mcp_hardkeys == nil and _G.gma3_mcp_feedback == nil)
 check("modules register in the plugin signal table under their NAME", signals.__gma3_mcp_modules.gma3_mcp_hardkeys == HK and signals.__gma3_mcp_modules.gma3_mcp_feedback == FB)
@@ -470,7 +470,7 @@ local list = f2:readers(); list[1] = "bogus"; table.remove(list, #list)
 local st = f2:status(); st.readers[2] = "bogus2"
 FB.READERS[1] = "bogus3"
 local okAll, allAfter = pcall(f3.readAll, f3)
-check("mutating a returned reader list does not affect other instances", okAll and allAfter.blind ~= nil and allAfter.bogus == nil and f3:readers()[1] == "blind" and #f3:readers() == 15, json.encode({ okAll, allAfter and allAfter.blind and allAfter.blind.value }))
+check("mutating a returned reader list does not affect other instances", okAll and allAfter.blind ~= nil and allAfter.bogus == nil and f3:readers()[1] == "blind" and #f3:readers() == 20, json.encode({ okAll, allAfter and allAfter.blind and allAfter.blind.value }))
 touched = {}
 local fcd = FB.consoleDeps(fakeEnv)
 check("feedback consoleDeps touches no console function at build time", type(fcd.cmdObj) == "function" and type(fcd.executor) == "function" and type(fcd.showFile) == "function" and #touched == 0, json.encode(touched))

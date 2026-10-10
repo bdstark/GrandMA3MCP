@@ -1013,13 +1013,13 @@ do
   start("")  -- bind fails in this harness, so serverMain returns and the instances are disposed again
   local hk, fb = state.modules.hardkeys, state.modules.feedback
   check("modules found through the plugin signal table", hk and hk.loaded and fb and fb.loaded, json.encode({ hk = hk and hk.error, fb = fb and fb.error }))
-  check("module versions recorded", hk.version == "0.10.0" and hk.apiVersion == 1 and fb.version == "0.2.0", json.encode({ hk.version, fb.version }))
+  check("module versions recorded", hk.version == "0.10.0" and hk.apiVersion == 1 and fb.version == "0.3.0", json.encode({ hk.version, fb.version }))
   check("modules start log line", lastLog():find("stopped") or true)
   local disposed = hk.instance and hk.instance:status().state == "disposed" and fb.instance:status().state == "disposed"
   check("instances disposed when the loop ends", disposed, hk.instance and hk.instance:status().state)
   check("modules did not publish via package.loaded or globals", package.loaded["gma3_mcp_hardkeys"] == nil and _G.gma3_mcp_hardkeys == nil and _G.gma3_mcp_feedback == nil)
   r = request("ping", {})
-  check("ping summarises modules", r.ok and r.result.modules.hardkeys.loaded == true and r.result.modules.feedback.version == "0.2.0", json.encode(r.result.modules))
+  check("ping summarises modules", r.ok and r.result.modules.hardkeys.loaded == true and r.result.modules.feedback.version == "0.3.0", json.encode(r.result.modules))
   r = request("modules", {})
   check("modules op reports status without Lua enabled", r.ok and state.lua.enabled == false and r.result.apiVersion == 1 and r.result.modules.hardkeys.status.inputEnabled == false and r.result.modules.feedback.status.module == "gma3_mcp_feedback", json.encode(r))
 
@@ -1517,11 +1517,11 @@ do
                              VirtualKeys = { Count = function() return 0 end }, MANetSocket = { Get = function(_, k) if k == "ShowFile" then return fbConsole.showFile end end }, maNetSocket = {} } end
   local C = { id = 61 }
   r = request("feedback.describe", {}, nil, C)
-  check("feedback.describe lists readers with the module version, without Lua", r.ok and r.result.version == "0.2.0" and #r.result.readers == 16 and r.result.status.epoch == 1 and r.result.note:find("not an atomic snapshot"), J(r))
+  check("feedback.describe lists readers with the module version, without Lua", r.ok and r.result.version == "0.3.0" and #r.result.readers == 21 and r.result.status.epoch == 1 and r.result.note:find("not an atomic snapshot"), J(r))
   r = request("feedback.read", {}, nil, C)
   check("feedback.read without items is refused with a code", r.ok == false and r.code == "no-items", r.error)
   r = request("feedback.read", { readers = { "commandText", "lastCommand", "blind", "solo", "page", "freeze", "selectedSequence", "previewBar", "sequenceActive" }, displays = { 1, 2, 9 }, executors = { 201, 202 }, sequences = { 5, 6 } }, nil, C)
-  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.12.0" and r.result.module.version == "0.2.0" and r.result.identity.showFile == "mcp-test-disposable", J(r))
+  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.13.0" and r.result.module.version == "0.3.0" and r.result.identity.showFile == "mcp-test-disposable", J(r))
   local by = {}
   if r.ok then for _, it in ipairs(r.result.items) do by[it.key] = it end end
   check("feedback.read: command text and last command are raw observations", by.commandText and by.commandText.value == "Store " and by.lastCommand.value == "Go+ Sequence 5 : OK" and by.lastCommand.note:find("not confirmation"), J(by.lastCommand))
@@ -1563,6 +1563,104 @@ do
   ObjectList, Root = savedObjectList, savedRoot
   CmdObj, ShowData, CurrentExecPage, GetExecutor, SelectedSequence = nil, nil, nil, nil, nil
   GetDisplayByIndex = function(n) if n == 1 then return {} end return nil end
+  for _, rec in pairs(state.modules) do if rec.instance then rec.instance:dispose(0) end end
+  state.running = false
+end
+
+
+-------------------------------------------------------------------------------
+-- KB-17: feedback.context / feedback.watch / feedback.unwatch with Lua and input disabled
+-------------------------------------------------------------------------------
+do
+  start("")
+  state._loadModules(); state.running = true; state.stopRequested = false; state.ignoreNextCleanup = false
+  check("kb17 precondition: Lua and input are disabled", state.lua.enabled == false and state.input.enabled == false)
+  local function H(props, items, class)
+    local h = {}
+    for k, v in pairs(props or {}) do h[k] = v end
+    h.Get = function(_, k) return props[k] end
+    h.GetClass = function() return class end
+    h.Count = function() return items and #items or 0 end
+    h.Ptr = function(_, i) return items and items[i] or nil end
+    return h
+  end
+  local con = { bank = 3, page = 0, showFile = "mcp-test-disposable" }
+  local presetBar = setmetatable({ Options = { PageSelector = setmetatable({}, { __index = function(_, k) if k == "SelectedItemValueI64" then return con.page end end }) },
+                                   EncodersArea = { EncoderPlace1 = H({}, { H({}, { H({ Text = "R", Resolution = "Coarse" }, nil, "BandFader") }, "UILayoutGrid") }) },
+                                   GetClass = function() return "PresetBar" end }, { __index = function(_, k) if k == "Context" then return "Default" end end })
+  local selector = setmetatable({}, { __index = function(_, k) if k == "SelectedItemValueI64" then return con.bank end end })
+  local display1 = { EncoderBarContainer = { EncoderBarGrid = { EncoderBarBase = { EncoderBarContainer = { EncoderBankSelector = selector } }, EncoderBar = H({}, { presetBar }) } } }
+  local function enc(inner) return H({ InnerObject = inner, InnerObjectType = "0", OuterObject = inner, OuterObjectType = "0" }) end
+  local banks = { H({ name = "Dimmer" }, { H({ name = "Dimmer" }, { enc("Attribute 1 'Dimmer'") }) }), H({ name = "Position" }, {}), H({ name = "Gobo" }, {}),
+                  H({ name = "Color" }, { H({ name = "RGB" }, { enc("Attribute 107 'ColorRGB_R'"), enc("Attribute 108 'ColorRGB_G'") }) }) }
+  local savedProfile, savedDisplay, savedRoot, savedExecPage, savedExecutor = CurrentProfile, GetDisplayByIndex, Root, CurrentExecPage, GetExecutor
+  CurrentProfile = function()
+    local p = savedProfile()
+    p.EncoderBarPool = H({}, { H({ name = "EncoderBar 1" }, banks) })
+    p.UserAttributePreferences = {}
+    p.Get = function(_, k) if k == "Layer" then return "Absolute" end end
+    return p
+  end
+  GetDisplayByIndex = function(n) if n == 1 then return display1 end return nil end
+  Root = function() return { Get = function(_, k) if k == "MAState" then return fakeMaState end error("no console property " .. tostring(k)) end,
+                             VirtualKeys = { Count = function() return 0 end }, MANetSocket = { Get = function(_, k) if k == "ShowFile" then return con.showFile end end }, maNetSocket = {},
+                             ShowData = { LivePatch = { AttributeDefinitions = { Attributes = { ColorRGB_R = H({ Feature = "FeatureGroup 4 'Color'.Feature 1 'RGB'", PhysicalUnit = "None", NaturalReadout = "Percent", EncoderResolution = "Coarse", Color = "1,0,0,1", ChannelFunctions = "1" }) } } } } } end
+  DataPool = function() return H({ name = "Default", No = "1" }) end
+  SelectionCount = function() return 1 end
+  SelectionFirst = function() return 63 end
+  SelectionNext = function() return nil end
+  GetUIChannels = function() return { 320, 321 } end
+  GetAttributeByUIChannel = function(ui) return ({ [320] = { name = "ColorRGB_R" }, [321] = { name = "ColorRGB_G" } })[ui] end
+  GetProgPhaser = function(ui) return ({ [320] = { { absolute = 50, channel_function = 0 } }, [321] = { {} } })[ui] end
+  GetAttributeIndex = function(n) return ({ ColorRGB_R = 107, ColorRGB_G = 108 })[n] end
+  local seq = H({ name = "Main", No = "5" }, nil, "Sequence")
+  seq.Addr = function() return "Sequence 5" end
+  seq.HasActivePlayback = function() return false end
+  seq.GetFader = function(_, t) if t.token == "FaderMaster" then return 100 end error("unknown token") end
+  seq.GetFaderText = function() return "100" end
+  local execs = { [201] = H({ index = 201, KeyPress = "Temp", KeyUnpress = "", Fader = "Master", Encoder = "Master" }), [202] = H({ index = 202 }) }
+  execs[201].Object = seq
+  local pageH = H({ name = "Page 1", No = "1" }, { execs[201], execs[202] })
+  CurrentExecPage = function() return pageH end
+  GetExecutor = function(n) return execs[n], pageH end
+  local C = { id = 71 }
+  r = request("feedback.context", { executors = { 201, 202 } }, nil, C)
+  check("feedback.context answers with Lua and input disabled", r.ok and r.result.bridgeVersion == "0.13.0" and r.result.module.version == "0.3.0" and r.result.atomic == false and r.result.generation == 1 and r.result.generationChanged == false and r.result.identity.showFile == "mcp-test-disposable" and r.result.identity.dataPool.name == "Default", J(r))
+  check("feedback.context: authoritative display, bank/page, slots with availability and value", r.ok and r.result.authoritativeDisplay.rule == "configured" and r.result.encoder.value.bank.name == "Color" and r.result.encoder.value.page.name == "RGB" and r.result.slots.value.slots[1].name == "ColorRGB_R" and r.result.slots.value.slots[1].availability == "available" and r.result.slots.value.slots[1].absolute == 50 and r.result.slots.value.slots[1].unit == "None" and r.result.slots.value.slots[2].valueState == "empty" and r.result.executorPage.no == 1, J(r.result.slots))
+  check("feedback.context: executor targets with functions, level and playback-target status", r.ok and #r.result.executors == 2 and r.result.executors[1].value.functions.keyPress == "Temp" and r.result.executors[1].value.level.value == 100 and r.result.executors[1].value.playbackTarget == true and r.result.executors[2].value.empty == true and r.result.executors[2].value.reserved == nil, J(r.result.executors))
+  check("feedback.context: nested fields survive the serialiser depth bound", r.ok and type(r.result.slots.value.slots[1].feature) == "string" and type(r.result.executors[1].value.assigned.name) == "string")
+  r = request("feedback.context", { display = 2 }, nil, C)
+  check("feedback.context: a requested display without an encoder bar is unavailable, not replaced", r.ok and r.result.authoritativeDisplay.rule == "requested" and r.result.encoder.available == false and r.result.encoder.reason:find("display 2 does not exist") and r.result.generation == 1, J(r.result.encoder))
+  r = request("feedback.context", { executors = "201" }, nil, C)
+  check("feedback.context: malformed executors refused with a code", r.ok == false and r.code == "bad-args", r.error)
+  r = request("feedback.context", { display = 0 }, nil, C)
+  check("feedback.context: display 0 refused", r.ok == false and r.code == "bad-args", r.error)
+  con.bank = 0
+  r = request("feedback.context", { executors = { 201, 202 } }, nil, C)
+  check("feedback.context: a bank change moves the generation", r.ok and r.result.generation == 2 and r.result.generationChanged == true and r.result.encoder.value.bank.name == "Dimmer", J(r.result.encoder))
+  r = request("feedback.watch", { executors = { 201 } }, nil, C)
+  check("feedback.watch subscribes the snapshot items to the loop", r.ok and r.result.watched == 5 and state.modules.feedback.instance:status().watched == 5, J(r))
+  r = request("feedback.context", { executors = { 201 }, cached = true }, nil, C)
+  check("feedback.context cached before the loop ran: nothing observed, no generation claimed", r.ok and r.result.cached == true and r.result.notObserved == 5 and r.result.generation == nil and r.result.generationUnknown == true, J(r))
+  local t = os.clock() + (_G.FAKE_CLOCK_OFFSET or 0)
+  state._serviceModules(t); state._serviceModules(t + 0.2)
+  r = request("feedback.context", { executors = { 201 }, cached = true }, nil, C)
+  check("feedback.context cached after the loop observed every item", r.ok and r.result.notObserved == 0 and r.result.encoder.available and r.result.encoder.value.bank.name == "Dimmer" and r.result.executors[1].value.level.value == 100 and r.result.generation == 1 and type(r.result.encoder.ageMs) == "number", J(r))
+  con.bank = 3
+  state._serviceModules(t + 0.5); state._serviceModules(t + 0.7)
+  r = request("feedback.context", { executors = { 201 }, cached = true }, nil, C)
+  check("the loop follows a console change without any client request; the cached generation moves", r.ok and r.result.encoder.value.bank.name == "Color" and r.result.generation == 2 and r.result.generationChanged == true, J(r.result.encoder))
+  r = request("feedback.unwatch", {}, nil, C)
+  check("feedback.unwatch clears the watch", r.ok and r.result.watched == 0 and state.modules.feedback.instance:status().watched == 0, J(r))
+  r = request("ping", {}, nil, C)
+  check("context ops never touched input or the busy guard", r.ok and r.result.input.busy == nil and r.result.input.sessions == 0 and C.session == nil, J(r.result.input))
+  local fbRec = state.modules.feedback
+  state.modules.feedback = { component = "gma3_mcp_feedback", loaded = true, version = "0.2.0", instance = { readMany = function() end, status = function() return {} end } }
+  r = request("feedback.context", {}, nil, C)
+  check("an older feedback module reports [no-feedback] for the context op", r.ok == false and r.code == "no-feedback" and r.error:find("0.3.0 or newer"), r.error)
+  state.modules.feedback = fbRec
+  CurrentProfile, GetDisplayByIndex, Root, CurrentExecPage, GetExecutor = savedProfile, savedDisplay, savedRoot, savedExecPage, savedExecutor
+  DataPool, SelectionCount, SelectionFirst, SelectionNext, GetUIChannels, GetAttributeByUIChannel, GetProgPhaser, GetAttributeIndex = nil, nil, nil, nil, nil, nil, nil, nil
   for _, rec in pairs(state.modules) do if rec.instance then rec.instance:dispose(0) end end
   state.running = false
 end

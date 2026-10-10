@@ -161,7 +161,7 @@ Ops: `ping`, `cmd`, `lua`, `object`, `children`, `objects`, `dump`, `set`, `setf
 `input.status` and the fake-backend test control `input.fake` (below), since v0.6.0 `input.combo` (below), and since
 v0.7.0 the interaction and sequence ops `input.begin`, `input.extend`, `input.end`, `input.sequence`,
 `input.sequence.status`, `input.sequence.abort` ([below](#interactions-admission-text-and-sequences-plugin-v070-kb-05)), and since
-v0.8.0 the read-only feedback ops `feedback.describe` and `feedback.read` ([below](#console-feedback-plugin-v080-kb-06)). See
+v0.8.0 the read-only feedback ops `feedback.describe` and `feedback.read` ([below](#console-feedback-plugin-v080-kb-06)), v0.13.0 `feedback.context`, `feedback.watch` and `feedback.unwatch` ([below](#control-context-plugin-v0130-kb-17)). See
 [`plugin/gma3_mcp_bridge.lua`](../plugin/gma3_mcp_bridge.lua).
 
 Error replies are `{"id", "ok": false, "error": "[code] message"}`; since v0.7.0 they also carry `code` (the bracketed
@@ -282,3 +282,18 @@ error?, observedAt, epoch, note?, alias?}`. The epoch starts at 1 at every bridg
 identity changed since the previous check (at most once per second; `invalidated` names the change on that reply).
 Neither op is guarded by the input admission, needs Lua, opens an input session or changes console state; an
 empty request is `[no-items]`, a bridge without the module `[no-feedback]`.
+
+### Control context (plugin v0.13.0, KB-17)
+
+`feedback.context {display?, executors?, allExecutors?, cached?}` returns the feedback module's
+`contextSnapshot()` ([modules](modules.md#control-context-and-binding-snapshots-gma3_mcp_feedback-030-kb-17)): identity (show
+file, user, profile, data pool), the authoritative display (`display` requested, else the configured display 1; a
+display without an encoder bar is unavailable and never replaced), the encoder bank/page/context, the ordered slots
+with attribute identity, label, unit, readout, resolution, layer, availability and programmer value state, one target
+per listed executor (`allExecutors` adds every assigned executor of the current page, bounded) with its configured
+functions, the configured fader function's level, activity, appearance and `playbackTarget` (a Quickey or an executor
+reserved by this bridge's KB-12 bank is never one), plus `generation`/`generationChanged`: the generation moves when an
+input's meaning changed, never for a value or level alone. `cached = true` serves the snapshot from the observations the
+plugin loop keeps for the spec given to `feedback.watch {display?, executors?}` (no read happens; items not yet observed
+are unavailable and no generation is claimed), `feedback.unwatch {}` stops that. Read-only, never guarded by the input
+admission, usable with Lua disabled; malformed arguments are `[bad-args]`, a feedback module older than 0.3.0 `[no-feedback]`.
