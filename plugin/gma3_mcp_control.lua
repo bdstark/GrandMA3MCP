@@ -137,6 +137,47 @@
 --     Review (PR #25): the gesture-bound (maxGestureMs) force-end, the unresolved record of a release the
 --     backend raised on, recover() and an adopted record carry the same frozen record (resolved, targetKey).
 --
+-- What 0.5.0 adds (KB-22, executor OPERATIONS on the console backend; the surface's playback profiles,
+-- its pickup policy for playback faders and its pickup display belong to the surface service):
+--   * a BUTTON on an executor KEY element is served as the console's own dispatch of the CONFIGURED
+--     button function:  Press Page <p>.<e>  on the down and  Unpress Page <p>.<e>  on the release (KB-16
+--     live: Press/Unpress run the executor's KeyPress/KeyUnpress, Temp and Flash stay active until the
+--     Unpress, Toggle and Top/Go+ act on the press). Nothing is translated into Go+: the command names the
+--     executor, the console runs what is configured on it. Only configured key functions this module
+--     QUALIFIED live are served (KEY_FUNCTIONS: Temp, Flash, Toggle, Top, Go+ from KB-16; the KB-22 probe
+--     extends the table); an executor whose configured KeyPress names any other function is refused
+--     "unsupported" at admission, and so is an executor without a key function or a target naming an
+--     executor ENCODER element (not qualified). A down the console refused leaves the hold owned so its
+--     release is still issued: an Unpress of an executor that is not pressed is harmless, a stuck press is not.
+--   * the release of a hold is the frozen record (KB-21): a forced end (lease, gesture bound, dispose,
+--     backend switch), recover() and an adopted record issue the same  Unpress Page <p>.<e>  of the
+--     executor the down resolved, whatever the binding maps the control to by then; a momentary function
+--     (Temp, Flash) is therefore released when the surface disconnects, not left active.
+--   * ASSIGNMENT CHANGED WHILE HELD: Press/Unpress address the executor, not the object, so an Unpress after
+--     the executor was reassigned or emptied would operate the REPLACEMENT. Before a frozen executor release
+--     is applied (a release, a forced end, recover()), the instance compares the record with the binding's
+--     current view of that (page, executor): a different assigned object or an emptied executor makes the
+--     release UNRESOLVED ("assignment-changed": the record is kept with the original object, nothing is
+--     issued, status() lists it) instead of releasing the replacement. recover() re-attempts it and applies
+--     it only once the binding shows the original object on that executor again; the operator ends the
+--     original playback by hand otherwise (Off <object>). A binding that cannot say (no snapshot, the item
+--     not in the binding, another page under a following binding) does not block the release.
+--   * an ABSOLUTE position on an executor FADER element honours the CONFIGURED fader function:
+--     Fader<Function> Page <p>.<e> At <value>  with the value scaled over the function's travel
+--     (FADER_FUNCTIONS; the console's fader levels are 0..100 for every token, KB-16 live: GetFader
+--     returns 0..100). Each function is qualified SEPARATELY (acceptance: a master-level setter is not
+--     assumed to implement every fader function; KB-16 live: `FaderRate ... At` on a Master executor did
+--     not change the readable rate): Master and Temp are qualified from KB-16, Rate, Speed and the
+--     crossfades (X/XA/XB) carry their neutral positions and endpoints in the table but are refused
+--     "unsupported" until the KB-22 probe qualifies them; a Temp fader is a playback start when it leaves
+--     0 (stateful, never superseded). The level of the binding (the configured function's GetFader) is
+--     on the resolved target for the surface's pickup; this backend places what it is asked to place.
+--   * a TOUCH on an executor fader is a hold (busy, the target owned until the release) that moves
+--     nothing, exactly as a strip touch; relative motion on an executor fader is not served (a playback
+--     fader is positioned, not stepped).
+--   * capabilities on the console backend become { relative, absolute, touch, button = true, targets =
+--     { slot, executor = true } } with executorElements { fader, key } and the qualification tables.
+--
 -- Rules every consumer must keep (as for the other modules):
 --   * One instance per consumer; the module table is read-only; nothing is published through
 --     package.loaded or globals. Dependencies come through opts.deps: deps.binding(now) returns the
@@ -145,7 +186,7 @@
 --   * Input is disabled on a new instance. enableInput(adapter) is the operator's explicit decision.
 
 local NAME        = "gma3_mcp_control"
-local VERSION     = "0.4.0"
+local VERSION     = "0.5.0"
 local API_VERSION = 1
 
 local EVENT_TYPES = { relative = true, absolute = true, touch = true, button = true }
@@ -156,6 +197,40 @@ local ELEMENTS    = { fader = true, key = true, encoder = true }
 -- Matched on the configured fader function token (feedback's level.token / functions.fader) without
 -- the "Fader" prefix, case-insensitively.
 local STATEFUL_FUNCTIONS = { x = true, xa = true, xb = true, crossfade = true, crossfadea = true, crossfadeb = true, temp = true }
+
+-- KB-22: configured executor KEY functions the console backend dispatches through Press/Unpress Page <p>.<e>.
+-- Keyed by the configured KeyPress function, lower-cased and without spaces (feedback's functions.keyPress).
+-- `qualified` names the live evidence; an unqualified or unknown function is refused "unsupported".
+local KEY_FUNCTIONS = {
+  temp     = { name = "Temp",   momentary = true,  qualified = "KB-16 live: Press -> active, Unpress -> inactive (a 1.2 s hold stayed active until the Unpress)" },
+  flash    = { name = "Flash",  momentary = true,  qualified = "KB-16 live: Press -> active, Unpress -> inactive" },
+  toggle   = { name = "Toggle", momentary = false, qualified = "KB-16 live: Press toggles the playback" },
+  top      = { name = "Top",    momentary = false, qualified = "KB-16 live: Press runs the configured Top/Go+ pair" },
+  ["go+"]  = { name = "Go+",    momentary = false, qualified = "KB-16 live: Press runs the configured Top/Go+ pair" },
+  ["go-"]  = { name = "Go-",    momentary = false, qualified = false },
+  pause    = { name = "Pause",  momentary = false, qualified = false },
+  off      = { name = "Off",    momentary = false, qualified = false },
+  on       = { name = "On",     momentary = false, qualified = false },
+  select   = { name = "Select", momentary = false, qualified = false },
+  learnspeed = { name = "LearnSpeed", momentary = false, qualified = false },
+}
+
+-- KB-22: configured executor FADER functions and the command keyword that places their level:
+--   <keyword> Page <p>.<e> At <level>   with level = from + value x (to - from), the console's 0..100 scale.
+-- `neutral` is the function's rest position in the same scale (a rate/speed master at 1:1, a crossfade at an
+-- endpoint); `endpoints` lists positions a surface may snap to. `qualified` names the live evidence; an
+-- unqualified function is refused "unsupported" (acceptance: each fader function is qualified separately).
+local FADER_FUNCTIONS = {
+  master    = { name = "Master",     keyword = "FaderMaster",    from = 0, to = 100, neutral = 100, endpoints = { 0, 100 }, qualified = "KB-16 live: setfader Page 1.191 25 -> GetFader{FaderMaster} = 25; the KB-22 probe places FaderMaster Page <p>.<e> At" },
+  temp      = { name = "Temp",       keyword = "FaderTemp",      from = 0, to = 100, neutral = 0,   endpoints = { 0, 100 }, stateful = true, qualified = "KB-16 live: FaderTemp Page 1.210 At 60 -> 60% and the sequence becomes active; At 0 -> inactive" },
+  rate      = { name = "Rate",       keyword = "FaderRate",      from = 0, to = 100, neutral = 50,  endpoints = { 0, 50, 100 }, qualified = false },
+  speed     = { name = "Speed",      keyword = "FaderSpeed",     from = 0, to = 100, neutral = 50,  endpoints = { 0, 50, 100 }, qualified = false },
+  x         = { name = "X",          keyword = "FaderX",         from = 0, to = 100, neutral = nil, endpoints = { 0, 100 }, stateful = true, qualified = false },
+  xa        = { name = "XA",         keyword = "FaderXA",        from = 0, to = 100, neutral = nil, endpoints = { 0, 100 }, stateful = true, qualified = false },
+  xb        = { name = "XB",         keyword = "FaderXB",        from = 0, to = 100, neutral = nil, endpoints = { 0, 100 }, stateful = true, qualified = false },
+  crossfade = { name = "CrossFade",  keyword = "FaderCrossFade", from = 0, to = 100, neutral = nil, endpoints = { 0, 100 }, stateful = true, qualified = false },
+  time      = { name = "Time",       keyword = "FaderTime",      from = 0, to = 100, neutral = nil, endpoints = { 0, 100 }, qualified = false },
+}
 
 local DEFAULT_CONFIG = {
   defaultLeaseMs     = 15000,
@@ -239,6 +314,53 @@ function FakeBackend:last() return self.intents[#self.intents] end
 local ConsoleBackend = {}
 ConsoleBackend.__index = ConsoleBackend
 
+-- The names of the qualified entries of a KB-22 function table (sorted), for capabilities and reasons.
+local function qualifiedNames(tbl)
+  local out = {}
+  for _, rec in pairs(tbl) do if rec.qualified then out[#out + 1] = rec.name end end
+  table.sort(out)
+  return out
+end
+
+-- KB-22: the table entry of a configured function (lower-cased, spaces removed, a "Fader" prefix dropped).
+local function functionEntry(tbl, fn)
+  if type(fn) ~= "string" then return nil end
+  local k = fn:gsub("%s+", ""):gsub("^[Ff]ader", ""):lower()
+  return tbl[k], k
+end
+
+-- KB-22: the admission verdict and command plan for an executor target. Returns a plan { keyword?, level?,
+-- entry } or nil plus the reason. Exported as executorOperation() for consumers and tests.
+local function executorOperation(kind, resolved, value)
+  if type(resolved) ~= "table" or resolved.kind ~= "executor" then return nil, "not an executor target" end
+  if not isInt(resolved.pageNo) or resolved.pageNo < 1 or not isInt(resolved.executor) then return nil, "the target has no page number and executor to address (Page <p>.<e>)" end
+  local el = resolved.element
+  if el == "encoder" then return nil, "executor encoders are not served by the console backend (not qualified)" end
+  if el == "key" then
+    if kind ~= "button" then return nil, string.format("%s is not an operation of an executor key (a key takes button down/up)", tostring(kind)) end
+    local entry, k = functionEntry(KEY_FUNCTIONS, resolved["function"])
+    if resolved["function"] == nil or resolved["function"] == "" then return nil, "the executor has no configured key function" end
+    if entry == nil then return nil, string.format("the configured key function '%s' is not qualified (served: %s)", tostring(resolved["function"]), table.concat(qualifiedNames(KEY_FUNCTIONS), ", ")) end
+    if not entry.qualified then return nil, string.format("the configured key function %s is not qualified yet (served: %s)", entry.name, table.concat(qualifiedNames(KEY_FUNCTIONS), ", ")) end
+    return { entry = entry, token = k, address = string.format("Page %d.%d", resolved.pageNo, resolved.executor) }
+  end
+  if el == "fader" then
+    if kind == "touch" then return { touch = true, address = string.format("Page %d.%d", resolved.pageNo, resolved.executor) } end
+    if kind ~= "absolute" then return nil, string.format("%s is not an operation of an executor fader (a playback fader is positioned by absolute events; its touch is a hold)", tostring(kind)) end
+    local entry, k = functionEntry(FADER_FUNCTIONS, resolved["function"])
+    if resolved["function"] == nil or resolved["function"] == "" then return nil, "the executor has no configured fader function" end
+    if entry == nil then return nil, string.format("the configured fader function '%s' is not qualified (served: %s)", tostring(resolved["function"]), table.concat(qualifiedNames(FADER_FUNCTIONS), ", ")) end
+    if not entry.qualified then return nil, string.format("the configured fader function %s is not qualified yet (served: %s); its range %d..%d%s is recorded but no setter was verified", entry.name, table.concat(qualifiedNames(FADER_FUNCTIONS), ", "), entry.from, entry.to, entry.neutral and string.format(", neutral %d", entry.neutral) or "") end
+    local plan = { entry = entry, token = k, keyword = entry.keyword, from = entry.from, to = entry.to, neutral = entry.neutral, address = string.format("Page %d.%d", resolved.pageNo, resolved.executor) }
+    if value ~= nil then
+      if type(value) ~= "number" or value < 0 or value > 1 then return nil, "a position must be a number in 0..1 of the travel" end
+      plan.level = entry.from + value * (entry.to - entry.from)
+    end
+    return plan
+  end
+  return nil, "target.element must be fader, key or encoder"
+end
+
 -- The calibrated step of one detent for a resolved slot target, or nil plus the reason it is not
 -- qualified. fine divides the step by fineDivisor. Exported as calibrate() for consumers and tests.
 local function calibrate(resolved, fine, config)
@@ -314,8 +436,9 @@ local function consoleBackend(deps, opts)
   local divisor = tonumber(opts.fineDivisor) or DEFAULT_CONFIG.fineDivisor
   if divisor <= 0 then error(NAME .. ".consoleBackend: opts.fineDivisor must be positive", 2) end
   return setmetatable({
-    name = "console", description = "selection-scoped attribute adjustment (Attribute \"<name>\" At + <detents x step>, KB-19) and placement (Attribute \"<name>\" At <value>, KB-20) for encoder slots; a strip touch reserves its slot and moves nothing; presses and executors are not served",
-    capabilities = { relative = true, absolute = true, touch = true, button = false, targets = { slot = true, executor = false } },
+    name = "console", description = "selection-scoped attribute adjustment (Attribute \"<name>\" At + <detents x step>, KB-19) and placement (Attribute \"<name>\" At <value>, KB-20) for encoder slots; a strip touch reserves its slot and moves nothing; executor keys through Press/Unpress Page <p>.<e> (the configured button function) and executor faders through Fader<Function> Page <p>.<e> At <level> for the qualified functions (KB-22); encoder presses and executor encoders are not served",
+    capabilities = { relative = true, absolute = true, touch = true, button = true, targets = { slot = true, executor = true }, executorElements = { fader = true, key = true, encoder = false },
+                     keyFunctions = qualifiedNames(KEY_FUNCTIONS), faderFunctions = qualifiedNames(FADER_FUNCTIONS) },
     calibration = { note = CALIBRATION_NOTE, readouts = shallowCopy(CALIBRATION.readouts), resolutions = shallowCopy(CALIBRATION.resolutions), layers = shallowCopy(CALIBRATION.layers), fineDivisor = divisor },
     _deps = deps, _config = { fineDivisor = divisor }, log = tonumber(opts.eventLog) or DEFAULT_CONFIG.eventLog,
     commands = {}, counters = { applied = 0, refused = 0, raised = 0, noop = 0 }, lastCommand = nil,
@@ -326,10 +449,14 @@ end
 -- are served (KB-19 motion; KB-20 strips: a touch is a hold that reserves the slot and moves nothing, a
 -- position is placed only where the travel has a verified range); presses and executors are not.
 function ConsoleBackend:supports(kind, resolved)
+  if type(resolved) == "table" and resolved.kind == "executor" then
+    local plan, reason = executorOperation(kind, resolved, nil)
+    if plan == nil then return false, reason end
+    return true
+  end
   if kind == "button" then return false, "an encoder press is not served by the console backend: calculator/open/select behaviour is not qualified (nothing is pressed)" end
   if type(resolved) ~= "table" or resolved.kind ~= "slot" then
-    if kind == "absolute" or kind == "touch" then return false, "executor faders are not served by the console backend (KB-21/KB-22); strips are served on encoder slots" end
-    return false, "executor elements are not served by the console backend (KB-21/KB-22)"
+    return false, "the target is neither an encoder slot nor an executor"
   end
   if kind == "absolute" then
     local amount, reason = position(resolved, 0, self._config)
@@ -349,15 +476,37 @@ end
 
 function ConsoleBackend:apply(intent, now)
   local kind = intent.kind
-  if kind == "touch" or kind == "button" then
+  local rec, command
+  local r = intent.resolved
+  if type(r) == "table" and r.kind == "executor" and not (kind == "touch" or (kind == "button" and r.element ~= "key")) then
+    -- KB-22: executor keys are pressed/released, executor faders are placed; the plan refuses what is not qualified.
+    local plan, reason = executorOperation(kind, r, intent.value)
+    if plan == nil then
+      self.counters.refused = self.counters.refused + 1
+      return nil, { code = "backend-refused", message = reason }
+    end
+    if kind == "button" then
+      command = string.format("%s %s", intent.down and "Press" or "Unpress", plan.address)
+      rec = { at = now, command = command, down = intent.down, executor = r.executor, page = r.pageNo, pool = r.pool, element = "key", assigned = r.assigned, keyFunction = plan.entry.name, momentary = plan.entry.momentary,
+              frozen = intent.frozen or nil, forced = intent.forced or nil, reason = intent.reason, session = intent.session }
+    else
+      command = string.format("%s %s At %s", plan.keyword, plan.address, formatValue(plan.level))
+      rec = { at = now, command = command, value = intent.value, level = plan.level, from = plan.from, to = plan.to, neutral = plan.neutral, executor = r.executor, page = r.pageNo, pool = r.pool, element = "fader", assigned = r.assigned,
+              faderFunction = plan.entry.name, token = plan.keyword, stateful = plan.entry.stateful or nil, takeover = intent.takeover or nil, events = intent.events, lost = intent.lost, session = intent.session }
+    end
+  elseif kind == "touch" or kind == "button" then
     -- A strip touch (KB-20) is a hold that reserves its slot for the gesture and moves nothing on the
     -- console; a button here is only the forced end of a hold admitted under another backend. Nothing was
     -- pressed, so nothing is released.
     self.counters.noop = self.counters.noop + 1
-    return true, { noop = true, note = kind == "touch" and "a strip touch moves nothing on the console; the hold reserved its slot for the gesture (KB-20)" or "the console backend presses nothing; the hold had no console effect" }
+    local note
+    if kind == "touch" then note = (type(r) == "table" and r.kind == "executor") and "a fader touch moves nothing on the console; the hold reserved the executor's fader for the gesture (KB-22)" or "a strip touch moves nothing on the console; the hold reserved its slot for the gesture (KB-20)"
+    else note = "the console backend presses nothing for this target; the hold had no console effect" end
+    return true, { noop = true, note = note }
   end
-  local rec, command
-  if kind == "absolute" then
+  if rec ~= nil then
+    -- an executor command, planned above
+  elseif kind == "absolute" then
     local amount, reason, pos = position(intent.resolved, intent.value, self._config)
     if amount == nil then
       self.counters.refused = self.counters.refused + 1
@@ -408,7 +557,8 @@ function ConsoleBackend:apply(intent, now)
 end
 
 function ConsoleBackend:status()
-  return { name = self.name, counters = shallowCopy(self.counters), lastCommand = self.lastCommand and shallowCopy(self.lastCommand) or nil, commands = #self.commands, calibration = self.calibration }
+  return { name = self.name, counters = shallowCopy(self.counters), lastCommand = self.lastCommand and shallowCopy(self.lastCommand) or nil, commands = #self.commands, calibration = self.calibration,
+           executorFunctions = { keys = qualifiedNames(KEY_FUNCTIONS), faders = qualifiedNames(FADER_FUNCTIONS) } }
 end
 
 -------------------------------------------------------------------------------
@@ -636,6 +786,8 @@ local function resolveTarget(snap, target)
              pageNo = pageNo, pool = pool, mode = v.mode or (target.page ~= nil and "page" or "current"), assigned = assigned, assignedClass = v.assigned and v.assigned.class,
              width = v.width, expanded = v.expanded or nil,
              ["function"] = fn, token = tok, stateful = STATEFUL_FUNCTIONS[tok or ""] == true or nil,
+             -- KB-22: the release function and the activity the binding last read (hints for the surface; not in the key)
+             keyUnpress = target.element == "key" and f.keyUnpress or nil, active = v.active,
              -- KB-21: the key names pool and page, so executor n of two pages (or pools) are two targets.
              key = string.format("exec%s/%s.%d.%s|%s|%s", tostring(pool), tostring(pageNo), target.executor, target.element, tostring(assigned), tostring(fn)),
              level = v.level and v.level.value or nil,
@@ -1001,9 +1153,51 @@ end
 -------------------------------------------------------------------------------
 -- Applying
 -------------------------------------------------------------------------------
+-- KB-22: what the binding currently shows on the (page, executor) of a frozen executor record, or nil when it
+-- cannot say. Read without the generation/rebind side effects of _binding(): a page-change window or a stale
+-- snapshot still names the assignments it last read.
+function Instance:_assignmentNow(resolved)
+  local b = self._deps.binding
+  if type(b) ~= "function" then return nil end
+  local ok, snap = pcall(b, self._lastServiced or 0)
+  if not ok or type(snap) ~= "table" then return nil end
+  for _, o in ipairs(snap.executors or {}) do
+    local v = o.available and o.value or nil
+    local n = v and v.executor or (o.params and o.params.executor)
+    if v and n == resolved.executor then
+      local pg = (type(v.page) == "table" and v.page.no) or (type(v.page) == "number" and v.page) or (o.params and o.params.page)
+      -- The item of the record's own mode: a page-bound record against the item bound to its page, a following
+      -- record against the following item while it still reads that page (another page: it cannot say).
+      local pageBound = o.params ~= nil and o.params.page ~= nil
+      local sameMode = (resolved.mode == "page") == pageBound
+      if sameMode and pg == resolved.pageNo then
+        if v.pageMissing then return nil end
+        local addr = v.assigned and (v.assigned.addr or v.assigned.name) or nil
+        return { empty = v.empty == true or addr == nil, assigned = addr }
+      end
+    end
+  end
+  return nil
+end
+
 -- Applies one intent through the backend. Returns { outcome = applied | refused | unresolved, ... }.
 function Instance:_applyNow(s, intent, now)
   local adapter = self._adapter
+  local rt = intent.resolved
+  if intent.frozen and intent.kind == "button" and type(rt) == "table" and rt.kind == "executor" and rt.element == "key" and rt.assigned ~= nil then
+    local nowA = self:_assignmentNow(rt)
+    if nowA ~= nil and (nowA.empty or nowA.assigned ~= rt.assigned) then
+      local why = nowA.empty and string.format("executor %s.%d was emptied while it was held", tostring(rt.pageNo), rt.executor)
+                  or string.format("executor %s.%d was reassigned from %s to %s while it was held", tostring(rt.pageNo), rt.executor, tostring(rt.assigned), tostring(nowA.assigned))
+      self._counters.unresolved = self._counters.unresolved + 1
+      local rec = { kind = intent.kind, session = s.id, device = intent.device, control = intent.control, target = intent.target, targetKey = intent.targetKey,
+                    resolved = rt, frozen = true, generation = intent.generation, down = false, reassigned = true, nowAssigned = nowA.assigned, nowEmpty = nowA.empty or nil,
+                    error = "assignment-changed: " .. why .. "; the release was not issued on the replacement (recover() applies it once the original object is back on that executor; end the original playback by hand otherwise)", at = now, backend = adapter and adapter.name or nil }
+      if not intent.recovering then self._unresolved[#self._unresolved + 1] = rec end
+      self._lastApplied = { outcome = "unresolved", kind = intent.kind, at = now, target = intent.targetKey, down = false, error = rec.error, reassigned = true }
+      return { outcome = "unresolved", unresolved = rec }
+    end
+  end
   if adapter == nil then
     local rec = { kind = intent.kind, session = s.id, device = intent.device, control = intent.control, target = intent.target, targetKey = intent.targetKey, resolved = intent.resolved, frozen = intent.resolved ~= nil or nil, error = "no backend", at = now }
     self._unresolved[#self._unresolved + 1] = rec
@@ -1268,11 +1462,14 @@ local M = {
   EVENT_TYPES = { "relative", "absolute", "touch", "button" }, ELEMENTS = { "fader", "key", "encoder" },
   STATEFUL_FUNCTIONS = shallowCopy(STATEFUL_FUNCTIONS),
   new = new, consoleDeps = consoleDeps, fakeBackend = fakeBackend, consoleBackend = consoleBackend, calibrate = calibrate, position = position, resolveTarget = resolveTarget,
+  executorOperation = executorOperation, KEY_FUNCTIONS = (function() local o = {} for k, v in pairs(KEY_FUNCTIONS) do o[k] = shallowCopy(v) end return o end)(),
+  FADER_FUNCTIONS = (function() local o = {} for k, v in pairs(FADER_FUNCTIONS) do o[k] = shallowCopy(v); o[k].endpoints = shallowCopy(v.endpoints) end return o end)(),
   backends = { fake = "fake", console = "console" },
   CALIBRATION = { readouts = shallowCopy(CALIBRATION.readouts), resolutions = shallowCopy(CALIBRATION.resolutions), layers = shallowCopy(CALIBRATION.layers), note = CALIBRATION_NOTE },
   LIMITATIONS = {
-    "the console backend serves attribute slots only: relative motion (KB-19) as the selection-scoped Attribute \"<name>\" At +/- <amount> adjustment (an explicitly limited mode, not native encoder equivalence), calibrated for the Percent/PercentFine readouts (1 per Coarse detent) and the Physical readout (the attribute's range / 120 per Coarse detent, in physical units) with Fine at a tenth, on the Absolute layer; a strip touch (KB-20) as a hold that reserves the slot and moves nothing; an absolute position (KB-20) as Attribute \"<name>\" At <value> over the verified travel only (Percent/PercentFine 0..100, Physical PhysicalFrom..PhysicalTo of the binding, never a mixed physical range), refused mixed-values while the selection's values disagree and values-incomplete while they were not completely read, unless the event says takeover; other readouts, Increment/Native, other layers, named channel functions, encoder presses and executor elements are refused unsupported",
-    "an executor target is explicit (pool, page, executor, element; KB-21): a number the binding reports covered by a wider neighbour, on a page that does not exist, reserved or holding a Quickey is refused target-unavailable; a hold's release goes to the target its down resolved (frozen), never to what a bank or page change mapped to the control since; executor operations themselves are KB-22",
+    "the console backend serves attribute slots only: relative motion (KB-19) as the selection-scoped Attribute \"<name>\" At +/- <amount> adjustment (an explicitly limited mode, not native encoder equivalence), calibrated for the Percent/PercentFine readouts (1 per Coarse detent) and the Physical readout (the attribute's range / 120 per Coarse detent, in physical units) with Fine at a tenth, on the Absolute layer; a strip touch (KB-20) as a hold that reserves the slot and moves nothing; an absolute position (KB-20) as Attribute \"<name>\" At <value> over the verified travel only (Percent/PercentFine 0..100, Physical PhysicalFrom..PhysicalTo of the binding, never a mixed physical range), refused mixed-values while the selection's values disagree and values-incomplete while they were not completely read, unless the event says takeover; other readouts, Increment/Native, other layers, named channel functions and encoder presses are refused unsupported",
+    "an executor target is explicit (pool, page, executor, element; KB-21): a number the binding reports covered by a wider neighbour, on a page that does not exist, reserved or holding a Quickey is refused target-unavailable; a hold's release goes to the target its down resolved (frozen), never to what a bank or page change mapped to the control since",
+    "executor operations on the console backend (KB-22): a key is Press/Unpress Page <p>.<e>, the console's dispatch of the CONFIGURED button function, served only for the qualified key functions (Temp, Flash, Toggle, Top, Go+); a fader is Fader<Function> Page <p>.<e> At <level> for the configured fader function, qualified separately per function (Master, Temp; Rate, Speed, X/XA/XB, CrossFade and Time are refused until qualified); a fader touch is a hold that moves nothing; relative motion on a fader and executor encoders are refused unsupported; no pool is addressed in commands (the current data pool, KB-21)",
     "generations are those of the consumer's binding source (one gma3_mcp_feedback instance and spec); events from a surface bound to another instance are refused as stale",
     "packet loss is reported, never repaired: a lost relative delta is gone, a lost absolute position is superseded by the next one",
   },

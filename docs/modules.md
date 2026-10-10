@@ -10,7 +10,7 @@ The bridge plugin ships two reusable, instance-based Lua modules as extra compon
 | `gma3_mcp_hardkeys` | [plugin/gma3_mcp_hardkeys.lua](../plugin/gma3_mcp_hardkeys.lua) | Owned input sessions, leases, deadline servicing and recovery over a backend adapter; read-only logical-key resolution |
 | `gma3_mcp_feedback` | [plugin/gma3_mcp_feedback.lua](../plugin/gma3_mcp_feedback.lua) | Read-only console state readers confirmed in KB-01, with freshness and bounded polling (KB-06); control-context readers and binding snapshots (KB-17) |
 
-Module API version **1**; `gma3_mcp_hardkeys` **0.10.0** (KB-03 to KB-05; 0.5.0 resolves any `Enums.VirtualKeyCode` name, KB-07; 0.6.0 adds the per-key routing policy, KB-11; 0.7.0 adds the owned Quickey bank, KB-12; 0.8.0 adds the owned-Quickey backend, KB-13; 0.9.0 adds scoped shortcut-mode changes and text routes, KB-14; 0.10.0 adds the mixed backend and the unqualified-mix refusals, KB-15), `gma3_mcp_feedback` **0.5.0** (KB-02 + KB-06; 0.3.0 adds the control-context readers and `contextSnapshot()`, KB-17; 0.4.0 physical ranges, KB-19; 0.5.0 explicit executor targets with paged reads and the layout rule, KB-21), `gma3_mcp_control` **0.4.0** (KB-18; 0.2.0 the console adjustment backend, KB-19; 0.3.0 strips, KB-20; 0.4.0 page-aware executor resolution and frozen holds, KB-21).
+Module API version **1**; `gma3_mcp_hardkeys` **0.10.0** (KB-03 to KB-05; 0.5.0 resolves any `Enums.VirtualKeyCode` name, KB-07; 0.6.0 adds the per-key routing policy, KB-11; 0.7.0 adds the owned Quickey bank, KB-12; 0.8.0 adds the owned-Quickey backend, KB-13; 0.9.0 adds scoped shortcut-mode changes and text routes, KB-14; 0.10.0 adds the mixed backend and the unqualified-mix refusals, KB-15), `gma3_mcp_feedback` **0.5.0** (KB-02 + KB-06; 0.3.0 adds the control-context readers and `contextSnapshot()`, KB-17; 0.4.0 physical ranges, KB-19; 0.5.0 explicit executor targets with paged reads and the layout rule, KB-21), `gma3_mcp_control` **0.4.0** (KB-18; 0.2.0 the console adjustment backend, KB-19; 0.3.0 strips, KB-20; 0.4.0 page-aware executor resolution and frozen holds, KB-21; 0.5.0 executor operations on the console backend, KB-22).
 Four backend adapters dispatch: the **fake backend** (records events, simulates aggregate console key state,
 nothing reaches a console key), the **keyboard backend** (`keyboardBackend(deps)`, KB-04: the console's
 `Keyboard()` PC-key emulation; console keys are really pressed), the **owned-Quickey backend**
@@ -669,7 +669,7 @@ slots and executor elements are refused. No acceleration is applied: n detents a
 
 `supports(kind, resolved)` served `relative` on slots only in 0.2.0; since 0.3.0 (KB-20, below) `touch` and `absolute`
 on slots are served too, while `button` (an encoder press: calculator/open/select is not qualified, nothing is pressed)
-and executor targets (KB-21/22) are refused `unsupported` at admission. A forced end of a hold reaching this backend (a hold admitted under another backend) is
+were refused `unsupported` at admission, as were executor targets until 0.5.0 (KB-22, [below](#executor-operations-on-the-console-backend-gma3_mcp_control-050-kb-22): executor keys and faders are served, encoder presses and executor encoders stay refused). A forced end of a hold reaching this backend (a hold admitted under another backend) is
 a noop. The console's feedback is the verdict: `OK` = applied (`lastApplied.result` carries `command, amount, step,
 fine, resolution, readout, physicalRange, attribute, slot, mixed, feedback`), anything else = `backend-refused` with the
 feedback, a raise = unresolved (a relative intent is never re-attempted). `status()` (in `Instance:status().backendStatus`)
@@ -710,7 +710,8 @@ binding's last read: a hint for the surface's pickup policy, never a guarantee o
 
 `lastApplied.result` for a position carries `command, value, amount, from, to, readout, physicalRange, attribute, slot,
 mixed, valueState, takeover, feedback`; for motion the KB-19 fields (and `delta`). `capabilities` on the console backend
-are `{ relative = true, absolute = true, touch = true, button = false, targets = { slot = true, executor = false } }`.
+were `{ relative = true, absolute = true, touch = true, button = false, targets = { slot = true, executor = false } }`
+until 0.5.0 (KB-22: `button = true`, `targets.executor = true`, `executorElements`, the qualified function lists).
 The bridge enables it with `control=console` (0.16.0); the live evidence is
 [kb-20-strips-macos-2.5.1.md](probes/kb-20-strips-macos-2.5.1.md).
 
@@ -761,17 +762,19 @@ by executor m (width w): not a separate playback"`, `detail.coveredBy`), empty, 
 refused `target-unavailable` in that order. The resolved target carries `pool` (`"Default#1"`), `page {no, name}`,
 `pageNo`, `mode`, `assigned`, `assignedClass`, `width`, `expanded`, `function`, `token`, `level` (the binding's last read)
 and a key of the form `exec<pool>/<page>.<n>.<element>|<assigned>|<function>`: executor 201 of two pages or two pools
-are two targets (two owners, two gestures). The console backend still refuses executor elements `unsupported` (KB-22);
-the fake backend records them, which is how the live probe exercises holds.
+are two targets (two owners, two gestures). The console backend refused executor elements `unsupported` until 0.5.0
+(KB-22, below); the fake backend records them, which is how the KB-21 live probe exercised holds.
 
 **Frozen holds.** A touch or button down stores the target it resolved (`gesture.resolved`); the release, a forced end
 (lease expiry, `maxGestureMs`, dispose, backend switch), the unresolved record of a release the backend raised on, its
 `recover()` re-attempt and an adopted record (review of PR #25) carry that record as `resolved` (with `targetKey`) and
 `frozen = true`, whatever the binding says by then. A surface bank change (a replaced spec: new binding revision), a
 console page change (the following item now reads another object) or a reassignment/deletion while the button is held
-therefore neither releases nor activates the newly mapped executor: the release goes to `exec.../1.201.key|Sequence 1|Go+`
+therefore neither releases nor activates the newly mapped executor: the release is addressed to `exec.../1.201.key|Sequence 1|Go+`
 even when 201 now holds Sequence 99 on page 2, and only a fresh down reaches the new mapping (through its own
-resolution; an empty or covered number is refused). `status().sessions[id].gestureList[].frozen` shows `{ kind,
+resolution; an empty or covered number is refused). Since 0.5.0 (KB-22) a release whose executor was **reassigned or
+emptied** while held is not issued at all (an `assignment-changed` record, below); a page change under a following
+binding still releases the frozen page's executor. `status().sessions[id].gestureList[].frozen` shows `{ kind,
 executor, element, page, pool, assigned }` (or `slot, name` for a slot hold) and `targetKey`. Rebinding still drops
 queued motion and marks held touches `rebound` (`gesture-rebound` for their motion until lift and re-touch), so the
 surface's pickup/takeover starts over on a bank change.
@@ -787,6 +790,53 @@ bad page, the frozen release through a bank + page change, the fresh down reachi
 strip gesture cancelled by a rebind), the bridge harness (495; 9 new, the binding source carrying `executorPage`) and
 `test/kb21-probe.test.ts` (4). Live: [kb-21-executors-macos-2.5.1.md](probes/kb-21-executors-macos-2.5.1.md)
 (`node scripts/kb21-probe.mjs run`, 28/28 on 2026-10-10).
+
+## Executor operations on the console backend (`gma3_mcp_control` 0.5.0, KB-22)
+
+The surface's playback profiles (which physical button is which executor element), its pickup policy for playback
+faders and its pickup display belong to the surface service (mtpnxk `KEYBOARD.md` "KB-22"). What the console half
+adds is the console backend serving executor targets:
+
+| Event | Executor element | Served as | Refused (`unsupported` at admission) |
+| --- | --- | --- | --- |
+| `button` down / up | `key` | `Press Page <p>.<e>` / `Unpress Page <p>.<e>`: the console's own dispatch of the **configured** button function (KB-16 live: KeyPress on the Press, KeyUnpress on the Unpress; Temp and Flash active until the Unpress, Toggle latches, Top/Go+ on press/release). Nothing is translated into Go+ | a configured key function outside `KEY_FUNCTIONS` or not yet qualified (LearnSpeed, Go-, Pause, Off, On, Select), an empty `KeyPress` |
+| `absolute` | `fader` | `Fader<Function> Page <p>.<e> At <level>` for the **configured** fader function, `level = from + value x (to - from)` over the function's travel (0..100 for every token, KB-16: `GetFader` is 0..100). Qualified **separately per function** (`FADER_FUNCTIONS`): Master and Temp from KB-16; a Temp fader above 0 is a playback start and its positions are stateful (never superseded) | Rate, Speed, X/XA/XB, CrossFade and Time until qualified (their travel, neutral position and endpoints are recorded in the table and named in the refusal), an empty fader function, a value outside 0..1 |
+| `touch` down / up | `fader` | a hold (busy, the target owned until the release) that moves nothing, exactly as a strip touch | — |
+| `relative` | `fader` | — | always: a playback fader is positioned, not stepped |
+| any | `encoder` | — | always: executor encoders are not qualified |
+| `button` | `fader` | — | a fader has no button |
+
+`executorOperation(kind, resolved, value?)` is exported: it returns the plan (`address`, `entry`, for faders `keyword`,
+`from`, `to`, `neutral` and `level`) or the refusal reason, and is what `supports()` and `apply()` share. `KEY_FUNCTIONS`
+(`temp`, `flash`, `toggle`, `top`, `go+` qualified with their evidence; `momentary` for Temp and Flash) and
+`FADER_FUNCTIONS` (`master` neutral 100, `temp` neutral 0 stateful, `rate`/`speed` neutral 50, the crossfades and `time`
+stateful or unqualified) are exported copies; the backend's `capabilities` carry `executorElements` and the qualified
+names (`keyFunctions`, `faderFunctions`), `status().executorFunctions` the same. `lastApplied.result` for a key carries
+`command, down, executor, page, pool, assigned, keyFunction, momentary, frozen?, forced?, reason?`; for a fader
+`command, value, level, from, to, neutral, faderFunction, token, stateful?, takeover?`. A Press the console refused
+leaves the hold owned so its release still issues the Unpress (harmless when nothing is pressed; a stuck press is not).
+
+**Assignment changed while held.** Press/Unpress address the executor, not the object, so an Unpress after the executor
+was reassigned or emptied would operate the replacement. Before a frozen executor-key release is applied (the release,
+a forced end, `recover()`), the instance compares the record with the binding's current view of that (page, executor)
+in the record's own mode (a page-bound record against the item bound to its page; a following record against the
+following item while it still reads that page): a different assigned object or an emptied executor makes the release
+**unresolved** (`assignment-changed`: the record keeps the original object, `nowAssigned`/`nowEmpty` say what replaced
+it, nothing is issued, `status().unresolved` lists it, `lastApplied.reassigned = true`) instead of releasing the
+replacement. `recover()` re-attempts it and applies it only once the binding shows the original object on that executor
+again (`attempts` counts the tries); the operator ends the original playback by hand otherwise (`Off <object>`). A
+binding that cannot say (no snapshot, the item not in the binding, a following item that now reads another page after
+a console page change) does not block the release: a disconnect while Temp is held issues its Unpress.
+
+**Bridge 0.18.0.** No new op: `control=console` serves executors through the 0.5.0 backend; `control.status` shows the
+qualified functions under `backendStatus.executorFunctions` and the assignment-changed records under `unresolved`;
+`control recover` re-attempts them. Harness: `test/lua/control_admission_test.lua` (243; 26 new: the operation plans
+and every refusal, Press/Unpress through a stub `Cmd`, a refused Press keeping the hold, unqualified and empty key
+functions, the encoder element, the reassignment and emptied-executor records, recover with and without the object
+back, a following record on another page, a raised Unpress recovered, the fader touch hold, Master supersession,
+Temp's stateful pair, the page-bound address, the status lists), the bridge harness (495; the console capabilities)
+and `test/kb22-probe.test.ts` (4). Live: `node scripts/kb22-probe.mjs run` (pending; the record will be
+`docs/probes/kb-22-executors-macos-2.5.1.md`).
 
 ## Vendoring into another plugin (mtpnxk)
 

@@ -458,8 +458,8 @@ page display, follow/independent as an operator choice, status and indicators) a
 - **Harness:** `test/lua/feedback_context_test.lua` (148; 28 new), `test/lua/control_admission_test.lua` (217; 23
   new), the bridge harness (495; 9 new), `test/kb21-probe.test.ts` (4).
 
-**Limitations:** executor **operations** (press/release/fader through the console) are KB-22: the console backend still
-refuses executor elements `unsupported`, and the live holds ran on the fake backend; the coverage rule assumes
+**Limitations:** executor **operations** (press/release/fader through the console) were KB-22 (below; the console backend
+refused executor elements `unsupported` at the time, and the KB-21 live holds ran on the fake backend); the coverage rule assumes
 `Width` spans the following numbers of the same row (one width-2 case live; the console's `Set` command forms did not
 change the width, only the property write did); right after a console page change a following binding claims no
 generation until its executors were re-read (motion is `binding-unknown` for that moment);
@@ -488,6 +488,42 @@ the generation (KB-17) but no pool is addressed explicitly in commands.
 - Revalidate assigned-object identity before new input. If an assignment changes while held, retain the original release record and enter recovery rather than operating the replacement.
 - Test that page/bank navigation neither stops existing playbacks nor starts newly visible ones.
 - Map dedicated Go, Pause, Select, and other device buttons only through explicit, documented profiles. Ambiguous functions remain unassigned.
+
+### KB-22 results (console half, 2026-10-10; surface half in mtpnxk)
+
+`gma3_mcp_control` 0.5.0 and bridge 0.18.0 ([modules](docs/modules.md#executor-operations-on-the-console-backend-gma3_mcp_control-050-kb-22),
+[reference](docs/reference.md#continuous-control-plugin-v0140-kb-18)); the feedback module is unchanged (0.5.0). No
+TypeScript changed. The live record is pending (`node scripts/kb22-probe.mjs run` on the console backend of a disposable
+show; `docs/probes/kb-22-executors-macos-2.5.1.md`). Pickup, pickup display and reset, the strip-button-to-element
+profiles and the dedicated Go/Pause/Select keys are the surface service's half (mtpnxk `KEYBOARD.md` "KB-22"); what the
+console half serves:
+
+- **Configured button action, separate down/up:** a key down is `Press Page <p>.<e>`, the release `Unpress Page <p>.<e>`;
+  the console runs the executor's own KeyPress/KeyUnpress (KB-16). Nothing is translated into Go+. Only the key
+  functions qualified live are served (Temp, Flash, Toggle, Top, Go+); any other configured function, or an empty one,
+  is a clear `unsupported` refusal naming it. Empty, covered, reserved and missing-page executors stay `target-unavailable`.
+- **Momentary functions and recovery:** Temp and Flash are active exactly while held; the release, a forced end (lease,
+  gesture bound, dispose, backend switch), a surface disconnect, `recover()` and an adopted record all issue the Unpress
+  of the executor the down resolved (frozen, KB-21).
+- **Configured fader function, qualified separately:** a position is `Fader<Function> Page <p>.<e> At <level>` scaled
+  over the function's travel; Master and Temp are qualified (KB-16), Rate, Speed, X/XA/XB, CrossFade and Time are
+  refused `unsupported` until a live run qualifies them, with their recorded travel, neutral position and endpoints in
+  the refusal. A Temp fader above 0 is a playback start; its positions are stateful (never superseded). The configured
+  function's level is on the binding for the surface's pickup; the console half never initialises anything from a
+  device report.
+- **Explicit elements:** `key` and `fader` are served, an executor `encoder` is refused, a button on a fader and
+  relative motion on a fader are refused: no control element is invented on an executor.
+- **Assignment changed while held:** a release whose executor was reassigned or emptied under the hold is not issued on
+  the replacement; it becomes an `assignment-changed` record with the original object, re-attempted by `recover()` and
+  applied once the original object is back, otherwise ended by the operator (`Off <object>`).
+- **Page navigation:** the probe checks that `Page n` neither stops a running playback nor starts the newly visible ones
+  (KB-16 observed it; re-run live here).
+- **Harness:** `test/lua/control_admission_test.lua` (243; 26 new), the bridge harness (495), `test/kb22-probe.test.ts` (4).
+
+**Limitations:** Rate, Speed and the crossfade fader functions are not qualified (no executor with them was available
+to the probe; the table records their ranges and neutral positions for the surface, the backend refuses them);
+`Press`/`Unpress` address the executor, so an original object cannot be released after a reassignment except by
+recovery or by hand; executor encoders are not served; no pool is addressed in commands (the current data pool).
 
 ## KB-23 — Parameter colors and playback feedback
 

@@ -329,7 +329,13 @@ by (page, executor) against the binding: a page-bound executor needs `page`, a f
 number, a missing page, an empty, reserved or Quickey executor are `target-unavailable` with the reason; the resolved
 target (and `lastApplied.target`) names pool and page (`exec<pool>/<page>.<n>.<element>|<assigned>|<function>`); a held
 button's or touch's target is **frozen** until its release (the release, a forced end and the unresolved record carry it,
-whatever a bank or page change mapped to the control since; `control.status` lists it under `gestureList[].frozen`). `control.open {leaseMs?, label?}` / `control.renew` /
+whatever a bank or page change mapped to the control since; `control.status` lists it under `gestureList[].frozen`).
+Since v0.18.0 (KB-22, control 0.5.0) the console backend serves executor **keys** as `Press`/`Unpress Page <p>.<e>` (the
+configured button function; only the qualified functions Temp, Flash, Toggle, Top, Go+, others `unsupported`) and
+executor **faders** as `Fader<Function> Page <p>.<e> At <level>` for the configured fader function (Master and Temp
+qualified; Rate, Speed, X, CrossFade, Time `unsupported` until qualified); a fader touch is a hold; a release whose
+executor was reassigned or emptied while held is kept as an `assignment-changed` record under `control.status`
+`unresolved` (nothing issued on the replacement) until `control.recover` finds the original object back. `control.open {leaseMs?, label?}` / `control.renew` /
 `control.close` are this connection's session (`conn-<id>`, opened on demand by `control.submit`). `control.submit
 {events: [...]}` (at most 32 per request, or `event` for one) admits each event in order and reports every outcome in
 place: `{accepted, queued, coalesced?, superseded?, lost, target, generation}` or `{refused: code, message, ...}` with

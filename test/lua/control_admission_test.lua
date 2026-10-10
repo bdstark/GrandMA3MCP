@@ -27,7 +27,7 @@ local CTL = assert(load(src, "=gma3_mcp_control.lua", "t", env))("test_plugin", 
 -------------------------------------------------------------------------------
 -- Loading contract
 -------------------------------------------------------------------------------
-check("module loads without console API", type(CTL) == "table" and CTL.VERSION == "0.4.0" and CTL.API_VERSION == 1 and type(CTL.new) == "function")
+check("module loads without console API", type(CTL) == "table" and CTL.VERSION == "0.5.0" and CTL.API_VERSION == 1 and type(CTL.new) == "function")
 check("module table is read-only", not pcall(function() CTL.x = 1 end) and CTL.x == nil)
 check("module registers in the signal table", signals.__gma3_mcp_modules.gma3_mcp_control == CTL)
 check("publishes nothing globally", package.loaded.gma3_mcp_control == nil and _G.gma3_mcp_control == nil)
@@ -602,16 +602,16 @@ do
     r1:find("readout Dec8") and r2:find("resolution Native") and r3:find("layer Relative") and r4:find("Gobo1 Shake") and r5:find("only encoder slots") and r6:find("quote"), J({ r1, r2, r3, r4, r5, r6 }))
   -- Admission: what the backend does not serve is refused before a gesture or queue entry exists.
   local inst, b = freshConsole()
-  check("kb19: the backend declares its capabilities and calibration", b.name == "console" and b.capabilities.relative == true and b.capabilities.button == false and b.capabilities.targets.slot == true and b.calibration.fineDivisor == 10 and b.calibration.note:find("one physical detent"))
+  check("kb19: the backend declares its capabilities and calibration", b.name == "console" and b.capabilities.relative == true and b.capabilities.button == true and b.capabilities.targets.slot == true and b.calibration.fineDivisor == 10 and b.calibration.note:find("one physical detent"))
   local okB, eB = inst:submit("s", 1, button(1, 1, true))
   check("kb19: an encoder press is refused unsupported at admission (calculator/open/select not qualified) and owns nothing", okB == nil and eB.code == "unsupported" and eB.reason:find("not qualified") and eB.backend == "console" and inst:status(1).sessions.s.gestures == 0 and inst:admission(1) == nil, J(eB))
-  local okT, eT = inst:submit("s", 1, touch(1, 201, true))
-  local okA, eA = inst:submit("s", 1, abs(2, 201, 0.5))
-  check("kb19: touches and positions are refused unsupported (KB-20/22)", okT == nil and eT.code == "unsupported" and okA == nil and eA.code == "unsupported" and eA.message:find("absolute on exec[^/]*/1%.201%.fader"), J({ eT, eA }))
+  local okT, eT = inst:submit("s", 1, { type = "relative", device = "mtouch", control = "Strip201", seq = 1, generation = binding.generation, target = { executor = 201, element = "fader" }, delta = 1, gesture = 1 })
+  local okA, eA = inst:submit("s", 1, abs(2, 202, 0.5))
+  check("kb19/22: relative motion on an executor fader and a position on an unqualified fader function (X) are refused unsupported", okT == nil and eT.code == "unsupported" and eT.reason:find("positioned by absolute") and okA == nil and eA.code == "unsupported" and eA.reason:find("X is not qualified yet") and eA.message:find("absolute on exec[^/]*/1%.202%.fader"), J({ eT, eA }))
   binding.executors[1].value.functions.encoder = "Master"
   local okE, eE = inst:submit("s", 1, { type = "relative", device = "nxk", control = "Enc201", seq = 3, generation = binding.generation, target = { executor = 201, element = "encoder" }, delta = 1, gesture = 1 })
   binding.executors[1].value.functions.encoder = nil
-  check("kb19: relative motion on an executor encoder element is refused unsupported (KB-21/22)", okE == nil and eE.code == "unsupported" and eE.reason:find("executor elements"), J(eE))
+  check("kb19/22: relative motion on an executor encoder element is refused unsupported (not qualified)", okE == nil and eE.code == "unsupported" and eE.reason:find("executor encoders"), J(eE))
   local okF, eF = inst:submit("s", 1, rel(2, 2, 1))  -- slot 2: Pan, Fine, mixed availability
   check("kb19: a mixed-availability slot with a calibrated resolution is admitted (the console leaves fixtures without the attribute untouched)", okF and okF.accepted and okF.mixed == true, J(eF))
   binding.slots.value.slots[3].availability = "available"; binding.slots.value.slots[3].channelFunction = "Gobo1 Shake"
@@ -736,10 +736,10 @@ do
     rM:find("different physical ranges") and rF:find("PhysicalFrom/PhysicalTo") and rD:find("readout Dec8") and rV:find("0..1") and rX:find("only encoder slots"), J({ rM, rF, rD, rV, rX }))
   -- Admission: touches and positions are served on slots, still refused on executors; capabilities say so.
   local inst, b = freshConsole()
-  check("kb20: the console backend declares touch and absolute on slots, no presses, no executors", b.capabilities.touch == true and b.capabilities.absolute == true and b.capabilities.button == false and b.capabilities.targets.executor == false and b.description:find("KB%-20"))
-  local okTX, eTX = inst:submit("s", 1, touch(1, 201, true))
-  local okAX, eAX = inst:submit("s", 1, abs(2, 201, 0.5))
-  check("kb20: a touch or a position on an executor fader stays unsupported (KB-21/22)", okTX == nil and eTX.code == "unsupported" and eTX.reason:find("executor faders") and okAX == nil and eAX.code == "unsupported", J({ eTX, eAX }))
+  check("kb20: the console backend declares touch and absolute on slots, no encoder presses; executors since KB-22", b.capabilities.touch == true and b.capabilities.absolute == true and b.capabilities.button == true and b.capabilities.targets.executor == true and b.capabilities.executorElements.encoder == false and b.description:find("KB%-20"))
+  local okTX, eTX = inst:submit("s", 1, { type = "relative", device = "mtouch", control = "Strip201", seq = 1, generation = binding.generation, target = { executor = 201, element = "fader" }, delta = 1, gesture = 1 })
+  local okAX, eAX = inst:submit("s", 1, abs(2, 202, 0.5))
+  check("kb20/22: relative motion on an executor fader and a position on an unqualified fader function stay unsupported", okTX == nil and eTX.code == "unsupported" and okAX == nil and eAX.code == "unsupported" and eAX.reason:find("not qualified yet"), J({ eTX, eAX }))
   -- A strip touch is a hold: busy, owned, applied as a noop, nothing issued.
   local okT, eT = inst:submit("s", 1, stouch(1, 1, true))
   local adm = inst:admission(1.001)
@@ -846,7 +846,7 @@ do
   local st = inst:status(1.5)
   check("status: backend, capabilities, session view, bounded event log", st.backend == "fake" and st.capabilities.relative == true and st.sessions.s.label == "surface" and st.sessions.s.queued == 5 and #st.events == 3 and st.events[3].refused == "duplicate", J(st.events))
   check("status is read-only (no service side effects)", st.serviced == 0 and inst:status().sessions.s.queued == 5)
-  check("limitations and lists are published", #CTL.LIMITATIONS == 4 and #CTL.EVENT_TYPES == 4 and CTL.STATEFUL_FUNCTIONS.x == true and CTL.backends.fake == "fake" and CTL.backends.console == "console" and CTL.CALIBRATION.readouts.Percent == 1)
+  check("limitations and lists are published", #CTL.LIMITATIONS == 5 and #CTL.EVENT_TYPES == 4 and CTL.STATEFUL_FUNCTIONS.x == true and CTL.backends.fake == "fake" and CTL.backends.console == "console" and CTL.CALIBRATION.readouts.Percent == 1)
   check("resolveTarget is exported for consumers", CTL.resolveTarget(binding, { slot = 1 }).key:find("^slot1") ~= nil)
 end
 
@@ -953,6 +953,148 @@ do
   binding.executors[1].value = saved2; binding.generation = 1
   local rc8 = i8:recover(7.1)
   check("review: an adopted record releases the executor it was pressed on (Sequence 77 on page 4) although the binding now maps 201 to Sequence 1 on page 1", ad.adopted == 1 and #rc8.resolved == 1 and b8:last().resolved.assigned == "Sequence 77" and b8:last().resolved.pageNo == 4 and b8:last().frozen == true, J(b8:last()))
+end
+
+-------------------------------------------------------------------------------
+-- KB-22: executor operations on the console backend (Press/Unpress Page P.E, Fader<Fn> Page P.E At)
+-------------------------------------------------------------------------------
+do
+  local cmds, feedback, raise = {}, "OK", nil
+  local deps = { cmd = function(text) cmds[#cmds + 1] = text; if raise then local r = raise; raise = nil; error(r, 0) end; return feedback end }
+  local function freshConsole()
+    local inst = CTL.new({ owner = "test", config = { requireBindingRevision = false }, deps = { binding = function() return binding end, busy = function() return busyOwner end } }):init()
+    local b = CTL.consoleBackend(deps)
+    inst:enableInput(b)
+    inst:openSession({ id = "s" }, 1)
+    cmds = {}; feedback = "OK"; raise = nil
+    return inst, b
+  end
+  local function key(seq, exec, down, extra)
+    local e = { type = "button", device = "mtouch", control = "PFA" .. tostring(exec), seq = seq, generation = binding.generation, target = { executor = exec, element = "key" }, down = down }
+    for k, v in pairs(extra or {}) do e[k] = v end
+    return e
+  end
+  -- The plan
+  local ex201 = CTL.resolveTarget(binding, { executor = 201, element = "key" })
+  local plan = CTL.executorOperation("button", ex201)
+  check("kb22: a key on a qualified function (Go+) plans Press/Unpress Page <p>.<e> and carries the configured release function", plan and plan.address == "Page 1.201" and plan.entry.name == "Go+" and plan.entry.momentary == false and ex201.keyUnpress == nil, J(plan))
+  local fx = CTL.resolveTarget(binding, { executor = 201, element = "fader" })
+  local fplan = CTL.executorOperation("absolute", fx, 0.25)
+  check("kb22: a Master fader plans FaderMaster Page <p>.<e> At over 0..100 with neutral 100", fplan and fplan.keyword == "FaderMaster" and fplan.level == 25 and fplan.from == 0 and fplan.to == 100 and fplan.neutral == 100, J(fplan))
+  local _, rX = CTL.executorOperation("absolute", CTL.resolveTarget(binding, { executor = 202, element = "fader" }), 0.5)
+  local _, rR = CTL.executorOperation("absolute", { kind = "executor", executor = 1, pageNo = 1, element = "fader", ["function"] = "Rate" }, 0.5)
+  local _, rU = CTL.executorOperation("absolute", { kind = "executor", executor = 1, pageNo = 1, element = "fader", ["function"] = "Bogus" }, 0.5)
+  local _, rN = CTL.executorOperation("absolute", { kind = "executor", executor = 1, pageNo = 1, element = "fader", ["function"] = "" }, 0.5)
+  local _, rK = CTL.executorOperation("button", { kind = "executor", executor = 1, pageNo = 1, element = "key", ["function"] = "LearnSpeed" })
+  local _, rE = CTL.executorOperation("button", { kind = "executor", executor = 1, pageNo = 1, element = "key", ["function"] = "" })
+  local _, rB = CTL.executorOperation("button", { kind = "executor", executor = 1, pageNo = 1, element = "fader", ["function"] = "Master" })
+  local _, rP = CTL.executorOperation("button", { kind = "executor", executor = 1, element = "key", ["function"] = "Temp" })
+  local _, rV = CTL.executorOperation("absolute", fx, 1.5)
+  check("kb22: X, Rate (unqualified, with their recorded range and neutral), an unknown or empty fader function, LearnSpeed, an empty key function, a button on a fader, a target without a page and a value outside 0..1 are refused with the reason",
+    rX:find("X is not qualified yet") and rR:find("Rate is not qualified yet") and rR:find("neutral 50") and rU:find("'Bogus' is not qualified") and rN:find("no configured fader function") and rK:find("LearnSpeed is not qualified yet")
+    and rE:find("no configured key function") and rB:find("not an operation of an executor fader") and rP:find("no page number") and rV:find("0..1"), J({ rX, rR, rU, rN, rK, rE, rB, rP, rV }))
+  local tplan = CTL.executorOperation("touch", fx)
+  check("kb22: a fader touch is a hold (no command); the qualification tables are exported with their evidence", tplan and tplan.touch == true and CTL.KEY_FUNCTIONS.temp.momentary == true and CTL.KEY_FUNCTIONS.flash.qualified and CTL.FADER_FUNCTIONS.master.qualified and CTL.FADER_FUNCTIONS.rate.qualified == false and CTL.FADER_FUNCTIONS.temp.stateful == true)
+  -- Press / release through the backend
+  local inst, b = freshConsole()
+  check("kb22: the console backend declares executor keys and faders, not encoders, and lists the qualified functions", b.capabilities.targets.executor == true and b.capabilities.executorElements.key == true and b.capabilities.executorElements.encoder == false and table.concat(b.capabilities.keyFunctions, ",") == "Flash,Go+,Temp,Toggle,Top" and table.concat(b.capabilities.faderFunctions, ",") == "Master,Temp")
+  local okD, eD = inst:submit("s", 1, key(1, 201, true))
+  local adm = inst:admission(1.001)
+  check("kb22: a key down on executor 201 is admitted as a hold; the instance is busy with it", okD and okD.accepted and adm and adm.reason == "button-down" and adm.target.executor == 201, J(adm or eD))
+  local sv = inst:service(1.01)
+  local la = inst:status(1.02).lastApplied
+  check("kb22: the down is Press Page 1.201 (the console runs the configured Go+); the record names the key function", sv.applied == 1 and cmds[1] == "Press Page 1.201" and la.outcome == "applied" and la.result.keyFunction == "Go+" and la.result.command == "Press Page 1.201" and b.counters.applied == 1, J({ cmds, la }))
+  inst:submit("s", 1.03, key(2, 201, false))
+  sv = inst:service(1.04)
+  check("kb22: the release is Unpress Page 1.201 and the instance is idle again", sv.applied == 1 and cmds[2] == "Unpress Page 1.201" and inst:admission(1.05) == nil and inst:status(1.05).lastApplied.down == false, J(cmds))
+  -- A refused Press keeps the hold owned; its release still issues the Unpress.
+  cmds = {}; feedback = "Error: no"
+  inst:submit("s", 1.1, key(3, 201, true))
+  sv = inst:service(1.11)
+  feedback = "OK"
+  check("kb22: a Press the console refused is backend-refused and the hold stays owned", sv.dropped.refused == 1 and inst:status(1.12).lastApplied.outcome == "refused" and inst:admission(1.12) ~= nil and b.counters.refused == 1, J(sv))
+  inst:submit("s", 1.13, key(4, 201, false))
+  sv = inst:service(1.14)
+  check("kb22: its release still issues Unpress Page 1.201 (harmless when not pressed, never a stuck press)", sv.applied == 1 and cmds[2] == "Unpress Page 1.201" and inst:admission(1.15) == nil, J(cmds))
+  -- An unqualified key function is refused at admission; nothing pressed, nothing owned.
+  binding.executors[1].value.functions.keyPress = "LearnSpeed"
+  local okL, eL = inst:submit("s", 1.2, key(5, 201, true))
+  binding.executors[1].value.functions.keyPress = "Go+"
+  check("kb22: a key whose configured function is not qualified (LearnSpeed) is refused unsupported at admission and owns nothing", okL == nil and eL.code == "unsupported" and eL.reason:find("LearnSpeed") and inst:admission(1.21) == nil and inst:status(1.21).sessions.s.gestures == 0, J(eL))
+  binding.executors[1].value.functions.keyPress = ""
+  local okN, eN = inst:submit("s", 1.22, key(6, 201, true))
+  binding.executors[1].value.functions.keyPress = "Go+"
+  check("kb22: an executor with an empty KeyPress is refused unsupported (no configured key function)", okN == nil and eN.code == "unsupported" and eN.reason:find("no configured key function"), J(eN))
+  binding.executors[1].value.functions.encoder = "Master"
+  local okEn, eEn = inst:submit("s", 1.23, { type = "button", device = "nxk", control = "Enc201", seq = 7, generation = binding.generation, target = { executor = 201, element = "encoder" }, down = true })
+  binding.executors[1].value.functions.encoder = nil
+  check("kb22: an executor encoder element stays unsupported", okEn == nil and eEn.code == "unsupported" and eEn.reason:find("executor encoders"), J(eEn))
+  -- Momentary function + reassignment while held: the release is NOT issued on the replacement; it is an
+  -- assignment-changed record until the original object is back (recover) - the acceptance's recovery rule.
+  cmds = {}
+  binding.executors[1].value.functions.keyPress = "Temp"
+  inst:submit("s", 1.3, key(8, 201, true))
+  inst:service(1.31)
+  binding.executors[1].value.assigned = { addr = "Sequence 99", class = "Sequence" }; binding.generation = binding.generation + 1
+  local r2 = inst:submit("s", 1.32, key(9, 201, false))
+  sv = inst:service(1.33)
+  st = inst:status(1.34)
+  check("kb22: a Temp held across a reassignment (Sequence 1 -> 99) is not released on the replacement: no Unpress, an assignment-changed record naming both objects, the instance idle", cmds[1] == "Press Page 1.201" and #cmds == 1 and r2.accepted and #sv.unresolved == 1 and sv.unresolved[1].reassigned == true and sv.unresolved[1].resolved.assigned == "Sequence 1" and sv.unresolved[1].nowAssigned == "Sequence 99" and st.lastApplied.outcome == "unresolved" and st.lastApplied.reassigned == true and #st.unresolved == 1 and inst:admission(1.34) == nil, J({ cmds, sv.unresolved, st.lastApplied }))
+  local rec0 = inst:recover(1.35)
+  check("kb22: recover() keeps it unresolved while the replacement is still assigned (nothing issued)", #rec0.unresolved == 1 and #rec0.resolved == 0 and #cmds == 1 and rec0.unresolved[1].attempts == 2, J(rec0))
+  binding.executors[1].value.assigned = { addr = "Sequence 1", class = "Sequence" }
+  local rec1 = inst:recover(1.36)
+  binding.executors[1].value.functions.keyPress = "Go+"
+  check("kb22: once Sequence 1 is back on 201, recover() issues Unpress Page 1.201 and resolves the record", #rec1.resolved == 1 and cmds[2] == "Unpress Page 1.201" and #inst:status(1.37).unresolved == 0, J({ rec1, cmds }))
+  -- An emptied executor is the same rule; a following record on another page cannot be judged and is released.
+  cmds = {}
+  inst:submit("s", 1.4, key(10, 201, true)); inst:service(1.41)
+  local savedV = binding.executors[1].value
+  binding.executors[1].value = { executor = 201, page = { no = 1, name = "Page 1" }, pool = { name = "Default", no = 1 }, mode = "current", empty = true, playbackTarget = false }
+  local outE = inst:closeSession("s", 1.42, "disconnect")
+  binding.executors[1].value = savedV
+  check("kb22: a disconnect while the executor was emptied keeps the release as an assignment-changed record (not issued)", #outE.unresolved == 1 and outE.unresolved[1].nowEmpty == true and #cmds == 1, J({ outE, cmds }))
+  check("kb22: recover() with the object back issues the Unpress", #inst:recover(1.43).resolved == 1 and cmds[2] == "Unpress Page 1.201", J(cmds))
+  inst:openSession({ id = "s" }, 1.44)
+  cmds = {}
+  inst:submit("s", 1.45, key(11, 201, true)); inst:service(1.46)
+  binding.executors[1].value = { executor = 201, page = { no = 2, name = "Page 2" }, pool = { name = "Default", no = 1 }, mode = "current", empty = false, playbackTarget = true, assigned = { addr = "Sequence 77", class = "Sequence" }, functions = { keyPress = "Go+", fader = "Master" } }
+  inst:submit("s", 1.47, key(12, 201, false)); sv = inst:service(1.48)
+  binding.executors[1].value = savedV
+  check("kb22: a following record whose item now reads another page (a console page change) is released on its frozen page: Unpress Page 1.201", sv.applied == 1 and cmds[2] == "Unpress Page 1.201" and #sv.unresolved == 0, J({ cmds, sv }))
+  -- A forced end (lease expiry) and recover() issue the Unpress too; a raise is unresolved until recover.
+  cmds = {}
+  inst:submit("s", 1.5, key(13, 201, true))
+  inst:service(1.51)
+  raise = "Cmd exploded"
+  local out = inst:closeSession("s", 1.52, "disconnect")
+  check("kb22: a forced end whose Unpress raised is unresolved with the frozen executor", #out.unresolved == 1 and out.unresolved[1].resolved.executor == 201 and out.unresolved[1].frozen == true and cmds[2] == "Unpress Page 1.201" and b.counters.raised == 1, J(out))
+  local rec = inst:recover(1.6)
+  check("kb22: recover() re-issues Unpress Page 1.201 and resolves it", #rec.resolved == 1 and cmds[3] == "Unpress Page 1.201" and #inst:status(1.6).unresolved == 0, J({ rec, cmds }))
+  -- Faders: touch hold (noop), Master placed, Temp stateful (never superseded), X refused.
+  inst, b = freshConsole()
+  local okT = inst:submit("s", 2, touch(1, 201, true))
+  sv = inst:service(2.01)
+  check("kb22: a touch on a Master fader is a hold applied as a noop (no command) and the instance is busy", okT and okT.accepted and sv.applied == 1 and #cmds == 0 and b.counters.noop == 1 and inst:admission(2.02).reason == "touch-down" and inst:status(2.02).lastApplied.result.note:find("executor's fader"), J(sv))
+  inst:submit("s", 2.03, abs(2, 201, 0.3))
+  inst:submit("s", 2.03, abs(3, 201, 0.5))
+  sv = inst:service(2.04)
+  la = inst:status(2.05).lastApplied
+  check("kb22: two positions on a Master fader supersede (stateless) and place FaderMaster Page 1.201 At 50; the record carries the function, travel and neutral", sv.applied == 1 and cmds[1] == "FaderMaster Page 1.201 At 50" and la.result.faderFunction == "Master" and la.result.level == 50 and la.result.neutral == 100 and la.result.stateful == nil, J({ cmds, la }))
+  inst:submit("s", 2.06, touch(4, 201, false))
+  inst:service(2.07)
+  cmds = {}
+  binding.executors[2].value.functions.fader = "Temp"; binding.executors[2].value.level = { token = "FaderTemp", value = 0 }
+  inst:submit("s", 2.1, abs(5, 202, 0.6))
+  inst:submit("s", 2.1, abs(6, 202, 0))
+  sv = inst:service(2.11)
+  binding.executors[2].value.functions.fader = "X"; binding.executors[2].value.level = { token = "FaderX", value = 0 }
+  check("kb22: positions on a Temp fader are stateful (both kept, in order): FaderTemp Page 1.202 At 60 then At 0", sv.applied == 2 and cmds[1] == "FaderTemp Page 1.202 At 60" and cmds[2] == "FaderTemp Page 1.202 At 0" and b.counters.applied == 3, J(cmds))
+  local okP, eP = inst:submit("s", 2.2, abs(7, 201, 0.5, { page = nil }))
+  local okQ, eQ = inst:submit("s", 2.2, { type = "absolute", device = "mtouch", control = "Strip211", seq = 8, generation = binding.generation, target = { executor = 211, element = "fader", page = 2 }, value = 0.5, gesture = 1 })
+  sv = inst:service(2.21)
+  check("kb22: a page-bound target is addressed on its page: FaderMaster Page 2.211 At 50", okP and okQ and cmds[3] == "FaderMaster Page 1.201 At 50" and cmds[4] == "FaderMaster Page 2.211 At 50", J({ eP or okP, eQ or okQ, cmds }))
+  check("kb22: the backend status lists the qualified functions", b:status().executorFunctions.keys[1] == "Flash" and b:status().executorFunctions.faders[2] == "Temp")
 end
 
 print(string.format("%d passed, %d failed", passes, failures))
