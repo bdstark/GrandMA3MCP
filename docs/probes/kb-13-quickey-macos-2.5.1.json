@@ -1,6 +1,6 @@
 {
   "probe": "kb-13-run",
-  "date": "2026-10-10T03:01:19.717Z",
+  "date": "2026-10-10T03:17:58.466Z",
   "bridge": {
     "version": "0.10.0",
     "host": "127.0.0.1",
@@ -37,7 +37,7 @@
     {
       "name": "deferred macro",
       "pass": null,
-      "detail": "Macro 116 created as \"MCP kb13 deferred\" (deleted at the end of the run)"
+      "detail": "Macro 116 created as \"MCP kb13 deferred\" with 0 line(s); verified by contents before every rewrite and deleted at the end of the run"
     },
     {
       "name": "restart macro",
@@ -122,7 +122,7 @@
     {
       "name": "console shows 5 on the command line",
       "pass": true,
-      "detail": "cmdtext=\"5\" after 16 ms"
+      "detail": "cmdtext=\"5\" after 12 ms"
     },
     {
       "name": "executor 180 now holds the NUM5 Quickey (assignment stays after the release)",
@@ -166,12 +166,12 @@
     {
       "name": "MASTATE true while MA1 is held (feedback.read during the interaction)",
       "pass": true,
-      "detail": "maState=true after 18 ms"
+      "detail": "maState=true after 31 ms"
     },
     {
       "name": "a repeated down report of MA1 is the same record (duplicate), nothing re-dispatched",
       "pass": true,
-      "detail": "h15"
+      "detail": "h3"
     },
     {
       "name": "THRU next to the held MA1 is refused (chord not qualified for THRU), nothing issued",
@@ -184,11 +184,11 @@
       "detail": {
         "state": "released",
         "reason": "client-release",
-        "at": 1791601242.5253,
-        "hold": "h15",
+        "at": 1791602241.7682,
+        "hold": "h3",
         "outcome": "dispatched",
         "logical": "MA1",
-        "session": "conn-327",
+        "session": "conn-333",
         "verified": false,
         "ok": true,
         "tupleKey": "quickkey:#1"
@@ -229,7 +229,7 @@
     {
       "name": "console shows Record (MA1 + STORE through the bank)",
       "pass": true,
-      "detail": "cmdtext=\"Record \" after 19 ms"
+      "detail": "cmdtext=\"Record \" after 33 ms"
     },
     {
       "name": "MASTATE false after the chord",
@@ -316,9 +316,9 @@
       "name": "executor reassigned mid-hold: the release is refused, nothing issued, the record is unresolved",
       "pass": true,
       "detail": {
-        "since": 1791601247.2835,
+        "since": 1791602246.4567,
         "reason": "release refused by the backend: Page 1.180 holds the bank's THRU, not the recorded Quickey 900 (MA1); the key may still be down on the console: restore the assignment and recover (no direct Unpress Quickey is issued)",
-        "lastAttempt": 1791601247.2835
+        "lastAttempt": 1791602246.4567
       }
     },
     {
@@ -349,11 +349,11 @@
       "detail": {
         "state": "released",
         "reason": "recover",
-        "at": 1791601255.0273,
-        "hold": "h25",
+        "at": 1791602254.2135,
+        "hold": "h13",
         "outcome": "dispatched",
         "logical": "MA1",
-        "session": "conn-327",
+        "session": "conn-333",
         "verified": false,
         "ok": true,
         "tupleKey": "quickkey:#1"
@@ -512,7 +512,7 @@
       }
     },
     {
-      "name": "the deferred macro is removed when this run created it, left alone otherwise",
+      "name": "the deferred macro this run created is verified by contents and removed (an edited one would be preserved)",
       "pass": true,
       "detail": {
         "deleted": true

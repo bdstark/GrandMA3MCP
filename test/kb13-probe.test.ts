@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import net from "node:net";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 /**
  * scripts/kb13-probe.mjs presses REAL console keys through the owned Quickey bank and fires show macros, so its
@@ -124,7 +125,7 @@ test("refuses when the console is not idle (command line or MASTATE)", async () 
 test("refuses an occupied deferred macro slot before any input op, and overlapping macro slots", async () => {
   const b = await startFakeBridge((op, args) => {
     if (op === "ping") return ping(idle);
-    if (op === "lua") return { values: [/Macro 116/.test(args.code) ? "Operator thing" : /MAState/.test(args.code) ? false : ""] };
+    if (op === "lua") return { values: [/Macro 116/.test(args.code) ? { name: "Operator thing", lines: [{ cmd: "Go+ Sequence 5", wait: "Follow" }] } : /MAState/.test(args.code) ? false : ""] };
     if (op.startsWith("input.")) dispatched.push(op);
     throw new Error("unexpected " + op);
   });
@@ -137,6 +138,38 @@ test("refuses an occupied deferred macro slot before any input op, and overlappi
   const r2 = await run(["run", "--deferred-macro", "115"], { GMA3_BRIDGE_PORT: "1" });
   assert.equal(r2.status, 2);
   assert.match(r2.stderr, /three distinct slots/);
+});
+
+test("refuses a slot holding a same-named macro from an earlier run (only an empty slot is claimed)", async () => {
+  const b = await startFakeBridge((op, args) => {
+    if (op === "ping") return ping(idle);
+    if (op === "lua") return { values: [/Macro 116/.test(args.code) ? { name: "MCP kb13 deferred", lines: [{ cmd: "Assign Quickey 955 At Page 1.180", wait: "3.0" }] } : /MAState/.test(args.code) ? false : ""] };
+    if (op.startsWith("input.")) dispatched.push(op);
+    throw new Error("unexpected " + op);
+  });
+  try {
+    const r = await run(["run"], { GMA3_BRIDGE_PORT: String(b.port) });
+    assert.equal(r.status, 2, r.stdout + r.stderr);
+    assert.match(r.stderr, /Macro 116 is occupied by "MCP kb13 deferred"/);
+    assert.match(r.stderr, /not reused/);
+    assert.equal(dispatched.length, 0, "no input op was sent");
+  } finally { b.close(); }
+});
+
+test("the deferred macro identity check refuses a same-name macro whose contents changed", async () => {
+  const mod = await import(pathToFileURL(script).href);
+  const expected = { name: "MCP kb13 deferred", lines: [{ cmd: "Echo kb13 deferred start", wait: "3.0" }, { cmd: "Assign Quickey 955 At Page 1.180", wait: "7.0" }] };
+  assert.deepEqual(mod.verifyDeferredMacro(expected, { name: "MCP kb13 deferred", lines: [...expected.lines] }), { ok: true });
+  const edited = mod.verifyDeferredMacro(expected, { name: "MCP kb13 deferred", lines: [expected.lines[0], { cmd: "Assign Quickey 1 At Page 1.180", wait: "7.0" }] });
+  assert.equal(edited.ok, false);
+  assert.match(edited.reason, /line 2/);
+  const waitChanged = mod.verifyDeferredMacro(expected, { name: "MCP kb13 deferred", lines: [expected.lines[0], { ...expected.lines[1], wait: "1.0" }] });
+  assert.equal(waitChanged.ok, false);
+  const extraLine = mod.verifyDeferredMacro(expected, { name: "MCP kb13 deferred", lines: [...expected.lines, { cmd: "Off Sequence 5", wait: "Follow" }] });
+  assert.match(extraLine.reason, /3 line\(s\) instead of 2/);
+  assert.match(mod.verifyDeferredMacro(expected, { name: "Operator thing", lines: expected.lines }).reason, /name is now/);
+  assert.match(mod.verifyDeferredMacro(expected, false).reason, /no longer exists/);
+  assert.match(mod.verifyDeferredMacro(null, expected).reason, /not created/);
 });
 
 test("usage error without a mode", async () => {

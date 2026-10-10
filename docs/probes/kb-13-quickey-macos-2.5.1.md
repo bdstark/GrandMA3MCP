@@ -39,10 +39,11 @@ during dispatch (harness only), the chord and hold evidence for codes other than
   the bridge is `[busy]` (a hold, an unresolved record) cannot be issued through the bridge or over OSC. The probe writes
   such actions into a deferred macro (Macro 116) with Wait times and fires it through `lua` before the hold starts; the
   console then executes the lines on its own (`Assign Quickey 955 At Page 1.180` after 3 s, the restore after 10 s, or the
-  restart/recover chain). The slot is claimed before any key is pressed: an empty slot is created as `MCP kb13 deferred`
-  and deleted at the end of the run, a macro of that name from an earlier run is reused and left in place, and any other
-  macro in the slot refuses the run (a disposable show name says nothing about who owns a macro); the deferred, restart
-  and teardown slots must be distinct.
+  restart/recover chain). The slot is claimed before any key is pressed and must be **empty**: the probe creates the macro
+  (`MCP kb13 deferred`), records its name and lines as the console reads them back, re-reads and compares them before
+  every rewrite and before the final deletion, and leaves the macro in place if anything differs (an operator edit is
+  never overwritten or deleted); any macro already in the slot, one of the probe's own name included, refuses the run (a
+  disposable show name says nothing about who owns a macro); the deferred, restart and teardown slots must be distinct.
 - `input recover` is the operator's path for a record of a previous run: the bridge's `[busy]` guard refuses `lua`, `cmd`
   and every new press from every connection while that record is unresolved, and the client-side `input.recover` acts on
   the client's own session only.
@@ -75,7 +76,7 @@ during dispatch (harness only), the chord and hold evidence for codes other than
 | 22 | `input.tap NUM5` | `[busy] 1 unresolved release record(s): MA1 (hold h1, session 'previous-run') may still be down (...); recover it (owner recover, or the operator's "input recover") before anything else runs` |
 | 23 | at +19 s the macro's `input recover` | log: `input recover released previous-run MA1(quickkey:#1) released (dispatched, effect not observable)`, `input recover: 1 released, 0 still unresolved`; `holds 0, unresolved 0`; `MASTATE` false |
 | 24 | Macro 116 fired (`Go+ Macro 113` at +3 s); `input.begin`; `input.press MA1`; wait 4.5 s | log: `ERROR ... bank teardown refused [bank-in-use]: 1 Quickey ownership record(s) are held or unresolved; release or recover them before tearing the bank down (deleting a Quickey during a hold leaves the key down, KB-10)`; bank still `ready`, hold still `held`; `input.end` released it |
-| 25 | `input.releaseAll`, `input.close`, final reads | `holds 0, unresolved 0`, not busy, bank `ready`, command line empty, `MASTATE` false; Macro 116 (created by this run) deleted and read back absent |
+| 25 | `input.releaseAll`, `input.close`, final reads | `holds 0, unresolved 0`, not busy, bank `ready`, command line empty, `MASTATE` false; Macro 116 (created by this run, 0 lines at creation, 5 lines as last written) verified against the last readback and deleted, read back absent |
 | 26 | `Go+ Macro 113`; `Go+ Macro 107` | `bank teardown: 95 Quickey(s) removed, 8 executor(s) cleared, 0 object(s) skipped; the bank is gone`; Quickeys 895–1000 empty, executors 180–187 empty, Quickey 1 (`THRU`) untouched; input back on the keyboard backend. **Caution (final run):** firing both macros from one Lua chunk made two plugin arguments run concurrently on their own macro executors; both completed (`bank teardown: ... the bank is gone`, `input now enabled on the keyboard backend`) and then the bridge logged `stopped`: a plugin argument arriving while another one runs ends the running `Main`. Fire control macros one at a time and wait for the log line |
 
 The first run of the script (43/46) failed only on three probe expectations: the `input.release` reply nests the hold
@@ -84,7 +85,8 @@ blocked until recovery completes) rather than admitted on another executor. The 
 repeated from the same clean state: 46/46. After the PR review of `bfe285b` (chord admission now checks every participating
 held key, not only the incoming one; the probe claims and cleans up its deferred macro) the plugin was reinstalled
 (Macro 100, bank re-provisioned with 108, `input=quickey` with 114) and the run repeated: 47/47 (the extra check is the
-macro cleanup). The held-key chord rule (NUM1 held, then NUM5 refused) is harness-covered; live, the chord steps use
+macro cleanup). A further review round made the probe require an empty deferred slot and verify the macro's contents
+before every rewrite and the deletion; the run was repeated once more from the same clean state: 47/47. The held-key chord rule (NUM1 held, then NUM5 refused) is harness-covered; live, the chord steps use
 MA1+STORE, both chord-qualified.
 
 ## Acceptance report

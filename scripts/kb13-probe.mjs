@@ -13,13 +13,16 @@
 // happen while the bridge is [busy] (a hold, an unresolved record) cannot be issued through the bridge, so the
 // probe writes them into the DEFERRED macro (default Macro 116) with Wait times and fires it through "lua" before
 // the hold starts: the console executes the lines on its own while the bridge is busy. The deferred slot must be
-// EMPTY (the probe creates the macro, named "MCP kb13 deferred", and deletes it at the end) or hold a macro of that
-// name left by an earlier run (reused, left in place); any other macro in the slot refuses the run before any key is
-// pressed, and the slot may not be the restart or teardown macro. The restart macro (default 115: stop + "lua
+// EMPTY: the probe creates the macro ("MCP kb13 deferred"), verifies its name and exact contents before every rewrite
+// and before deleting it at the end, and leaves it in place if anything changed meanwhile; an occupied slot (a macro
+// of that name from an earlier run included) refuses the run before any key is pressed, and the slot may not be the
+// restart or teardown macro. The restart macro (default 115: stop + "lua
 // input=quickey") and the teardown macro (default 113: "bank teardown") must exist in the show. Reads happen through the unguarded feedback.read op during interactions and through
 // "lua" otherwise. Nothing is retried or replayed.
 import net from "node:net";
 import fs from "node:fs";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 const host = process.env.GMA3_BRIDGE_HOST ?? "127.0.0.1";
 const port = Number(process.env.GMA3_BRIDGE_PORT ?? 9800);
@@ -141,39 +144,62 @@ async function waitSequence(conn, id, timeoutMs) {
  * line) and fires it. Called only while the bridge is idle; the console runs the lines while the bridge is busy.
  */
 const macroName = (conn, n) => lua(conn, `local m = ObjectList('Macro ${n}')[1]; return m and tostring(m.name) or false`);
+/** Name and every line (command + wait) of a macro as the console reads them back, or false when the slot is empty. */
+const readMacro = (conn, n) => lua(conn, `local m = ObjectList('Macro ${n}')[1]; if not m then return false end local lines = {} for i = 1, m:Count() do local l = m:Ptr(i); lines[#lines + 1] = { cmd = tostring(l:Get('Command')), wait = tostring(l:Get('Wait')) } end return { name = tostring(m.name), lines = lines }`);
+let expectedDeferred = null;  // the deferred macro exactly as this run last wrote and read it back; nothing else is ever rewritten or deleted
 /**
- * Claims the deferred slot before any key is pressed: an empty slot is taken (created, named, deleted at the end),
- * a macro of the probe's name is reused (left in place), anything else refuses the run. A disposable show name
- * says nothing about who owns a macro.
+ * Identity check of the deferred macro against what this run last wrote: same name and the same lines (command and
+ * wait, as read back). Pure, so it can be tested. Returns { ok: true } or { ok: false, reason }.
+ */
+export function verifyDeferredMacro(expected, actual) {
+  if (!expected) return { ok: false, reason: "this run has not created the deferred macro" };
+  if (actual === false || actual == null) return { ok: false, reason: "the macro no longer exists" };
+  if (actual.name !== expected.name) return { ok: false, reason: `name is now ${JSON.stringify(actual.name)}, expected ${JSON.stringify(expected.name)}` };
+  const a = actual.lines || [], e = expected.lines || [];
+  if (a.length !== e.length) return { ok: false, reason: `${a.length} line(s) instead of ${e.length}` };
+  for (let i = 0; i < e.length; i++) {
+    if (a[i].cmd !== e[i].cmd || String(a[i].wait) !== String(e[i].wait)) {
+      return { ok: false, reason: `line ${i + 1} is ${JSON.stringify(a[i])}, expected ${JSON.stringify(e[i])}` };
+    }
+  }
+  return { ok: true };
+}
+/**
+ * Claims the deferred slot before any key is pressed: it must be EMPTY. The probe creates the macro, names it and
+ * records its contents; from then on every rewrite and the final deletion first verify that name and contents are
+ * exactly what the probe last wrote, so an operator's edit (or any other macro, however it is named) is never
+ * overwritten or deleted. A disposable show name says nothing about who owns a macro.
  */
 async function claimDeferredMacro(conn) {
-  const name = await macroName(conn, DEFERRED_MACRO);
-  if (name === false) {
-    const created = await lua(conn, `Cmd('Store Macro ${DEFERRED_MACRO} /NoConfirmation'); local m = ObjectList('Macro ${DEFERRED_MACRO}')[1]; if not m then return false end m:Set('Name', '${DEFERRED_NAME}'); return tostring(m.name)`);
-    if (created !== DEFERRED_NAME) { console.error(`could not create the deferred Macro ${DEFERRED_MACRO} (got ${JSON.stringify(created)})`); process.exit(2); }
-    deferredCreated = true;
-    note("deferred macro", `Macro ${DEFERRED_MACRO} created as "${DEFERRED_NAME}" (deleted at the end of the run)`);
-  } else if (name === DEFERRED_NAME) {
-    note("deferred macro", `Macro ${DEFERRED_MACRO} "${DEFERRED_NAME}" from an earlier run is reused and left in place`);
-  } else {
-    console.error(`Macro ${DEFERRED_MACRO} is occupied by "${name}"; the probe only uses an empty slot or its own "${DEFERRED_NAME}" macro. Pass --deferred-macro <free slot>.`);
+  const existing = await readMacro(conn, DEFERRED_MACRO);
+  if (existing !== false) {
+    console.error(`Macro ${DEFERRED_MACRO} is occupied by "${existing.name}" (${(existing.lines || []).length} line(s)); the probe needs an EMPTY slot it can create and remove itself${existing.name === DEFERRED_NAME ? " (a macro of the probe's own name left by an earlier run is not reused: remove it yourself if it is yours)" : ""}. Pass --deferred-macro <free slot>.`);
     process.exit(2);
   }
+  const created = await lua(conn, `Cmd('Store Macro ${DEFERRED_MACRO} /NoConfirmation'); local m = ObjectList('Macro ${DEFERRED_MACRO}')[1]; if not m then return false end m:Set('Name', '${DEFERRED_NAME}'); return true`);
+  const read = await readMacro(conn, DEFERRED_MACRO);
+  if (created !== true || read === false || read.name !== DEFERRED_NAME) { console.error(`could not create the deferred Macro ${DEFERRED_MACRO} (read back ${JSON.stringify(read)})`); process.exit(2); }
+  expectedDeferred = read;
+  note("deferred macro", `Macro ${DEFERRED_MACRO} created as "${DEFERRED_NAME}" with ${read.lines.length} line(s); verified by contents before every rewrite and deleted at the end of the run`);
   for (const [label, n] of [["restart", RESTART_MACRO], ["teardown", TEARDOWN_MACRO]]) {
     const nm = await macroName(conn, n);
     if (nm === false) { console.error(`the ${label} macro (Macro ${n}) does not exist in this show`); process.exit(2); }
     note(`${label} macro`, `Macro ${n} "${nm}"`);
   }
 }
-/** Deletes the deferred macro only when this run created it; verifies it is gone. */
+/** Deletes the deferred macro only when this run created it and it still reads back exactly as last written. */
 async function releaseDeferredMacro(conn) {
-  if (!deferredCreated) return { skipped: true };
-  const name = await macroName(conn, DEFERRED_MACRO);
-  if (name !== DEFERRED_NAME) return { skipped: true, reason: `Macro ${DEFERRED_MACRO} is now ${JSON.stringify(name)}; not ours any more, left alone` };
+  if (!expectedDeferred) return { skipped: true, reason: "not created by this run" };
+  const actual = await readMacro(conn, DEFERRED_MACRO);
+  const v = verifyDeferredMacro(expectedDeferred, actual);
+  if (!v.ok) return { skipped: true, preserved: true, reason: `Macro ${DEFERRED_MACRO} differs from what the probe last wrote (${v.reason}); left in place for the operator` };
   await lua(conn, `Cmd('Delete Macro ${DEFERRED_MACRO} /NoConfirmation'); return true`);
-  return { deleted: (await macroName(conn, DEFERRED_MACRO)) === false };
+  return { deleted: (await readMacro(conn, DEFERRED_MACRO)) === false };
 }
 async function deferred(conn, lines) {
+  const actual = await readMacro(conn, DEFERRED_MACRO);
+  const v = verifyDeferredMacro(expectedDeferred, actual);
+  if (!v.ok) throw new Error(`Macro ${DEFERRED_MACRO} differs from what the probe last wrote (${v.reason}); not rewritten, left in place`);
   const luaList = "{ " + lines.map((l) => `{ cmd = [==[${l.cmd}]==], wait = [==[${l.wait == null ? "Follow" : String(l.wait)}]==] }`).join(", ") + " }";
   const code = `
     local list = ${luaList}
@@ -184,12 +210,13 @@ async function deferred(conn, lines) {
       local l = m:Ptr(i)
       if list[i] then l:Set('Command', list[i].cmd); l:Set('Wait', list[i].wait) else l:Set('Command', 'Echo kb13 noop'); l:Set('Wait', 'Follow') end
     end
-    local rd = {}
-    for i = 1, m:Count() do rd[#rd + 1] = tostring(m:Ptr(i):Get('Command')) .. ' | ' .. tostring(m:Ptr(i):Get('Wait')) end
+    local lines = {}
+    for i = 1, m:Count() do local l = m:Ptr(i); lines[#lines + 1] = { cmd = tostring(l:Get('Command')), wait = tostring(l:Get('Wait')) } end
     Cmd('Go+ Macro ${DEFERRED_MACRO}')
-    return rd`;
-  const rd = await lua(conn, code);
-  note(`deferred macro ${DEFERRED_MACRO} fired`, rd);
+    return { name = tostring(m.name), lines = lines }`;
+  const written = await lua(conn, code);
+  expectedDeferred = written;  // what the console read back after the write is the identity the next check expects
+  note(`deferred macro ${DEFERRED_MACRO} fired`, written.lines.map((l) => `${l.cmd} | ${l.wait}`));
   return Date.now();
 }
 /** Escape through Keyboard() (an ESC Quickey never touches the command line, KB-10). Explicit, never implicit. */
@@ -383,25 +410,28 @@ async function run() {
   const finalMa = await readMa(A);
   record("console and bridge left clean: no holds, nothing unresolved, bank ready, empty command line, MASTATE false", finalPing?.input?.holds === 0 && finalPing?.input?.unresolved === 0 && !finalPing?.input?.busy && finalPing?.input?.bank?.state === "ready" && finalCmd === "" && finalMa === false, { input: finalPing?.input, cmd: finalCmd, ma: finalMa });
   const rel = await releaseDeferredMacro(A);
-  record("the deferred macro is removed when this run created it, left alone otherwise", rel.skipped ? true : rel.deleted === true, rel);
+  record("the deferred macro this run created is verified by contents and removed (an edited one would be preserved)", rel.deleted === true, rel);
   await A.end();
   return { ping, finalPing };
 }
 
-if (mode !== "run") {
-  console.error("usage: node scripts/kb13-probe.mjs run [--out report.json] [--restart-macro N] [--teardown-macro N] [--deferred-macro N]");
-  process.exit(2);
+const isMain = process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+if (isMain) {
+  if (mode !== "run") {
+    console.error("usage: node scripts/kb13-probe.mjs run [--out report.json] [--restart-macro N] [--teardown-macro N] [--deferred-macro N]");
+    process.exit(2);
+  }
+  for (const [label, n] of [["--restart-macro", RESTART_MACRO], ["--teardown-macro", TEARDOWN_MACRO], ["--deferred-macro", DEFERRED_MACRO]]) {
+    if (!Number.isInteger(n) || n < 1) { console.error(`${label} must be a positive macro number`); process.exit(2); }
+  }
+  if (DEFERRED_MACRO === RESTART_MACRO || DEFERRED_MACRO === TEARDOWN_MACRO || RESTART_MACRO === TEARDOWN_MACRO) {
+    console.error("the deferred, restart and teardown macros must be three distinct slots (the deferred macro is rewritten by the probe)");
+    process.exit(2);
+  }
+  run().then(({ ping, finalPing }) => {
+    const report = { probe: "kb-13-run", date: new Date().toISOString(), bridge: { version: ping.bridgeVersion, host: ping.host, port: ping.port, build: ping.build, hostname: ping.hostname, showfile: ping.showfile, input: ping.input }, passed: steps.filter((s) => s.pass === true).length, failed, steps, finalInput: finalPing?.input };
+    if (outFile) { fs.writeFileSync(outFile, JSON.stringify(report, null, 2) + "\n"); console.log(`report written to ${outFile}`); }
+    console.log(`${report.passed}/${steps.filter((s) => s.pass !== null).length} passed`);
+    process.exit(failed ? 1 : 0);
+  }).catch((e) => { console.error(`probe aborted: ${e.message}`); process.exit(2); });
 }
-for (const [label, n] of [["--restart-macro", RESTART_MACRO], ["--teardown-macro", TEARDOWN_MACRO], ["--deferred-macro", DEFERRED_MACRO]]) {
-  if (!Number.isInteger(n) || n < 1) { console.error(`${label} must be a positive macro number`); process.exit(2); }
-}
-if (DEFERRED_MACRO === RESTART_MACRO || DEFERRED_MACRO === TEARDOWN_MACRO || RESTART_MACRO === TEARDOWN_MACRO) {
-  console.error("the deferred, restart and teardown macros must be three distinct slots (the deferred macro is rewritten by the probe)");
-  process.exit(2);
-}
-run().then(({ ping, finalPing }) => {
-  const report = { probe: "kb-13-run", date: new Date().toISOString(), bridge: { version: ping.bridgeVersion, host: ping.host, port: ping.port, build: ping.build, hostname: ping.hostname, showfile: ping.showfile, input: ping.input }, passed: steps.filter((s) => s.pass === true).length, failed, steps, finalInput: finalPing?.input };
-  if (outFile) { fs.writeFileSync(outFile, JSON.stringify(report, null, 2) + "\n"); console.log(`report written to ${outFile}`); }
-  console.log(`${report.passed}/${steps.filter((s) => s.pass !== null).length} passed`);
-  process.exit(failed ? 1 : 0);
-}).catch((e) => { console.error(`probe aborted: ${e.message}`); process.exit(2); });
