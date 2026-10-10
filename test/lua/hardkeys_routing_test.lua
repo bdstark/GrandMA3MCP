@@ -318,8 +318,8 @@ do
   check("hold-only adapter: a second hold next to a held Quickey needs chord", x == nil and J(err.missing) == J({ "chord" }) and #backend.events == 5, J(err))
   local dup = inst:press("s", 2, { key = "NUM5" })
   check("a duplicate press of the held tuple is still the duplicate report, not a chord refusal", dup and dup.duplicate == true and dup.id == h.id and #backend.events == 5, J(dup))
-  local kb = inst:press("s", 2, { pcKey = "F3" })
-  check("a PC-key press next to a held Quickey is not a Quickey chord", kb and kb.route.source == "raw", J(kb))
+  local kb, kerr = inst:press("s", 2, { pcKey = "F3" })
+  check("a PC-key press next to a held Quickey is refused as an unqualified mix (KB-15), not as a Quickey chord", kb == nil and kerr.code == "unqualified-mix" and kerr.reason == "held" and kerr.heldKind == "quickkey" and kerr.hold == h.id and #backend.events == 5, J(kerr))
   inst:releaseAll("s", 3)
   check("describeRoute reports the flags", inst:describeRoute("NUM5").quickkeyCapabilities.chord == false)
 end
@@ -356,11 +356,14 @@ do
   check("while unresolved, the code stays owned under either name", x == nil and err.code == "conflict" and err.state == "unresolved", J(err))
   local rec = inst:recover("s", 9)
   check("recovery releases it with the stored tuple", #rec.released == 1 and lastEvent(backend).quickkey == "UNDO" and lastEvent(backend).quickkeyCode == 86 and not backend:isDown(qk("OOPS")), J(rec))
-  -- Mixed backends: a Quickey tuple and a PC key never share identity.
+  -- Mixed backends: a Quickey tuple and a PC key never share identity (and are never down at once, KB-15).
   h = inst:press("s", 10, { key = "NUM5" })
-  local kb = inst:press("s", 10, { pcKey = "5" })
-  check("Quickey NUM5 and PC key 5 are distinct tuples", h and kb and h.tupleKey ~= kb.tupleKey, J({ h.tupleKey, kb.tupleKey }))
+  local kb, kerr = inst:press("s", 10, { pcKey = "5" })
+  check("PC key 5 next to Quickey NUM5 is refused as an unqualified mix", kb == nil and kerr.code == "unqualified-mix" and kerr.heldKind == "quickkey", J(kerr))
   inst:releaseAll("s", 11)
+  kb = inst:press("s", 12, { pcKey = "5" })
+  check("Quickey NUM5 and PC key 5 are distinct tuples", h and kb and h.tupleKey ~= kb.tupleKey, J({ h.tupleKey, kb and kb.tupleKey }))
+  inst:releaseAll("s", 13)
 end
 
 -------------------------------------------------------------------------------

@@ -10,12 +10,14 @@ The bridge plugin ships two reusable, instance-based Lua modules as extra compon
 | `gma3_mcp_hardkeys` | [plugin/gma3_mcp_hardkeys.lua](../plugin/gma3_mcp_hardkeys.lua) | Owned input sessions, leases, deadline servicing and recovery over a backend adapter; read-only logical-key resolution |
 | `gma3_mcp_feedback` | [plugin/gma3_mcp_feedback.lua](../plugin/gma3_mcp_feedback.lua) | Read-only console state readers confirmed in KB-01, with freshness and bounded polling (KB-06) |
 
-Module API version **1**; `gma3_mcp_hardkeys` **0.8.0** (KB-03 to KB-05; 0.5.0 resolves any `Enums.VirtualKeyCode` name, KB-07; 0.6.0 adds the per-key routing policy, KB-11; 0.7.0 adds the owned Quickey bank, KB-12; 0.8.0 adds the owned-Quickey backend, KB-13), `gma3_mcp_feedback` **0.2.0** (KB-02 + KB-06).
-Three backend adapters dispatch: the **fake backend** (records events, simulates aggregate console key state,
+Module API version **1**; `gma3_mcp_hardkeys` **0.10.0** (KB-03 to KB-05; 0.5.0 resolves any `Enums.VirtualKeyCode` name, KB-07; 0.6.0 adds the per-key routing policy, KB-11; 0.7.0 adds the owned Quickey bank, KB-12; 0.8.0 adds the owned-Quickey backend, KB-13; 0.9.0 adds scoped shortcut-mode changes and text routes, KB-14; 0.10.0 adds the mixed backend and the unqualified-mix refusals, KB-15), `gma3_mcp_feedback` **0.2.0** (KB-02 + KB-06).
+Four backend adapters dispatch: the **fake backend** (records events, simulates aggregate console key state,
 nothing reaches a console key), the **keyboard backend** (`keyboardBackend(deps)`, KB-04: the console's
-`Keyboard()` PC-key emulation; console keys are really pressed) and the **owned-Quickey backend**
+`Keyboard()` PC-key emulation; console keys are really pressed), the **owned-Quickey backend**
 (`quickeyBackend(instance)`, KB-13: Quickey tuples pressed and released through the instance's KB-12 bank on its
-reserved executors; console keys are really pressed).
+reserved executors; console keys are really pressed) and the **mixed backend** (`mixedBackend({ quickey, keyboard })`,
+KB-15: both of the above on one instance, each record released through the part that pressed it; console keys are
+really pressed).
 
 ## Loading contract (what the console does and does not do)
 
@@ -441,6 +443,42 @@ live: it holds MA1 exactly like the KB-10 `Press Executor E`; `Unpress` on an em
 Bridge: `Plugin "gma3_mcp_bridge" "input=quickey"` (bank first or in the same argument). Qualified live on the disposable
 show ([record](probes/kb-13-quickey-macos-2.5.1.md), 47/47); regressions: `test/lua/hardkeys_quickey_test.lua`.
 
+## Mixed backend (`gma3_mcp_hardkeys` 0.10.0, KB-15)
+
+A surface that defaults to `quickkey` dispatches only the codes with KB-10 evidence; KB-15 asks for per-key overrides
+that are not inert. `mixedBackend({ quickey = <adapter>, keyboard = <adapter> })` serves both console mechanisms on one
+instance: Quickey tuples go to the Quickey part, PC-key tuples and character events to the Keyboard() part. It owns
+nothing and keeps no state; the rules below live in the instance and hold on every adapter that advertises both kinds
+(the fake included).
+
+```lua
+local inst = HK.new({ owner = "surface", deps = HK.consoleDeps(_G), config = { requireInteraction = false } }):init()
+inst:provisionBank({ authorized = true, quickeys = { first = 900 }, executors = { page = 1, first = 180, count = 8 } }, now)
+local mixed = HK.mixedBackend({ quickey = HK.quickeyBackend(inst), keyboard = HK.keyboardBackend(HK.consoleDeps(_G)) })
+inst:enableInput(mixed, { routing = { default = "quickkey",
+  keys = { NUM0 = { method = "shortcut" },                 -- no KB-10 evidence yet: the shortcut row through Keyboard()
+           THRU = { method = "type", text = "Thru " } } } }) -- literal text, shortcuts temporarily off while it is typed
+inst:describeRoute("NUM5").dispatchBackend  -- "quickey"; "keyboard" for NUM0 and THRU
+inst:tap("s", now, { key = "NUM5" }, 50)    -- Assign/Press/Unpress Page P.E; hold.backend = "quickey"
+inst:tap("s", now, { key = "NUM0" }, 50)    -- Keyboard() press/release; hold.backend = "keyboard"
+inst:describeRoute("ESC")                   -- dispatchable = false, "discovered only": NOT re-routed to Keyboard()
+```
+
+| Element | Behaviour |
+| --- | --- |
+| Construction | Both parts must be adapters; the Quickey part must advertise `capabilities.quickkey`, the keyboard part `capabilities.keyboard`; a part cannot itself be mixed. `capabilities = { keyboard, char, modeChange }` from the keyboard part, `quickkey` from the Quickey part; `limitations` = the mixed rules plus both parts' (prefixed); `counters = { quickey, keyboard }`. |
+| Dispatch | `supportsKey` → keyboard part; `supportsQuickkey` / `quickkeyCapabilities` / `unavailable` → Quickey part; `preflight`, `press`, `release(tuple, target)` → the part the tuple selects; `char` → keyboard part; `observe()` → the keyboard part's view plus the Quickey part's under `.quickey`. |
+| Records | `recordBackend(tuple)` names the part, so `hold.backend` is `"quickey"` or `"keyboard"` (never `"mixed"`); `serves(name)` accepts either part's records for release, `recover()` and `adopt()`; a record of a backend that is not a part stays unresolved naming its origin. `describeRoute()` adds `dispatchBackend`. |
+| No fallback | An unavailable Quickey route (no bank, partial bank, not in bank, discovered-only code) is refused naming the requirement; the keyboard part is never tried for it. A policy naming `type` against a keyboard part without `modeChange` is `policy-unavailable` at `enableInput()`/`configureRouting()`. |
+| `unqualified-mix` | Refused before dispatch, on every backend: a PC key while a Quickey record is held/releasing/unresolved and the reverse (`reason = "held"`, `heldKind`, `hold`); a combo mixing the kinds (`reason = "combo"`, `key`); a sequence step putting one kind down next to the other, from live records or earlier steps (`step`); a Quickey while a temporary shortcut-mode change is active or pending restoration (`reason = "mode"`; a sequence step waits for the restoration, `waitingFor`); a route needing a mode change while a Quickey is down (nothing written). Evidence: disabling shortcuts drops a Keyboard()-held MA (KB-14); the effect on an executor-held Quickey and a chord across the mechanisms were never dispatched. |
+
+Bridge 0.12.0: `Plugin "gma3_mcp_bridge" "input=mixed"` (bank first or in the same argument) attaches the mixed adapter
+over the same cached Quickey and keyboard adapters, routing default `quickkey`; `input.routing` accepts the overrides,
+`input.route` reports `dispatchBackend`, `input recover` attaches the mixed adapter for cleanup when kept records of both
+parts exist. Regressions: `test/lua/hardkeys_mixed_test.lua`, the KB-15 section of `test/lua/bridge_plugin_test.lua`.
+Not run on the console: the mixed backend has no live record yet, and the surface half of KB-15 (defaults, startup
+report, vendoring, NX-K qualification) is done in mtpnxk.
+
 ## Feedback readers (`gma3_mcp_feedback` 0.2.0, KB-06)
 
 Every observation is `{ name, key, scope, source, params?, available, value?, reason? | error?, observedAt, epoch,
@@ -547,7 +585,7 @@ a flooding client that cannot starve deadline servicing; and since 0.7.0 the `[b
 shared-connection ownership, `input.sequence` serviced by the loop, a disconnect mid-sequence and cleanup while
 input is disabled; and since 0.8.0 the `feedback.describe`/`feedback.read` ops with Lua and input disabled, partial
 failures, displays, executor and sequence expansion, bounds, the show-change epoch bump, `[no-feedback]` and a read
-answered while another connection owns an interaction; and since 0.9.0 the `bank=` argument: provisioning at start, the record kept across a dispose and adopted at the next load, `bank status`/`verify`/`teardown`, the in-use and preflight refusals; and since 0.10.0 `input=quickey`: the backend and routing switch, a tap issuing `Assign`/`Press`/`Unpress Page`, refusals through the bridge, the switch back) and [test/lua/hardkeys_bank_test.lua](../test/lua/hardkeys_bank_test.lua) (the KB-12 bank against a fake pool: spec validation, discovery, preflight refusals, creation with readback, reuse, partial-failure rollback, verification, dispatch-time target checks, staleness, teardown, dispose/adopt) and [test/lua/hardkeys_quickey_test.lua](../test/lua/hardkeys_quickey_test.lua) (the KB-13 backend against a fake console with executor key state: capabilities and routing reports, taps through executors, holds, chords, duplicates, per-code and discovered-code refusals in both press orders and in sequence preflight, bank-side refusals right before the press, unreserved/foreign executors, release integrity after reassignment, deletion, show change, console refusals and raises, teardown in use, restart with targets, sequences). `node scripts/kb13-probe.mjs run` exercises it against a live bridge started with `input=quickey` and a provisioned bank ([record](probes/kb-13-quickey-macos-2.5.1.md)). `node scripts/kb03-probe.mjs run` exercises the lifecycle against a live bridge
+answered while another connection owns an interaction; and since 0.9.0 the `bank=` argument: provisioning at start, the record kept across a dispose and adopted at the next load, `bank status`/`verify`/`teardown`, the in-use and preflight refusals; and since 0.10.0 `input=quickey`: the backend and routing switch, a tap issuing `Assign`/`Press`/`Unpress Page`, refusals through the bridge, the switch back; and since 0.12.0 `input=mixed`: overrides accepted, `dispatchBackend` per key, a Quickey hold and a Keyboard() hold each refusing the other kind as `unqualified-mix`) and [test/lua/hardkeys_bank_test.lua](../test/lua/hardkeys_bank_test.lua) (the KB-12 bank against a fake pool: spec validation, discovery, preflight refusals, creation with readback, reuse, partial-failure rollback, verification, dispatch-time target checks, staleness, teardown, dispose/adopt) and [test/lua/hardkeys_quickey_test.lua](../test/lua/hardkeys_quickey_test.lua) (the KB-13 backend against a fake console with executor key state: capabilities and routing reports, taps through executors, holds, chords, duplicates, per-code and discovered-code refusals in both press orders and in sequence preflight, bank-side refusals right before the press, unreserved/foreign executors, release integrity after reassignment, deletion, show change, console refusals and raises, teardown in use, restart with targets, sequences) and [test/lua/hardkeys_mixed_test.lua](../test/lua/hardkeys_mixed_test.lua) (the KB-15 mixed backend: construction and merged capabilities, overrides validated against the parts, `dispatchBackend`, no fallback for unavailable Quickey routes, dispatch and release through the recorded part, recover and adopt across instances, every `unqualified-mix` refusal for presses, combos, sequences and mode changes, the sequence waiting for a restoration, the rules on the fake backend). `node scripts/kb13-probe.mjs run` exercises it against a live bridge started with `input=quickey` and a provisioned bank ([record](probes/kb-13-quickey-macos-2.5.1.md)). `node scripts/kb03-probe.mjs run` exercises the lifecycle against a live bridge
 started with `input=fake` over real TCP connections ([record](probes/kb-03-fake-macos-2.5.1.md));
 `node scripts/kb04-probe.mjs run|restart` presses real keys through a bridge started with `lua input=keyboard` on a
 disposable show ([record](probes/kb-04-keyboard-macos-2.5.1.md)); `node scripts/kb05-probe.mjs run` exercises the

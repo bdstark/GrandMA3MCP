@@ -46,7 +46,14 @@ change of the operator's keyboard-shortcut mode that is kept through the hold, r
 never written over a state the operator changed meanwhile (unresolved restorations block input until recovery); the bridge gained
 `input.routing` / `input.route`; harness-tested (98 + 21 bridge checks) and **qualified live on the disposable show (32/32, plus the
 11/11 consumption-order probe behind the restore delay)**. Profile switches, failed restores and the kept restoration across a restart
-are harness-only. KB-15 remains planned work.
+are harness-only. **KB-15 implemented in the shared module and bridge on 2026-10-09** (hardkeys 0.10.0, bridge 0.12.0): the
+mixed backend serves the `quickkey` default and per-key `shortcut`/`shortcutOrType`/`type` overrides on one instance, each
+record is released and recovered through the part that pressed it, an unavailable Quickey route never falls back to
+`Keyboard()`, and every combination whose console semantics are not qualified (both kinds down at once, a Quickey under a
+temporary shortcut-mode change, a mode change while a Quickey is down) is refused before dispatch on every backend;
+harness-tested (63 + 11 bridge checks). The surface defaults, its startup/status reporting, the vendoring of 0.10.0 and the
+live qualification of the surface path are the mtpnxk side of KB-15 and are not done here; no new console path is
+qualified by this change (the mixed backend has not run on the console).
 
 This document expands the initial request from `mtpnxk-client-pico` into dependency-ordered features
 and acceptance criteria, following the format of [FEATURES.md](FEATURES.md). The originating project's
@@ -1312,6 +1319,67 @@ No MCP/TypeScript changes should be needed unless its public options are deliber
 - Update module versions, vendoring pins/hashes, integration examples, capabilities, key maps and LED guidance.
 - Run lifecycle and packet-loss/reordering regressions plus live console qualification. Keep benchmark/flood
   defects separate, and do not grant new platform coverage merely because the implementation is shared.
+
+### Module change for KB-15 (hardkeys 0.10.0, bridge 0.12.0, 2026-10-09)
+
+The shared-module and bridge half of KB-15, implemented in `plugin/gma3_mcp_hardkeys.lua` 0.10.0 with the regression
+harness `test/lua/hardkeys_mixed_test.lua` (63 checks: the real owned-Quickey backend over the KB-13 fake console as one
+part, the fake backend with the KB-14 fake profile and mode writer as the other) and a section of
+`test/lua/bridge_plugin_test.lua` (11 checks, `input=mixed`). No MCP tool or TypeScript contract changed. The surface half
+(mtpnxk: vendoring 0.10.0, `quickkey` as its default after the bank setup, its own startup/status report, key maps, LED
+guidance and the live NX-K qualification) is done in the surface project against this revision.
+
+- **Why a mixed backend.** A surface that defaults to `quickkey` can dispatch only the codes with KB-10 evidence (nine on
+  this console); every other key would be refused until it is qualified. KB-15 asks for per-key overrides that are not
+  inert, so the module now serves both console mechanisms on one instance: `mixedBackend({ quickey = quickeyBackend(inst),
+  keyboard = keyboardBackend(deps) })`. Quickey tuples go to the Quickey part (executor presses of the KB-12 bank), PC-key
+  tuples and character events to the Keyboard() part. Capabilities are merged (`keyboard`, `char`, `modeChange` from the
+  keyboard part; `quickkey` from the Quickey part, with the per-code flags and `unavailable()` of the Quickey part), so a
+  policy `{ default = "quickkey", keys = { NUM0 = { method = "shortcut" }, THRU = { method = "type", text = "Thru " } } }`
+  validates against it, and a keyboard part that cannot change the mode still refuses a `type` override at `enableInput()`
+  (`policy-unavailable`) rather than accepting it.
+- **No silent fallback.** The method decides the part, never the other way round: a `quickkey` route without a bank,
+  with a partial bank, for a code outside the bank or for a discovered-only code is `unavailable` naming the KB-12/KB-10
+  requirement, and nothing goes to `Keyboard()`. Literal text stays a separate route (`type`, the text side of
+  `shortcutOrType`, the KB-05 text step) through the keyboard part; a complete bank never replaces it.
+- **The record remembers its part.** `hold.backend` is the part's own name (`"quickey"` / `"keyboard"`; the fake's when a
+  test uses it), not `"mixed"`: a release, `recover()`, `dispose()` records and `adopt()` go through that part, and the mixed
+  adapter `serves()` records of either part, while a record of a backend that is not one of its parts stays unresolved with
+  its origin named. `describeRoute()` reports `dispatchBackend`, the part that would press the key, for startup and status
+  reports; `status().backend` lists the mixed rules plus both parts' limitations and counters.
+- **Unqualified combinations are refused, on every backend** (`unqualified-mix`, before any dispatch; the fake backend,
+  which advertises both kinds, now refuses them too): a PC key while a Quickey record is held, releasing or unresolved and
+  the reverse (`reason = "held"`, `heldKind`, the record named); a combo mixing both kinds (`reason = "combo"`, the key
+  index); a sequence step that would put one kind down next to the other, from live records or from earlier steps of the
+  sequence (`step`); a Quickey while a temporary shortcut-mode change is active or its restoration is pending
+  (`reason = "mode"`; a sequence step waits for the restoration instead, like a text step); and a route needing a mode
+  change while a Quickey is down (`_enterMode` refuses, nothing is written). The reason is evidence, not caution for its
+  own sake: disabling shortcuts drops a `Keyboard()`-held MA (KB-14) and what it does to an executor-held Quickey is
+  unknown, and a chord across the two mechanisms has never been dispatched. An unresolved restoration keeps the KB-14
+  `busy` refusal. Text routes already refused every other record; that stands.
+- **Bridge 0.12.0.** `input=mixed` (aliases `quickey+keyboard`, `kb+qk`) attaches the mixed adapter built from the same
+  cached Quickey and keyboard adapters `input=quickey` / `input=keyboard` use, with the routing default `quickkey`;
+  `input.routing` then accepts the overrides, `input.route` reports `dispatchBackend`, and `input recover` attaches the
+  mixed adapter for cleanup when kept records of both parts exist (one kind attaches its own backend as before).
+- **Operator guide (bridge; the surface documents its own spelling).** Setup: `Plugin "gma3_mcp_bridge" "bank=900/1.180-187"`
+  (operator-authorised, creates the owned Quickeys and reserves the executors; KB-12), then `"input=mixed"` (or
+  `"input=quickey"` for Quickeys only). Opt-out or override: `input.routing` with `{ default = "quickkey", keys = { <KEY> =
+  { method = "shortcut" | "shortcutOrType" | "type", text = ... } } }`, or `"input=keyboard"` to leave Quickeys out
+  entirely; a switch is refused while records exist. Recovery: an executor reassigned during a hold leaves the record
+  unresolved and the key down until the assignment is restored and `"input recover"` runs; a restoration the module could
+  not verify blocks input until `"input recover"` on the original profile (KB-14). Teardown: `"input=off"` (releases what
+  it can), then `"bank teardown"` (refused while a Quickey record is live; removes only verified owned objects).
+- **Owned show resources, mode changes, focus, interference.** The bank (Quickeys from the chosen pool index, the reserved
+  executor range with the placeholder Quickey) is the only show data this path writes, marked and re-read before every
+  use. The shortcut mode is changed only by the routes KB-14 describes, for a bounded operation, and never while a Quickey
+  is down. Text goes to whatever the console has focused (best effort, reported as such, no Enter/Please added); Quickeys
+  and PC keys press the console's own keys, so a physical key, another plugin or another console user can interfere with
+  either, and a record is responsibility for a release, not proof of why a key is down.
+
+What is *not* established: the mixed backend on the console (no live run: the bridge section is harness-only), any code
+beyond the nine KB-10 codes (still refused on the Quickey part until qualified live), a chord across the two parts or a
+mode change while a Quickey is down (refused, so never exercised), the NX-K surface path, save/reload. The
+`modules.lock.json` pin names the 0.10.0 bytes of this revision for vendoring; it does not grant platform coverage.
 
 
 ## Evidence and open questions

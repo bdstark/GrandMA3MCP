@@ -37,6 +37,7 @@ sessions (off by default and reset at every start):
 ```text
 Plugin "gma3_mcp_bridge" "input=keyboard"
 Plugin "gma3_mcp_bridge" "input=quickey"
+Plugin "gma3_mcp_bridge" "input=mixed"
 Plugin "gma3_mcp_bridge" "input=fake"
 Plugin "gma3_mcp_bridge" "input=off"
 Plugin "gma3_mcp_bridge" "input status"
@@ -55,7 +56,11 @@ hold and chord is an executor press of the bank's Quickey for that code (`Assign
 `Unpress Page P.E`), so the Quickey bank below must be provisioned first (or in the same argument); only the nine codes
 with KB-10 evidence dispatch (NUM1, NUM5, THRU, FIXTURE, PLEASE, CLEAR, STORE, MA1, OOPS), PC keys and text are refused,
 and a release is issued only on the executor the key was pressed on (an executor reassigned during a hold leaves the key
-down and the record unresolved until you restore the assignment and run `input recover`). `input=fake` admits
+down and the record unresolved until you restore the assignment and run `input recover`). `input=mixed` (v0.12.0, KB-15)
+admits them on the **mixed backend**: the `quickkey` default of `input=quickey` plus the `Keyboard()` part for per-key
+overrides a client sets with `input.routing` (`shortcut`, `shortcutOrType`, `type`); each record is released through the
+part that pressed it, an unavailable Quickey route never falls back to `Keyboard()`, and both kinds are never down at once
+nor is the shortcut mode changed while a Quickey is down (`unqualified-mix` refusals; not yet run on a console). `input=fake` admits
 them on the fake backend (events are recorded, nothing reaches a console key). `input=off` stops admitting
 input and attempts to release every held key. `input status` prints sessions, holds and unresolved releases;
 `input recover` is the operator's recovery action: it re-attempts every unresolved release, including records
