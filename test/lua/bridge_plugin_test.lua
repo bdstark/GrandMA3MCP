@@ -1014,13 +1014,13 @@ do
   start("")  -- bind fails in this harness, so serverMain returns and the instances are disposed again
   local hk, fb = state.modules.hardkeys, state.modules.feedback
   check("modules found through the plugin signal table", hk and hk.loaded and fb and fb.loaded, json.encode({ hk = hk and hk.error, fb = fb and fb.error }))
-  check("module versions recorded", hk.version == "0.10.0" and hk.apiVersion == 1 and fb.version == "0.3.0", json.encode({ hk.version, fb.version }))
+  check("module versions recorded", hk.version == "0.10.0" and hk.apiVersion == 1 and fb.version == "0.4.0", json.encode({ hk.version, fb.version }))
   check("modules start log line", lastLog():find("stopped") or true)
   local disposed = hk.instance and hk.instance:status().state == "disposed" and fb.instance:status().state == "disposed"
   check("instances disposed when the loop ends", disposed, hk.instance and hk.instance:status().state)
   check("modules did not publish via package.loaded or globals", package.loaded["gma3_mcp_hardkeys"] == nil and _G.gma3_mcp_hardkeys == nil and _G.gma3_mcp_feedback == nil)
   r = request("ping", {})
-  check("ping summarises modules", r.ok and r.result.modules.hardkeys.loaded == true and r.result.modules.feedback.version == "0.3.0", json.encode(r.result.modules))
+  check("ping summarises modules", r.ok and r.result.modules.hardkeys.loaded == true and r.result.modules.feedback.version == "0.4.0", json.encode(r.result.modules))
   r = request("modules", {})
   check("modules op reports status without Lua enabled", r.ok and state.lua.enabled == false and r.result.apiVersion == 1 and r.result.modules.hardkeys.status.inputEnabled == false and r.result.modules.feedback.status.module == "gma3_mcp_feedback", json.encode(r))
 
@@ -1518,11 +1518,11 @@ do
                              VirtualKeys = { Count = function() return 0 end }, MANetSocket = { Get = function(_, k) if k == "ShowFile" then return fbConsole.showFile end end }, maNetSocket = {} } end
   local C = { id = 61 }
   r = request("feedback.describe", {}, nil, C)
-  check("feedback.describe lists readers with the module version, without Lua", r.ok and r.result.version == "0.3.0" and #r.result.readers == 21 and r.result.status.epoch == 1 and r.result.note:find("not an atomic snapshot"), J(r))
+  check("feedback.describe lists readers with the module version, without Lua", r.ok and r.result.version == "0.4.0" and #r.result.readers == 21 and r.result.status.epoch == 1 and r.result.note:find("not an atomic snapshot"), J(r))
   r = request("feedback.read", {}, nil, C)
   check("feedback.read without items is refused with a code", r.ok == false and r.code == "no-items", r.error)
   r = request("feedback.read", { readers = { "commandText", "lastCommand", "blind", "solo", "page", "freeze", "selectedSequence", "previewBar", "sequenceActive" }, displays = { 1, 2, 9 }, executors = { 201, 202 }, sequences = { 5, 6 } }, nil, C)
-  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.14.0" and r.result.module.version == "0.3.0" and r.result.identity.showFile == "mcp-test-disposable", J(r))
+  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.15.0" and r.result.module.version == "0.4.0" and r.result.identity.showFile == "mcp-test-disposable", J(r))
   local by = {}
   if r.ok then for _, it in ipairs(r.result.items) do by[it.key] = it end end
   check("feedback.read: command text and last command are raw observations", by.commandText and by.commandText.value == "Store " and by.lastCommand.value == "Go+ Sequence 5 : OK" and by.lastCommand.note:find("not confirmation"), J(by.lastCommand))
@@ -1626,7 +1626,7 @@ do
   GetExecutor = function(n) return execs[n], pageH end
   local C = { id = 71 }
   r = request("feedback.context", { executors = { 201, 202 } }, nil, C)
-  check("feedback.context answers with Lua and input disabled", r.ok and r.result.bridgeVersion == "0.14.0" and r.result.module.version == "0.3.0" and r.result.atomic == false and r.result.generation == 1 and r.result.generationChanged == false and r.result.identity.showFile == "mcp-test-disposable" and r.result.identity.dataPool.name == "Default", J(r))
+  check("feedback.context answers with Lua and input disabled", r.ok and r.result.bridgeVersion == "0.15.0" and r.result.module.version == "0.4.0" and r.result.atomic == false and r.result.generation == 1 and r.result.generationChanged == false and r.result.identity.showFile == "mcp-test-disposable" and r.result.identity.dataPool.name == "Default", J(r))
   check("feedback.context: authoritative display, bank/page, slots with availability and value", r.ok and r.result.authoritativeDisplay.rule == "configured" and r.result.encoder.value.bank.name == "Color" and r.result.encoder.value.page.name == "RGB" and r.result.slots.value.slots[1].name == "ColorRGB_R" and r.result.slots.value.slots[1].availability == "available" and r.result.slots.value.slots[1].absolute == 50 and r.result.slots.value.slots[1].unit == "None" and r.result.slots.value.slots[2].valueState == "empty" and r.result.executorPage.no == 1, J(r.result.slots))
   check("feedback.context: executor targets with functions, level and playback-target status", r.ok and #r.result.executors == 2 and r.result.executors[1].value.functions.keyPress == "Temp" and r.result.executors[1].value.level.value == 100 and r.result.executors[1].value.playbackTarget == true and r.result.executors[2].value.empty == true and r.result.executors[2].value.reserved == nil, J(r.result.executors))
   check("feedback.context: nested fields survive the serialiser depth bound", r.ok and type(r.result.slots.value.slots[1].feature) == "string" and type(r.result.executors[1].value.assigned.name) == "string")
@@ -1673,7 +1673,7 @@ end
 do
   start("")
   state._loadModules(); state.running = true; state.stopRequested = false; state.ignoreNextCleanup = false
-  check("kb18: the control module loads with the pair", state.modules.control and state.modules.control.loaded and state.modules.control.version == "0.1.0", state.modules.control and state.modules.control.error)
+  check("kb18: the control module loads with the pair", state.modules.control and state.modules.control.loaded and state.modules.control.version == "0.2.0", state.modules.control and state.modules.control.error)
   check("kb18: control is disabled at a plain start", state.control.enabled == false and state.control.backend == nil)
   -- The binding source is this bridge's feedback instance; replace it with a controllable fake snapshot
   -- (the module's own harness covers the real readers; here the wiring is what is tested).
@@ -1689,7 +1689,8 @@ do
   state.modules.feedback = { component = "gma3_mcp_feedback", loaded = true, version = "0.3.0", module = fbRec.module,
     instance = { contextSnapshot = function() return snapshot() end, watchContext = function(_, spec) watched = spec; return { watched = 5, limitations = {} } end,
                  status = function() return { config = {} } end, service = function() return {} end, dispose = function() end, unwatch = function() end } }
-  Cmd = function() return "OK" end
+  local consoleCmds = {}
+  Cmd = function(c) consoleCmds[#consoleCmds + 1] = c; return "OK" end
   local C, D = { id = 81 }, { id = 82 }
   local function tnow() return os.clock() + (_G.FAKE_CLOCK_OFFSET or 0) end
   local brev = 1  -- the bridge's binding can be replaced (control.bind), so every motion/down carries the revision
@@ -1708,7 +1709,7 @@ do
   Main(nil, "control"); Cleanup()
   check("'control' alone is refused", lastLog():find("refusing argument") and lastLog():find("control=fake"), lastLog())
   Main(nil, "control=keyboard"); Cleanup()
-  check("an unknown control backend is refused", lastLog():find("control=fake or control=off"), lastLog())
+  check("an unknown control backend is refused", lastLog():find("control=fake, control=console or control=off"), lastLog())
   Main(nil, "control=fake"); Cleanup()
   check("'control=fake' while running enables the fake backend", state.control.enabled == true and state.control.backend == "fake" and logFound("control now enabled on the fake backend") ~= nil, lastLog())
   r = request("control.submit", { events = { ev(1) } }, nil, C)
@@ -1796,6 +1797,25 @@ do
   r = request("control.status", {}, nil, D)
   check("'control=off' ends the touch; a release the backend raised on stays unresolved on the instance", state.control.enabled == false and r.ok and #r.result.unresolved == 1 and logFound("control: disable: touch on mtouch/Strip1 ended: unresolved") ~= nil, J(r.result.unresolved))
   check("control.submit after control=off is refused", request("control.submit", { events = { ev(1) } }, nil, D).code == "control-disabled")
+  -- KB-19: the console backend applies relative motion on attribute slots through Cmd().
+  Main(nil, "control=console"); Cleanup()
+  check("kb19: 'control=console' enables the console backend", state.control.enabled == true and state.control.backend == "console" and logFound("control now enabled on the console backend") ~= nil, lastLog())
+  r = request("control.status", {}, nil, D)
+  check("kb19: control.status reports the console backend, its capabilities and calibration", r.ok and r.result.backend == "console" and r.result.capabilities.button == false and r.result.backendStatus.calibration.resolutions.Coarse == 1, J(r.result.backendStatus))
+  consoleCmds = {}
+  r = request("control.submit", { events = { ev(30, { gesture = 30, generation = 2, binding = brev }), ev(31, { gesture = 30, generation = 2, binding = brev }), ev(32, { gesture = 31, generation = 2, binding = brev, fine = true, delta = -3 }) } }, nil, D)
+  check("kb19: two coalesced detents and a fine negative delta are admitted", r.ok and r.result.accepted == 3 and r.result.outcomes[2].coalesced == true, J(r))
+  r = request("control.submit", { events = { { type = "button", device = "nxk", control = "Rotary1", seq = 33, generation = 2, binding = brev, target = { slot = 1 }, down = true } } }, nil, D)
+  check("kb19: an encoder press is refused unsupported on the console backend (nothing pressed, nothing owned)", r.ok and r.result.outcomes[1].refused == "unsupported" and r.result.outcomes[1].backend == "console" and (function() local sv = request("control.status", {}, nil, D).result.sessions["conn-82"]; for _, g in ipairs(sv and sv.gestureList or {}) do if g.kind == "button" then return false end end return true end)(), J(r))
+  state._serviceModules(tnow() + 0.01)
+  check("kb19: the loop issued the selection-scoped adjustments through Cmd()", consoleCmds[1] == 'Attribute "Dimmer" At + 2' and consoleCmds[2] == 'Attribute "Dimmer" At - 0.3' and #consoleCmds == 2, J(consoleCmds))
+  r = request("control.status", {}, nil, D)
+  check("kb19: lastApplied carries the command and ping's summary names the console backend", r.ok and r.result.lastApplied.result.command == 'Attribute "Dimmer" At - 0.3' and r.result.backendStatus.counters.applied == 2 and request("ping", {}, nil, D).result.control.backend == "console", J(r.result.lastApplied))
+  Main(nil, "control status"); Cleanup()
+  check("kb19: 'control status' names the console backend", logFound("control=console enabled") ~= nil, lastLog())
+  Main(nil, "control=fake"); Cleanup()
+  check("kb19: switching back to the fake backend is logged and the module reports it", state.control.backend == "fake" and request("control.status", {}, nil, D).result.backend == "fake")
+  Main(nil, "control=off"); Cleanup()
   state.clients = {}
   Cleanup()  -- the owning call's Cleanup: what the loop's end does on the console
   check("the stop keeps the unresolved release for the next run", #state.control.unresolved == 1 and state.control.unresolved[1].kind == "touch", J(state.control.unresolved))

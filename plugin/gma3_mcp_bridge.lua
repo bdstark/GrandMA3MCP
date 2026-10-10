@@ -47,13 +47,19 @@
 --                                               including records kept from a previous run. With no
 --                                               backend attached it attaches the records' own backend
 --                                               for cleanup only; input stays disabled.
--- Continuous control (KB-18, bridge 0.14.0 / gma3_mcp_control 0.1.0) is OFF by default and enabled per
--- start, or toggled while running. It admits the control.* ops: encoder motion, strip positions, touches
--- and encoder buttons from a surface, each stamped with the feedback module's binding generation and
--- admitted, ordered, coalesced and bounded by the control module before a backend applies them:
+-- Continuous control (KB-18, bridge 0.14.0 / gma3_mcp_control 0.1.0; KB-19, bridge 0.15.0 / control
+-- 0.2.0) is OFF by default and enabled per start, or toggled while running. It admits the control.* ops:
+-- encoder motion, strip positions, touches and encoder buttons from a surface, each stamped with the
+-- feedback module's binding generation and admitted, ordered, coalesced and bounded by the control
+-- module before a backend applies them:
 --   Plugin "gma3_mcp_bridge" "control=fake"     admit control.* ops on the FAKE backend (intents are
---                                               recorded, nothing moves on the console; KB-18 ships
---                                               this backend only, the adjustment backend is KB-19)
+--                                               recorded, nothing moves on the console)
+--   Plugin "gma3_mcp_bridge" "control=console"  admit them on the CONSOLE backend (KB-19): relative
+--                                               motion on an attribute slot of the bound display is
+--                                               applied as  Attribute "<name>" At +/- <detents x step>
+--                                               for the selection (Percent/PercentFine readout, Coarse
+--                                               1 / Fine 0.1 per detent, fine gesture /10); presses,
+--                                               touches, positions and executors are refused unsupported
 --   Plugin "gma3_mcp_bridge" "control=off"      stop admitting; end every gesture, drop queued motion
 --   Plugin "gma3_mcp_bridge" "control status"   print sessions, gestures, queues and unresolved releases
 --   Plugin "gma3_mcp_bridge" "control recover"  re-attempt the unresolved touch/button releases
@@ -138,7 +144,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.14.0"
+local VERSION      = "0.15.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -2300,7 +2306,7 @@ end
 local function requireControlEnabled()
   if state.stopRequested then error("[stopping] the bridge is stopping", 0) end
   if not state.control.enabled then
-    error('[control-disabled] continuous control is disabled on the console. The console operator can enable it with:  Plugin "gma3_mcp_bridge" "control=fake"  (intents recorded, nothing moves; KB-18) or start the bridge with that argument. control.bind, control.status, control.close and control.recover remain available.', 0)
+    error('[control-disabled] continuous control is disabled on the console. The console operator can enable it with:  Plugin "gma3_mcp_bridge" "control=fake"  (intents recorded, nothing moves; KB-18) or  Plugin "gma3_mcp_bridge" "control=console"  (attribute adjustments for encoder slots; KB-19), or start the bridge with that argument. control.bind, control.status, control.close and control.recover remain available.', 0)
   end
 end
 
@@ -2337,7 +2343,8 @@ controlSummary = function()
     moduleInputEnabled = st and st.inputEnabled or false, sessions = sessions, gestures = gestures, queued = queued,
     unresolved = st and #st.unresolved or 0, unresolvedFromPreviousRun = #state.control.unresolved,
     spec = state.control.spec, counters = st and st.counters or nil,
-    note = "KB-18: admission, ordering, coalescing and bounds; the fake backend records intents and moves nothing on the console (KB-19 adds the adjustment backend)",
+    note = state.control.backend == "console" and "KB-19: relative motion on attribute slots is applied as Attribute \"<name>\" At +/- <amount> for the selection; presses, touches, positions and executors are refused unsupported" or "KB-18: admission, ordering, coalescing and bounds; the fake backend records intents and moves nothing on the console (control=console applies attribute adjustments, KB-19)",
+    backendStatus = st and st.backendStatus or nil,
   }
 end
 
@@ -3293,9 +3300,9 @@ local function parseArgument(argument)
     elseif l == "nocontrol" then
       opts.control = false
     elseif key == "control" then
-      if val == "fake" then opts.control, opts.controlBackend = true, "fake"
+      if val == "fake" or val == "console" then opts.control, opts.controlBackend = true, val
       elseif val == "off" or val == "0" or val == "no" or val == "false" or val == "none" then opts.control = false
-      else return nil, string.format("\"%s\": expected control=fake or control=off (KB-18 ships the fake backend only)", tok) end
+      else return nil, string.format("\"%s\": expected control=fake, control=console or control=off", tok) end
     elseif l == "input" then
       opts.inputToken = true  -- followed by "status" or "recover"; alone it is an error (no default backend)
     elseif l == "noinput" then
@@ -3332,7 +3339,7 @@ local function parseArgument(argument)
       if not port or port < 1 or port > 65535 then return nil, string.format("\"%s\" is not a valid port number (expected 1-65535)", tok) end
       opts.port = port
     else
-      return nil, string.format("\"%s\" is not a recognised argument (expected a port number, \"stop\", \"status\", \"lua\", \"lua on|off\", \"luatime=<ms>\", \"luasteps=<n>\", \"luahook=preserve|replace\", \"input=keyboard|fake|quickey|mixed|off\", \"input status\", \"input recover\", \"bank=<quickey>/<page>.<first>-<last>\", \"bankcodes=hardkeys|qualified\", \"bank status\", \"bank verify\", \"bank teardown\", \"control=fake|off\", \"control status\" or \"control recover\")", tok)
+      return nil, string.format("\"%s\" is not a recognised argument (expected a port number, \"stop\", \"status\", \"lua\", \"lua on|off\", \"luatime=<ms>\", \"luasteps=<n>\", \"luahook=preserve|replace\", \"input=keyboard|fake|quickey|mixed|off\", \"input status\", \"input recover\", \"bank=<quickey>/<page>.<first>-<last>\", \"bankcodes=hardkeys|qualified\", \"bank status\", \"bank verify\", \"bank teardown\", \"control=fake|console|off\", \"control status\" or \"control recover\")", tok)
     end
     prev = l
   end
@@ -3344,7 +3351,7 @@ local function parseArgument(argument)
   end
   if opts.bankCodes and not opts.bank then return nil, "\"bankcodes\" needs a bank=... range in the same argument" end
   if opts.controlToken and opts.command == nil and opts.control == nil then
-    return nil, "\"control\": expected control=fake, control=off, \"control status\" or \"control recover\" (there is no default backend)"
+    return nil, "\"control\": expected control=fake, control=console, control=off, \"control status\" or \"control recover\" (there is no default backend)"
   end
   return opts
 end
@@ -3388,8 +3395,9 @@ local function applyInputPolicy(opts)
   end
 end
 
--- Continuous control (KB-18): the fake backend is attached to the running control instance; disabling
--- ends every gesture through it and drops queued motion.
+-- Continuous control (KB-18/KB-19): the chosen backend is attached to the running control instance
+-- (fake: intents recorded; console: attribute adjustments through Cmd()); switching backends or
+-- disabling ends every gesture through the previous backend and drops queued motion.
 local function applyControlPolicy(opts)
   if opts.control == nil then return end
   local rec = state.running and state.modules.control or nil
@@ -3397,7 +3405,21 @@ local function applyControlPolicy(opts)
   if opts.control then
     local backend = opts.controlBackend or "fake"
     if rec then
-      local okA, err = pcall(function() rec.instance:enableInput(rec.module.fakeBackend()) end)
+      if state.control.enabled and state.control.backend ~= backend then
+        local okD, r = pcall(rec.instance.disableInput, rec.instance, now(), "backend-switch")
+        if okD and type(r) == "table" then
+          for _, e in ipairs(r.ended or {}) do log("control: switching to %s: %s on %s/%s ended on %s: %s", backend, tostring(e.kind), tostring(e.device), tostring(e.control), tostring(state.control.backend), tostring(e.outcome)) end
+          if (r.dropped or 0) > 0 then log("control: switching to %s: %d queued intent(s) dropped", backend, r.dropped) end
+        end
+      end
+      local okA, err = pcall(function()
+        if backend == "console" then
+          if type(rec.module.consoleBackend) ~= "function" then error("the loaded control module " .. tostring(rec.version) .. " has no console backend (0.2.0 or newer is needed)", 0) end
+          rec.instance:enableInput(rec.module.consoleBackend(rec.module.consoleDeps(_G)))
+        else
+          rec.instance:enableInput(rec.module.fakeBackend())
+        end
+      end)
       if not okA then logerr("control: %s; control stays %s", tostring(err), state.control.enabled and "enabled" or "disabled"); return end
       if #state.control.unresolved > 0 then
         local a = rec.instance:adopt(state.control.unresolved, now())
@@ -3408,7 +3430,11 @@ local function applyControlPolicy(opts)
       logerr("control: the module is not loaded; the policy is recorded for the next start")
     end
     state.control.enabled, state.control.backend = true, backend
-    log("control now enabled on the %s backend (intents are recorded; nothing moves on the console until KB-19)", backend)
+    if backend == "console" then
+      log("control now enabled on the console backend: relative motion on attribute slots is applied as Attribute \"<name>\" At +/- <amount> for the selection (KB-19); presses, touches, positions and executors are refused unsupported")
+    else
+      log("control now enabled on the fake backend (intents are recorded; nothing moves on the console)")
+    end
   else
     state.control.enabled = false
     if rec then

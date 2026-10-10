@@ -568,7 +568,7 @@ console reads) and are requested explicitly, through `contextSnapshot()`, or wat
 | --- | --- | --- |
 | `dataPool` | user | `{name, no}` of `DataPool()` |
 | `encoderBank` | display | `params.display` (default `config.encoderDisplay` = 1): `{display, bar, bank {index, name, pages}, page {index, name, slots}, banks, context, attributeEditing, unsupported?, poolUnavailable?}`; indexes are 1-based (the selectors' `SelectedItemValueI64` is 0-based); `context ~= "Default"` is available but `unsupported` (editors, timing, phasers are not qualified); a selector value without a pool page keeps the index and reports `poolUnavailable` |
-| `encoderSlots` | display | the pool page's ordered slots (`config.maxSlots` = 5), **flat** records: `slot, kind (attribute | other | empty), ref, name, attributeIndex, objectType, label` (the on-screen band), `feature, unit, readout, readoutSource, resolution, resolutionSource` (`user-preference` > `attribute-definition` > `encoder-band`), `pressFactor, layer` (the profile's), `color, channelFunctions, channelFunction` (the selector's text), `availability` (`no-selection | available | unavailable | mixed`), `fixtures, with, partial`, `valueState` (`none | value | empty | mixed | unavailable`), `absolute, raw, valueChannelFunction, valueFixture, uiChannel, valueNote`, `outerRef/outerName/outerUnsupported`, `unsupported`, `attributeUnavailable`; plus `selection {count, scanned, fixtures, identityComplete, partial, limitations}`: the attribute scan is bounded by `config.maxSelectionScan` (8) fixtures and `config.maxUIChannels` (64) channels each (a grouping fixture read through its first subfixture), while `fixtures` is the **whole** selection's ids walked without channel reads up to `config.maxSelectionIdentity` (512); `identityComplete` is true only after a traversal that ended by itself within that bound with exactly `count` distinct ids (a nil or raising `SelectionFirst`, a `SelectionNext` that ends early, repeats a fixture, fails or is missing leave it false) |
+| `encoderSlots` | display | the pool page's ordered slots (`config.maxSlots` = 5), **flat** records: `slot, kind (attribute | other | empty), ref, name, attributeIndex, objectType, label` (the on-screen band), `feature, unit, readout, readoutSource, resolution, resolutionSource` (`user-preference` > `attribute-definition` > `encoder-band`), `pressFactor, layer` (the profile's), `color, channelFunctions, channelFunction` (the selector's text), `availability` (`no-selection | available | unavailable | mixed`), `fixtures, with, partial`, `valueState` (`none | value | empty | mixed | unavailable`), `absolute, raw, valueChannelFunction, valueFixture, uiChannel, valueNote`, since 0.4.0 (KB-19) `physicalFrom, physicalTo, physicalRange, physicalFunction, physicalFunctionIndex, physicalFunctions, physicalFixtures, physicalMixed?, physicalNote?` (the range of the channel function that names the attribute, read from `GetUIChannel(ui).logical_channel` for every scanned fixture with the channel; the **smallest** range when fixture types differ, `physicalMixed` saying so) or `physicalUnavailable`, `outerRef/outerName/outerUnsupported`, `unsupported`, `attributeUnavailable`; plus `selection {count, scanned, fixtures, identityComplete, partial, limitations}`: the attribute scan is bounded by `config.maxSelectionScan` (8) fixtures and `config.maxUIChannels` (64) channels each (a grouping fixture read through its first subfixture), while `fixtures` is the **whole** selection's ids walked without channel reads up to `config.maxSelectionIdentity` (512); `identityComplete` is true only after a traversal that ended by itself within that bound with exactly `count` distinct ids (a nil or raising `SelectionFirst`, a `SelectionNext` that ends early, repeats a fixture, fails or is missing leave it false) |
 | `executorTarget` | page | `params.executor`: `{executor, page, empty, assigned, functions {keyPress, keyUnpress, keyUnpressCombined, fader, encoder, encoderLeft, encoderRight}, configuration, isXKey, width, level {token, value, text} | {unavailable}` (the token of the **configured** fader function, `Fader<fn>`), `active | activeUnavailable, appearance {name, backRGBA, color} | appearanceUnavailable, playbackTarget, reason?, reserved?}`; a `Quickey` object or an executor inside `deps.reservedExecutors()` (the bridge wires its KB-12 bank) is never a playback target |
 | `pageExecutors` | page | index, name and class of every assigned executor of the current page, bounded by `config.maxExecutors` |
 
@@ -599,9 +599,10 @@ exposes them ([reference](reference.md#control-context-plugin-v0130-kb-17)).
 
 A third module carries encoder motion and strip gestures from a surface to the console without stale input
 affecting a new target. It is loaded like the other two (a ComponentLua that only returns a table), touches no console
-API itself (the binding and the other input owner are injected by the consumer through `deps.binding(now)` and
-`deps.busy(sessionId, now)`), and in this version ships the **fake backend only**: intents are admitted, ordered,
-coalesced, bounded and recorded, and nothing moves on the console (the adjustment backend is KB-19).
+API itself for admission (the binding and the other input owner are injected by the consumer through `deps.binding(now)` and
+`deps.busy(sessionId, now)`). 0.1.0 shipped the **fake backend only**: intents are admitted, ordered,
+coalesced, bounded and recorded, and nothing moves on the console; 0.2.0 adds the console adjustment backend
+([below](#console-adjustment-backend-gma3_mcp_control-020-kb-19)).
 
 | Event | Fields | Meaning |
 | --- | --- | --- |
@@ -620,10 +621,10 @@ Every event carries `device`, `control`, `seq` (strictly increasing per session 
 | `submit(sessionId, now, event)` | admission in this order: session and lease; shape (`bad-event`); per-device order (`duplicate` for a seen `seq`, `out-of-order` for an older unseen one within `seqWindow`, a gap is accepted and reported as `lost`; a **delayed release** newer than its own hold's press is admitted `late` even after another control advanced the device and regardless of `seqWindow`, it ends that hold and never a newer one); per-device rate for motion (`rate`, dropped not deferred; releases are never rate-refused); a **release** (`touch`/`button` with `down = false`) is then admitted without a binding and with reserved queue capacity (`maxQueue + maxHolds`, the session's oldest motion evicted first; `noop` when nothing is down; a release that still cannot be queued is refused `queue-full` and the hold stays owned for its retransmission); everything else needs the binding (`binding-unknown` while no generation is claimed or while the snapshot is `stale`), the event's binding revision (`binding-required` when it carries none and the consumer did not declare a fixed binding with `config.requireBindingRevision = false`; `stale-binding`: the snapshot's `bindingKey` changed, so the module dropped every queued intent except releases, which still end their holds against the captured targets, rebound every hold and reports the new `revision`), the event's generation (`stale-generation`, the current one reported), a resolvable target (`target-unavailable` with the binding's reason: no selection, unavailable, empty slot, empty executor, not a playback target, no such function; `unsupported` for phaser/editor slots), no rebound touch (`gesture-rebound`: the touch was held under another generation or binding, whether or not motion was queued; release and re-touch), no other input owner (`busy` from `deps.busy` unless it is this session), no other session's gesture on the target (`conflict` with the owner), `capacity` (`maxHolds` touches/buttons down) and room in the queue (`queue-full`: motion is refused; a release evicts the session's oldest motion instead). Returns `{ accepted, queued, coalesced?, superseded?, lost, target, generation, mixed?, stateful?, boundary?, noop? }` |
 | `service(now)` | lease expiries and `maxGestureMs` force-ends first, idle motion gestures lapse (`gestureIdleMs`), then at most `maxWorkPerService` queued intents in order through `adapter.apply(intent, now)`; motion older than `maxEventAgeMs` is dropped `expired`, motion whose generation is no longer the binding's is dropped `staleGeneration` (and marks the touch that produced it `rebound`); returns `{ applied, dropped {expired, staleGeneration, refused}, unresolved[], expired[], ended[], work, pending }` |
 | `admission(now)` | the busy descriptor (`touch-down`, `button-down`, `motion` within `gestureIdleMs`, `queued`) or nil |
-| `enableInput(adapter)` / `disableInput(now, reason)` / `attachBackend(adapter)` / `backendAvailable()` | as for hardkeys; `fakeBackend()` records intents and stages refusals (`failNext`) and raises (`raiseNext`) |
+| `enableInput(adapter)` / `disableInput(now, reason)` / `attachBackend(adapter)` / `backendAvailable()` | as for hardkeys; `fakeBackend()` records intents and stages refusals (`failNext`) and raises (`raiseNext`); an adapter may declare `supports(kind, resolvedTarget) -> true | false, reason` and `submit` then refuses what it does not serve as `unsupported` (with `backend` and `reason`) right after the target resolves, before any gesture or queue entry (0.2.0) |
 | `recover(now)` / `adopt(records, now)` / `dispose(now)` | a release the backend raised on is an **unresolved** record (whether the console saw it is unknown); `dispose()` hands the records back, `adopt()` takes them into a new instance, `recover()` re-attempts each record of a detached batch once per call (a persistent fault is retained once, never retried in a loop) |
 | `bindingInfo(now)` | the current binding `revision` (monotonic per instance, moved by a changed `bindingKey`), `key` and `generation`, or `unknown` with the reason; consumers hand the revision to their clients so events can carry `binding` |
-| `status(now)` | read-only: sessions (devices with `last/lost/duplicates/reordered/rateDropped`, gestures with `rebound`), counters, the bounded event log, unresolved records, `lastApplied` |
+| `status(now)` | read-only: sessions (devices with `last/lost/duplicates/reordered/rateDropped`, gestures with `rebound`), counters, the bounded event log, unresolved records, `lastApplied` (with the backend's `result`), `backendStatus` when the adapter has a `status()` (0.2.0) |
 
 **Coalescing.** Relative deltas merge into the queue's tail only when it is motion of the same session, device, control,
 target, generation, resolution, fine flag and gesture, and nothing else was queued since; a touch or button event, a
@@ -637,6 +638,44 @@ the next one.
 `gestureIdleMs`); the bridge ORs `admission()` into its `[busy]` guard so `cmd`/`set`/`setfader`/`lua` from every
 other writer are refused while a surface gesture is active, and refuses motion while the hardkeys instance reports
 another owner (bridge 0.14.0, [reference](reference.md#continuous-control-plugin-v0140-kb-18)).
+
+## Console adjustment backend (`gma3_mcp_control` 0.2.0, KB-19)
+
+`consoleBackend(consoleDeps(_G), opts?)` (`deps.cmd(text)` is `Cmd`; `opts.fineDivisor` 10, `opts.eventLog` 64) applies
+**relative motion on attribute slots** as the selection-scoped adjustment KB-16 qualified live:
+
+```
+Attribute "<name>" At + <detents x step>      (At - for a negative delta; at most four decimals)
+```
+
+The name, layer, resolution, readout, channel function and physical range come from the resolved slot of the binding
+(the feedback 0.4.0 snapshot), never from the surface. `calibrate(resolvedSlot, fine?, config?)` (exported) gives the
+step of one detent or nil plus the reason, after the grandMA3 manual's "Encoder resolution" rule (24 clicks per turn,
+5 turns across the range) and the live measurements (KB-16 `At + 1` = one Coarse click at Percent; KB-19 Pan `At 10` =
+10 degrees):
+
+| Readout | Coarse | Fine | Needs |
+| --- | --- | --- | --- |
+| `Percent`, `PercentFine` | 1 | 0.1 | - |
+| `Physical` | `physicalRange / 120` in the attribute's physical unit | a tenth | `physicalRange` in the slot (feedback 0.4.0); an unreadable or empty range is refused |
+| anything else (`Dec8`, `Dec16`, `Hex` ...) | refused | refused | not measured |
+
+`fine = true` on the event divides the step by `fineDivisor` (an explicitly smaller adjustment, not the console's
+resolution toggle); resolutions other than Coarse/Fine (Increment, Native), layers other than Absolute, a
+channel-function selector naming a function other than the attribute's own, a quoted attribute name, phaser/editor
+slots and executor elements are refused. No acceleration is applied: n detents are n steps.
+
+`supports(kind, resolved)` serves `relative` on slots only: `button` (an encoder press: calculator/open/select is not
+qualified, nothing is pressed), `touch` and `absolute` (KB-20/22) and executor targets (KB-21/22) are refused
+`unsupported` at admission. A forced end of a hold reaching this backend (a hold admitted under another backend) is
+a noop. The console's feedback is the verdict: `OK` = applied (`lastApplied.result` carries `command, amount, step,
+fine, resolution, readout, physicalRange, attribute, slot, mixed, feedback`), anything else = `backend-refused` with the
+feedback, a raise = unresolved (a relative intent is never re-attempted). `status()` (in `Instance:status().backendStatus`)
+carries the counters (`applied/refused/raised/noop`), the last command and the calibration table; `capabilities` says
+`{ relative = true, absolute = false, touch = false, button = false, targets = { slot = true, executor = false } }`.
+The module publishes `CALIBRATION` and `backends = { fake, console }`. The bridge enables it with
+`control=console` (0.15.0, [reference](reference.md#continuous-control-plugin-v0140-kb-18)); the live evidence is
+[kb-19-adjust-macos-2.5.1.md](probes/kb-19-adjust-macos-2.5.1.md).
 
 ## Vendoring into another plugin (mtpnxk)
 
@@ -679,7 +718,7 @@ qualified there.
 ## Verification
 
 `npm test` runs [test/lua/modules_test.lua](../test/lua/modules_test.lua) (modules alone, no console
-API, route resolution including the native/ambiguous cases), [test/lua/control_admission_test.lua](../test/lua/control_admission_test.lua) (KB-18 against a hand-built binding snapshot and the fake backend: loading, sessions and leases, event validation, per-device duplicates/out-of-order/loss, binding-unknown and stale generations, every target refusal, coalescing and its boundaries, absolute supersession and stateful functions, queue/eviction/age/rate/holds/gesture/work bounds, generation moves while queued or touched and the rebound rule, conflicts and the busy descriptor, expiry/close/disable/dispose ending gestures, backend refusals and raises, recover/adopt, status), [test/lua/feedback_context_test.lua](../test/lua/feedback_context_test.lua) (KB-17 against a fake console: the registry, bank/page/context on the configured and requested display, slots with definitions, preferences, bands, mixed and empty selections, bounded scans, phaser and empty slots, executor targets including Quickey and reserved exclusions, page executors, live snapshots and every generation rule, cached snapshots through `watchContext()`/`service()`, missing dependencies), [test/lua/hardkeys_sessions_test.lua](../test/lua/hardkeys_sessions_test.lua)
+API, route resolution including the native/ambiguous cases), [test/lua/control_admission_test.lua](../test/lua/control_admission_test.lua) (KB-18 against a hand-built binding snapshot and the fake backend, KB-19 the console backend over a stub `Cmd`: calibration, admission refusals, command text, feedback verdicts; loading, sessions and leases, event validation, per-device duplicates/out-of-order/loss, binding-unknown and stale generations, every target refusal, coalescing and its boundaries, absolute supersession and stateful functions, queue/eviction/age/rate/holds/gesture/work bounds, generation moves while queued or touched and the rebound rule, conflicts and the busy descriptor, expiry/close/disable/dispose ending gestures, backend refusals and raises, recover/adopt, status), [test/lua/feedback_context_test.lua](../test/lua/feedback_context_test.lua) (KB-17 against a fake console: the registry, bank/page/context on the configured and requested display, slots with definitions, preferences, bands, mixed and empty selections, bounded scans, phaser and empty slots, executor targets including Quickey and reserved exclusions, page executors, live snapshots and every generation rule, cached snapshots through `watchContext()`/`service()`, missing dependencies), [test/lua/hardkeys_sessions_test.lua](../test/lua/hardkeys_sessions_test.lua)
 (the KB-03 session lifecycle on the fake backend: ownership, aliases, leases, taps, bounded deadline servicing, route
 changes, failed releases, disconnect, disable, dispose/adopt; the KB-04 keyboard adapter over stubbed console
 deps: argument passing, pre-dispatch refusals, raising `Keyboard()`, MASTATE readback, exclusive holds, combos,
@@ -703,6 +742,7 @@ interactions, the busy guard over two connections, sequences, command-line text 
 way ([record](probes/kb-05-input-macos-2.5.1.md)).
 `node scripts/kb06-probe.mjs verify|run` exercises the feedback readers, displays, executor expansion, bounds, side-effect
 freedom and reads while another connection owns input against a live bridge ([record](probes/kb-06-feedback-macos-2.5.1.md)).
+`node scripts/kb19-probe.mjs verify|run` exercises the console backend live: calibration per readout, coalesced, negative and fine deltas, clamping, a two-fixture relationship, colour pages, Pan/Tilt, a gobo slot, mixed fixtures, the empty selection, a page change with motion queued and the refusals ([record](probes/kb-19-adjust-macos-2.5.1.md)).
 `node scripts/kb17-probe.mjs verify|run|watch` exercises `feedback.context` live: identity, the authoritative display, slots, executor targets, cached snapshots through `feedback.watch`, and (`run`) the generation moving on selection, bank, page and executor-page changes but not on a value change ([record](probes/kb-17-context-macos-2.5.1.md)).
 `node scripts/kb02-probe.mjs verify` checks a live bridge: `ping.modules`, the `modules` op, and that the
 readers and key resolution return successful values (Blind readable, PLEASE resolved, Freeze and MA1

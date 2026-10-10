@@ -34,13 +34,22 @@
 -- property read); watch() them for service() polling and build the snapshot from the cache with
 -- opts.cached = true.
 --
--- MODULE API 1, module version 0.3.0. Lifecycle: new() -> init() -> read()/readMany()/watch()/service()
+-- Physical ranges (KB-19, 0.4.0): each attribute slot also carries the flat fields physicalFrom,
+-- physicalTo, physicalRange, physicalFunction, physicalFunctionIndex, physicalFunctions,
+-- physicalFixtures, physicalMixed?, physicalNote?: the range of the channel function that belongs to
+-- the slot's attribute, read from GetUIChannel(ui).logical_channel (the fixture type's logical channel:
+-- its children are the ChannelFunctions with PhysicalFrom/PhysicalTo) for every scanned fixture that
+-- has the channel; with several fixture types the smallest range is reported (the console sizes one
+-- encoder click by it, manual "Encoder resolution") and physicalMixed says they differ.
+-- physicalUnavailable carries the reason otherwise. The adjustment backend needs it for the Physical readout, where "At" takes
+-- physical units (live: Pan "At 10" = 10 degrees).
+-- MODULE API 1, module version 0.4.0. Lifecycle: new() -> init() -> read()/readMany()/watch()/service()
 -- ... -> dispose(). Consumers pass dependencies via opts.deps (consoleDeps(_G) builds lazy closures)
 -- and keep one instance each; the module table is read-only and nothing here uses globals or
 -- package.loaded.
 
 local NAME        = "gma3_mcp_feedback"
-local VERSION     = "0.3.0"
+local VERSION     = "0.4.0"
 local API_VERSION = 1
 
 local DEFAULTS = {
@@ -314,14 +323,57 @@ end
 --   availability: no-selection | available (every scanned fixture has the channel) | unavailable (none) | mixed (some)
 --   valueState:   none (nothing selected / no fixture has it) | value (every readable fixture agrees) | empty (the
 --                 programmer holds nothing for it) | mixed (fixtures disagree) | unavailable (GetProgPhaser gave nothing)
+-- The physical range of the channel function belonging to `attrName` on one UI channel (KB-19):
+-- GetUIChannel(ui).logical_channel -> ChannelFunctions (PhysicalFrom/PhysicalTo as raw numbers; the
+-- function's Attribute in the display role). nil plus a reason when it cannot be read.
+local function physicalOf(d, ui, attrName)
+  if type(d.logicalChannel) ~= "function" then return nil, "deps.logicalChannel missing" end
+  local ok, lc = pcall(d.logicalChannel, ui)
+  if not ok then return nil, "GetUIChannel failed: " .. tostring(lc) end
+  if lc == nil then return nil, "GetUIChannel gave no logical channel" end
+  local n = countOf(lc)
+  if n == 0 then return nil, "the logical channel has no channel functions" end
+  local fallback
+  for k = 1, n do
+    local cf = ptr(lc, k)
+    if cf ~= nil then
+      local okA, attr = pcall(function() return cf:Get("Attribute", d.enums().Roles.Display) end)
+      attr = okA and attr ~= nil and tostring(attr) or nil
+      local okR, from, to = pcall(function() return tonumber(cf.PhysicalFrom), tonumber(cf.PhysicalTo) end)
+      if okR and from ~= nil and to ~= nil then
+        local rec = { from = from, to = to, range = math.abs(to - from), ["function"] = str(field(cf, "name")), index = k, functions = n }
+        if attr == attrName then return rec end
+        if fallback == nil then fallback = rec end
+      end
+    end
+  end
+  if fallback then
+    fallback.note = "no channel function names attribute '" .. attrName .. "'; the first readable function's range is reported"
+    return fallback
+  end
+  return nil, "no channel function with a readable PhysicalFrom/PhysicalTo"
+end
+
 local function slotState(d, scan, attrName)
   local st = { fixtures = #scan.fixtures, with = 0, partial = scan.partial or nil }
   if scan.count == 0 then st.availability, st.valueState, st.valueNote = "no-selection", "none", "nothing is selected"; return st end
   local first, readErr, agree, anyValue, anyEmpty = nil, nil, true, false, false
+  local phys, physErr, physMixed = nil, nil, false
   for _, f in ipairs(scan.fixtures) do
     local ui = f.channels[attrName]
     if ui ~= nil then
       st.with = st.with + 1
+      -- KB-19: the smallest physical range across the scanned fixtures sizes one encoder click.
+      local pr, perr = physicalOf(d, ui, attrName)
+      if pr then
+        pr.fixtures = 1
+        if phys == nil then phys = pr
+        else
+          phys.fixtures = phys.fixtures + 1
+          if pr.from ~= phys.from or pr.to ~= phys.to then physMixed = true end
+          if pr.range < phys.range then local nfix = phys.fixtures; phys = pr; phys.fixtures = nfix end
+        end
+      else physErr = physErr or perr end
       local ok, ph
       if type(d.progPhaser) == "function" then ok, ph = pcall(d.progPhaser, ui) else ok, ph = false, "deps.progPhaser missing" end
       -- KB-17 live: GetProgPhaser(ui, false) returns nil for a channel the programmer holds nothing for and a
@@ -350,6 +402,11 @@ local function slotState(d, scan, attrName)
   elseif not anyValue then st.valueState, st.valueFixture, st.uiChannel = "empty", first.fixture, first.uiChannel; st.valueNote = "the programmer holds no value for this attribute (output values are not read here)"
   else st.valueState, st.absolute, st.raw, st.channelFunction, st.valueFixture, st.uiChannel = "value", first.absolute, first.raw, first.channelFunction, first.fixture, first.uiChannel end
   if readErr and st.valueState ~= "unavailable" then st.valueNote = (st.valueNote and (st.valueNote .. "; ") or "") .. "some fixtures could not be read: " .. readErr end
+  if phys then
+    if physMixed then phys.mixed = true; phys.note = (phys.note and (phys.note .. "; ") or "") .. "the scanned fixtures have different physical ranges; the smallest is reported (the console sizes one click by it)" end
+    if physErr then phys.note = (phys.note and (phys.note .. "; ") or "") .. "some fixtures' ranges could not be read: " .. physErr end
+    st.physical = phys
+  elseif st.with > 0 then st.physicalUnavailable = physErr or "no physical range readable" end
   return st
 end
 
@@ -505,7 +562,7 @@ local READERS = {
     identify = encoderIdent },
   encoderSlots = { scope = "display", context = true, params = { "display" }, paramless = true,
     source = "CurrentProfile().EncoderBarPool[bar][bank][page].Encoder n (InnerObject/OuterObject in the display role), AttributeDefinitions, UserAttributePreferences, the display's EncoderPlace bands, GetUIChannels/GetAttributeByUIChannel/GetProgPhaser per selected (sub)fixture",
-    note = "ordered slot assignments of the active page with attribute identity, label, unit, readout, resolution, layer, selection availability and programmer value state; the outer ring and non-attribute slots are reported but unsupported (KB-16)",
+    note = "ordered slot assignments of the active page with attribute identity, label, unit, readout, resolution, layer, selection availability, programmer value state and the physical range of the attribute's channel function on the selection (KB-19); the outer ring and non-attribute slots are reported but unsupported (KB-16)",
     fn = function(d, p, cfg)
       local n = displayParam(p, cfg)
       local ui, why = encoderUi(d, n)
@@ -553,6 +610,11 @@ local READERS = {
           local st = slotState(d, scan, inner.name)
           slot.availability, slot.fixtures, slot.with, slot.partial = st.availability, st.fixtures, st.with, st.partial
           slot.valueState, slot.absolute, slot.raw, slot.valueChannelFunction, slot.valueFixture, slot.uiChannel, slot.valueNote = st.valueState, st.absolute, st.raw, st.channelFunction, st.valueFixture, st.uiChannel, st.valueNote
+          if st.physical then
+            local ph = st.physical
+            slot.physicalFrom, slot.physicalTo, slot.physicalRange, slot.physicalFunction, slot.physicalFunctionIndex = ph.from, ph.to, ph.range, ph["function"], ph.index
+            slot.physicalFunctions, slot.physicalFixtures, slot.physicalMixed, slot.physicalNote = ph.functions, ph.fixtures, ph.mixed, ph.note
+          else slot.physicalUnavailable = st.physicalUnavailable end
         elseif slot.kind == "other" then
           slot.availability, slot.valueState = "unsupported", "unsupported"
           slot.unsupported = "slot object '" .. tostring(inner.ref) .. "' is not an attribute (InnerObjectType " .. tostring(slot.objectType) .. "); phaser/editor slots are not qualified (KB-16)"
@@ -704,6 +766,8 @@ local function consoleDeps(env)
     uiChannels = function(i) return env.GetUIChannels(i) end,
     attributeByUIChannel = function(ui) return env.GetAttributeByUIChannel(ui) end,
     progPhaser = function(ui) return env.GetProgPhaser(ui, false) end,
+    -- KB-19: the fixture type's logical channel behind a UI channel (its children are the channel functions)
+    logicalChannel = function(ui) local u = env.GetUIChannel(ui); return u and u.logical_channel end,
     subfixtureCount = function(i) return env.GetSubfixtureCount(i) end,
     subfixture = function(i, n) return env.GetSubfixture(i, n) end,
     attributeDefinitions = function() return env.Root().ShowData.LivePatch.AttributeDefinitions.Attributes end,

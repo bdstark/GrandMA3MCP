@@ -27,7 +27,7 @@ local CTL = assert(load(src, "=gma3_mcp_control.lua", "t", env))("test_plugin", 
 -------------------------------------------------------------------------------
 -- Loading contract
 -------------------------------------------------------------------------------
-check("module loads without console API", type(CTL) == "table" and CTL.VERSION == "0.1.0" and CTL.API_VERSION == 1 and type(CTL.new) == "function")
+check("module loads without console API", type(CTL) == "table" and CTL.VERSION == "0.2.0" and CTL.API_VERSION == 1 and type(CTL.new) == "function")
 check("module table is read-only", not pcall(function() CTL.x = 1 end) and CTL.x == nil)
 check("module registers in the signal table", signals.__gma3_mcp_modules.gma3_mcp_control == CTL)
 check("publishes nothing globally", package.loaded.gma3_mcp_control == nil and _G.gma3_mcp_control == nil)
@@ -41,7 +41,7 @@ local binding = {
   generation = 1,
   slots = { available = true, value = { selection = { count = 2, fixtures = { 401, 402 }, identityComplete = true }, slots = {
     { slot = 1, kind = "attribute", ref = "Attribute 1 'Dimmer'", name = "Dimmer", layer = "Absolute", resolution = "Coarse", readout = "Percent", channelFunction = "Dimmer", availability = "available" },
-    { slot = 2, kind = "attribute", ref = "Attribute 3 'Pan'", name = "Pan", layer = "Absolute", resolution = "Fine", readout = "Percent", channelFunction = "Pan", availability = "mixed" },
+    { slot = 2, kind = "attribute", ref = "Attribute 3 'Pan'", name = "Pan", layer = "Absolute", resolution = "Fine", readout = "Physical", channelFunction = "Pan", availability = "mixed", physicalRange = 450, physicalFrom = -225, physicalTo = 225, physicalMixed = true },
     { slot = 3, kind = "attribute", ref = "Attribute 7 'Gobo1'", name = "Gobo1", layer = "Absolute", resolution = "Coarse", readout = "Percent", channelFunction = "Gobo1", availability = "unavailable" },
     { slot = 4, kind = "other", ref = "Phaser 1", unsupported = true },
     { slot = 5, kind = "empty" } } } },
@@ -556,6 +556,102 @@ do
   local _ = b, b2
 end
 
+
+-------------------------------------------------------------------------------
+-- KB-19: the console adjustment backend (consoleBackend over a stub Cmd)
+-------------------------------------------------------------------------------
+do
+  local cmds, feedback, raise = {}, "OK", nil
+  local deps = { cmd = function(text) cmds[#cmds + 1] = text; if raise then local r = raise; raise = nil; error(r, 0) end; return feedback end }
+  check("kb19: consoleBackend needs deps.cmd; consoleDeps needs an env and raises on a missing Cmd at call time", not pcall(CTL.consoleBackend, {}) and not pcall(CTL.consoleDeps, nil) and not pcall(CTL.consoleDeps({}).cmd, "x") and CTL.consoleDeps({ Cmd = function() return "OK" end }).cmd("x") == "OK")
+  local function freshConsole(config)
+    config = config or {}
+    if config.requireBindingRevision == nil then config.requireBindingRevision = false end
+    local inst = CTL.new({ owner = "test", config = config, deps = { binding = function() return binding end, busy = function() return busyOwner end } }):init()
+    local b = CTL.consoleBackend(deps)
+    inst:enableInput(b)
+    inst:openSession({ id = "s" }, 1)
+    cmds = {}; feedback = "OK"; raise = nil
+    return inst, b
+  end
+  -- Calibration
+  local slot = { kind = "slot", slot = 1, name = "Dimmer", readout = "Percent", resolution = "Coarse", layer = "Absolute", channelFunction = "" }
+  check("kb19: Coarse at Percent is 1 per detent, Fine 0.1, PercentFine like Percent", CTL.calibrate(slot) == 1 and CTL.calibrate({ kind = "slot", slot = 1, name = "Pan", readout = "Percent", resolution = "Fine", layer = "Absolute" }) == 0.1
+    and CTL.calibrate({ kind = "slot", slot = 1, name = "Pan", readout = "PercentFine", resolution = "Coarse", layer = "Absolute" }) == 1)
+  check("kb19: a fine gesture divides the step by fineDivisor (10 by default, configurable)", CTL.calibrate(slot, true) == 0.1 and CTL.calibrate(slot, true, { fineDivisor = 5 }) == 0.2)
+  check("kb19: Physical readout: one Coarse detent is the attribute's range / 120 in physical units, Fine a tenth, a fine gesture a tenth again",
+    CTL.calibrate({ kind = "slot", slot = 1, name = "Pan", readout = "Physical", resolution = "Coarse", layer = "Absolute", physicalRange = 450 }) == 3.75
+    and CTL.calibrate({ kind = "slot", slot = 1, name = "Pan", readout = "Physical", resolution = "Fine", layer = "Absolute", physicalRange = 450 }) == 0.375
+    and math.abs(CTL.calibrate({ kind = "slot", slot = 1, name = "Pan", readout = "Physical", resolution = "Coarse", layer = "Absolute", physicalRange = 450 }, true) - 0.375) < 1e-9)
+  local _, rP = CTL.calibrate({ kind = "slot", slot = 1, name = "Pan", readout = "Physical", resolution = "Coarse", layer = "Absolute", physicalUnavailable = "deps.logicalChannel missing" })
+  local _, rZ = CTL.calibrate({ kind = "slot", slot = 1, name = "Shutter1", readout = "Physical", resolution = "Coarse", layer = "Absolute", physicalRange = 0, physicalFrom = 1, physicalTo = 1 })
+  check("kb19: Physical readout without a range in the binding, or with an empty range, is refused with the reason", rP:find("deps.logicalChannel missing") and rP:find("range / 120") and rZ:find("1..1 is empty"), J({ rP, rZ }))
+  local _, r1 = CTL.calibrate({ kind = "slot", slot = 1, name = "Pan", readout = "Dec8", resolution = "Coarse", layer = "Absolute" })
+  local _, r2 = CTL.calibrate({ kind = "slot", slot = 1, name = "Pan", readout = "Percent", resolution = "Native", layer = "Absolute" })
+  local _, r3 = CTL.calibrate({ kind = "slot", slot = 1, name = "Pan", readout = "Percent", resolution = "Coarse", layer = "Relative" })
+  local _, r4 = CTL.calibrate({ kind = "slot", slot = 1, name = "Gobo1", readout = "Percent", resolution = "Coarse", layer = "Absolute", channelFunction = "Gobo1 Shake" })
+  local _, r5 = CTL.calibrate({ kind = "executor", executor = 201 })
+  local _, r6 = CTL.calibrate({ kind = "slot", slot = 1, name = 'Bad"Name', readout = "Percent", resolution = "Coarse", layer = "Absolute" })
+  check("kb19: unqualified readout, resolution, layer, named channel function, executor and a quoted name are refused with the reason",
+    r1:find("readout Dec8") and r2:find("resolution Native") and r3:find("layer Relative") and r4:find("Gobo1 Shake") and r5:find("only encoder slots") and r6:find("quote"), J({ r1, r2, r3, r4, r5, r6 }))
+  -- Admission: what the backend does not serve is refused before a gesture or queue entry exists.
+  local inst, b = freshConsole()
+  check("kb19: the backend declares its capabilities and calibration", b.name == "console" and b.capabilities.relative == true and b.capabilities.button == false and b.capabilities.targets.slot == true and b.calibration.fineDivisor == 10 and b.calibration.note:find("one physical detent"))
+  local okB, eB = inst:submit("s", 1, button(1, 1, true))
+  check("kb19: an encoder press is refused unsupported at admission (calculator/open/select not qualified) and owns nothing", okB == nil and eB.code == "unsupported" and eB.reason:find("not qualified") and eB.backend == "console" and inst:status(1).sessions.s.gestures == 0 and inst:admission(1) == nil, J(eB))
+  local okT, eT = inst:submit("s", 1, touch(1, 201, true))
+  local okA, eA = inst:submit("s", 1, abs(2, 201, 0.5))
+  check("kb19: touches and positions are refused unsupported (KB-20/22)", okT == nil and eT.code == "unsupported" and okA == nil and eA.code == "unsupported" and eA.message:find("absolute on exec201.fader"), J({ eT, eA }))
+  binding.executors[1].value.functions.encoder = "Master"
+  local okE, eE = inst:submit("s", 1, { type = "relative", device = "nxk", control = "Enc201", seq = 3, generation = binding.generation, target = { executor = 201, element = "encoder" }, delta = 1, gesture = 1 })
+  binding.executors[1].value.functions.encoder = nil
+  check("kb19: relative motion on an executor encoder element is refused unsupported (KB-21/22)", okE == nil and eE.code == "unsupported" and eE.reason:find("executor elements"), J(eE))
+  local okF, eF = inst:submit("s", 1, rel(2, 2, 1))  -- slot 2: Pan, Fine, mixed availability
+  check("kb19: a mixed-availability slot with a calibrated resolution is admitted (the console leaves fixtures without the attribute untouched)", okF and okF.accepted and okF.mixed == true, J(eF))
+  binding.slots.value.slots[3].availability = "available"; binding.slots.value.slots[3].channelFunction = "Gobo1 Shake"
+  local okG, eG = inst:submit("s", 1, rel(3, 3, 1))
+  check("kb19: a slot whose channel-function selector names a function other than the attribute's own is refused unsupported with the reason (the attribute's own name or an empty selector is qualified)", okG == nil and eG.code == "unsupported" and eG.reason:find("Gobo1 Shake"), J(eG))
+  binding.slots.value.slots[3].availability = "unavailable"; binding.slots.value.slots[3].channelFunction = "Gobo1"
+  check("kb19: a refused event is counted and logged, nothing queued", inst:status(1).sessions.s.queued == 1 and inst:status(1).counters.refused >= 5)
+  -- Apply: the command text, sign, coalesced deltas, fine, feedback verdicts.
+  inst, b = freshConsole()
+  for i = 1, 3 do inst:submit("s", 1, rel(i, 1, 1)) end
+  inst:submit("s", 1, rel(4, 1, -5, { gesture = 2 }))
+  inst:submit("s", 1, rel(5, 1, 2, { fine = true, gesture = 3 }))
+  inst:submit("s", 1, rel(6, 2, 4, { gesture = 4 }))  -- Pan: Physical readout, range 450, Fine resolution -> 0.375 per detent
+  local sv = inst:service(1.01)
+  check("kb19: three coalesced detents become Attribute \"Dimmer\" At + 3; a negative delta At - 5; fine 2 detents At + 0.2; 4 detents of a Fine Physical slot (450 / 120 / 10 each) At + 1.5",
+    sv.applied == 4 and cmds[1] == 'Attribute "Dimmer" At + 3' and cmds[2] == 'Attribute "Dimmer" At - 5' and cmds[3] == 'Attribute "Dimmer" At + 0.2' and cmds[4] == 'Attribute "Pan" At + 1.5', J({ sv, cmds }))
+  local st = inst:status(1.02)
+  check("kb19: lastApplied carries the backend's result (command, amount, step, slot, attribute, physical range) and status carries the backend's counters and last command",
+    st.lastApplied.outcome == "applied" and st.lastApplied.result.command == 'Attribute "Pan" At + 1.5' and st.lastApplied.result.slot == 2 and st.lastApplied.result.mixed == true and st.lastApplied.result.physicalRange == 450 and st.lastApplied.result.physicalMixed == true and st.backendStatus.counters.applied == 4 and st.backendStatus.lastCommand.outcome == "applied" and b.counters.applied == 4, J(st.lastApplied))
+  feedback = "Illegal command"
+  inst:submit("s", 2, rel(7, 1, 1, { gesture = 5 }))
+  sv = inst:service(2.01)
+  check("kb19: feedback other than OK is a backend refusal (nothing changed), counted and recorded", sv.dropped.refused == 1 and inst:status(2.02).lastApplied.outcome == "refused" and inst:status(2.02).lastApplied.error.feedback == "Illegal command" and b.counters.refused == 1 and b.lastCommand.outcome == "refused", J(inst:status(2.02).lastApplied))
+  feedback = "OK"; raise = "Cmd raised"
+  inst:submit("s", 3, rel(8, 1, 1, { gesture = 6 }))
+  sv = inst:service(3.01)
+  check("kb19: a raising Cmd leaves relative motion unresolved (no record kept: a delta is never re-attempted) and is counted", #sv.unresolved == 1 and #inst:status(3.02).unresolved == 0 and b.counters.raised == 1 and inst:status(3.02).lastApplied.outcome == "unresolved", J(sv.unresolved))
+  -- A hold admitted under the fake backend is ended as a noop by the console backend (never pressed there).
+  local i2, fake = fresh()
+  i2:openSession({ id = "s" }, 1)
+  i2:submit("s", 1, button(1, 1, true))
+  i2:attachBackend(CTL.consoleBackend(deps))
+  local r = i2:closeSession("s", 2, "switch")
+  check("kb19: a release reaching the console backend is a noop end (nothing was pressed on the console)", r.ended[1].outcome == "applied" and i2:status(2).backendStatus.counters.noop == 1, J(r))
+  -- Switching backends: a consumer re-enables input with the console adapter; the fake still records.
+  local i3 = fresh()
+  i3:enableInput(CTL.consoleBackend(deps))
+  check("kb19: enableInput with the console backend replaces the fake", i3:status(1).backend == "console" and i3:backendAvailable())
+  -- Amount formatting: no exponent, at most 4 decimals, trailing zeros stripped.
+  inst, b = freshConsole()
+  inst:submit("s", 1, rel(1, 1, 4096, { fine = true }))
+  inst:submit("s", 1, rel(2, 1, 1, { fine = true, gesture = 2 }))
+  inst:service(1.01)
+  check("kb19: amounts are plain decimals", cmds[1] == 'Attribute "Dimmer" At + 409.6' and cmds[2] == 'Attribute "Dimmer" At + 0.1', J(cmds))
+end
+
 -------------------------------------------------------------------------------
 -- Status and the event log
 -------------------------------------------------------------------------------
@@ -567,7 +663,7 @@ do
   local st = inst:status(1.5)
   check("status: backend, capabilities, session view, bounded event log", st.backend == "fake" and st.capabilities.relative == true and st.sessions.s.label == "surface" and st.sessions.s.queued == 5 and #st.events == 3 and st.events[3].refused == "duplicate", J(st.events))
   check("status is read-only (no service side effects)", st.serviced == 0 and inst:status().sessions.s.queued == 5)
-  check("limitations and lists are published", #CTL.LIMITATIONS == 3 and #CTL.EVENT_TYPES == 4 and CTL.STATEFUL_FUNCTIONS.x == true and CTL.backends.fake == "fake")
+  check("limitations and lists are published", #CTL.LIMITATIONS == 3 and #CTL.EVENT_TYPES == 4 and CTL.STATEFUL_FUNCTIONS.x == true and CTL.backends.fake == "fake" and CTL.backends.console == "console" and CTL.CALIBRATION.readouts.Percent == 1)
   check("resolveTarget is exported for consumers", CTL.resolveTarget(binding, { slot = 1 }).key:find("^slot1") ~= nil)
 end
 

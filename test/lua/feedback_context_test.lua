@@ -21,7 +21,7 @@ local function loadModule(file)
   return chunk("test_plugin", (file:gsub("%.lua$", "")), {}, nil)
 end
 local FB = loadModule("gma3_mcp_feedback.lua")
-check("feedback 0.3.0 loads", FB.VERSION == "0.3.0" and FB.API_VERSION == 1)
+check("feedback 0.4.0 loads", FB.VERSION == "0.4.0" and FB.API_VERSION == 1)
 
 -------------------------------------------------------------------------------
 -- Fake console
@@ -85,6 +85,15 @@ local selection = { list = { 63, 64 } }
 local uiOf = { [63] = { 320, 321, 322, 1 }, [64] = { 420, 421, 2 }, [65] = { 520, 521, 522, 3 } }
 local attrOfUi = { [320] = "ColorRGB_R", [321] = "ColorRGB_G", [322] = "ColorRGB_B", [1] = "Dimmer", [420] = "ColorRGB_R", [421] = "ColorRGB_G", [2] = "Dimmer",
                    [520] = "ColorRGB_R", [521] = "ColorRGB_G", [522] = "ColorRGB_B", [3] = "Dimmer" }
+-- KB-19: logical channels (channel functions with physical ranges) per UI channel. Fixture 64's R has a
+-- smaller range than 63's; Dimmer on fixture 63 names no function for the attribute (fallback).
+local function cf(name, attr, from, to) local h = H({ Attribute = attr }); h.name = name; h.PhysicalFrom = from; h.PhysicalTo = to; return h end
+local logical = {
+  [320] = H({}, { cf("ColorRGB_R 1", "ColorRGB_R", 0, 1) }), [420] = H({}, { cf("ColorRGB_R 1", "ColorRGB_R", 0, 0.5) }), [520] = H({}, { cf("ColorRGB_R 1", "ColorRGB_R", 0, 1) }),
+  [321] = H({}, { cf("ColorRGB_G 1", "ColorRGB_G", 0, 1) }), [421] = H({}, { cf("ColorRGB_G 1", "ColorRGB_G", 0, 1) }), [521] = H({}, { cf("ColorRGB_G 1", "ColorRGB_G", 0, 1) }),
+  [322] = H({}, { cf("Gobo 1", "Gobo1", 0, 15), cf("ColorRGB_B 2", "ColorRGB_B", 0, 1) }), [522] = H({}, { cf("ColorRGB_B 1", "ColorRGB_B", 0, 1) }),
+  [1] = H({}, { cf("Dimmer 1", "Other", 0, 1) }), [2] = H({}, {}), [3] = H({}, { cf("Dimmer 1", "Dimmer", 0, 1) }),
+}
 local programmer = { [320] = { { absolute = 50, absolute_value = 8388608, channel_function = 0 } }, [420] = { { absolute = 50, channel_function = 0 } },
                      [321] = { { absolute = 50, channel_function = 0 } }, [421] = { { absolute = 60, channel_function = 0 } },
                      [322] = nil, [1] = { { absolute = 100 } }, [2] = { { absolute = 100 } },
@@ -135,6 +144,7 @@ local function deps(overrides)
     uiChannels = function(i) calls.ui = (calls.ui or 0) + 1; return uiOf[i] or {} end,
     attributeByUIChannel = function(ui) local n = attrOfUi[ui]; return n and { name = n } or nil end,
     progPhaser = function(ui) return programmer[ui] end,
+    logicalChannel = function(ui) if ui == 421 then error("GetUIChannel exploded") end return logical[ui] end,
     subfixtureCount = function() return 0 end,
     attributeDefinitions = function() return defs end,
     attributeIndex = function(n) return attrIndex[n] end,
@@ -209,6 +219,15 @@ check("slot 2: fixtures disagree -> mixed value with the first fixture's", s[2].
 check("slot 3: only one fixture has it -> mixed availability; nil from GetProgPhaser (nothing in the programmer, KB-17 live) -> empty value", s[3].name == "ColorRGB_B" and s[3].availability == "mixed" and s[3].with == 1 and s[3].valueState == "empty" and s[3].absolute == nil and s[3].valueNote:find("holds no value") and s[3].label == nil, json.encode(s[3]))
 check("slot 4: attribute missing from the definitions and from the selection is explicit", s[4].name == "ColorRGB_RY" and s[4].attributeUnavailable:find("not in the show's attribute definitions") and s[4].availability == "unavailable" and s[4].valueState == "none" and s[4].unit == nil and s[4].readoutUnavailable ~= nil and s[4].attributeIndex == 110, json.encode(s[4]))
 check("slot 5: empty slot", s[5].kind == "empty" and s[5].ref == nil and s[5].availability == "empty" and s[5].valueState == "none", json.encode(s[5]))
+check("kb19: slot 1 physical range is the smallest across the scanned fixtures and says they differ (flat fields)", s[1].physicalFrom == 0 and s[1].physicalTo == 0.5 and s[1].physicalRange == 0.5 and s[1].physicalFunction == "ColorRGB_R 1" and s[1].physicalFixtures == 2 and s[1].physicalMixed == true and s[1].physicalNote:find("smallest"), json.encode(s[1]))
+check("kb19: slot 2: one fixture's logical channel raised; the other's range is reported with the error in the note", s[2].physicalRange == 1 and s[2].physicalFixtures == 1 and s[2].physicalNote:find("GetUIChannel exploded"), json.encode(s[2]))
+check("kb19: slot 3 picks the channel function that names the attribute, not the first one", s[3].physicalFunction == "ColorRGB_B 2" and s[3].physicalFunctionIndex == 2 and s[3].physicalFunctions == 2 and s[3].physicalTo == 1, json.encode(s[3]))
+check("kb19: slot 4 (no fixture has it) carries no physical range", s[4].physicalRange == nil and s[4].physicalUnavailable == nil)
+check("kb19: Dimmer bank: a function that does not name the attribute is the fallback with a note; a channel without functions is unavailable per fixture", (function()
+  console.bank = 0
+  local rd = f:read("encoderSlots", nil, 2).value.slots[1]
+  console.bank = 3
+  return rd.name == "Dimmer" and rd.physicalFunction == "Dimmer 1" and rd.physicalNote:find("no channel function names attribute 'Dimmer'") and rd.physicalNote:find("no channel functions") and rd.physicalFixtures == 1 end)(), "see Dimmer slot")
 local flat = true
 for _, sl in ipairs(s) do for k, v in pairs(sl) do if type(v) == "table" then flat = false end end end
 check("slots are flat records (serialisable within the bridge's depth bound)", flat)
