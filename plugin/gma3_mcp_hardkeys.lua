@@ -4238,7 +4238,7 @@ function Instance:adoptMode(record, now)
   if self._mode then return fail("mode-exists", "a mode operation already exists (" .. self._mode.id .. ")") end
   self._modeSeq = (self._modeSeq or 0) + 1
   self._mode = { id = string.format("m%d", self._modeSeq), profile = record.profile, original = record.original, target = record.target, changedAt = record.changedAt or now,
-                 lastEventAt = now, owner = "previous-run", purpose = record.purpose, holds = {}, state = "unresolved", writes = record.writes or 0, adopted = true, pending = record.pending,
+                 lastEventAt = type(record.lastEventAt) == "number" and record.lastEventAt or now, owner = "previous-run", purpose = record.purpose, holds = {}, state = "unresolved", writes = record.writes or 0, adopted = true, pending = record.pending,
                  unresolved = { reason = "adopted from a previous run: " .. tostring(record.unresolved and record.unresolved.reason), since = now } }
   return self:_modeReport(now)
 end

@@ -1759,6 +1759,8 @@ local function inputRecover()
   if type(r.restoration) == "table" then
     if r.restoration.state == "restored" then
       log("input recover: keyboard-shortcut mode restoration %s restored (profile '%s', shortcuts back to %s, by %s%s)", tostring(r.restoration.id), tostring(r.restoration.profile), tostring(r.restoration.original), tostring(r.restoration.restoredBy), r.restoration.restoreNote and ("; " .. r.restoration.restoreNote) or "")
+    elseif r.restoration.state == "active" then
+      log("input recover: keyboard-shortcut mode restoration %s re-validated; the loop restores it %d ms after the last key event (%s)", tostring(r.restoration.id), tonumber(r.restoration.restoreInMs) or 0, tostring(r.restoration.revalidated and r.restoration.revalidated.note))
     else
       logerr("input recover: keyboard-shortcut mode restoration %s still unresolved: %s", tostring(r.restoration.id), tostring(r.restoration.unresolved and r.restoration.unresolved.reason))
     end
