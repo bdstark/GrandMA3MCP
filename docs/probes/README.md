@@ -19,6 +19,7 @@ They are evidence for [KEYBOARD.md](../../KEYBOARD.md), not automated regression
 | [kb-13-quickey-macos-2.5.1.md](kb-13-quickey-macos-2.5.1.md), [script report](kb-13-quickey-macos-2.5.1.json) (47/47; owned-Quickey backend: taps, MA1 hold with MASTATE, duplicate suppression, MA1+STORE chord, Fixture 1 Thru 5 Please sequence, refusals before dispatch, executor reassigned during a hold, restart with the stuck record, teardown refused in use) | macOS, onPC 2.5.1.0 |
 | [kb-14-timing-macos-2.5.1.md](kb-14-timing-macos-2.5.1.md), [script report](kb-14-timing-macos-2.5.1.json) (11/11; when char/key events are consumed relative to a same-chunk shortcut-mode change: chars and taps in the chunk, Escape/modifier on a later frame, a release in the other mode does not lift a modifier, disabling shortcuts drops MA) | macOS, onPC 2.5.1.0 |
 | [kb-14-run-macos-2.5.1.md](kb-14-run-macos-2.5.1.md), [script report](kb-14-run-macos-2.5.1.json) (32/32; `type`/`shortcutOrType`/`shortcut` routes with temporary shortcut-mode changes: insertion with the mode restored by the loop, mode kept through a hold, mode-conflict refusal, operator interference during a hold, recovery) | macOS, onPC 2.5.1.0 |
+| [kb-16-encoders-macos-2.5.1.md](kb-16-encoders-macos-2.5.1.md), [script report](kb-16-encoders-macos-2.5.1.json) (47/47; encoder bank/page/slot readers, profile pool, programmer values, signed adjustments, selection-dependent pages, executor press/release functions, fader tokens, page navigation) | macOS, onPC 2.5.1.0 |
 
 ## Running the KB-01 probe on another platform
 
@@ -117,3 +118,18 @@ adds three state changes on a show whose name contains `disposable`, `mcp-test` 
 nothing busy: Blind off/on, one fader of the first assigned executor to 25 or 75 and back, and `Go+`/`Off` of its
 sequence; each is read back through the feedback op and restored. Record:
 [kb-06-feedback-macos-2.5.1.md](kb-06-feedback-macos-2.5.1.md); record Windows separately.
+
+## Running the KB-16 encoder and executor probe
+
+`node scripts/kb16-probe.mjs verify [--out ...]` is **read-only** and needs a bridge with Lua enabled (0.12.0 or newer):
+it reads the encoder bank/page selectors, the on-screen places, the profile's encoder bar pool, attribute definitions,
+the display-2 and display-9 cases, the current page's executors with their key/fader/encoder functions, appearance,
+activity and fader tokens, and checks that nothing changed. `node scripts/kb16-probe.mjs run [--out
+docs/probes/kb-16-encoders-<os>-<version>.json]` adds state changes on a show whose name matches `disposable`, `mcp-test`
+or `scratch` with an empty selection and no held keys: selects fixture 401 (RGB) and 601 (beam), switches the Color
+bank and its pages, applies absolute and signed `Attribute ... At` adjustments read back through `GetProgPhaser`, presses
+and releases Temp/Flash/Toggle/Top executors, moves a Master and a Temp fader, and changes the executor page; it restores
+each change and ends with `ClearAll`. The fixture and executor numbers are those of the test show (`RGB_FIXTURE`,
+`BEAM_FIXTURE` at the top of `runPhase`; executors are picked by key function). `node scripts/kb16-probe.mjs watch
+[--seconds N]` prints the context whenever it changes while the operator works in onPC. Record:
+[kb-16-encoders-macos-2.5.1.md](kb-16-encoders-macos-2.5.1.md).
