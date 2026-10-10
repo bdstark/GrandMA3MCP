@@ -8,6 +8,10 @@ KB-03..KB-19 macros any more, so the plugin was re-imported from the library as 
 command line; the probe makes no operator decision itself). Verify ran first (8/8, nothing queued). A first `run` of
 the same revision passed 25/28 with three probe-side checks reading `lastApplied` after a request that bundled touch,
 position and lift (the lift's noop); the checks were pointed at the backend's last command and the run repeated 28/28.
+Re-run unchanged after the PR #24 review round 1 (`597ba47`: feedback reports `valueComplete`, a position on
+incompletely read values is refused `values-incomplete` unless `takeover`): the bridge re-imported from the library and
+restarted the same way, 28/28 again (the show's one- and two-fixture selections are complete reads, so every placement
+went through as before; the bounded-scan and failed-read refusals are harness evidence). The JSON report is this re-run's.
 
 ## Facts established before the run
 
