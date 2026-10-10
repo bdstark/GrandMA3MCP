@@ -161,7 +161,7 @@ Ops: `ping`, `cmd`, `lua`, `object`, `children`, `objects`, `dump`, `set`, `setf
 `input.status` and the fake-backend test control `input.fake` (below), since v0.6.0 `input.combo` (below), and since
 v0.7.0 the interaction and sequence ops `input.begin`, `input.extend`, `input.end`, `input.sequence`,
 `input.sequence.status`, `input.sequence.abort` ([below](#interactions-admission-text-and-sequences-plugin-v070-kb-05)), and since
-v0.8.0 the read-only feedback ops `feedback.describe` and `feedback.read` ([below](#console-feedback-plugin-v080-kb-06)), v0.13.0 `feedback.context`, `feedback.watch` and `feedback.unwatch` ([below](#control-context-plugin-v0130-kb-17)). See
+v0.8.0 the read-only feedback ops `feedback.describe` and `feedback.read` ([below](#console-feedback-plugin-v080-kb-06)), v0.13.0 `feedback.context`, `feedback.watch` and `feedback.unwatch` ([below](#control-context-plugin-v0130-kb-17)), and v0.14.0 the continuous-control ops `control.bind`, `control.open`, `control.renew`, `control.close`, `control.submit`, `control.status` and `control.recover` ([below](#continuous-control-plugin-v0140-kb-18)). See
 [`plugin/gma3_mcp_bridge.lua`](../plugin/gma3_mcp_bridge.lua).
 
 Error replies are `{"id", "ok": false, "error": "[code] message"}`; since v0.7.0 they also carry `code` (the bracketed
@@ -297,3 +297,29 @@ input's meaning changed, never for a value or level alone. `cached = true` serve
 plugin loop keeps for the spec given to `feedback.watch {display?, executors?}` (no read happens; items not yet observed
 are unavailable and no generation is claimed), `feedback.unwatch {}` stops that. Read-only, never guarded by the input
 admission, usable with Lua disabled; malformed arguments are `[bad-args]`, a feedback module older than 0.3.0 `[no-feedback]`.
+
+### Continuous control (plugin v0.14.0, KB-18)
+
+The `gma3_mcp_control` module ([modules](modules.md#continuous-control-admission-gma3_mcp_control-010-kb-18)) behind
+the `control.*` ops is OFF until the operator enables it (`Plugin "gma3_mcp_bridge" "control=fake"`; `control=off`,
+`control status`, `control recover` as for input). KB-18 ships the fake backend only: intents are recorded and nothing
+moves on the console. `control.bind {display?, executors?}` names what this bridge's events mean (the same spec
+`feedback.watch` takes; the loop keeps it observed and the cached generation is what events are checked against) and
+returns the current `generation` or why none is claimed, plus the `binding` revision: generations are per spec, so a
+replaced spec is a new revision (queued motion dropped, holds rebound) and events must carry `binding` as well as
+`generation` (`binding-required` without it, `stale-binding` with an old one, each naming the current revision; releases
+need neither). A snapshot built from stale observations is no binding
+(`binding-unknown`). `control.open {leaseMs?, label?}` / `control.renew` /
+`control.close` are this connection's session (`conn-<id>`, opened on demand by `control.submit`). `control.submit
+{events: [...]}` (at most 32 per request, or `event` for one) admits each event in order and reports every outcome in
+place: `{accepted, queued, coalesced?, superseded?, lost, target, generation}` or `{refused: code, message, ...}` with
+the module's codes (`bad-event`, `duplicate`, `out-of-order`, `rate`, `binding-unknown`, `stale-generation` with the
+current `generation`, `stale-binding` and `binding-required` with the current `binding`, `target-unavailable`, `unsupported`, `gesture-rebound`, `busy` with the other owner,
+`conflict` with the owning session, `capacity`, `queue-full`); a refusal never stops the batch. `control.status {}` is
+read-only (sessions with per-device order counters and gestures, counters, the bounded event log, unresolved releases,
+`busy`, `yourSession`); `control.recover {}` adopts the releases kept from a previous run and re-attempts every
+unresolved one. While a surface gesture is active (a touch or button down, motion within 500 ms, queued intents) the
+`[busy]` guard refuses `cmd`/`set`/`setfader`/`lua` for every connection with `detail.module = "control"`; motion is
+refused `busy` while the hardkeys instance reports another owner. A disconnect, `control=off`, a lease expiry or a
+stop ends the connection's gestures through the backend and drops its queued motion. `[control-disabled]` while the
+operator has not enabled control; `[no-module]` without the module; `[bad-args]` for malformed arguments.

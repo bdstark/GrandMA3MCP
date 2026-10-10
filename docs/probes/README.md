@@ -152,3 +152,18 @@ with Lua enabled, an empty selection and a programmer proven empty through the `
 move the generation, and `Page <other>`; each undo is registered before its change and run at the end
 (`scripts/lib/kb16-steps.mjs`). `node scripts/kb17-probe.mjs watch [--seconds N]` prints every snapshot whose generation
 moved while the operator works in onPC. Record: [kb-17-context-macos-2.5.1.md](kb-17-context-macos-2.5.1.md).
+
+## Running the KB-18 continuous-control admission probe
+
+`node scripts/kb18-probe.mjs verify [--out ...]` needs a bridge 0.14.0 or newer with the control module loaded and
+queues nothing: `control.status`, the `ping` summary, `control.bind` against the current executor page, a malformed
+event, a stale generation, an unbound executor and (on an empty selection) a slot without a selection are each
+refused in place, and `[control-disabled]` is reported while the operator has not enabled control. `node
+scripts/kb18-probe.mjs run [--out docs/probes/kb-18-control-<os>-<version>.json]` adds, on a show whose name matches
+`disposable`, `mcp-test` or `scratch` with `Plugin "gma3_mcp_bridge" "control=fake"` enabled by the operator (the
+probe never enables it; the fake backend records intents and moves nothing): `Fixture 401` (`KB18_RGB_FIXTURE`, undo
+registered first), a coalesced burst of ten deltas, a duplicate, a sequence gap reported as loss, an out-of-order
+event, a touch on a fader executor that makes `cmd` `[busy]` for a second connection and its position a `conflict`,
+position supersession (or every position kept for a stateful fader function), `ClearSelection` moving the generation
+(the old generation refused, queued motion dropped) and a third connection disconnecting with a button down. Record:
+[kb-18-control-macos-2.5.1.md](kb-18-control-macos-2.5.1.md).

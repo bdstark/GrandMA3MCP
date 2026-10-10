@@ -37,6 +37,8 @@ end
 
 local HK = loadModule("gma3_mcp_hardkeys.lua")
 local FB = loadModule("gma3_mcp_feedback.lua")
+local CT = loadModule("gma3_mcp_control.lua")
+check("control loads without console API (KB-18)", type(CT) == "table" and CT.API_VERSION == 1 and CT.VERSION == "0.1.0" and type(CT.new) == "function" and signals.__gma3_mcp_modules.gma3_mcp_control == CT and not pcall(function() CT.x = 1 end))
 check("hardkeys loads without console API", type(HK) == "table" and HK.API_VERSION == 1 and HK.VERSION == "0.10.0" and type(HK.new) == "function")
 check("feedback loads without console API", type(FB) == "table" and FB.API_VERSION == 1 and FB.VERSION == "0.3.0" and type(FB.new) == "function")
 check("module tables are read-only", not pcall(function() HK.state = {} end) and not pcall(function() FB.cache = {} end) and HK.state == nil)

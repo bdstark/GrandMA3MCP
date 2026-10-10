@@ -1,0 +1,652 @@
+{
+  "mode": "run",
+  "host": "127.0.0.1",
+  "port": 9800,
+  "startedAt": "2026-10-10T10:18:42.183Z",
+  "ping": {
+    "bridgeVersion": "0.14.0",
+    "build": {
+      "version": "2.5.1.0",
+      "codeType": "Release",
+      "hostType": "onPC"
+    },
+    "hostname": "bdsmbpm401",
+    "showfile": "mcp-test-disposable",
+    "user": "Admin",
+    "modules": {
+      "feedback": {
+        "loaded": true,
+        "version": "0.3.0"
+      },
+      "hardkeys": {
+        "loaded": true,
+        "version": "0.10.0"
+      },
+      "control": {
+        "loaded": true,
+        "version": "0.1.0"
+      }
+    },
+    "input": {
+      "unresolvedFromPreviousRun": 0,
+      "holds": 0,
+      "enabled": true,
+      "sessions": 0,
+      "bank": {
+        "provisioned": false
+      },
+      "backend": "keyboard",
+      "unresolved": 0,
+      "quarantined": 0,
+      "note": "ownership records, not physical key state; see input.status. busy: cmd/set/setfader/lua are refused for every connection while it is set",
+      "retained": 0,
+      "moduleInputEnabled": true
+    },
+    "control": {
+      "unresolvedFromPreviousRun": 0,
+      "enabled": true,
+      "sessions": 0,
+      "spec": {
+        "executors": [
+          191,
+          192,
+          193,
+          194,
+          195,
+          196,
+          197,
+          198
+        ]
+      },
+      "note": "KB-18: admission, ordering, coalescing and bounds; the fake backend records intents and moves nothing on the console (KB-19 adds the adjustment backend)",
+      "unresolved": 0,
+      "gestures": 0,
+      "backend": "fake",
+      "queued": 0,
+      "counters": {
+        "backendRefused": 0,
+        "staleDropped": 0,
+        "rateDropped": 0,
+        "admitted": 18,
+        "unresolved": 0,
+        "dropped": 0,
+        "lost": 3,
+        "refused": 10,
+        "applied": 8,
+        "evicted": 0,
+        "coalesced": 9,
+        "expired": 0
+      },
+      "moduleInputEnabled": true
+    },
+    "lua": {
+      "enabled": true
+    }
+  },
+  "steps": [
+    {
+      "name": "console",
+      "note": true,
+      "detail": {
+        "bridgeVersion": "0.14.0",
+        "build": {
+          "version": "2.5.1.0",
+          "codeType": "Release",
+          "hostType": "onPC"
+        },
+        "hostname": "bdsmbpm401",
+        "showfile": "mcp-test-disposable",
+        "user": "Admin",
+        "modules": {
+          "feedback": {
+            "loaded": true,
+            "version": "0.3.0"
+          },
+          "hardkeys": {
+            "loaded": true,
+            "version": "0.10.0"
+          },
+          "control": {
+            "loaded": true,
+            "version": "0.1.0"
+          }
+        },
+        "input": {
+          "unresolvedFromPreviousRun": 0,
+          "holds": 0,
+          "enabled": true,
+          "sessions": 0,
+          "bank": {
+            "provisioned": false
+          },
+          "backend": "keyboard",
+          "unresolved": 0,
+          "quarantined": 0,
+          "note": "ownership records, not physical key state; see input.status. busy: cmd/set/setfader/lua are refused for every connection while it is set",
+          "retained": 0,
+          "moduleInputEnabled": true
+        },
+        "control": {
+          "unresolvedFromPreviousRun": 0,
+          "enabled": true,
+          "sessions": 0,
+          "spec": {
+            "executors": [
+              191,
+              192,
+              193,
+              194,
+              195,
+              196,
+              197,
+              198
+            ]
+          },
+          "note": "KB-18: admission, ordering, coalescing and bounds; the fake backend records intents and moves nothing on the console (KB-19 adds the adjustment backend)",
+          "unresolved": 0,
+          "gestures": 0,
+          "backend": "fake",
+          "queued": 0,
+          "counters": {
+            "backendRefused": 0,
+            "staleDropped": 0,
+            "rateDropped": 0,
+            "admitted": 18,
+            "unresolved": 0,
+            "dropped": 0,
+            "lost": 3,
+            "refused": 10,
+            "applied": 8,
+            "evicted": 0,
+            "coalesced": 9,
+            "expired": 0
+          },
+          "moduleInputEnabled": true
+        },
+        "lua": {
+          "enabled": true
+        }
+      }
+    },
+    {
+      "name": "ping carries the control summary (enabled, backend, sessions, queued, spec)",
+      "pass": true,
+      "detail": {
+        "unresolvedFromPreviousRun": 0,
+        "enabled": true,
+        "sessions": 0,
+        "spec": {
+          "executors": [
+            191,
+            192,
+            193,
+            194,
+            195,
+            196,
+            197,
+            198
+          ]
+        },
+        "note": "KB-18: admission, ordering, coalescing and bounds; the fake backend records intents and moves nothing on the console (KB-19 adds the adjustment backend)",
+        "unresolved": 0,
+        "gestures": 0,
+        "backend": "fake",
+        "queued": 0,
+        "counters": {
+          "backendRefused": 0,
+          "staleDropped": 0,
+          "rateDropped": 0,
+          "admitted": 18,
+          "unresolved": 0,
+          "dropped": 0,
+          "lost": 3,
+          "refused": 10,
+          "applied": 8,
+          "evicted": 0,
+          "coalesced": 9,
+          "expired": 0
+        },
+        "moduleInputEnabled": true
+      }
+    },
+    {
+      "name": "control.status answers with the module version, limitations and no session for this connection",
+      "pass": true,
+      "detail": {
+        "version": "0.1.0",
+        "limitations": [
+          "KB-18 ships the fake backend only: intents are admitted, ordered, coalesced and bounded, and recorded; nothing moves on the console (the adjustment backend is KB-19)",
+          "generations are those of the consumer's binding source (one gma3_mcp_feedback instance and spec); events from a surface bound to another instance are refused as stale",
+          "packet loss is reported, never repaired: a lost relative delta is gone, a lost absolute position is superseded by the next one"
+        ]
+      }
+    },
+    {
+      "name": "feedback.context lists the executors of the current page",
+      "pass": true,
+      "detail": 32
+    },
+    {
+      "name": "control.bind watches the context and reports a generation (or why none is claimed) and the binding revision",
+      "pass": true,
+      "detail": {
+        "generationUnknown": true,
+        "note": "no generation: 12 item(s) not observed in this epoch (service() must observe every watched item first)",
+        "watched": 12,
+        "binding": 1
+      }
+    },
+    {
+      "name": "the cached snapshot claims a generation once the loop observed every part",
+      "pass": true,
+      "detail": {
+        "generation": 5,
+        "notObserved": 0
+      }
+    },
+    {
+      "name": "control.bind refuses malformed arguments [bad-args]",
+      "pass": true,
+      "detail": {
+        "ok": false,
+        "error": "[bad-args] args.display must be a positive integer",
+        "code": "bad-args"
+      }
+    },
+    {
+      "name": "verify: a malformed event, a stale generation, an unbound executor, a missing and a wrong binding revision are refused in place; nothing is queued",
+      "pass": true,
+      "detail": {
+        "accepted": 0,
+        "refused": 5,
+        "lost": 0,
+        "outcomes": [
+          "bad-event",
+          "stale-generation",
+          "target-unavailable",
+          "binding-required",
+          "stale-binding"
+        ]
+      }
+    },
+    {
+      "name": "verify: slot 1 without a selection is refused target-unavailable (no fixture is selected); nothing is queued",
+      "pass": true,
+      "detail": {
+        "accepted": 0,
+        "refused": 1,
+        "lost": 0,
+        "outcomes": [
+          "target-unavailable"
+        ]
+      }
+    },
+    {
+      "name": "verify: the session opened on demand has nothing queued and no gesture",
+      "pass": true,
+      "detail": {
+        "conn-468": {
+          "gestureList": [],
+          "renewals": 0,
+          "state": "active",
+          "expiresAt": 1791627537.7643,
+          "id": "conn-468",
+          "leaseMs": 15000,
+          "counters": {
+            "dropped": 0,
+            "evicted": 0,
+            "coalesced": 0,
+            "applied": 0,
+            "lost": 0,
+            "refused": 6,
+            "admitted": 0
+          },
+          "gestures": 0,
+          "queued": 0,
+          "remainingMs": 14950,
+          "devices": {
+            "probe-verify": {
+              "late": 0,
+              "reordered": 0,
+              "lost": 0,
+              "last": 0,
+              "rateDropped": 0,
+              "duplicates": 0
+            }
+          },
+          "openedAt": 1791627522.7643,
+          "binding": "client 468"
+        }
+      }
+    },
+    {
+      "name": "verify: control.close ends the session",
+      "pass": true,
+      "detail": {
+        "ok": true,
+        "result": {
+          "ended": [],
+          "dropped": 0,
+          "unresolved": [],
+          "session": "conn-468"
+        }
+      }
+    },
+    {
+      "name": "run: Fixture 401 selected; the cached generation moved and slot 1 is available",
+      "pass": true,
+      "detail": {
+        "generation": [
+          5,
+          6
+        ],
+        "slot1": [
+          "Dimmer",
+          "available",
+          "Coarse"
+        ]
+      }
+    },
+    {
+      "name": "run: a burst of 10 relative events on slot 1 is admitted and coalesced into one queued intent",
+      "pass": true,
+      "detail": {
+        "accepted": 10,
+        "refused": 0,
+        "lost": 0,
+        "outcomes": [
+          "queued",
+          "coalesced",
+          "coalesced",
+          "coalesced",
+          "coalesced",
+          "coalesced",
+          "coalesced",
+          "coalesced",
+          "coalesced",
+          "coalesced"
+        ]
+      }
+    },
+    {
+      "name": "run: a resent event (same seq) is a duplicate, never applied twice",
+      "pass": true,
+      "detail": {
+        "accepted": 0,
+        "refused": 1,
+        "lost": 0,
+        "outcomes": [
+          "duplicate"
+        ]
+      }
+    },
+    {
+      "name": "run: a sequence gap is accepted and reported as loss (3 lost), never replayed",
+      "pass": true,
+      "detail": {
+        "accepted": 1,
+        "refused": 0,
+        "lost": 3,
+        "outcomes": [
+          "queued"
+        ]
+      }
+    },
+    {
+      "name": "run: an older event after a newer one is out-of-order (dropped, not applied late)",
+      "pass": true,
+      "detail": {
+        "accepted": 0,
+        "refused": 1,
+        "lost": 0,
+        "outcomes": [
+          "out-of-order"
+        ]
+      }
+    },
+    {
+      "name": "run: the plugin loop applied the queued intents through the fake backend (coalesced delta, loss carried)",
+      "pass": true,
+      "detail": {
+        "counters": {
+          "dropped": 0,
+          "evicted": 0,
+          "coalesced": 9,
+          "applied": 2,
+          "lost": 3,
+          "refused": 2,
+          "admitted": 11
+        },
+        "lastApplied": {
+          "delta": 1,
+          "outcome": "applied",
+          "target": "slot1|Attribute 1 'Dimmer'|Absolute|Coarse",
+          "at": 1791627523.4162,
+          "result": {
+            "recorded": true
+          },
+          "kind": "relative"
+        }
+      }
+    },
+    {
+      "name": "run: a touch down on executor 191 (fader) is admitted",
+      "pass": true,
+      "detail": {
+        "accepted": 1,
+        "refused": 0,
+        "lost": 0,
+        "outcomes": [
+          "queued"
+        ]
+      }
+    },
+    {
+      "name": "run: a command from another connection is [busy] while the touch is down (the control module's gesture: touch-down or the motion just before it)",
+      "pass": true,
+      "detail": {
+        "ok": false,
+        "error": "[busy] a command is refused while input ownership is active: probe-nxk/Rotary1 of session conn-468 moved 320 ms ago. Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first",
+        "code": "busy",
+        "detail": {
+          "code": "busy",
+          "remainingMs": 180,
+          "reason": "motion",
+          "device": "probe-nxk",
+          "module": "control",
+          "message": "a command is refused while input ownership is active: probe-nxk/Rotary1 of session conn-468 moved 320 ms ago. Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first",
+          "control": "Rotary1",
+          "owner": "conn-468"
+        }
+      }
+    },
+    {
+      "name": "run: another connection's position for the touched target is a conflict with the owner",
+      "pass": true,
+      "detail": {
+        "accepted": 0,
+        "refused": 1,
+        "lost": 0,
+        "outcomes": [
+          "conflict"
+        ]
+      }
+    },
+    {
+      "name": "run: three positions of the touched master supersede each other (newest kept)",
+      "pass": true,
+      "detail": {
+        "accepted": 3,
+        "refused": 0,
+        "lost": 0,
+        "outcomes": [
+          "queued",
+          "superseded:1",
+          "superseded:2"
+        ]
+      }
+    },
+    {
+      "name": "run: the touch release is admitted as a boundary",
+      "pass": true,
+      "detail": {
+        "accepted": 1,
+        "refused": 0,
+        "lost": 0,
+        "outcomes": [
+          "queued"
+        ]
+      }
+    },
+    {
+      "name": "run: after the release and the loop applying it, commands are admitted again",
+      "pass": true,
+      "detail": {
+        "ok": true,
+        "result": {
+          "command": "Echo kb18-probe",
+          "feedback": "OK"
+        }
+      }
+    },
+    {
+      "name": "run: the probe's own motion makes its command [busy] (motion within gestureIdleMs); nothing fights the gesture",
+      "pass": true,
+      "detail": {
+        "ok": false,
+        "error": "[busy] a command is refused while input ownership is active: probe-nxk/Rotary1 of session conn-468 moved 17 ms ago. Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first",
+        "code": "busy",
+        "detail": {
+          "code": "busy",
+          "remainingMs": 483,
+          "reason": "motion",
+          "device": "probe-nxk",
+          "module": "control",
+          "message": "a command is refused while input ownership is active: probe-nxk/Rotary1 of session conn-468 moved 17 ms ago. Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first",
+          "control": "Rotary1",
+          "owner": "conn-468"
+        }
+      }
+    },
+    {
+      "name": "run: once the gesture lapsed ClearSelection is admitted and moves the generation; the applied motion stayed applied",
+      "pass": true,
+      "detail": {
+        "generation": [
+          6,
+          7
+        ],
+        "counters": {
+          "backendRefused": 0,
+          "staleDropped": 0,
+          "rateDropped": 0,
+          "admitted": 35,
+          "unresolved": 0,
+          "dropped": 0,
+          "lost": 6,
+          "refused": 19,
+          "applied": 14,
+          "evicted": 0,
+          "coalesced": 18,
+          "expired": 0
+        }
+      }
+    },
+    {
+      "name": "run: an event with the old generation is refused stale-generation with the current one",
+      "pass": true,
+      "detail": {
+        "accepted": 0,
+        "refused": 1,
+        "lost": 0,
+        "outcomes": [
+          "stale-generation"
+        ]
+      }
+    },
+    {
+      "name": "run: a third connection's button down on slot 1 is admitted and reported as its gesture",
+      "pass": true,
+      "detail": {
+        "accepted": 1,
+        "refused": 0,
+        "lost": 0,
+        "outcomes": [
+          "queued"
+        ]
+      }
+    },
+    {
+      "name": "run: the disconnect ended the button through the backend and forgot the session (lastApplied: button up, reason disconnect)",
+      "pass": true,
+      "detail": {
+        "lastApplied": {
+          "down": false,
+          "outcome": "applied",
+          "target": "slot1|Attribute 1 'Dimmer'|Absolute|Coarse",
+          "at": 1791627526.6023,
+          "result": {
+            "recorded": true
+          },
+          "kind": "button"
+        },
+        "sessions": [
+          "conn-468"
+        ]
+      }
+    },
+    {
+      "name": "run: cleanup ran every registered undo",
+      "pass": true,
+      "detail": [
+        {
+          "label": "control.close A",
+          "ok": true,
+          "detail": {
+            "ok": true,
+            "result": {
+              "ended": [],
+              "dropped": 0,
+              "unresolved": [],
+              "session": "conn-468"
+            }
+          }
+        },
+        {
+          "label": "ClearSelection",
+          "ok": true,
+          "detail": {
+            "ok": true,
+            "result": {
+              "command": "ClearSelection",
+              "feedback": "OK"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "run: the selection is empty again",
+      "pass": true,
+      "detail": {
+        "scanned": 0,
+        "limitations": [],
+        "partial": false,
+        "identityComplete": true,
+        "count": 0,
+        "fixtures": []
+      }
+    },
+    {
+      "name": "run: no session, gesture or queued intent is left; nothing is unresolved",
+      "pass": true,
+      "detail": {
+        "sessions": [],
+        "unresolved": []
+      }
+    }
+  ],
+  "finishedAt": "2026-10-10T10:18:47.600Z",
+  "passed": 30,
+  "failed": 0
+}

@@ -51,9 +51,9 @@ MCP client → stdio → Node.js MCP server → local TCP bridge → grandMA3 on
 
 The [Lua bridge plugin](plugin/gma3_mcp_bridge.lua) runs inside onPC and listens on `127.0.0.1:9800`.
 The [MCP server](src/index.ts) translates tool calls into bridge requests. Both parts are required for
-show inspection and workflow tools. The plugin also carries two instance-based
-[console interaction modules](docs/modules.md) (owned input sessions, read-only feedback) as extra
-components of the same XML. Input is off by default; the operator enables it per start on the console
+show inspection and workflow tools. The plugin also carries three instance-based
+[console interaction modules](docs/modules.md) (owned input sessions, read-only feedback, continuous-control
+admission) as extra components of the same XML. Input is off by default; the operator enables it per start on the console
 keyboard backend (`input=keyboard`, real key presses through `Keyboard()`), the owned-Quickey backend
 (`input=quickey`, real key presses through a provisioned Quickey bank on reserved executors), both on one instance
 (`input=mixed`, the Quickey default with per-key `Keyboard()` overrides; combinations that are not qualified are refused)

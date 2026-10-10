@@ -189,6 +189,52 @@ them on this onPC; if a console shows an encoder bar on several displays, the co
 - Serialize conflicting edits from multiple surfaces or MCP operations; do not let simultaneous writers silently fight over one target.
 - Test loss, duplicates, reordering, bursts, reconnects, stale generations, and context changes.
 
+### KB-18 results (console half, 2026-10-10; surface half in mtpnxk)
+
+`gma3_mcp_control` 0.1.0 and bridge 0.14.0 ([modules](docs/modules.md#continuous-control-admission-gma3_mcp_control-010-kb-18),
+[reference](docs/reference.md#continuous-control-plugin-v0140-kb-18)); live on macOS, onPC 2.5.1.0:
+[record](docs/probes/kb-18-control-macos-2.5.1.md), [script report](docs/probes/kb-18-control-macos-2.5.1.json)
+(`scripts/kb18-probe.mjs run`, 30/30). Existing MCP tools and ops are unchanged; no TypeScript changed.
+
+- **Events:** `relative` (delta in detents), `absolute` (0..1), `touch` and `button` (down/up), each with device,
+  control, per-device sequence, the feedback module's binding generation, a gesture id (motion, touches) and a target
+  (`{slot}` or `{executor, element}`); a surface's intent is resolved against the binding, never against attribute names.
+- **Admission (`submit`):** expired/unknown sessions, malformed events, duplicates (`duplicate`), older unseen
+  sequence numbers (`out-of-order`, never applied late; a delayed release newer than its own press is admitted late
+  and ends only that hold) and gaps (accepted, `lost` reported: loss is reported, never replayed) are decided per
+  device before the binding; motion needs the binding's current generation and revision (`stale-generation` and
+  `stale-binding` carry the current ones, `binding-unknown` while none is claimed or the snapshot is stale) and a
+  resolvable target with the binding's reason otherwise; a touch held under another generation or binding is
+  `gesture-rebound` until released; queued motion is re-checked at apply time and dropped when the generation,
+  revision or freshness moved.
+- **Coalescing:** relative deltas merge only within one session, device, control, target, generation, resolution,
+  fine flag and gesture, and never across a touch/button or generation boundary; absolute positions supersede a queued
+  one only for stateless functions (attribute slots, `Master`, `Rate`, ...); `X`/`XA`/`XB`/crossfade/`Temp` keep every
+  position in order, so endpoint transitions are never skipped.
+- **Bounds:** queue 64 per session (motion refused `queue-full`; a release evicts the oldest motion and has reserved
+  capacity, and when even that is used it is refused with the hold kept owned for its retransmission), event age 250 ms at apply time (`expired`), 400 motion events/s per device (`rate`, dropped not deferred;
+  releases are never rate-refused or expired), 4 intents applied per loop iteration, 30 s gesture ceiling, 16 holds.
+- **Serialisation:** a touched/pressed target belongs to its session (motion keeps it 500 ms); another session gets
+  `conflict`; the bridge's `[busy]` guard refuses `cmd`/`set`/`setfader`/`lua` from every connection while a surface
+  gesture is active (`detail.module = "control"`), and motion is refused `busy` while the hardkeys instance reports
+  another owner. A disconnect, lease expiry, `control=off` or stop ends gestures through the backend, drops queued
+  motion and keeps a release the backend raised on for `control recover` (adopted across restarts).
+- **Bridge:** `control=fake|off`, `control status`, `control recover` arguments (Macros 118/119 on the test show);
+  `control.bind/open/renew/close/submit/status/recover` ops (32 events per request), binding = the bridge's feedback
+  instance cached for the bound spec.
+- **Harness:** `test/lua/control_admission_test.lua` (139 checks, including the PR review's late releases (beyond the
+  sequence window too), release capacity, recovery batches, rebound holds, stale and replaced bindings, releases kept
+  across a rebind, the required binding revision: loss, duplicates, reordering, bursts, reconnect/
+  expiry/close/dispose, stale generations and rebound touches, context changes while queued, every bound, conflicts,
+  backend faults, recover/adopt) and the bridge harness block (44 checks); `test/kb18-probe.test.ts` (5).
+
+**Limitations:** KB-18 ships the fake backend only (intents are admitted, ordered, coalesced, bounded and recorded;
+nothing moves on the console; KB-19 adds the adjustment backend and calibration); generations are those of one
+feedback instance and spec (a surface bound elsewhere is refused as stale); packet loss is reported, not repaired;
+stateful fader functions, rate limiting, eviction, the gesture ceiling, a loop-dropped delta and a raising backend
+were exercised in the harness only; surface-side transport (event ids, retransmission policy, per-device queues in
+the service) is the mtpnxk half.
+
 ## KB-19 — NX-K encoders follow the active encoder context
 
 **Request:** Turn an NX-K encoder to adjust the corresponding current grandMA3 encoder slot.
