@@ -297,6 +297,11 @@ input's meaning changed, never for a value or level alone. `cached = true` serve
 plugin loop keeps for the spec given to `feedback.watch {display?, executors?}` (no read happens; items not yet observed
 are unavailable and no generation is claimed), `feedback.unwatch {}` stops that. Read-only, never guarded by the input
 admission, usable with Lua disabled; malformed arguments are `[bad-args]`, a feedback module older than 0.3.0 `[no-feedback]`.
+Since v0.17.0 (KB-21, feedback 0.5.0) `executorPage` binds the listed executors to that page explicitly (read through
+`ObjectList("Page P.E")` whatever page the console shows; `executorMode = "page"`, `executorSpecPage`; a page that does
+not exist is `pageMissing` and nothing creates it) and every target carries `pool`, `page`, `mode`, `width`,
+`expanded`/`coveredBy` (an expanded assignment covers the following numbers of its row: not separate playbacks); without
+`executorPage` the executors follow the user's page as before. `[no-feedback]` on a module without explicit pages.
 
 ### Continuous control (plugin v0.14.0, KB-18)
 
@@ -313,13 +318,18 @@ units), refused `mixed-values` while the selection's values disagree and `values
 and executor elements stay refused `unsupported` (with `backend` and `reason`); switching backends while running ends the
 gestures through the previous one. `control.status`
 then also carries `capabilities` and `backendStatus` (counters, the last command, the calibration table), `lastApplied.result`
-the command issued, and the ping summary the backend name. `control.bind {display?, executors?}` names what this bridge's events mean (the same spec
+the command issued, and the ping summary the backend name. `control.bind {display?, executors?, executorPage?}` names what this bridge's events mean (the same spec
 `feedback.watch` takes; the loop keeps it observed and the cached generation is what events are checked against) and
 returns the current `generation` or why none is claimed, plus the `binding` revision: generations are per spec, so a
 replaced spec is a new revision (queued motion dropped, holds rebound) and events must carry `binding` as well as
 `generation` (`binding-required` without it, `stale-binding` with an old one, each naming the current revision; releases
 need neither). A snapshot built from stale observations is no binding
-(`binding-unknown`). `control.open {leaseMs?, label?}` / `control.renew` /
+(`binding-unknown`). Since v0.17.0 (KB-21, control 0.4.0) an executor target is `{executor, element, page?}` and resolves
+by (page, executor) against the binding: a page-bound executor needs `page`, a following one must not carry it; a covered
+number, a missing page, an empty, reserved or Quickey executor are `target-unavailable` with the reason; the resolved
+target (and `lastApplied.target`) names pool and page (`exec<pool>/<page>.<n>.<element>|<assigned>|<function>`); a held
+button's or touch's target is **frozen** until its release (the release, a forced end and the unresolved record carry it,
+whatever a bank or page change mapped to the control since; `control.status` lists it under `gestureList[].frozen`). `control.open {leaseMs?, label?}` / `control.renew` /
 `control.close` are this connection's session (`conn-<id>`, opened on demand by `control.submit`). `control.submit
 {events: [...]}` (at most 32 per request, or `event` for one) admits each event in order and reports every outcome in
 place: `{accepted, queued, coalesced?, superseded?, lost, target, generation}` or `{refused: code, message, ...}` with

@@ -27,7 +27,7 @@ local CTL = assert(load(src, "=gma3_mcp_control.lua", "t", env))("test_plugin", 
 -------------------------------------------------------------------------------
 -- Loading contract
 -------------------------------------------------------------------------------
-check("module loads without console API", type(CTL) == "table" and CTL.VERSION == "0.3.0" and CTL.API_VERSION == 1 and type(CTL.new) == "function")
+check("module loads without console API", type(CTL) == "table" and CTL.VERSION == "0.4.0" and CTL.API_VERSION == 1 and type(CTL.new) == "function")
 check("module table is read-only", not pcall(function() CTL.x = 1 end) and CTL.x == nil)
 check("module registers in the signal table", signals.__gma3_mcp_modules.gma3_mcp_control == CTL)
 check("publishes nothing globally", package.loaded.gma3_mcp_control == nil and _G.gma3_mcp_control == nil)
@@ -47,11 +47,16 @@ local binding = {
     { slot = 4, kind = "other", ref = "Phaser 1", unsupported = true },
     { slot = 5, kind = "empty" } } } },
   executors = {
-    { available = true, value = { executor = 201, page = 1, empty = false, playbackTarget = true, assigned = { addr = "Sequence 1", class = "Sequence" }, functions = { keyPress = "Go+", fader = "Master" }, level = { token = "FaderMaster", value = 50 } } },
+    { available = true, value = { executor = 201, page = { no = 1, name = "Page 1" }, pool = { name = "Default", no = 1 }, mode = "current", width = 1, empty = false, playbackTarget = true, assigned = { addr = "Sequence 1", class = "Sequence" }, functions = { keyPress = "Go+", fader = "Master" }, level = { token = "FaderMaster", value = 50 } } },
     { available = true, value = { executor = 202, page = 1, empty = false, playbackTarget = true, assigned = { addr = "Sequence 2" }, functions = { keyPress = "Toggle", fader = "X" }, level = { token = "FaderX", value = 0 } } },
     { available = true, value = { executor = 203, page = 1, empty = true } },
     { available = true, value = { executor = 204, page = 1, empty = false, playbackTarget = false, reserved = true, assigned = { addr = "Quickey 1" }, functions = { keyPress = "Toggle" } } },
     { available = false, params = { executor = 205 }, reason = "not observed yet" },
+    -- KB-21: executors bound to an explicit page (params.page), read whatever page the user is on.
+    { available = true, params = { executor = 201, page = 2 }, value = { executor = 201, page = { no = 2, name = "Page 2" }, pool = { name = "Default", no = 1 }, mode = "page", width = 1, empty = false, playbackTarget = true, assigned = { addr = "Sequence 9", class = "Sequence" }, functions = { keyPress = "Toggle", fader = "Master" }, level = { token = "FaderMaster", value = 10 } } },
+    { available = true, params = { executor = 211, page = 2 }, value = { executor = 211, page = { no = 2, name = "Page 2" }, pool = { name = "Default", no = 1 }, mode = "page", width = 2, expanded = true, empty = false, playbackTarget = true, assigned = { addr = "Sequence 11", class = "Sequence" }, functions = { keyPress = "Go+", fader = "Master" }, level = { token = "FaderMaster", value = 0 } } },
+    { available = true, params = { executor = 212, page = 2 }, value = { executor = 212, page = { no = 2, name = "Page 2" }, pool = { name = "Default", no = 1 }, mode = "page", empty = true, coveredBy = 211, coveredWidth = 2, playbackTarget = false, reason = "covered by executor 211 (width 2)" } },
+    { available = true, params = { executor = 201, page = 7 }, value = { executor = 201, page = { no = 7 }, mode = "page", pageMissing = true, empty = true, playbackTarget = false, reason = "page 7 does not exist (nothing is created)" } },
   },
 }
 local busyOwner = nil
@@ -179,7 +184,7 @@ do
   check("slot 4 (phaser) is unsupported", code(inst:submit("s", 1, rel(6, 4, 1))) == "unsupported")
   check("slot 5 (empty) is unavailable", code(inst:submit("s", 1, rel(7, 5, 1))) == "target-unavailable")
   check("slot 9 (off the page) is unavailable", code(inst:submit("s", 1, rel(8, 9, 1))) == "target-unavailable")
-  check("executor fader 201 resolves with the Master token", (function() local r = inst:submit("s", 1, abs(1, 201, 0.5)); return r and r.accepted and r.target:find("^exec201%.fader") and r.stateful == nil end)())
+  check("executor fader 201 resolves with the Master token", (function() local r = inst:submit("s", 1, abs(1, 201, 0.5)); return r and r.accepted and r.target:find("^exec[^/]*/1%.201%.fader") and r.stateful == nil end)())
   check("executor 202 crossfade is stateful", inst:submit("s", 1, abs(2, 202, 0.5, { control = "Strip202" })).stateful == true)
   check("executor key element needs keyPress", inst:submit("s", 1, abs(3, 201, 0.5, { target = { executor = 201, element = "key" } })).accepted == true and
         code(inst:submit("s", 1, abs(4, 201, 0.5, { target = { executor = 201, element = "encoder" } }))) == "target-unavailable")
@@ -602,7 +607,7 @@ do
   check("kb19: an encoder press is refused unsupported at admission (calculator/open/select not qualified) and owns nothing", okB == nil and eB.code == "unsupported" and eB.reason:find("not qualified") and eB.backend == "console" and inst:status(1).sessions.s.gestures == 0 and inst:admission(1) == nil, J(eB))
   local okT, eT = inst:submit("s", 1, touch(1, 201, true))
   local okA, eA = inst:submit("s", 1, abs(2, 201, 0.5))
-  check("kb19: touches and positions are refused unsupported (KB-20/22)", okT == nil and eT.code == "unsupported" and okA == nil and eA.code == "unsupported" and eA.message:find("absolute on exec201.fader"), J({ eT, eA }))
+  check("kb19: touches and positions are refused unsupported (KB-20/22)", okT == nil and eT.code == "unsupported" and okA == nil and eA.code == "unsupported" and eA.message:find("absolute on exec[^/]*/1%.201%.fader"), J({ eT, eA }))
   binding.executors[1].value.functions.encoder = "Master"
   local okE, eE = inst:submit("s", 1, { type = "relative", device = "nxk", control = "Enc201", seq = 3, generation = binding.generation, target = { executor = 201, element = "encoder" }, delta = 1, gesture = 1 })
   binding.executors[1].value.functions.encoder = nil
@@ -841,8 +846,80 @@ do
   local st = inst:status(1.5)
   check("status: backend, capabilities, session view, bounded event log", st.backend == "fake" and st.capabilities.relative == true and st.sessions.s.label == "surface" and st.sessions.s.queued == 5 and #st.events == 3 and st.events[3].refused == "duplicate", J(st.events))
   check("status is read-only (no service side effects)", st.serviced == 0 and inst:status().sessions.s.queued == 5)
-  check("limitations and lists are published", #CTL.LIMITATIONS == 3 and #CTL.EVENT_TYPES == 4 and CTL.STATEFUL_FUNCTIONS.x == true and CTL.backends.fake == "fake" and CTL.backends.console == "console" and CTL.CALIBRATION.readouts.Percent == 1)
+  check("limitations and lists are published", #CTL.LIMITATIONS == 4 and #CTL.EVENT_TYPES == 4 and CTL.STATEFUL_FUNCTIONS.x == true and CTL.backends.fake == "fake" and CTL.backends.console == "console" and CTL.CALIBRATION.readouts.Percent == 1)
   check("resolveTarget is exported for consumers", CTL.resolveTarget(binding, { slot = 1 }).key:find("^slot1") ~= nil)
+end
+
+-------------------------------------------------------------------------------
+-- KB-21: explicit executor targets, page-bound resolution, frozen holds
+-------------------------------------------------------------------------------
+do
+  local inst, b = fresh()
+  inst:openSession({ id = "s" }, 1)
+  local r = inst:submit("s", 1, abs(1, 201, 0.5))
+  check("kb21: a current-page target resolves with pool, page, mode and a key naming both", r.accepted and r.target == "execDefault#1/1.201.fader|Sequence 1|Master", J(r))
+  inst:service(1.01)
+  local it = b:last()
+  check("kb21: the applied intent carries the explicit identity", it.resolved.pool == "Default#1" and it.resolved.pageNo == 1 and it.resolved.page.name == "Page 1" and it.resolved.mode == "current" and it.resolved.width == 1 and it.resolved.level == 50, J(it.resolved))
+  r = inst:submit("s", 1.02, abs(2, 201, 0.5, { target = { executor = 201, element = "fader", page = 2 }, control = "StripP2" }))
+  check("kb21: the same number on an explicit page is a different target (page in the key, mode=page)", r.accepted and r.target == "execDefault#1/2.201.fader|Sequence 9|Master", J(r))
+  inst:service(1.03)
+  check("kb21: its intent says page 2 and mode page", b:last().resolved.pageNo == 2 and b:last().resolved.mode == "page" and b:last().resolved.assigned == "Sequence 9", J(b:last().resolved))
+  local _, e = inst:submit("s", 1.04, abs(3, 202, 0.5, { target = { executor = 202, element = "fader", page = 2 }, control = "StripX" }))
+  check("kb21: a page-bound number the binding does not hold says bind first", e and e.code == "target-unavailable" and e.message:find("executor 202 of page 2 is not in the binding"), J(e))
+  _, e = inst:submit("s", 1.04, abs(4, 211, 0.5, { target = { executor = 211, element = "fader" }, control = "StripY" }))
+  check("kb21: a page-bound executor is not reached without target.page (never silently the current page)", e and e.code == "target-unavailable" and e.message:find("needs target.page"), J(e))
+  r = inst:submit("s", 1.05, abs(5, 211, 0.5, { target = { executor = 211, element = "fader", page = 2 }, control = "StripW" }))
+  check("kb21: an expanded assignment resolves with its width", r.accepted and (function() inst:service(1.06); return b:last().resolved.width == 2 and b:last().resolved.expanded == true end)(), J(r))
+  _, e = inst:submit("s", 1.07, abs(6, 212, 0.5, { target = { executor = 212, element = "fader", page = 2 }, control = "StripC" }))
+  check("kb21: a covered number is refused with the covering executor, not treated as empty", e and e.code == "target-unavailable" and e.coveredBy == 211 and e.message:find("covered by executor 211 %(width 2%)"), J(e))
+  _, e = inst:submit("s", 1.08, abs(7, 201, 0.5, { target = { executor = 201, element = "fader", page = 7 }, control = "StripM" }))
+  check("kb21: a missing page is refused as such and nothing is created", e and e.code == "target-unavailable" and e.pageMissing == true and e.message:find("page 7 does not exist"), J(e))
+  _, e = inst:submit("s", 1.09, abs(8, 201, 0.5, { target = { executor = 201, element = "fader", page = 0 }, control = "StripZ" }))
+  check("kb21: a bad page is a bad event", e and e.code == "bad-event" and e.message:find("target.page"), J(e))
+
+  -- Frozen holds: a button down on page 1's 201, then the binding is replaced (a bank change) and the
+  -- console's page changes (the following item now reads page 2's object). The release goes to what was pressed.
+  local i2, b2 = fresh()
+  i2:openSession({ id = "s" }, 1)
+  binding.bindingKey = "display=1;executors=201"
+  local d, derr = i2:submit("s", 1, { type = "button", device = "mtouch", control = "PFA1", seq = 1, generation = binding.generation, target = { executor = 201, element = "key" }, down = true })
+  check("kb21: the down resolved and recorded its target", d.accepted and i2:service(1.01).applied == 1 and b2:last().resolved.assigned == "Sequence 1" and b2:last().frozen == nil, J(b2:last()))
+  local st = i2:status(1.02)
+  check("kb21: status shows what the hold is frozen to", st.sessions.s.gestureList[1].frozen.executor == 201 and st.sessions.s.gestureList[1].frozen.page == 1 and st.sessions.s.gestureList[1].frozen.assigned == "Sequence 1" and st.sessions.s.gestureList[1].targetKey:find("^execDefault#1/1%.201%.key"), J(st.sessions.s.gestureList))
+  -- The bank moves (a replaced spec) and the console page changes: 201 now means Sequence 99 on page 2.
+  local saved = binding.executors[1].value
+  binding.executors[1].value = { executor = 201, page = { no = 2, name = "Page 2" }, pool = { name = "Default", no = 1 }, mode = "current", empty = false, playbackTarget = true, assigned = { addr = "Sequence 99", class = "Sequence" }, functions = { keyPress = "Go+", fader = "Master" }, level = { token = "FaderMaster", value = 0 } }
+  binding.bindingKey = "display=1;executors=201,202"
+  binding.generation = 5
+  local rel_ = i2:submit("s", 1.1, { type = "button", device = "mtouch", control = "PFA1", seq = 2, target = { executor = 201, element = "key" }, down = false })
+  check("kb21: the release is admitted without a binding and marked a boundary", rel_.accepted and rel_.boundary == true, J(rel_))
+  i2:service(1.11)
+  local up = b2:last()
+  check("kb21: the release went to the frozen target (page 1, Sequence 1), not to the newly mapped Sequence 99", up.down == false and up.frozen == true and up.resolved.assigned == "Sequence 1" and up.resolved.pageNo == 1 and up.targetKey:find("^execDefault#1/1%.201%.key|Sequence 1"), J(up))
+  check("kb21: the gesture is gone and the hold was marked rebound by the rebind", st.sessions.s.gestureList[1] ~= nil and i2:status(1.12).sessions.s.gestureList[1] == nil and i2:status(1.12).counters.staleDropped == 0)
+  -- A new down after the change reaches the new mapping only through its own resolution.
+  local d2 = i2:submit("s", 1.13, { type = "button", device = "mtouch", control = "PFA1", seq = 3, generation = 5, target = { executor = 201, element = "key" }, down = true })
+  i2:service(1.14)
+  check("kb21: a fresh down resolves the new mapping (Sequence 99 on page 2)", d2.accepted and b2:last().down == true and b2:last().resolved.assigned == "Sequence 99" and b2:last().resolved.pageNo == 2, J(b2:last().resolved))
+  -- A forced end (lease expiry) carries the frozen target too.
+  local i3, b3 = fresh({ defaultLeaseMs = 100 })
+  i3:openSession({ id = "s" }, 2)
+  i3:submit("s", 2, { type = "button", device = "mtouch", control = "PFA2", seq = 1, generation = 5, target = { executor = 201, element = "key" }, down = true }); i3:service(2.01)
+  binding.executors[1].value = saved
+  binding.generation = 1; binding.bindingKey = nil
+  i3:service(2.5)
+  check("kb21: a forced end (lease expired) releases the frozen target with the down's identity", b3:last().down == false and b3:last().forced == true and b3:last().frozen == true and b3:last().resolved.assigned == "Sequence 99" and b3:last().resolved.pageNo == 2, J(b3:last()))
+  -- A held touch on a strip is rebound by a replaced binding: its motion is refused until lift and re-touch.
+  local i4 = fresh()
+  i4:openSession({ id = "s" }, 3)
+  binding.bindingKey = "display=1;executors=201"
+  i4:submit("s", 3, touch(1, 201, true)); i4:service(3.01)
+  binding.bindingKey = "display=1;executors=211;page=2"
+  local _, e7 = i4:submit("s", 3.02, abs(2, 201, 0.4))
+  check("kb21: rebinding (a bank change) cancels the strip gesture: motion inside the held touch is gesture-rebound", e7 and e7.code == "gesture-rebound", J(e7))
+  check("kb21: the lift is admitted and a new touch starts over", i4:submit("s", 3.03, touch(3, 201, false)).accepted and i4:submit("s", 3.04, touch(4, 201, true)).accepted)
+  binding.bindingKey = nil
 end
 
 print(string.format("%d passed, %d failed", passes, failures))

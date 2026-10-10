@@ -422,6 +422,44 @@ native fader equivalence; whether a fixture's value is "current" is the binding'
 - Exclude internal Quickey-bank reservations.
 - Test page changes, missing pages, reassignment, deleted objects, expanded executors, and simultaneous surfaces.
 
+### KB-21 results (console half, 2026-10-10; surface half in mtpnxk)
+
+`gma3_mcp_feedback` 0.5.0, `gma3_mcp_control` 0.4.0 and bridge 0.17.0 ([modules](docs/modules.md#explicit-executor-targets-and-stable-bindings-gma3_mcp_feedback-050--gma3_mcp_control-040-kb-21),
+[reference](docs/reference.md#continuous-control-plugin-v0140-kb-18)); the live record is
+[kb-21-executors-macos-2.5.1.md](docs/probes/kb-21-executors-macos-2.5.1.md) (`node scripts/kb21-probe.mjs run`). No
+TypeScript changed. Banks themselves (which strip is which executor number, bank navigation, M-Play's sections, the
+page display, follow/independent as an operator choice, status and indicators) are the surface service's half (mtpnxk
+`KEYBOARD.md` "KB-21"); what the console half serves:
+
+- **Explicit targets:** every executor target carries pool, page `{no, name}`, executor, element and `mode`
+  (`current`: the user's page through `GetExecutor`; `page`: an explicit page through `ObjectList("Page P.E")`, the
+  paged form KB-12/13 proved), plus the assigned object, the configured functions, `width`; the resolved key names
+  pool and page, so executor 201 of two pages are two targets.
+- **Executor page vs surface bank:** the console half knows pages only. A surface bank is a different executor list
+  bound by the service (`control.bind { executors, executorPage? }`); a replaced list is a new binding revision.
+- **Follow or independent:** without `executorPage` the binding follows the console's current page (a `Page n` moves
+  its generation and its targets are the new page's); with it the executors are read on that page whatever the
+  console shows and the console's page is **not** part of the digest (a `Page n` leaves the generation alone). Local
+  banking never issues a page command; a page that does not exist is `pageMissing` and nothing creates it.
+- **Layouts from the console:** `Width` is read; a number inside a wider neighbour's span (same row) is `coveredBy`
+  that executor and never a target; adjacent numbers are not assumed to be separate playbacks. Width > 1 was not
+  produced live (see the record for the `Set ... "Width"` attempt); the rule is harness evidence.
+- **Frozen holds:** a touch or button down records the target it resolved; the release, a forced end and the
+  unresolved record carry it (`frozen = true`) whatever the binding says by then. A bank change (rebinding), a console
+  page change, a reassignment or a deletion while a button is held neither releases nor activates the newly mapped
+  executor; a fresh down resolves the new mapping only.
+- **Strip gestures on rebinding:** a replaced binding marks held touches rebound (their motion is `gesture-rebound`
+  until lift and re-touch), so the surface's pickup/takeover starts over.
+- **Quickey exclusion:** unchanged (a Quickey object or a bank-reserved executor is never a target).
+- **Harness:** `test/lua/feedback_context_test.lua` (142; 22 new), `test/lua/control_admission_test.lua` (213; 19
+  new), the bridge harness (494; 8 new), `test/kb21-probe.test.ts` (4).
+
+**Limitations:** executor **operations** (press/release/fader through the console) are KB-22: the console backend still
+refuses executor elements `unsupported`, and the live holds ran on the fake backend; the coverage rule assumes
+`Width` spans the following numbers of the same row (unverified live while no console accepted the width change);
+`maxExecutorWidth` (5) bounds the neighbour scan; the data pool is the current one (`DataPool()`), a pool switch moves
+the generation (KB-17) but no pool is addressed explicitly in commands.
+
 ## KB-22 — Playback faders and buttons follow executor configuration
 
 **Request:** Operate playback strips and button banks as close to their assigned grandMA3 executor controls as qualified.

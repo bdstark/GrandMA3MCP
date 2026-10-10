@@ -21,7 +21,7 @@ local function loadModule(file)
   return chunk("test_plugin", (file:gsub("%.lua$", "")), {}, nil)
 end
 local FB = loadModule("gma3_mcp_feedback.lua")
-check("feedback 0.4.0 loads", FB.VERSION == "0.4.0" and FB.API_VERSION == 1)
+check("feedback 0.5.0 loads", FB.VERSION == "0.5.0" and FB.API_VERSION == 1)
 
 -------------------------------------------------------------------------------
 -- Fake console
@@ -128,6 +128,19 @@ local execs = {
 execs[206] = setmetatable({ index = 206 }, { __index = function(_, k) if k == "Object" then error("Object read exploded") end end })
 local pageH = H({ name = "Page 1", No = "1" }, { execs[201], execs[202], execs[203], execs[205], execs[207], execs[208] })
 local reserved = { page = 1, first = 203, count = 2 }
+-- KB-21: a second page read through ObjectList("Page 2.E"), with an expanded (width 2) assignment on 211
+-- covering 212, and an assigned 213 right after it. Page 2 executors never go through GetExecutor.
+local seqTwo = obj("Two", "Sequence", 20, { faders = { FaderMaster = 30 } })
+local function wide(index, object, width, fns) local e = ex(index, object, fns); e.Width = tostring(width); e.Get = function(_, k) if k == "Width" then return tostring(width) end; return ({ index = index, KeyPress = fns.keyPress, KeyUnpress = "", KeyUnpressCombined = fns.keyUnpressCombined, Fader = fns.fader, Encoder = "Master", EncoderLeft = "", EncoderRight = "", ExecutorConfiguration = "Configuration 2 'Wide'", IsXKey = "No" })[k] end; return e end
+local execs2 = {
+  [201] = ex(201, seqTwo, { keyPress = "Go+", fader = "Master" }),
+  [211] = wide(211, seqTwo, 2, { keyPress = "Go+", fader = "Master" }),
+  [213] = ex(213, seqTemp, { keyPress = "Flash", fader = "Temp" }),
+  [115] = wide(115, seqTwo, 3, { keyPress = "Go+", fader = "Master" }),
+}
+local page2 = H({ name = "Page 2", No = "2" }, { execs2[115], execs2[201], execs2[211], execs2[213] })
+local pages = { [1] = pageH, [2] = page2 }
+local pagedExecs = { [1] = execs, [2] = execs2 }
 
 local calls = {}
 local function deps(overrides)
@@ -137,6 +150,8 @@ local function deps(overrides)
     currentExecPage = function() return pageH end,
     display = function(n) return displays[n] end,
     executor = function(n) return execs[n], pageH end,
+    pageByNo = function(p) return pages[p] end,
+    pagedExecutor = function(p, n) return pagedExecs[p] and pagedExecs[p][n] end,
     dataPool = function() return H({ name = "Default", No = "1" }) end,
     selectionCount = function() return #selection.list end,
     selectionFirst = function() return selection.list[1] end,
@@ -520,6 +535,85 @@ check("once observed again in the new epoch the generation resumes and has moved
 fc:unwatch()
 check("unwatch clears the watch", fc:status().watched == 0)
 console.bank = 3
+
+-------------------------------------------------------------------------------
+-- KB-21: explicit targets (pool, page, executor, mode), paged reads, layout, independent pages
+-------------------------------------------------------------------------------
+do
+  local fk = FB.new({ owner = "kb21", deps = deps() }):init()
+  local r = fk:read("executorTarget", { executor = 201 }, 1)
+  check("kb21: a current-page target carries pool, page, mode=current and width", r.available and r.value.mode == "current" and r.value.pool.name == "Default" and r.value.pool.no == 1 and r.value.page.no == 1 and r.value.width == 1 and r.value.expanded == nil and r.value.coveredBy == nil and r.value.playbackTarget == true and r.key == "executorTarget[executor=201]", json.encode(r))
+  r = fk:read("executorTarget", { executor = 201, page = 2 }, 1)
+  check("kb21: an explicit page is read through ObjectList, not GetExecutor; key and identity say so", r.available and r.value.mode == "page" and r.value.page.no == 2 and r.value.page.name == "Page 2" and r.value.assigned.name == "Two" and r.value.level.value == 30 and r.value.playbackTarget == true and r.key == "executorTarget[executor=201,page=2]", json.encode(r))
+  r = fk:read("executorTarget", { executor = 201, page = 7 }, 1)
+  check("kb21: a page that does not exist is pageMissing, empty, never a target, never created", r.available and r.value.pageMissing == true and r.value.page.no == 7 and r.value.empty == true and r.value.playbackTarget == false and r.value.reason:find("does not exist") and pages[7] == nil, json.encode(r))
+  r = fk:read("executorTarget", { executor = 211, page = 2 }, 1)
+  check("kb21: an expanded assignment reports its width and is a target", r.available and r.value.width == 2 and r.value.expanded == true and r.value.playbackTarget == true and r.value.coveredBy == nil, json.encode(r))
+  r = fk:read("executorTarget", { executor = 212, page = 2 }, 1)
+  check("kb21: the number inside a wider neighbour's span is covered: not a separate playback", r.available and r.value.empty == true and r.value.coveredBy == 211 and r.value.coveredWidth == 2 and r.value.playbackTarget == false and r.value.reason:find("covered by executor 211"), json.encode(r))
+  r = fk:read("executorTarget", { executor = 213, page = 2 }, 1)
+  check("kb21: the first number after the span is its own playback", r.available and r.value.coveredBy == nil and r.value.playbackTarget == true and r.value.assigned.name == "Odd", json.encode(r))
+  r = fk:read("executorTarget", { executor = 116, page = 2 }, 1)
+  local r2 = fk:read("executorTarget", { executor = 117, page = 2 }, 1)
+  local r3 = fk:read("executorTarget", { executor = 118, page = 2 }, 1)
+  check("kb21: a width of 3 covers the next two numbers and not the third", r.value.coveredBy == 115 and r2.value.coveredBy == 115 and r3.value.coveredBy == nil, json.encode({ r.value, r2.value, r3.value }))
+  r = fk:read("executorTarget", { executor = 201, page = 2 }, 1)
+  check("kb21: a span never crosses the row (115 width 3 does not cover 201)", r.value.coveredBy == nil, json.encode(r.value))
+  local fw = FB.new({ owner = "kb21w", deps = deps(), config = { maxExecutorWidth = 2 } }):init()
+  r = fw:read("executorTarget", { executor = 117, page = 2 }, 1)
+  check("kb21: the neighbour scan is bounded by maxExecutorWidth (117 is two behind 115; not resolved at width bound 2)", r.available and r.value.coveredBy == nil, json.encode(r.value))
+  r = fk:read("executorTarget", { executor = 201, page = 0 }, 1)
+  check("kb21: a bad page parameter is an error item", r.available == false and r.error:find("params.page"), json.encode(r))
+  local fn = FB.new({ owner = "kb21n", deps = deps({ pageByNo = false, pagedExecutor = false }) }):init()
+  r = fn:read("executorTarget", { executor = 201, page = 2 }, 1)
+  check("kb21: without the paged dependencies an explicit page is an explicit error, the current page still reads", r.available == false and r.error:find("pageByNo") and fn:read("executorTarget", { executor = 201 }, 1).available, json.encode(r))
+  r = fk:read("pageExecutors", { page = 2 }, 1)
+  check("kb21: pageExecutors reads an explicit page with widths", r.available and r.value.page.no == 2 and #r.value.executors == 4 and r.value.executors[3].index == 211 and r.value.executors[3].width == 2 and r.key == "pageExecutors[page=2]", json.encode(r))
+  r = fk:read("pageExecutors", { page = 9 }, 1)
+  check("kb21: pageExecutors on a missing page is pageMissing with no executors", r.available and r.value.pageMissing == true and #r.value.executors == 0, json.encode(r))
+  check("kb21: pageExecutors without params keeps its old key", fk:read("pageExecutors", nil, 1).key == "pageExecutors")
+
+  -- Binding: current-page executors follow the console's page; an independent page does not.
+  local follow = { executors = { 201, 211 } }
+  local indep = { executors = { 201, 211, 212 }, executorPage = 2 }
+  local s1 = fk:contextSnapshot(follow, 2)
+  local s2 = fk:contextSnapshot(indep, 2)
+  check("kb21: the binding key names the page of an independent binding; the snapshot says its mode", s1.bindingKey == "display=1;executors=201,211" and s2.bindingKey == "display=1;executors=201,211,212;page=2" and s1.executorMode == "current" and s2.executorMode == "page" and s2.executorSpecPage == 2 and s2.executors[3].value.coveredBy == 211, s1.bindingKey .. " / " .. s2.bindingKey)
+  local items = fk:contextItems(indep)
+  check("kb21: contextItems carries the page into every executor item", items[5].params.page == 2 and items[7].params.executor == 212 and items[7].params.page == 2)
+  -- The console changes page: the user's page is now page 2.
+  local pageWas = pageH
+  local dp = deps(); dp.currentExecPage = function() return page2 end; dp.executor = function(n) return execs2[n], page2 end
+  local fp = FB.new({ owner = "kb21p", deps = dp }):init()
+  -- Same instance semantics are per instance; stage both specs on a fresh instance whose deps switch pages.
+  local cur = { page = pageH, execs = execs }
+  local d2 = deps(); d2.currentExecPage = function() return cur.page end; d2.executor = function(n) return cur.execs[n], cur.page end
+  local fs = FB.new({ owner = "kb21s", deps = d2 }):init()
+  local a1 = fs:contextSnapshot(follow, 3); local b1 = fs:contextSnapshot(indep, 3)
+  cur.page, cur.execs = page2, execs2
+  local a2 = fs:contextSnapshot(follow, 4); local b2 = fs:contextSnapshot(indep, 4)
+  check("kb21: a console page change moves the generation of a following binding (its targets are now page 2's)", a2.generation == a1.generation + 1 and a2.generationChanged == true and a2.executors[1].value.page.no == 2 and a2.executors[1].value.assigned.name == "Two", json.encode({ a1.generation, a2.generation }))
+  check("kb21: a console page change does not move an independent-page binding", b2.generation == b1.generation and b2.generationChanged == false and b2.executorPage.no == 2 and b2.executors[1].value.page.no == 2, json.encode({ b1.generation, b2.generation, b2.executorPage }))
+  cur.page, cur.execs = pageWas, execs
+  -- A width change and a page appearing/disappearing move the generation of the independent binding.
+  execs2[211] = wide(211, seqTwo, 1, { keyPress = "Go+", fader = "Master" })
+  local b3 = fs:contextSnapshot(indep, 5)
+  check("kb21: a changed width moves the generation and uncovers the neighbour", b3.generation == b2.generation + 1 and b3.executors[3].value.coveredBy == nil and b3.executors[3].value.empty == true, json.encode(b3.executors[3].value))
+  execs2[211] = wide(211, seqTwo, 2, { keyPress = "Go+", fader = "Master" })
+  fs:contextSnapshot(indep, 6)
+  pages[2] = nil
+  local b4 = fs:contextSnapshot(indep, 7)
+  check("kb21: a deleted page moves the generation and every target is pageMissing", b4.generationChanged == true and b4.executors[1].value.pageMissing == true and b4.executors[2].value.playbackTarget == false, json.encode(b4.executors[1].value))
+  pages[2] = page2
+  local b5 = fs:contextSnapshot({ executors = { 201 }, executorPage = "two" }, 8)
+  check("kb21: a bad executorPage is reported and the executors follow the current page", b5.limitations[1]:find("executorPage") and b5.executorMode == "current" and b5.executors[1].params.page == nil, json.encode(b5.limitations))
+  -- Cached path: watchContext with an independent page observes the paged items.
+  local fcch = FB.new({ owner = "kb21c", deps = deps() }):init()
+  fcch:watchContext(indep, 1)
+  for i = 1, 4 do fcch:service(1 + i * 0.2) end
+  local c = fcch:contextSnapshot(indep, 2, { cached = true })
+  check("kb21: the cached snapshot of an independent page carries the page and generation", c.generation == 1 and c.executorMode == "page" and c.executors[1].value.page.no == 2 and c.executors[3].value.coveredBy == 211, json.encode({ c.generation, c.notObserved, c.generationNote }))
+end
 
 print(string.format("\n%d passed, %d failed", passes, failures))
 if failures > 0 then print("FAILED"); os.exit(1) else print("ALL PASSED") end

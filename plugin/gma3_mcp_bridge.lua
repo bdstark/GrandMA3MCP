@@ -48,7 +48,8 @@
 --                                               backend attached it attaches the records' own backend
 --                                               for cleanup only; input stays disabled.
 -- Continuous control (KB-18, bridge 0.14.0 / gma3_mcp_control 0.1.0; KB-19, bridge 0.15.0 / control
--- 0.2.0; KB-20, bridge 0.16.0 / control 0.3.0) is OFF by default and enabled per start, or toggled while running. It admits the control.* ops:
+-- 0.2.0; KB-20, bridge 0.16.0 / control 0.3.0; KB-21, bridge 0.17.0 / control 0.4.0 / feedback 0.5.0: explicit executor
+-- targets with `executorPage` on feedback.context / control.bind and frozen holds) is OFF by default and enabled per start, or toggled while running. It admits the control.* ops:
 -- encoder motion, strip positions, touches and encoder buttons from a surface, each stamped with the
 -- feedback module's binding generation and admitted, ordered, coalesced and bounded by the control
 -- module before a backend applies them:
@@ -147,7 +148,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.16.0"
+local VERSION      = "0.17.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -2252,6 +2253,12 @@ local function feedbackContextRec()
   return rec
 end
 
+-- KB-21: feedback 0.5.0 reports executorMode on every snapshot; an older module would silently read the user's page.
+local function feedbackHasPages(rec)
+  local okI, items = pcall(rec.module.contextItems, { executors = { 1 }, executorPage = 1 })
+  return okI and type(items) == "table" and items[5] ~= nil and type(items[5].params) == "table" and items[5].params.page == 1
+end
+
 local function checkContextArgs(args)
   args = args or {}
   if args.display ~= nil and (type(args.display) ~= "number" or args.display < 1 or args.display ~= math.floor(args.display)) then error("[bad-args] args.display must be a positive integer", 0) end
@@ -2259,13 +2266,17 @@ local function checkContextArgs(args)
     if type(args.executors) ~= "table" then error("[bad-args] args.executors must be a list of executor numbers", 0) end
     for i, n in ipairs(args.executors) do if type(n) ~= "number" then error(string.format("[bad-args] args.executors[%d] is not a number", i), 0) end end
   end
+  -- KB-21: executorPage binds the listed executors to that page (independent of the user's page); without it
+  -- they follow the user's current page. Needs feedback 0.5.0 (an older module ignores the field: refused here).
+  if args.executorPage ~= nil and (type(args.executorPage) ~= "number" or args.executorPage < 1 or args.executorPage ~= math.floor(args.executorPage)) then error("[bad-args] args.executorPage must be a positive page number", 0) end
   return args
 end
 
 ops["feedback.context"] = function(args)
   local rec = feedbackContextRec()
   args = checkContextArgs(args)
-  local snap = rec.instance:contextSnapshot({ display = args.display, executors = args.executors, allExecutors = args.allExecutors == true }, now(), { cached = args.cached == true })
+  if args.executorPage ~= nil and not feedbackHasPages(rec) then error("[no-feedback] the loaded feedback module has no explicit executor pages (module " .. tostring(rec.version) .. "; KB-21 needs 0.5.0 or newer)", 0) end
+  local snap = rec.instance:contextSnapshot({ display = args.display, executors = args.executors, executorPage = args.executorPage, allExecutors = args.allExecutors == true }, now(), { cached = args.cached == true })
   snap.limitations = emptyArray(snap.limitations)
   snap.executors = emptyArray(snap.executors)
   snap.bridgeVersion = VERSION
@@ -2359,7 +2370,8 @@ ops["control.bind"] = function(args)
   controlRec()
   local frec = feedbackContextRec()
   args = checkContextArgs(args)
-  local spec = { display = args.display, executors = args.executors }
+  if args.executorPage ~= nil and not feedbackHasPages(frec) then error("[no-feedback] the loaded feedback module has no explicit executor pages (module " .. tostring(frec.version) .. "; KB-21 needs 0.5.0 or newer)", 0) end
+  local spec = { display = args.display, executors = args.executors, executorPage = args.executorPage }
   local w = frec.instance:watchContext(spec, now())
   state.control.spec = spec
   local snap = frec.instance:contextSnapshot(spec, now(), { cached = true })
@@ -2368,7 +2380,7 @@ ops["control.bind"] = function(args)
   -- and events should carry it as `binding`; an old revision is refused stale-binding.
   local crec = controlRec()
   local info = type(crec.instance.bindingInfo) == "function" and crec.instance:bindingInfo(now()) or nil
-  return { bound = spec, watched = w.watched, limitations = emptyArray(w.limitations), generation = snap.generation, generationUnknown = snap.generationUnknown or nil,
+  return { bound = spec, executorMode = snap.executorMode, watched = w.watched, limitations = emptyArray(w.limitations), generation = snap.generation, generationUnknown = snap.generationUnknown or nil,
            generationNote = snap.generationNote, notObserved = snap.notObserved, stale = snap.stale or nil,
            binding = info and info.revision or nil, bindingKey = snap.bindingKey,
            note = "events carry this generation (and binding revision); feedback.context {cached=true} follows it; a stale, unknown or replaced binding refuses motion until the client rebinds" }
