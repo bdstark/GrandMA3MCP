@@ -286,9 +286,12 @@ the service) is the mtpnxk half.
   phaser or unreadable context refuses every slot event in target resolution, whatever the slot record says.
 - **Calibration coverage (review):** a physical range is reported only when it is complete and verified: every
   scanned fixture with the channel contributed the range of the channel function that names the attribute (no
-  fallback to another function) and the bounded scan covered the whole selection; otherwise `physicalUnavailable`
-  carries the reason and the Physical readout is refused. The range and its availability are part of the binding
-  digest, so a range change moves the generation and queued motion calibrated against the old range is dropped.
+  fallback to another function), the bounded scan covered the whole selection and every scanned fixture's channels
+  were enumerated and mapped (review round 2: a raising `GetUIChannels`, `GetAttributeByUIChannel` or subfixture
+  discovery marks the scan partial and the slot `discoveryIncomplete`; that fixture is not a confirmed "lacks the
+  attribute"); otherwise `physicalUnavailable` carries the reason and the Physical readout is refused. The range, its
+  availability and the discovery state are part of the binding digest, so a range or coverage change moves the
+  generation and queued motion calibrated against the old range is dropped.
 - **Presses separate from rotation:** a `button` event is refused `unsupported` on the console backend (calculator /
   open / select behaviour is not qualified; nothing is pressed); touches, positions and executor elements likewise
   (KB-20/21/22). The target still resolves first: a press on a slot with nothing selected is `target-unavailable`.
@@ -311,9 +314,9 @@ the service) is the mtpnxk half.
   range-change drop: calibration per readout/resolution/layer/
   channel function/range, admission refusals for presses, touches, positions, executor elements and unqualified slots,
   the command text, coalesced and negative deltas, fine, Physical steps, feedback verdicts, a raising `Cmd`, a hold
-  ended as a noop, backend switching, amount formatting), `test/lua/feedback_context_test.lua` (109; physical ranges:
+  ended as a noop, backend switching, amount formatting), `test/lua/feedback_context_test.lua` (114; physical ranges:
   smallest over the selection, mixed ranges, the function that names the attribute, a raising `GetUIChannel`, a function
-  that does not name the attribute, a bounded scan and a range change each refusing or moving the generation), the bridge harness block (`control=console`, the commands through
+  that does not name the attribute, a bounded scan, channel-discovery failures and a range change each refusing or moving the generation), the bridge harness block (`control=console`, the commands through
   `Cmd()`, status, switching) and `test/kb19-probe.test.ts` (4).
 
 **Limitations:** the adjustment is the explicitly limited mode KB-16 allowed (a selection-scoped relative `At`), not native

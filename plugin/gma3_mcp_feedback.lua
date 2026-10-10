@@ -266,7 +266,15 @@ local function scanSelection(d, cfg)
   count = tonumber(count) or 0
   -- identityComplete starts false (KB-17 review) and becomes true only after a traversal that ended by itself,
   -- within the bound, and yielded exactly `count` distinct fixture ids.
-  local scan = { count = count, fixtures = {}, ids = {}, partial = false, identityComplete = false, limitations = {} }
+  -- discoveryFailures (KB-19 review): fixtures whose channels could not be enumerated or mapped (GetUIChannels,
+  -- GetAttributeByUIChannel, subfixture discovery raising or answering with the wrong type). Such a fixture is NOT a
+  -- confirmed "lacks the attribute": the scan is marked partial and every slot says its coverage is incomplete.
+  local scan = { count = count, fixtures = {}, ids = {}, partial = false, identityComplete = false, limitations = {}, discoveryFailures = {} }
+  local function discoveryFailed(fixture, why)
+    scan.partial = true
+    scan.discoveryFailures[#scan.discoveryFailures + 1] = { fixture = fixture, reason = why }
+    scan.limitations[#scan.limitations + 1] = string.format("fixture %s: channel discovery failed (%s); it is not confirmed to lack any attribute", tostring(fixture), why)
+  end
   if count == 0 then scan.identityComplete = true; return scan end
   local function incomplete(why) scan.identityLimitation = why; scan.limitations[#scan.limitations + 1] = why end
   if type(d.selectionFirst) ~= "function" then scan.partial = true; incomplete("deps.selectionFirst missing: the selection cannot be walked"); return scan end
@@ -282,16 +290,23 @@ local function scanSelection(d, cfg)
     if #scan.fixtures < cfg.maxSelectionScan then
       -- bounded attribute scan: UI channels of this (sub)fixture
       local target = idx
+      local failed = false
       local okU, ui = pcall(d.uiChannels, idx)
-      if not (okU and type(ui) == "table") then ui = {} end
-      if #ui == 0 and type(d.subfixtureCount) == "function" then
+      if not okU then discoveryFailed(idx, "GetUIChannels raised: " .. tostring(ui)); ui = {}; failed = true
+      elseif type(ui) ~= "table" then discoveryFailed(idx, "GetUIChannels returned " .. type(ui)); ui = {}; failed = true end
+      if not failed and #ui == 0 and type(d.subfixtureCount) == "function" then
         local okS, sc = pcall(d.subfixtureCount, idx)
-        if okS and (tonumber(sc) or 0) > 0 then
+        if not okS then discoveryFailed(idx, "GetSubfixtureCount raised: " .. tostring(sc)); failed = true
+        elseif (tonumber(sc) or 0) > 0 then
           local okSub, sub = pcall(d.subfixture, idx, 0)
-          if okSub and sub ~= nil then
+          if not okSub then discoveryFailed(idx, "GetSubfixture raised: " .. tostring(sub)); failed = true
+          elseif sub == nil then discoveryFailed(idx, "GetSubfixture gave no first subfixture although " .. tostring(sc) .. " were counted"); failed = true
+          else
             target = sub
             local okU2, ui2 = pcall(d.uiChannels, sub)
-            ui = (okU2 and type(ui2) == "table") and ui2 or {}
+            if not okU2 then discoveryFailed(idx, "GetUIChannels(subfixture) raised: " .. tostring(ui2)); ui = {}; failed = true
+            elseif type(ui2) ~= "table" then discoveryFailed(idx, "GetUIChannels(subfixture) returned " .. type(ui2)); ui = {}; failed = true
+            else ui = ui2 end
           end
         end
       end
@@ -299,12 +314,14 @@ local function scanSelection(d, cfg)
       for i = 1, #ui do
         if i > cfg.maxUIChannels then truncated = true; break end
         local okA, a = pcall(d.attributeByUIChannel, ui[i])
-        if okA and a ~= nil then
+        if not okA then
+          if not failed then discoveryFailed(idx, "GetAttributeByUIChannel(" .. tostring(ui[i]) .. ") raised: " .. tostring(a)); failed = true end
+        elseif a ~= nil then
           local nm = str(field(a, "name"))
           if nm ~= nil and channels[nm] == nil then channels[nm] = ui[i] end
         end
       end
-      scan.fixtures[#scan.fixtures + 1] = { fixture = idx, target = target, channels = channels, channelCount = #ui }
+      scan.fixtures[#scan.fixtures + 1] = { fixture = idx, target = target, channels = channels, channelCount = #ui, discoveryFailed = failed or nil }
       if truncated then scan.partial = true; scan.limitations[#scan.limitations + 1] = string.format("fixture %s: only the first %d of %d UI channels were mapped", tostring(idx), cfg.maxUIChannels, #ui) end
     end
     if type(d.selectionNext) ~= "function" then failure = "deps.selectionNext missing: only the first selected fixture could be walked"; break end
@@ -406,8 +423,13 @@ local function slotState(d, scan, attrName)
   -- Review (PR #23): a range is reported only when it is complete and verified: every scanned fixture with the
   -- channel contributed its own range for this attribute AND the scan covered the whole selection (a fixture
   -- outside the bounded scan could have a smaller range, and the console sizes one click by the smallest).
+  if #scan.discoveryFailures > 0 then
+    st.discoveryIncomplete = string.format("channel discovery failed for %d fixture(s) (%s): they are not confirmed to lack this attribute", #scan.discoveryFailures, scan.discoveryFailures[1].reason)
+  end
   if st.with > 0 then
-    if phys and not physErr and not scan.partial then
+    if #scan.discoveryFailures > 0 then
+      st.physicalUnavailable = "the physical range cannot be established while " .. st.discoveryIncomplete
+    elseif phys and not physErr and not scan.partial then
       if physMixed then phys.mixed = true; phys.note = "the scanned fixtures have different physical ranges; the smallest is reported (the console sizes one click by it)" end
       st.physical = phys
     elseif physErr then
@@ -619,7 +641,7 @@ local READERS = {
           else slot.readoutUnavailable = "no readout readable for this slot" end
           if pref and pref.pressFactor then slot.pressFactor = pref.pressFactor end
           local st = slotState(d, scan, inner.name)
-          slot.availability, slot.fixtures, slot.with, slot.partial = st.availability, st.fixtures, st.with, st.partial
+          slot.availability, slot.fixtures, slot.with, slot.partial, slot.discoveryIncomplete = st.availability, st.fixtures, st.with, st.partial, st.discoveryIncomplete
           slot.valueState, slot.absolute, slot.raw, slot.valueChannelFunction, slot.valueFixture, slot.uiChannel, slot.valueNote = st.valueState, st.absolute, st.raw, st.channelFunction, st.valueFixture, st.uiChannel, st.valueNote
           if st.physical then
             local ph = st.physical
@@ -635,7 +657,7 @@ local READERS = {
         slots[s] = slot
       end
       return { display = n, bar = cfg.encoderBar, bank = { index = bank0 + 1, name = pp.bankName }, page = { index = page0 + 1, name = pp.pageName }, context = context, attributeEditing = (context == "Default") and true or (context ~= nil and false or nil),
-               layer = layer, selection = { count = scan.count, scanned = #scan.fixtures, fixtures = scan.ids, identityComplete = scan.identityComplete, partial = scan.partial, limitations = scan.limitations },
+               layer = layer, selection = { count = scan.count, scanned = #scan.fixtures, fixtures = scan.ids, identityComplete = scan.identityComplete, partial = scan.partial, discoveryFailures = #scan.discoveryFailures, limitations = scan.limitations },
                slots = slots, slotCount = pp.slotCount, truncated = pp.slotCount > count }
     end,
     identify = encoderIdent },
@@ -1154,7 +1176,7 @@ local function bindingDigest(snap)
       -- KB-19 review: the calibration inputs (physical range and its availability) are part of a slot's meaning.
       parts[#parts + 1] = string.format("slot%d=%s|%s|%s|%s|%s|%s|%s|%s|phys=%s..%s/%s/%s/%s", sl.slot, tostring(sl.kind), tostring(sl.ref), tostring(sl.resolution), tostring(sl.readout),
         tostring(sl.channelFunction), tostring(sl.layer), tostring(sl.availability), tostring(sl.outerRef),
-        tostring(sl.physicalFrom), tostring(sl.physicalTo), tostring(sl.physicalRange), tostring(sl.physicalMixed), tostring(sl.physicalUnavailable))
+        tostring(sl.physicalFrom), tostring(sl.physicalTo), tostring(sl.physicalRange), tostring(sl.physicalMixed), tostring(sl.physicalUnavailable)) .. (sl.discoveryIncomplete and "|discovery-incomplete" or "")
     end
   else
     parts[#parts + 1] = "slots=unavailable:" .. tostring(s and (s.reason or s.error))

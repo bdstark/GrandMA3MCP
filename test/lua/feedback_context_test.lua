@@ -349,6 +349,31 @@ check("nine fixtures with maxSelectionScan 8: the scan is partial but the identi
 big[9] = 999
 local s9b = f:contextSnapshot(spec, 16.9)
 check("replacing only the ninth fixture (same count, same first eight) moves the generation (review)", s9b.generation == 10 and s9b.generationChanged == true and s9b.slots.value.selection.fixtures[9] == 999, json.encode({ s9b.generation, s9b.slots.value.selection.fixtures }))
+-- KB-19 review 2: a fixture whose channels cannot be enumerated or mapped is not a confirmed "lacks the attribute":
+-- the scan is partial, every slot says its discovery is incomplete and no physical range is established.
+do
+  local fx = FB.new({ owner = "kb19x", deps = deps({ uiChannels = function(i) if i == 64 then error("GetUIChannels exploded") end return uiOf[i] or {} end }) }):init()
+  selection.list = { 63, 64 }
+  local rx = fx:read("encoderSlots", nil, 19)
+  local sl = rx.value.slots[1]
+  check("kb19 review 2: GetUIChannels raising for one fixture: scan partial, one discovery failure listed, slot 1 has no physical range and says why", rx.value.selection.partial == true and rx.value.selection.discoveryFailures == 1 and rx.value.selection.limitations[1]:find("channel discovery failed") and sl.physicalRange == nil and sl.physicalUnavailable:find("GetUIChannels exploded") and sl.discoveryIncomplete ~= nil and sl.partial == true, json.encode({ sl.physicalUnavailable, rx.value.selection }))
+  local fy = FB.new({ owner = "kb19y", deps = deps({ attributeByUIChannel = function(ui) if ui == 420 then error("map exploded") end local n = attrOfUi[ui]; return n and { name = n } or nil end }) }):init()
+  local ry = fy:read("encoderSlots", nil, 19.1)
+  check("kb19 review 2: GetAttributeByUIChannel raising is a discovery failure too (no range, incomplete)", ry.value.selection.discoveryFailures == 1 and ry.value.slots[1].physicalRange == nil and ry.value.slots[1].physicalUnavailable:find("map exploded"), json.encode(ry.value.slots[1].physicalUnavailable))
+  local fz = FB.new({ owner = "kb19z", deps = deps({ uiChannels = function(i) if i == 64 then return {} end return uiOf[i] end, subfixtureCount = function(i) if i == 64 then error("count exploded") end return 0 end }) }):init()
+  local rz = fz:read("encoderSlots", nil, 19.2)
+  check("kb19 review 2: a raising subfixture discovery is a discovery failure (no range, incomplete)", rz.value.selection.discoveryFailures == 1 and rz.value.slots[1].physicalRange == nil and rz.value.slots[1].physicalUnavailable:find("count exploded"), json.encode(rz.value.slots[1].physicalUnavailable))
+  local sOk = f:read("encoderSlots", nil, 19.3).value
+  check("kb19 review 2: a confirmed missing attribute (fixture 64 has no B) is not a discovery failure: no limitation, range from the fixture that has it", sOk.selection.discoveryFailures == 0 and sOk.selection.partial == false and sOk.slots[3].availability == "mixed" and sOk.slots[3].physicalRange == 1 and sOk.slots[3].discoveryIncomplete == nil, json.encode(sOk.slots[3]))
+  local fail64 = false
+  local fw = FB.new({ owner = "kb19w", deps = deps({ uiChannels = function(i) if i == 64 and fail64 then error("GetUIChannels exploded") end return uiOf[i] or {} end }) }):init()
+  local w1 = fw:contextSnapshot(spec, 19.4)
+  fail64 = true
+  local w2 = fw:contextSnapshot(spec, 19.5)
+  fail64 = false
+  local w3 = fw:contextSnapshot(spec, 19.6)
+  check("kb19 review 2: discovery failing and recovering moves the generation each time (incomplete coverage is part of the digest), so queued motion against the earlier calibration is dropped", w1.generation == 1 and w1.slots.value.slots[1].physicalRange == 0.5 and w2.generation == 2 and w2.slots.value.slots[1].physicalRange == nil and w2.slots.value.slots[1].discoveryIncomplete ~= nil and w3.generation == 3 and w3.slots.value.slots[1].physicalRange == 0.5, json.encode({ w1.generation, w2.generation, w3.generation }))
+end
 -- KB-19 review: the physical range and its availability are calibration inputs, so they are part of the digest.
 selection.list = { 63, 64 }
 local fD = FB.new({ owner = "kb19d", deps = deps() }):init()
