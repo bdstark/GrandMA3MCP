@@ -129,8 +129,9 @@ docs/probes/kb-16-encoders-<os>-<version>.json]` adds state changes on a show wh
 or `scratch`. It refuses before any change unless the selection is empty, nothing is held through the bridge and the
 programmer is provably empty through the `programmer` op (complete coverage, no channel with data); it then selects fixture 401 (RGB) and 601 (beam), switches the Color
 bank and its pages, applies absolute and signed `Attribute ... At` adjustments read back through `GetProgPhaser`, presses
-and releases Temp/Flash/Toggle/Top executors on page-qualified targets, moves a Master and a Temp fader, and changes the
-executor page. Every undo is registered before its change (`scripts/lib/kb16-steps.mjs`, tested with injected failures in
+and releases Temp/Flash/Toggle/Top executors on page-qualified targets (a target that is already active or unreadable is
+refused before any dispatch and the next candidate tried), moves a Master and a Temp fader, and switches to another existing
+page and back to the original one. Every undo is registered before its change (`scripts/lib/kb16-steps.mjs`, tested with injected failures in
 `test/kb16-steps.test.ts`) and the cleanup runs all remaining undos at the end even if one fails, then `ClearAll`. The fixture and executor numbers are those of the test show (`RGB_FIXTURE`,
 `BEAM_FIXTURE` at the top of `runPhase`; executors are picked by key function). `node scripts/kb16-probe.mjs watch
 [--seconds N]` prints the context whenever it changes while the operator works in onPC. Record:

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 // @ts-ignore plain ES module without types
-import { createCleanup, execRef, probeExecutorButton, probeFader, programmerEmpty } from "../scripts/lib/kb16-steps.mjs";
+import { createCleanup, execRef, probeExecutorButton, probeFader, programmerEmpty, TargetRefused } from "../scripts/lib/kb16-steps.mjs";
 
 /**
  * scripts/lib/kb16-steps.mjs with injected failures: an intermediate error must never skip an executor
@@ -78,6 +78,27 @@ test("a latching function registers Off before the Press and keeps it when the U
   assert.deepEqual(cleanup.pending(), ['Off Sequence "LOS2 Chase" (LOS2 Chase)'], "the Unpress was answered OK, only the Off remains");
   await cleanup.run();
   assert.deepEqual(cmds(io), ["Press Page 2.195", "Unpress Page 2.195", 'Off Sequence "LOS2 Chase"']);
+});
+
+test("an already-active target is refused before any dispatch and nothing is registered", async () => {
+  const io = fakeIo({ activity: [true] });
+  const cleanup = createCleanup();
+  await assert.rejects(() => probeExecutorButton({ io, cleanup, pageNo: 1, exec: temp, holdMs: 1, off: 'Off Sequence "x"' }), (e: any) => e instanceof TargetRefused && e.detail.reason === "active");
+  assert.deepEqual(cmds(io), [], "no Press, no Unpress, no Off");
+  assert.deepEqual(cleanup.pending(), []);
+  const io2 = fakeIo({ activity: [true], faderValues: [100] });
+  const cleanup2 = createCleanup();
+  await assert.rejects(() => probeFader({ io: io2, cleanup: cleanup2, pageNo: 1, exec: temp, token: "FaderTemp", target: 60, set: io2.setfader }), (e: any) => e instanceof TargetRefused);
+  assert.equal(io2.calls.filter((c: Call) => c.kind === "setfader" || c.kind === "faderValue").length, 0, "neither read nor moved");
+  assert.deepEqual(cleanup2.pending(), []);
+});
+
+test("an unreadable activity before dispatch is refused with nothing registered", async () => {
+  const io = fakeIo({ failActivityAt: 1 });
+  const cleanup = createCleanup();
+  await assert.rejects(() => probeExecutorButton({ io, cleanup, pageNo: 1, exec: temp, holdMs: 1 }), (e: any) => e instanceof TargetRefused && e.detail.reason === "unreadable");
+  assert.deepEqual(cmds(io), []);
+  assert.deepEqual(cleanup.pending(), []);
 });
 
 test("a refused Press registers nothing to undo", async () => {

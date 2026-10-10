@@ -2,7 +2,7 @@
   "mode": "run",
   "host": "127.0.0.1",
   "port": 9800,
-  "startedAt": "2026-10-10T07:16:47.962Z",
+  "startedAt": "2026-10-10T07:46:41.281Z",
   "ping": {
     "bridgeVersion": "0.12.0",
     "build": {
@@ -836,11 +836,11 @@
       }
     },
     {
-      "name": "run: Page 2 / Page 1 (both exist) changes the page and back without starting or stopping playbacks",
+      "name": "run: Page 2 / Page 1 (both exist; 1 is the original page) changes the page and back without starting or stopping playbacks",
       "pass": true,
       "detail": {
         "before": "Page 1#1",
-        "up": "Page 2#2",
+        "other": "Page 2#2",
         "after": "Page 1#1",
         "activity": [
           false,
@@ -912,7 +912,7 @@
       }
     }
   ],
-  "finishedAt": "2026-10-10T07:17:00.644Z",
+  "finishedAt": "2026-10-10T07:46:54.087Z",
   "failed": 0,
   "passed": 44
 }

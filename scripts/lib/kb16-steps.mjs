@@ -64,19 +64,38 @@ export function programmerEmpty(result) {
   return { ok: true, detail: { scannedFixtures: cov.scannedFixtures, totalFixtures: cov.totalFixtures, scannedChannels: cov.scannedChannels } };
 }
 
+/** Thrown before any dispatch when a target must not be touched; nothing is registered for it. */
+export class TargetRefused extends Error {
+  constructor(message, detail) { super(message); this.refused = true; this.detail = detail; }
+}
+
 /**
- * Press and release an executor through its configured key functions. The Unpress is registered before
- * the Press; an optional `off` command (for latching functions) is registered before that, so a failure at
- * any point leaves exactly the undo that is still needed. Throws after an intermediate failure with the
- * observations so far attached (`error.partial`); the registered undo stays for `runCleanup`.
+ * Reads the target's activity and refuses (throws TargetRefused, nothing registered) when it is already
+ * active or cannot be read: a playback that is running cannot be put back where it was by Unpress/Off,
+ * and an unreadable one cannot be verified afterwards.
+ */
+async function requireInactive(io, exec, ref) {
+  let before;
+  try { before = await io.activity(exec.index); } catch (e) { throw new TargetRefused(`${exec.name} (${ref}): activity cannot be read before dispatch (${e?.message ?? e}); not touched`, { ref, name: exec.name, reason: "unreadable" }); }
+  if (typeof before?.active !== "boolean") throw new TargetRefused(`${exec.name} (${ref}): activity read gave no boolean; not touched`, { ref, name: exec.name, reason: "unreadable" });
+  if (before.active) throw new TargetRefused(`${exec.name} (${ref}) is already active; not touched (its playback position could not be restored)`, { ref, name: exec.name, reason: "active" });
+  return before.active;
+}
+
+/**
+ * Press and release an executor through its configured key functions. The target must be readable and
+ * inactive first (TargetRefused otherwise, nothing registered). The Unpress is registered before the Press;
+ * an optional `off` command (for latching functions) is registered before that, so a failure at any point
+ * leaves exactly the undo that is still needed. Throws after an intermediate failure with the observations so
+ * far attached (`error.partial`); the registered undo stays for `runCleanup`.
  */
 export async function probeExecutorButton({ io, cleanup, pageNo, exec, holdMs = 300, off = null }) {
   const ref = execRef(pageNo, exec.index);
+  const before = await requireInactive(io, exec, ref);
   const offUndo = off ? cleanup.add(`${off} (${exec.name})`, () => io.cmd(off)) : null;
   const unpress = cleanup.add(`Unpress ${ref} (${exec.name})`, () => io.cmd(`Unpress ${ref}`));
-  const obs = { ref, name: exec.name, keyPress: exec.keyPress, keyUnpress: exec.keyUnpress };
+  const obs = { ref, name: exec.name, keyPress: exec.keyPress, keyUnpress: exec.keyUnpress, before };
   const partial = (step, e) => Object.assign(new Error(`${exec.name}: ${step}: ${e?.message ?? e}`), { partial: obs, step });
-  try { obs.before = (await io.activity(exec.index)).active; } catch (e) { unpress.done(); offUndo?.done(); throw partial("activity before", e); }
   const p = await io.cmd(`Press ${ref}`);
   obs.press = p;
   if (!p.ok) { unpress.done(); offUndo?.done(); throw partial("press refused", p.error); }
@@ -100,13 +119,15 @@ export async function probeExecutorButton({ io, cleanup, pageNo, exec, holdMs = 
 }
 
 /**
- * Moves a fader function and restores it. The original level is read first and its restoration registered
+ * Moves a fader function and restores it. The target must be readable and inactive first (TargetRefused
+ * otherwise, nothing registered). The original level is read first and its restoration registered
  * before the move; the restoration is marked done only after the restoring call answered OK and the read-back
  * matched. `set(ref, value)` is the setter for the function (setfader for Master, a `Fader<Fn> ... At` command
  * for the others).
  */
 export async function probeFader({ io, cleanup, pageNo, exec, token, target, set, settleMs = 200, tolerance = 0.5 }) {
   const ref = execRef(pageNo, exec.index);
+  await requireInactive(io, exec, ref);
   const original = await io.faderValue(exec.index, token);
   if (typeof original !== "number" || !Number.isFinite(original)) throw Object.assign(new Error(`${exec.name}: ${token} cannot be read before the move; nothing changed`), { step: "read original" });
   const restore = cleanup.add(`${token} ${ref} back to ${original} (${exec.name})`, () => set(ref, original));

@@ -21,7 +21,7 @@
 // GMA3_BRIDGE_HOST / GMA3_BRIDGE_PORT select the bridge.
 import net from "node:net";
 import fs from "node:fs";
-import { createCleanup, execRef, probeExecutorButton, probeFader, programmerEmpty } from "./lib/kb16-steps.mjs";
+import { createCleanup, execRef, probeExecutorButton, probeFader, programmerEmpty, TargetRefused } from "./lib/kb16-steps.mjs";
 
 const host = process.env.GMA3_BRIDGE_HOST ?? "127.0.0.1";
 const port = Number(process.env.GMA3_BRIDGE_PORT ?? 9800);
@@ -266,6 +266,11 @@ safe("list", function()
   for i = 1, p:Count() do local e = p:Ptr(i); if e and e.Object then t[#t + 1] = tostring(e.index) .. "|" .. tostring(e.Object.name) .. "|" .. tostring(cls(e.Object)) .. "|" .. tostring(get(e, "KeyPress")) .. "|" .. tostring(get(e, "KeyUnpress")) .. "|" .. tostring(get(e, "Fader")) end end
   return t
 end)
+return out
+`;
+
+const LUA_PAGES = `${LUA_PRELUDE}
+safe("pages", function() local p = DataPool().Pages; local t = {}; for i = 1, p:Count() do local pg = p:Ptr(i); if pg then t[#t + 1] = tonumber(pg.index) end end; return t end)
 return out
 `;
 
@@ -592,39 +597,44 @@ async function runPhase(A, ctx0, banks, playback, tokens) {
     const activity = async (n) => { const c = await lua(A, LUA_EXECUTORS([n], tokens)); if (!c.ok) throw new Error(`activity read failed: ${c.error}`); const l = c.value?.executors?.[0] ?? ""; return { active: /active=true/.test(l), line: l }; };
     const faderValue = async (n, token) => { const c = await lua(A, LUA_EXECUTORS([n], [token])); if (!c.ok) throw new Error(`fader read failed: ${c.error}`); const m = (c.value?.executors?.[0] ?? "").match(new RegExp(`${token}=([-\\d.]+)`)); return m ? Number(m[1]) : undefined; };
     const io = { cmd: (c) => cmd(A, c), activity, faderValue, setfader: async (ref, value) => { const r = await A.request("setfader", { ref, value }); return r.ok ? { ok: true } : { ok: false, error: r.error }; }, sleep };
-    const button = async (e, { expectDuring, expectAfter, holdMs, off, title }) => {
-      try {
-        const o = await probeExecutorButton({ io, cleanup, pageNo, exec: e, holdMs, off });
-        const pass = o.before === false && (expectDuring === undefined || o.during === expectDuring) && (expectAfter === undefined || o.after === expectAfter) && (!off || o.afterOff === false);
-        record(title(o), pass, o);
-        return o;
-      } catch (err) {
-        record(`run: ${e.name}: ${err.step ?? "step"} failed; its release/off is left to the cleanup`, false, { error: err.message, partial: err.partial, pendingCleanup: cleanup.pending() });
-        return null;
+    // A candidate that is already active or unreadable is refused by the helper before anything is dispatched
+    // or registered (TargetRefused); the next candidate with the same function is tried, and the refusal noted.
+    const button = async (candidates, { expectDuring, expectAfter, holdMs, off, title, what }) => {
+      for (const e of candidates) {
+        try {
+          const o = await probeExecutorButton({ io, cleanup, pageNo, exec: e, holdMs, off: off ? off(e) : null });
+          const pass = o.before === false && (expectDuring === undefined || o.during === expectDuring) && (expectAfter === undefined || o.after === expectAfter) && (!off || o.afterOff === false);
+          record(title(o), pass, o);
+          return o;
+        } catch (err) {
+          if (err instanceof TargetRefused) { note(`run: ${what}: ${err.message}; next candidate`, err.detail); continue; }
+          record(`run: ${e.name}: ${err.step ?? "step"} failed; its release/off is left to the cleanup`, false, { error: err.message, partial: err.partial, pendingCleanup: cleanup.pending() });
+          return null;
+        }
       }
+      note(`run: no usable ${what} executor on the page (none, or every candidate active/unreadable)`);
+      return null;
     };
-    const temp = playback.find((e) => e.keyPress === "Temp" && e.klass === "Sequence");
-    const flash = playback.find((e) => e.keyPress === "Flash" && e.klass === "Sequence");
-    const toggle = playback.find((e) => e.keyPress === "Toggle" && e.klass === "Sequence");
-    const top = playback.find((e) => e.keyPress === "Top" && e.klass === "Sequence");
+    const ofKey = (fn) => playback.filter((e) => e.keyPress === fn && e.klass === "Sequence");
     const momentary = (o) => `run: ${o.name} (${o.keyPress}/${o.keyUnpress}): Press ${o.ref} -> active=${o.during}, Unpress -> active=${o.after}`;
-    if (temp) await button(temp, { expectDuring: true, expectAfter: false, holdMs: 400, title: momentary }); else note("run: no Temp executor on the page");
-    if (flash) await button(flash, { expectDuring: true, expectAfter: false, holdMs: 400, title: momentary }); else note("run: no Flash executor on the page");
-    if (toggle) await button(toggle, { expectDuring: true, expectAfter: true, holdMs: 300, off: `Off Sequence "${toggle.name}"`, title: (o) => `run: ${o.name} (Toggle): Press ${o.ref} -> active=${o.during}, Unpress -> still active=${o.after}, Off -> active=${o.afterOff}` }); else note("run: no Toggle executor on the page");
+    const temp = await button(ofKey("Temp"), { expectDuring: true, expectAfter: false, holdMs: 400, title: momentary, what: "Temp" });
+    await button(ofKey("Flash"), { expectDuring: true, expectAfter: false, holdMs: 400, title: momentary, what: "Flash" });
+    const toggle = await button(ofKey("Toggle"), { expectDuring: true, expectAfter: true, holdMs: 300, off: (e) => `Off Sequence "${e.name}"`, title: (o) => `run: ${o.name} (Toggle): Press ${o.ref} -> active=${o.during}, Unpress -> still active=${o.after}, Off -> active=${o.afterOff}`, what: "Toggle" });
     // Top on press, Go+ on release: what the sequence does after the release depends on its cues (a one-cue
     // sequence goes past its last cue and releases), so the after-state is an observation, not an expectation.
-    if (top) await button(top, { expectDuring: true, holdMs: 300, off: `Off Sequence "${top.name}"`, title: (o) => `run: ${o.name} (Top/Go+): Press ${o.ref} runs Top (active=${o.during}), Unpress runs Go+ (observed active=${o.after}), Off -> active=${o.afterOff}` }); else note("run: no Top/Go+ executor on the page");
+    await button(ofKey("Top"), { expectDuring: true, holdMs: 300, off: (e) => `Off Sequence "${e.name}"`, title: (o) => `run: ${o.name} (Top/Go+): Press ${o.ref} runs Top (active=${o.during}), Unpress runs Go+ (observed active=${o.after}), Off -> active=${o.afterOff}`, what: "Top/Go+" });
     // Disconnect-style recovery: a held Temp released by the plain Unpress after the probe's own delay.
-    if (temp) await button(temp, { expectDuring: true, expectAfter: false, holdMs: 1200, title: (o) => `run: a Temp held for 1.2 s stays active until the Unpress ${o.ref} (release is the holder's responsibility): during=${o.during}, after=${o.after}` });
+    if (temp) await button(playback.filter((e) => e.name === temp.name), { expectDuring: true, expectAfter: false, holdMs: 1200, title: (o) => `run: a Temp held for 1.2 s stays active until the Unpress ${o.ref} (release is the holder's responsibility): during=${o.during}, after=${o.after}`, what: "Temp (long hold)" });
 
     // R6. fader functions: the original level is read and its restoration registered before every move.
     const master = playback.find((e) => e.fader === "Master" && e.klass === "Sequence" && e.keyPress !== "Toggle");
     if (master) {
       try {
+        // (an active or unreadable target is refused by probeFader before anything is read or registered)
         const m0 = await faderValue(master.index, "FaderMaster");
         const o = await probeFader({ io, cleanup, pageNo, exec: master, token: "FaderMaster", target: m0 > 50 ? 25 : 75, set: io.setfader });
         record(`run: Master fader of ${master.name} (${o.ref}) set to ${o.target} and read back through GetFader{FaderMaster}, then restored to ${o.original}`, Math.abs(o.moved - o.target) < 0.5 && Math.abs(o.restored - o.original) < 0.5, o);
-      } catch (err) { record(`run: Master fader of ${master.name}: ${err.step ?? "step"} failed; its restoration is left to the cleanup`, false, { error: err.message, partial: err.partial, pendingCleanup: cleanup.pending() }); }
+      } catch (err) { if (err instanceof TargetRefused) note(`run: Master fader: ${err.message}`, err.detail); else record(`run: Master fader of ${master.name}: ${err.step ?? "step"} failed; its restoration is left to the cleanup`, false, { error: err.message, partial: err.partial, pendingCleanup: cleanup.pending() }); }
       try {
         const setRate = async (ref, value) => cmd(A, `FaderRate ${ref} At ${value}`);
         const o = await probeFader({ io, cleanup, pageNo, exec: master, token: "FaderRate", target: 75, set: setRate, tolerance: 1 });
@@ -637,21 +647,31 @@ async function runPhase(A, ctx0, banks, playback, tokens) {
         const setTemp = async (ref, value) => cmd(A, `FaderTemp ${ref} At ${value}`);
         const o = await probeFader({ io, cleanup, pageNo, exec: tempFader, token: "FaderTemp", target: 60, set: setTemp });
         record(`run: Temp fader of ${tempFader.name} (${o.ref}): FaderTemp At 60 read back through GetFader{FaderTemp} (59.99…) and the sequence becomes active; back to ${o.original} and inactive again`, Math.abs(o.moved - 60) < 0.5 && o.activeAfterMove === true && Math.abs(o.restored - o.original) < 0.5 && o.activeAfterRestore === false, o);
-      } catch (err) { record(`run: Temp fader of ${tempFader.name}: ${err.step ?? "step"} failed; its restoration is left to the cleanup`, false, { error: err.message, partial: err.partial, pendingCleanup: cleanup.pending() }); }
+      } catch (err) { if (err instanceof TargetRefused) note(`run: Temp fader: ${err.message}`, err.detail); else record(`run: Temp fader of ${tempFader.name}: ${err.step ?? "step"} failed; its restoration is left to the cleanup`, false, { error: err.message, partial: err.partial, pendingCleanup: cleanup.pending() }); }
     } else note("run: no Temp-fader executor on the page");
-    // Page navigation neither stops nor starts playbacks.
-    const pageBefore = (await lua(A, LUA_EXECUTORS([101], tokens))).value?.page;
-    const actBefore = await Promise.all([temp, toggle].filter(Boolean).map((e) => activity(e.index)));
-    const pageBack = cleanup.add("Page 1", () => cmd(A, "Page 1"));
-    r = await cmd(A, "Page 2");
-    await sleep(200);
-    const pageUp = (await lua(A, LUA_EXECUTORS([101], tokens))).value?.page;
-    const back = await cmd(A, "Page 1");
-    if (back.ok) pageBack.done();
-    await sleep(200);
-    const pageAfter = (await lua(A, LUA_EXECUTORS([101], tokens))).value?.page;
-    const actAfter = await Promise.all([temp, toggle].filter(Boolean).map((e) => activity(e.index)));
-    record("run: Page 2 / Page 1 (both exist) changes the page and back without starting or stopping playbacks", r.ok && back.ok && pageUp !== pageBefore && pageAfter === pageBefore && actBefore.every((s, i) => s.active === actAfter[i].active), { before: pageBefore, up: pageUp, after: pageAfter, activity: actAfter.map((s) => s.active) });
+    // Page navigation neither stops nor starts playbacks. The page the console was on (`pageNo`, read before
+    // any change) is the one restored, both on the normal path and by the registered undo; the other page is
+    // picked from the pool's existing pages so nothing is created.
+    const pagesR = await lua(A, LUA_PAGES, "pages");
+    const existing = (pagesR.value?.pages ?? []).map(Number).filter(Number.isFinite);
+    const other = existing.find((n) => n !== pageNo);
+    if (other === undefined) {
+      note("run: page navigation not exercised: the data pool has no second page (nothing is created)", { current: pageNo, existing });
+    } else {
+      const pageBefore = (await lua(A, LUA_EXECUTORS([101], tokens))).value?.page;
+      const watched = [temp, toggle].filter(Boolean).map((o) => playback.find((e) => e.name === o.name)).filter(Boolean);
+      const actBefore = await Promise.all(watched.map((e) => activity(e.index)));
+      const pageBack = cleanup.add(`Page ${pageNo}`, () => cmd(A, `Page ${pageNo}`));
+      r = await cmd(A, `Page ${other}`);
+      await sleep(200);
+      const pageUp = (await lua(A, LUA_EXECUTORS([101], tokens))).value?.page;
+      const back = await cmd(A, `Page ${pageNo}`);
+      await sleep(200);
+      const pageAfter = (await lua(A, LUA_EXECUTORS([101], tokens))).value?.page;
+      if (back.ok && pageAfter === pageBefore) pageBack.done();
+      const actAfter = await Promise.all(watched.map((e) => activity(e.index)));
+      record(`run: Page ${other} / Page ${pageNo} (both exist; ${pageNo} is the original page) changes the page and back without starting or stopping playbacks`, r.ok && back.ok && pageUp !== pageBefore && pageAfter === pageBefore && actBefore.every((s, i) => s.active === actAfter[i].active), { before: pageBefore, other: pageUp, after: pageAfter, activity: actAfter.map((s) => s.active) });
+    }
   } finally {
     // Every registered undo that the normal path did not complete, newest first, each attempted even if an
     // earlier one failed; the outcomes are part of the record.

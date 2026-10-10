@@ -9,7 +9,10 @@ gate that refuses before any change unless the selection is empty, nothing is he
 programmer is provably empty through the bridge's `programmer` op (complete coverage of all 70 (sub)fixtures, 342
 channels, no data); every undo is registered before the change it belongs to, on a page-qualified target with the
 original value read first, and the cleanup runs all of them at the end even if one fails (`scripts/lib/kb16-steps.mjs`,
-injected-failure tests in `test/kb16-steps.test.ts`). The closing `ClearAll` was a no-op by the gate.
+injected-failure tests in `test/kb16-steps.test.ts`). An executor that is already active or whose activity cannot be
+read is refused before any dispatch with nothing registered for it, and the next candidate with the same key
+function is tried (none was refused in this run: every target read inactive). The closing `ClearAll` was a no-op by
+the gate.
 
 | Item | Value |
 | --- | --- |
@@ -62,7 +65,7 @@ injected-failure tests in `test/kb16-steps.test.ts`). The closing `ClearAll` was
 | 41 | Master fader | original 100 read first; `setfader Page 1.191 25` → `GetFader{FaderMaster}=25`; restored to 100 and read back |
 | — | `FaderRate Page 1.191 At 75` | OK, read back `FaderRate=50` before and after: the rate master of this sequence did not follow (the executor's fader is Master; function-specific setters need their own qualification, not assumed from the Master path) |
 | 42 | Temp fader | original 0 read first; `FaderTemp Page 1.210 At 60` → `FaderTemp=59.999996 (60%)` **and the sequence becomes active**; `At 0` → inactive. A Temp fader above zero is a playback start |
-| 43 | page navigation | `Page 2` then `Page 1` (registered before leaving): `CurrentExecPage()` follows and the Temp/Toggle sequences stayed inactive throughout |
+| 43 | page navigation | the original page (1, read before any change) is the one restored, by the normal path and by the registered undo; the other page (2) is taken from the data pool's existing pages, nothing is created. `Page 2` then `Page 1`: `CurrentExecPage()` follows and the Temp/Toggle sequences stayed inactive throughout |
 | 44 | cleanup | the three undos the normal path had not consumed ran newest first, each OK: `Off Attribute "ColorRGB_R"`, `Select EncoderBank 1.1`, `ClearSelection`; then `ClearAll`; final bank 0, page 0, selection 0 |
 
 ## Observations worth keeping
