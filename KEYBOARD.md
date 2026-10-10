@@ -51,7 +51,7 @@ mixed backend serves the `quickkey` default and per-key `shortcut`/`shortcutOrTy
 record is released and recovered through the part that pressed it, an unavailable Quickey route never falls back to
 `Keyboard()`, and every combination whose console semantics are not qualified (both kinds down at once, a Quickey under a
 temporary shortcut-mode change, a mode change while a Quickey is down) is refused before dispatch on every backend;
-harness-tested (63 + 11 bridge checks). The surface defaults, its startup/status reporting, the vendoring of 0.10.0 and the
+harness-tested (67 + 11 bridge checks). The surface defaults, its startup/status reporting, the vendoring of 0.10.0 and the
 live qualification of the surface path are the mtpnxk side of KB-15 and are not done here; no new console path is
 qualified by this change (the mixed backend has not run on the console).
 
@@ -1323,7 +1323,7 @@ No MCP/TypeScript changes should be needed unless its public options are deliber
 ### Module change for KB-15 (hardkeys 0.10.0, bridge 0.12.0, 2026-10-09)
 
 The shared-module and bridge half of KB-15, implemented in `plugin/gma3_mcp_hardkeys.lua` 0.10.0 with the regression
-harness `test/lua/hardkeys_mixed_test.lua` (63 checks: the real owned-Quickey backend over the KB-13 fake console as one
+harness `test/lua/hardkeys_mixed_test.lua` (67 checks: the real owned-Quickey backend over the KB-13 fake console as one
 part, the fake backend with the KB-14 fake profile and mode writer as the other) and a section of
 `test/lua/bridge_plugin_test.lua` (11 checks, `input=mixed`). No MCP tool or TypeScript contract changed. The surface half
 (mtpnxk: vendoring 0.10.0, `quickkey` as its default after the bank setup, its own startup/status report, key maps, LED

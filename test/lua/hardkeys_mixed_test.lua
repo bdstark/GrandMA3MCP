@@ -327,6 +327,21 @@ do
   h = inst:press("s", 8, { key = "NUM5" })
   q, err = inst:startSequence("s", 8, { { kind = "tap", key = "NUM0" } })
   check("a sequence is refused while a live Quickey record exists and it taps a PC key", q == nil and err.code == "unqualified-mix" and err.step == 1, J(err))
+  inst:release("s", 8, { hold = h.id })
+  -- Under an interaction the session may hold a key and still start a sequence: a release step of that
+  -- hold is simulated by the preflight, so a later step of the other kind is allowed.
+  local ia = inst:beginInteraction("s", 8, {})
+  h = inst:press("s", 8, { key = "NUM5", interaction = ia.id })
+  q, err = inst:startSequence("s", 8, { { kind = "release", key = "NUM5" }, { kind = "tap", key = "NUM0", holdMs = 20 } }, { interaction = ia.id })
+  check("a sequence that first releases the held Quickey may then tap a PC key (preflight simulates the release)", q and q.state == "running", J(err or q))
+  for t = 8.0, 8.3, 0.025 do inst:service(t) end
+  check("...it completed: Unpress on the executor, then the Keyboard() tap", inst:sequenceStatus(q.id, 8.3).state == "completed" and holdById(inst, h.id).state == "released" and kbEvents("press") >= 3, J(inst:sequenceStatus(q.id, 8.3)))
+  inst:endInteraction("s", ia.id, 8.35)
+  q, err = inst:startSequence("s", 8.4, { { kind = "press", key = "NUM0" }, { kind = "release", key = "NUM0" }, { kind = "tap", key = "NUM5", holdMs = 20 } })
+  check("a PC key pressed and released by earlier steps no longer blocks a Quickey step", q and q.state == "running", J(err or q))
+  for t = 8.4, 8.7, 0.025 do inst:service(t) end
+  check("...completed", inst:sequenceStatus(q.id, 8.7).state == "completed", J(inst:sequenceStatus(q.id, 8.7)))
+  h = inst:press("s", 9, { key = "NUM5" })
   inst:release("s", 9, { hold = h.id })
   -- An unresolved Quickey record (not just a held one) blocks PC keys as well.
   h = inst:press("s", 10, { key = "NUM5" })

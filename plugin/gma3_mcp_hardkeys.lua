@@ -3167,14 +3167,24 @@ function Instance:_validateSequence(sessionId, steps)
   local pressed = {}
   local heldQuickkeys = {}  -- Quickey tuples a press/combo step leaves down for later steps (chord capability)
   local heldPcKeys = {}     -- PC-key tuples a press/combo step leaves down (KB-15: never next to a Quickey)
-  local liveQuickkeys = self:_liveQuickkeyCount()
-  local liveKinds = self:_liveKinds()
+  -- The instance's live key records by tuple (held, releasing, unresolved; text records own no key), as a
+  -- simulated state the steps update: a release step of a key this session holds removes it, so a later
+  -- step is judged against what will be down then. The runtime checks still catch a release that fails.
+  local liveByTuple = {}
+  for _, h in pairs(self._holds) do
+    if h.kind ~= "text" and (h.state == "held" or h.state == "releasing" or h.state == "unresolved") then liveByTuple[h.tupleKey] = h.quickkey and "quickkey" or "pckey" end
+  end
+  local function liveCount(kind)
+    local n = 0
+    for _, k in pairs(liveByTuple) do if k == kind then n = n + 1 end end
+    return n
+  end
   -- KB-15: a step must not put a Quickey down next to a PC key or the reverse (live records or earlier steps).
   local function mixFail(i, tuple, prefix)
     local tkind = tuple.quickkey and "quickkey" or "pckey"
     local other = tkind == "quickkey" and "pckey" or "quickkey"
     local otherHeld = other == "quickkey" and heldQuickkeys or heldPcKeys
-    if liveKinds[other] > 0 or next(otherHeld) ~= nil then
+    if liveCount(other) > 0 or next(otherHeld) ~= nil then
       local _, e = fail("unqualified-mix", string.format("%s%s next to a %s that is down (a live record or an earlier step of this sequence) is not qualified (KB-15); release it first",
         prefix or "", tkind == "quickkey" and ("Quickey " .. tostring(tuple.quickkey)) or ("PC key " .. tostring(tuple.pcKey)), other == "quickkey" and "Quickey" or "PC key"), { reason = "held", heldKind = other })
       return e
@@ -3213,7 +3223,7 @@ function Instance:_validateSequence(sessionId, steps)
       end
       if tuple.quickkey then
         local tk = tupleKey(tuple)
-        local others = liveQuickkeys > 0 or (next(heldQuickkeys) ~= nil and (count(heldQuickkeys) > 1 or not heldQuickkeys[tk]))
+        local others = liveCount("quickkey") > 0 or (next(heldQuickkeys) ~= nil and (count(heldQuickkeys) > 1 or not heldQuickkeys[tk]))
         local cerr = self:_quickkeyCapabilityError(tuple, route, kind, false, others)
         if cerr then return stepFail(i, cerr.code, cerr.message, { reason = cerr.reason, missing = cerr.missing, capabilities = cerr.capabilities }) end
         if others then
@@ -3293,6 +3303,7 @@ function Instance:_validateSequence(sessionId, steps)
         local tk = tupleKey(tuple)
         local existing = self._byTuple[tk]
         known = pressed[tk] ~= nil or (existing ~= nil and existing.session == sessionId and existing.state == "held")
+        if existing ~= nil and existing.session == sessionId and existing.state == "held" then liveByTuple[tk] = nil end
         s.tupleKey, s.logical, s.pcKey = tk, route.logical, tuple.pcKey
       elseif type(spec.key) == "string" then
         known = pressed[spec.key:upper()] ~= nil

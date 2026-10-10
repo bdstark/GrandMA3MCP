@@ -49,8 +49,10 @@ show object, socket or timer and sends no input.
 
 ```lua
 -- Helpers in the entry component. Call startModules() from Main, after all chunks ran.
--- The consumer owns `retained`: keep it across stop/start and persist it across reloads
--- if those can replace the entry component's Lua state. Never recreate it on each start.
+-- The consumer owns `retained` = { records = {}, mode = nil, bank = nil }: the unresolved key records,
+-- the pending keyboard-shortcut mode restoration (KB-14) and the Quickey bank record (KB-12) a
+-- dispose() hands back. Keep it across stop/start and persist it across reloads if those can replace
+-- the entry component's Lua state. Never recreate it on each start.
 local function startModules(pluginName, signalTable, retained, now)
   assert(type(now) == "number", "supply the consumer clock in seconds")
   local reg = rawget(signalTable, "__gma3_mcp_modules") or {}
@@ -59,30 +61,46 @@ local function startModules(pluginName, signalTable, retained, now)
   assert(FB and FB.API_VERSION == 1 and FB.VERSION == "0.2.0", "wrong feedback module")
   local hardkeys = HK.new({ owner = pluginName, deps = HK.consoleDeps(_G) }):init()
   local feedback = FB.new({ owner = pluginName, deps = FB.consoleDeps(_G) }):init()
-  local adopted = hardkeys:adopt(retained, now) -- reserves old tuples; dispatches nothing
-  local rejected = {}
-  for _, item in ipairs(adopted.rejected) do rejected[#rejected + 1] = item.record end
-  -- Input is still disabled. Do not enable it if any record could not be adopted.
-  return hardkeys, feedback, rejected
+  local problems = {}
+  -- The bank first: Quickey records release through it. A record that is not adopted stays retained.
+  if retained.bank then
+    local b, err = hardkeys:adoptBank(retained.bank, now) -- re-verified by readback; nothing is created
+    if b then retained.bank = nil else problems[#problems + 1] = "bank: " .. tostring(err and err.message) end
+  end
+  local adopted = hardkeys:adopt(retained.records, now)   -- reserves old tuples; dispatches nothing
+  retained.records = {}
+  for _, item in ipairs(adopted.rejected) do retained.records[#retained.records + 1] = item.record; problems[#problems + 1] = "record: " .. tostring(item.reason) end
+  if retained.mode then
+    local m, err = hardkeys:adoptMode(retained.mode, now)   -- unresolved until recover() verifies and restores it
+    if m then retained.mode = nil else problems[#problems + 1] = "mode: " .. tostring(err and err.message) end
+  end
+  -- Input is still disabled. Do not enable it while anything could not be adopted; report `problems`.
+  return hardkeys, feedback, problems
 end
 
 local function stopModules(hardkeys, feedback, retained, now)
   assert(type(now) == "number", "cleanup needs the consumer clock in seconds")
-  local result = hardkeys:dispose(now) -- attempts releases using the stored tuples
-  for _, record in ipairs(result.records) do retained[#retained + 1] = record end
+  local result = hardkeys:dispose(now) -- attempts releases and the mode restore when they are due
+  for _, record in ipairs(result.records) do retained.records[#retained.records + 1] = record end
+  if result.mode then retained.mode = result.mode end -- a restoration still pending or unresolved: shortcuts may be changed
+  if result.bank then retained.bank = result.bank end
   feedback:dispose()
-  return result -- report unresolved releases; retain their records for the next start
+  return result -- report unresolved releases and restoration; retain everything for the next start
 end
 
 -- Main assigns all three results:
--- hardkeys, feedback, retained = startModules(pluginName, signalTable, retained, now)
+-- hardkeys, feedback, problems = startModules(pluginName, signalTable, retained, now)
 -- Each loop: hardkeys:service(now); feedback:service(now), using a fresh clock value.
 -- Stop/Cleanup: stopModules(hardkeys, feedback, retained, now), then persist retained.
 ```
 
 Calling `hardkeys:dispose()` without a numeric clock does **not** dispatch releases. Do not discard its
-returned records. If cleanup raises, preserve the instance and report the failure instead of dropping
-ownership state. Adopt retained records before admitting input; retain and report any rejected records.
+returned records, nor `result.mode` (a temporary shortcut-mode change the stop could not restore: without it the
+operator's shortcuts stay changed with nothing to recover from) or `result.bank` (the owned Quickeys and reserved
+executors; without it the next start cannot verify, use or tear them down). If cleanup raises, preserve the instance
+and report the failure instead of dropping ownership state. Adopt retained state before admitting input; retain and
+report anything that could not be adopted. The bridge does the same (`state.input.unresolved`, `state.input.mode`,
+`state.input.bank`).
 Release recovery is an explicit action through the originating backend (`attachBackend()` then `recover()`);
 it does not replay presses and does not require enabling new input. The consumer must choose storage that
 survives its own restart/reload lifecycle; a local table alone does not survive replacement of that Lua state.
@@ -458,10 +476,17 @@ local mixed = HK.mixedBackend({ quickey = HK.quickeyBackend(inst), keyboard = HK
 inst:enableInput(mixed, { routing = { default = "quickkey",
   keys = { NUM0 = { method = "shortcut" },                 -- no KB-10 evidence yet: the shortcut row through Keyboard()
            THRU = { method = "type", text = "Thru " } } } }) -- literal text, shortcuts temporarily off while it is typed
-inst:describeRoute("NUM5").dispatchBackend  -- "quickey"; "keyboard" for NUM0 and THRU
-inst:tap("s", now, { key = "NUM5" }, 50)    -- Assign/Press/Unpress Page P.E; hold.backend = "quickey"
-inst:tap("s", now, { key = "NUM0" }, 50)    -- Keyboard() press/release; hold.backend = "keyboard"
-inst:describeRoute("ESC")                   -- dispatchable = false, "discovered only": NOT re-routed to Keyboard()
+inst:openSession({ id = "s", leaseMs = 2000 }, now)
+local r5, r0 = inst:describeRoute("NUM5"), inst:describeRoute("NUM0")
+-- r5.dispatchBackend == "quickey", r0.dispatchBackend == "keyboard" (THRU too)
+local esc = inst:describeRoute("ESC")      -- esc.dispatchable == false, "discovered only": NOT re-routed to Keyboard()
+-- One kind at a time: a tap is released by service(), so the second tap is refused (unqualified-mix) while
+-- the first is still down. Either service() between them, or let a sequence order them:
+local seq = inst:startSequence("s", now, {
+  { kind = "tap", key = "NUM5", holdMs = 50 },  -- Assign/Press/Unpress Page P.E; hold.backend = "quickey"
+  { kind = "tap", key = "NUM0", holdMs = 50 },  -- Keyboard() press/release; hold.backend = "keyboard"
+})
+-- each loop iteration: inst:service(now) runs the steps; inst:sequenceStatus(seq.id, now).state ends "completed"
 ```
 
 | Element | Behaviour |
