@@ -252,80 +252,62 @@ local function scanSelection(d, cfg)
   local okC, count = pcall(d.selectionCount)
   if not okC then error("SelectionCount failed: " .. tostring(count), 0) end
   count = tonumber(count) or 0
-  local scan = { count = count, fixtures = {}, partial = false, limitations = {} }
-  if count == 0 then return scan end
+  -- identityComplete starts false (KB-17 review) and becomes true only after a traversal that ended by itself,
+  -- within the bound, and yielded exactly `count` distinct fixture ids.
+  local scan = { count = count, fixtures = {}, ids = {}, partial = false, identityComplete = false, limitations = {} }
+  if count == 0 then scan.identityComplete = true; return scan end
+  local function incomplete(why) scan.identityLimitation = why; scan.limitations[#scan.limitations + 1] = why end
+  if type(d.selectionFirst) ~= "function" then scan.partial = true; incomplete("deps.selectionFirst missing: the selection cannot be walked"); return scan end
   local okF, idx = pcall(d.selectionFirst)
-  if not okF or idx == nil then scan.partial = true; scan.limitations[1] = "SelectionFirst() gave nothing although the selection is not empty"; return scan end
-  local n = 0
-  while idx ~= nil and n < cfg.maxSelectionScan do
-    n = n + 1
-    local target = idx
-    local okU, ui = pcall(d.uiChannels, idx)
-    if not (okU and type(ui) == "table") then ui = {} end
-    if #ui == 0 and type(d.subfixtureCount) == "function" then
-      local okS, sc = pcall(d.subfixtureCount, idx)
-      if okS and (tonumber(sc) or 0) > 0 then
-        local okSub, sub = pcall(d.subfixture, idx, 0)
-        if okSub and sub ~= nil then
-          target = sub
-          local okU2, ui2 = pcall(d.uiChannels, sub)
-          ui = (okU2 and type(ui2) == "table") and ui2 or {}
+  if not okF then scan.partial = true; incomplete("SelectionFirst() failed: " .. tostring(idx)); return scan end
+  if idx == nil then scan.partial = true; incomplete("SelectionFirst() gave nothing although the selection is not empty"); return scan end
+  local seen, ended, failure = {}, false, nil
+  while idx ~= nil do
+    if seen[idx] then failure = "SelectionNext() returned fixture " .. tostring(idx) .. " again; the walk is not a traversal"; break end
+    if #scan.ids >= cfg.maxSelectionIdentity then failure = string.format("selection identity bounded to %d of %d fixtures", #scan.ids, count); break end
+    seen[idx] = true
+    scan.ids[#scan.ids + 1] = idx
+    if #scan.fixtures < cfg.maxSelectionScan then
+      -- bounded attribute scan: UI channels of this (sub)fixture
+      local target = idx
+      local okU, ui = pcall(d.uiChannels, idx)
+      if not (okU and type(ui) == "table") then ui = {} end
+      if #ui == 0 and type(d.subfixtureCount) == "function" then
+        local okS, sc = pcall(d.subfixtureCount, idx)
+        if okS and (tonumber(sc) or 0) > 0 then
+          local okSub, sub = pcall(d.subfixture, idx, 0)
+          if okSub and sub ~= nil then
+            target = sub
+            local okU2, ui2 = pcall(d.uiChannels, sub)
+            ui = (okU2 and type(ui2) == "table") and ui2 or {}
+          end
         end
       end
-    end
-    local channels, truncated = {}, false
-    for i = 1, #ui do
-      if i > cfg.maxUIChannels then truncated = true; break end
-      local okA, a = pcall(d.attributeByUIChannel, ui[i])
-      if okA and a ~= nil then
-        local nm = str(field(a, "name"))
-        if nm ~= nil and channels[nm] == nil then channels[nm] = ui[i] end
+      local channels, truncated = {}, false
+      for i = 1, #ui do
+        if i > cfg.maxUIChannels then truncated = true; break end
+        local okA, a = pcall(d.attributeByUIChannel, ui[i])
+        if okA and a ~= nil then
+          local nm = str(field(a, "name"))
+          if nm ~= nil and channels[nm] == nil then channels[nm] = ui[i] end
+        end
       end
+      scan.fixtures[#scan.fixtures + 1] = { fixture = idx, target = target, channels = channels, channelCount = #ui }
+      if truncated then scan.partial = true; scan.limitations[#scan.limitations + 1] = string.format("fixture %s: only the first %d of %d UI channels were mapped", tostring(idx), cfg.maxUIChannels, #ui) end
     end
-    scan.fixtures[#scan.fixtures + 1] = { fixture = idx, target = target, channels = channels, channelCount = #ui }
-    if truncated then scan.partial = true; scan.limitations[#scan.limitations + 1] = string.format("fixture %s: only the first %d of %d UI channels were mapped", tostring(idx), cfg.maxUIChannels, #ui) end
-    if type(d.selectionNext) ~= "function" then
-      if count > n then scan.partial = true; scan.limitations[#scan.limitations + 1] = "deps.selectionNext missing: only the first selected fixture was scanned" end
-      break
-    end
+    if type(d.selectionNext) ~= "function" then failure = "deps.selectionNext missing: only the first selected fixture could be walked"; break end
     local okN, nxt = pcall(d.selectionNext, idx)
-    if not okN then
-      if count > n then scan.partial = true; scan.limitations[#scan.limitations + 1] = "SelectionNext() failed (" .. tostring(nxt) .. "): only the first " .. n .. " of " .. count .. " selected fixtures were scanned" end
-      break
-    end
-    if nxt == idx then break end
+    if not okN then failure = "SelectionNext() failed after " .. #scan.ids .. " of " .. count .. " fixtures: " .. tostring(nxt); break end
     idx = nxt
+    if idx == nil then ended = true end
   end
-  if idx ~= nil and n >= cfg.maxSelectionScan and n < count then scan.partial = true; scan.limitations[#scan.limitations + 1] = string.format("selection scan bounded to %d of %d fixtures", n, count) end
-  -- Selection identity (KB-17 review): every selected fixture id, walked without channel reads beyond the
-  -- scan, bounded by config.maxSelectionIdentity. The attribute scan above stays bounded; the identity says
-  -- which fixtures an encoder would operate, so a snapshot cannot claim a generation without all of it.
-  local ids = {}
-  for i, f in ipairs(scan.fixtures) do ids[i] = f.fixture end
-  scan.identityComplete = true
-  if idx ~= nil then
-    if type(d.selectionNext) ~= "function" then
-      scan.identityComplete = false
-      scan.identityLimitation = "deps.selectionNext missing: the selection identity beyond the scanned fixtures is unknown"
-    else
-      local walked = n
-      while idx ~= nil do
-        if #ids >= cfg.maxSelectionIdentity then scan.identityComplete = false; scan.identityLimitation = string.format("selection identity bounded to %d of %d fixtures", #ids, count); break end
-        ids[#ids + 1] = idx
-        walked = walked + 1
-        local okN, nxt = pcall(d.selectionNext, idx)
-        if not okN then scan.identityComplete = false; scan.identityLimitation = "SelectionNext() failed while walking the selection identity: " .. tostring(nxt); break end
-        if nxt == idx then break end
-        idx = nxt
-      end
-    end
-  elseif n < count and scan.partial then
-    -- The scan stopped early (SelectionFirst/SelectionNext problems) and nothing more could be walked.
-    scan.identityComplete = false
-    scan.identityLimitation = scan.limitations[#scan.limitations]
-  end
-  scan.ids = ids
-  if not scan.identityComplete then scan.limitations[#scan.limitations + 1] = scan.identityLimitation end
+  if #scan.fixtures < count then scan.partial = true end
+  if #scan.fixtures < math.min(count, cfg.maxSelectionScan) and not failure then failure = "the walk ended early" end
+  if #scan.fixtures == cfg.maxSelectionScan and count > cfg.maxSelectionScan then scan.limitations[#scan.limitations + 1] = string.format("selection scan bounded to %d of %d fixtures", cfg.maxSelectionScan, count) end
+  if failure then incomplete(failure)
+  elseif not ended then incomplete("the selection walk did not end")
+  elseif #scan.ids ~= count then incomplete(string.format("SelectionNext() ended after %d distinct fixture(s) but the selection count is %d", #scan.ids, count))
+  else scan.identityComplete = true end
   return scan
 end
 

@@ -335,7 +335,22 @@ check("a selection within the identity bound gets a generation again (first for 
 local fNoNext = FB.new({ owner = "kb17nn", deps = deps({ selectionNext = false }) }):init()
 sb = fNoNext:contextSnapshot(spec, 17.2)
 check("without SelectionNext a multi-fixture selection's identity is incomplete: no generation", sb.generation == nil and sb.generationUnknown == true and sb.slots.value.selection.identityComplete == false, json.encode(sb.generationNote))
+-- Review: the identity is complete only after a validated traversal (count matched, distinct ids, ended by itself).
 selection.list = { 63, 64 }
+local fNilFirst = FB.new({ owner = "kb17nf", deps = deps({ selectionFirst = function() return nil end }) }):init()
+sb = fNilFirst:contextSnapshot(spec, 17.21)
+check("SelectionFirst() nil with a nonempty selection: identity incomplete, no generation", sb.generation == nil and sb.generationUnknown == true and sb.slots.value.selection.identityComplete == false and sb.generationNote:find("gave nothing"), tostring(sb.generation) .. " " .. tostring(sb.generationNote))
+local fShort = FB.new({ owner = "kb17sh", deps = deps({ selectionCount = function() return 3 end }) }):init()
+sb = fShort:contextSnapshot(spec, 17.22)
+check("SelectionNext() ending before the reported count: identity incomplete, no generation", sb.generation == nil and sb.generationUnknown == true and sb.slots.value.selection.identityComplete == false and #sb.slots.value.selection.fixtures == 2 and sb.generationNote:find("ended after 2 distinct fixture%(s%) but the selection count is 3"), tostring(sb.generation) .. " " .. tostring(sb.generationNote))
+local fLoop = FB.new({ owner = "kb17lp", deps = deps({ selectionNext = function() return 63 end }) }):init()
+sb = fLoop:contextSnapshot(spec, 17.23)
+check("SelectionNext() returning the same fixture again: identity incomplete, no generation", sb.generation == nil and sb.generationUnknown == true and sb.slots.value.selection.identityComplete == false and #sb.slots.value.selection.fixtures == 1 and sb.generationNote:find("fixture 63 again"), tostring(sb.generation) .. " " .. tostring(sb.generationNote))
+local fRaise = FB.new({ owner = "kb17rs", deps = deps({ selectionFirst = function() error("no first") end }) }):init()
+sb = fRaise:contextSnapshot(spec, 17.24)
+check("SelectionFirst() raising: identity incomplete, no generation", sb.generation == nil and sb.generationUnknown == true and sb.slots.value.selection.identityComplete == false, tostring(sb.generationNote))
+sb = fShort:contextSnapshot(spec, 17.25)
+check("a repeated incomplete read still claims nothing and records no generation", sb.generation == nil and sb.lastGeneration == nil)
 snap = f:contextSnapshot(spec, 17.3)
 check("back to the two-fixture selection (f): moved again", snap.generation == 11)
 band1.Text = "Red"
