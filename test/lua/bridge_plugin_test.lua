@@ -1014,13 +1014,13 @@ do
   start("")  -- bind fails in this harness, so serverMain returns and the instances are disposed again
   local hk, fb = state.modules.hardkeys, state.modules.feedback
   check("modules found through the plugin signal table", hk and hk.loaded and fb and fb.loaded, json.encode({ hk = hk and hk.error, fb = fb and fb.error }))
-  check("module versions recorded", hk.version == "0.10.0" and hk.apiVersion == 1 and fb.version == "0.4.0", json.encode({ hk.version, fb.version }))
+  check("module versions recorded", hk.version == "0.10.0" and hk.apiVersion == 1 and fb.version == "0.5.0", json.encode({ hk.version, fb.version }))
   check("modules start log line", lastLog():find("stopped") or true)
   local disposed = hk.instance and hk.instance:status().state == "disposed" and fb.instance:status().state == "disposed"
   check("instances disposed when the loop ends", disposed, hk.instance and hk.instance:status().state)
   check("modules did not publish via package.loaded or globals", package.loaded["gma3_mcp_hardkeys"] == nil and _G.gma3_mcp_hardkeys == nil and _G.gma3_mcp_feedback == nil)
   r = request("ping", {})
-  check("ping summarises modules", r.ok and r.result.modules.hardkeys.loaded == true and r.result.modules.feedback.version == "0.4.0", json.encode(r.result.modules))
+  check("ping summarises modules", r.ok and r.result.modules.hardkeys.loaded == true and r.result.modules.feedback.version == "0.5.0", json.encode(r.result.modules))
   r = request("modules", {})
   check("modules op reports status without Lua enabled", r.ok and state.lua.enabled == false and r.result.apiVersion == 1 and r.result.modules.hardkeys.status.inputEnabled == false and r.result.modules.feedback.status.module == "gma3_mcp_feedback", json.encode(r))
 
@@ -1518,11 +1518,11 @@ do
                              VirtualKeys = { Count = function() return 0 end }, MANetSocket = { Get = function(_, k) if k == "ShowFile" then return fbConsole.showFile end end }, maNetSocket = {} } end
   local C = { id = 61 }
   r = request("feedback.describe", {}, nil, C)
-  check("feedback.describe lists readers with the module version, without Lua", r.ok and r.result.version == "0.4.0" and #r.result.readers == 21 and r.result.status.epoch == 1 and r.result.note:find("not an atomic snapshot"), J(r))
+  check("feedback.describe lists readers with the module version, without Lua", r.ok and r.result.version == "0.5.0" and #r.result.readers == 21 and r.result.status.epoch == 1 and r.result.note:find("not an atomic snapshot"), J(r))
   r = request("feedback.read", {}, nil, C)
   check("feedback.read without items is refused with a code", r.ok == false and r.code == "no-items", r.error)
   r = request("feedback.read", { readers = { "commandText", "lastCommand", "blind", "solo", "page", "freeze", "selectedSequence", "previewBar", "sequenceActive" }, displays = { 1, 2, 9 }, executors = { 201, 202 }, sequences = { 5, 6 } }, nil, C)
-  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.16.0" and r.result.module.version == "0.4.0" and r.result.identity.showFile == "mcp-test-disposable", J(r))
+  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.17.0" and r.result.module.version == "0.5.0" and r.result.identity.showFile == "mcp-test-disposable", J(r))
   local by = {}
   if r.ok then for _, it in ipairs(r.result.items) do by[it.key] = it end end
   check("feedback.read: command text and last command are raw observations", by.commandText and by.commandText.value == "Store " and by.lastCommand.value == "Go+ Sequence 5 : OK" and by.lastCommand.note:find("not confirmation"), J(by.lastCommand))
@@ -1624,9 +1624,18 @@ do
   local pageH = H({ name = "Page 1", No = "1" }, { execs[201], execs[202] })
   CurrentExecPage = function() return pageH end
   GetExecutor = function(n) return execs[n], pageH end
+  -- KB-21: page 2 is reachable through ObjectList only (the user is on page 1); page 9 does not exist.
+  local execs2 = { [201] = H({ index = 201, KeyPress = "Go+", KeyUnpress = "", Fader = "Master", Encoder = "Master", Width = "2" }) }
+  execs2[201].Object = seq
+  local page2 = H({ name = "Page 2", No = "2" }, { execs2[201] })
+  local savedObjectList = ObjectList
+  ObjectList = function(ref)
+    if ref == "Page 2" then return { page2 } elseif ref == "Page 2.201" then return { execs2[201] } elseif ref == "Page 2.202" or ref == "Page 9" or ref:match("^Page 9%.") then return {} end
+    return savedObjectList(ref)
+  end
   local C = { id = 71 }
   r = request("feedback.context", { executors = { 201, 202 } }, nil, C)
-  check("feedback.context answers with Lua and input disabled", r.ok and r.result.bridgeVersion == "0.16.0" and r.result.module.version == "0.4.0" and r.result.atomic == false and r.result.generation == 1 and r.result.generationChanged == false and r.result.identity.showFile == "mcp-test-disposable" and r.result.identity.dataPool.name == "Default", J(r))
+  check("feedback.context answers with Lua and input disabled", r.ok and r.result.bridgeVersion == "0.17.0" and r.result.module.version == "0.5.0" and r.result.atomic == false and r.result.generation == 1 and r.result.generationChanged == false and r.result.identity.showFile == "mcp-test-disposable" and r.result.identity.dataPool.name == "Default", J(r))
   check("feedback.context: authoritative display, bank/page, slots with availability and value", r.ok and r.result.authoritativeDisplay.rule == "configured" and r.result.encoder.value.bank.name == "Color" and r.result.encoder.value.page.name == "RGB" and r.result.slots.value.slots[1].name == "ColorRGB_R" and r.result.slots.value.slots[1].availability == "available" and r.result.slots.value.slots[1].absolute == 50 and r.result.slots.value.slots[1].unit == "None" and r.result.slots.value.slots[2].valueState == "empty" and r.result.executorPage.no == 1, J(r.result.slots))
   check("feedback.context: executor targets with functions, level and playback-target status", r.ok and #r.result.executors == 2 and r.result.executors[1].value.functions.keyPress == "Temp" and r.result.executors[1].value.level.value == 100 and r.result.executors[1].value.playbackTarget == true and r.result.executors[2].value.empty == true and r.result.executors[2].value.reserved == nil, J(r.result.executors))
   check("feedback.context: nested fields survive the serialiser depth bound", r.ok and type(r.result.slots.value.slots[1].feature) == "string" and type(r.result.executors[1].value.assigned.name) == "string")
@@ -1634,6 +1643,14 @@ do
   check("feedback.context: a requested display without an encoder bar is unavailable, not replaced", r.ok and r.result.authoritativeDisplay.rule == "requested" and r.result.encoder.available == false and r.result.encoder.reason:find("display 2 does not exist") and r.result.generation == 1, J(r.result.encoder))
   r = request("feedback.context", { executors = "201" }, nil, C)
   check("feedback.context: malformed executors refused with a code", r.ok == false and r.code == "bad-args", r.error)
+  r = request("feedback.context", { executors = { 201, 202 }, executorPage = 2 }, nil, C)
+  check("kb21: feedback.context with executorPage reads that page through ObjectList while the user is on page 1 (mode page, width, coverage)", r.ok and r.result.executorMode == "page" and r.result.executorSpecPage == 2 and r.result.executorPage.no == 1 and r.result.executors[1].value.page.no == 2 and r.result.executors[1].value.mode == "page" and r.result.executors[1].value.width == 2 and r.result.executors[1].value.pool.name == "Default" and r.result.executors[2].value.coveredBy == 201 and r.result.executors[2].value.playbackTarget == false and r.result.bindingKey:find("page=2"), J(r.result.executors))
+  r = request("feedback.context", { executors = { 201 }, executorPage = 9 }, nil, C)
+  check("kb21: a page that does not exist is pageMissing, nothing is created", r.ok and r.result.executors[1].value.pageMissing == true and r.result.executors[1].value.playbackTarget == false, J(r.result.executors))
+  r = request("feedback.context", { executors = { 201 }, executorPage = 0 }, nil, C)
+  check("kb21: a bad executorPage is refused", r.ok == false and r.code == "bad-args", r.error)
+  r = request("feedback.context", { executors = { 201, 202 } }, nil, C)
+  check("kb21: without executorPage the executors follow the user's page (mode current)", r.ok and r.result.executorMode == "current" and r.result.executors[1].value.mode == "current" and r.result.executors[1].value.page.no == 1, J(r.result.executors))
   r = request("feedback.context", { display = 0 }, nil, C)
   check("feedback.context: display 0 refused", r.ok == false and r.code == "bad-args", r.error)
   con.bank = 0
@@ -1673,7 +1690,7 @@ end
 do
   start("")
   state._loadModules(); state.running = true; state.stopRequested = false; state.ignoreNextCleanup = false
-  check("kb18: the control module loads with the pair", state.modules.control and state.modules.control.loaded and state.modules.control.version == "0.3.0", state.modules.control and state.modules.control.error)
+  check("kb18: the control module loads with the pair", state.modules.control and state.modules.control.loaded and state.modules.control.version == "0.4.0", state.modules.control and state.modules.control.error)
   check("kb18: control is disabled at a plain start", state.control.enabled == false and state.control.backend == nil)
   -- The binding source is this bridge's feedback instance; replace it with a controllable fake snapshot
   -- (the module's own harness covers the real readers; here the wiring is what is tested).
@@ -1703,7 +1720,7 @@ do
   local r = request("control.submit", { events = { ev(1) } }, nil, C)
   check("control.submit is refused while control is disabled", r.ok == false and r.code == "control-disabled" and r.error:find("control=fake"), r.error)
   r = request("control.status", {}, nil, C)
-  check("control.status answers while disabled, with the limitations", r.ok and r.result.controlEnabled == false and #r.result.limitations == 3 and r.result.inputEnabled == false, J(r))
+  check("control.status answers while disabled, with the limitations", r.ok and r.result.controlEnabled == false and #r.result.limitations == 4 and r.result.inputEnabled == false, J(r))
   r = request("ping", {}, nil, C)
   check("ping carries the control summary", r.ok and r.result.control.enabled == false and r.result.control.sessions == 0, J(r.result.control))
   Main(nil, "control"); Cleanup()
@@ -1719,6 +1736,20 @@ do
   check("control.bind reports the binding revision (review 6)", r.result.binding == 1 and r.result.bindingKey ~= nil, J(r.result))
   r = request("control.bind", { display = 0 }, nil, C)
   check("control.bind validates its arguments", r.ok == false and r.code == "bad-args", r.error)
+  r = request("control.bind", { executors = { 201 }, executorPage = 2 }, nil, C)
+  check("kb21: control.bind passes executorPage into the watched spec", r.ok and watched.executorPage == 2 and state.control.spec.executorPage == 2, J({ r, watched }))
+  check("kb21: the control module's binding source is the same page-bound spec (live bug: the key named no page)", (function()
+    local seen
+    local fbi = state.modules.feedback.instance
+    local saved = fbi.contextSnapshot
+    fbi.contextSnapshot = function(self, spec, t, opts) seen = spec; return saved(self, spec, t, opts) end
+    state.modules.control.instance:bindingInfo(tnow())
+    fbi.contextSnapshot = saved
+    return seen and seen.executorPage == 2 and seen.executors[1] == 201 end)())
+  r = request("control.bind", { executors = { 201 }, executorPage = -1 }, nil, C)
+  check("kb21: control.bind refuses a bad executorPage", r.ok == false and r.code == "bad-args", r.error)
+  r = request("control.bind", { executors = { 201 } }, nil, C)
+  check("kb21: rebinding without executorPage follows the page again", r.ok and watched.executorPage == nil and state.control.spec.executorPage == nil, J(watched))
   r = request("control.submit", { events = { ev(1), ev(2), ev(3, { delta = -1 }), ev(4, { generation = 9 }), ev(5) } }, nil, C)
   check("a batch is admitted in order: coalesced, a stale generation refused in place, the rest admitted", r.ok and r.result.accepted == 4 and r.result.refused == 1 and r.result.outcomes[2].coalesced == true and r.result.outcomes[4].refused == "stale-generation" and r.result.outcomes[4].generation == 1 and r.result.outcomes[5].coalesced == true and r.result.session == "conn-81", J(r))
   r = request("control.status", {}, nil, C)

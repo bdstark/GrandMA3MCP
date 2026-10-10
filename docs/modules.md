@@ -10,7 +10,7 @@ The bridge plugin ships two reusable, instance-based Lua modules as extra compon
 | `gma3_mcp_hardkeys` | [plugin/gma3_mcp_hardkeys.lua](../plugin/gma3_mcp_hardkeys.lua) | Owned input sessions, leases, deadline servicing and recovery over a backend adapter; read-only logical-key resolution |
 | `gma3_mcp_feedback` | [plugin/gma3_mcp_feedback.lua](../plugin/gma3_mcp_feedback.lua) | Read-only console state readers confirmed in KB-01, with freshness and bounded polling (KB-06); control-context readers and binding snapshots (KB-17) |
 
-Module API version **1**; `gma3_mcp_hardkeys` **0.10.0** (KB-03 to KB-05; 0.5.0 resolves any `Enums.VirtualKeyCode` name, KB-07; 0.6.0 adds the per-key routing policy, KB-11; 0.7.0 adds the owned Quickey bank, KB-12; 0.8.0 adds the owned-Quickey backend, KB-13; 0.9.0 adds scoped shortcut-mode changes and text routes, KB-14; 0.10.0 adds the mixed backend and the unqualified-mix refusals, KB-15), `gma3_mcp_feedback` **0.3.0** (KB-02 + KB-06; 0.3.0 adds the control-context readers and `contextSnapshot()`, KB-17).
+Module API version **1**; `gma3_mcp_hardkeys` **0.10.0** (KB-03 to KB-05; 0.5.0 resolves any `Enums.VirtualKeyCode` name, KB-07; 0.6.0 adds the per-key routing policy, KB-11; 0.7.0 adds the owned Quickey bank, KB-12; 0.8.0 adds the owned-Quickey backend, KB-13; 0.9.0 adds scoped shortcut-mode changes and text routes, KB-14; 0.10.0 adds the mixed backend and the unqualified-mix refusals, KB-15), `gma3_mcp_feedback` **0.5.0** (KB-02 + KB-06; 0.3.0 adds the control-context readers and `contextSnapshot()`, KB-17; 0.4.0 physical ranges, KB-19; 0.5.0 explicit executor targets with paged reads and the layout rule, KB-21), `gma3_mcp_control` **0.4.0** (KB-18; 0.2.0 the console adjustment backend, KB-19; 0.3.0 strips, KB-20; 0.4.0 page-aware executor resolution and frozen holds, KB-21).
 Four backend adapters dispatch: the **fake backend** (records events, simulates aggregate console key state,
 nothing reaches a console key), the **keyboard backend** (`keyboardBackend(deps)`, KB-04: the console's
 `Keyboard()` PC-key emulation; console keys are really pressed), the **owned-Quickey backend**
@@ -569,8 +569,8 @@ console reads) and are requested explicitly, through `contextSnapshot()`, or wat
 | `dataPool` | user | `{name, no}` of `DataPool()` |
 | `encoderBank` | display | `params.display` (default `config.encoderDisplay` = 1): `{display, bar, bank {index, name, pages}, page {index, name, slots}, banks, context, attributeEditing, unsupported?, poolUnavailable?}`; indexes are 1-based (the selectors' `SelectedItemValueI64` is 0-based); `context ~= "Default"` is available but `unsupported` (editors, timing, phasers are not qualified); a selector value without a pool page keeps the index and reports `poolUnavailable` |
 | `encoderSlots` | display | the pool page's ordered slots (`config.maxSlots` = 5), **flat** records: `slot, kind (attribute | other | empty), ref, name, attributeIndex, objectType, label` (the on-screen band), `feature, unit, readout, readoutSource, resolution, resolutionSource` (`user-preference` > `attribute-definition` > `encoder-band`), `pressFactor, layer` (the profile's), `color, channelFunctions, channelFunction` (the selector's text), `availability` (`no-selection | available | unavailable | mixed`), `fixtures, with, partial`, `valueState` (`none | value | empty | mixed | unavailable`), `absolute, raw, valueChannelFunction, valueFixture, uiChannel, valueNote`, since 0.4.0 (KB-19) `physicalFrom, physicalTo, physicalRange, physicalFunction, physicalFunctionIndex, physicalFunctions, physicalFixtures, physicalMixed?, physicalNote?` (the range of the channel function that names the attribute, read from `GetUIChannel(ui).logical_channel` for every scanned fixture with the channel; the **smallest** range when fixture types differ, `physicalMixed` saying so; reported only when every such fixture contributed, the scan covered the whole selection and every scanned fixture's channels were enumerated and mapped, never from another function) or `physicalUnavailable` with the reason; `discoveryIncomplete` when `GetUIChannels` or the subfixture discovery raised for a fixture, or an enumerated channel could not be mapped to a readable attribute name (`GetAttributeByUIChannel` raising, returning nil, or a handle whose name is unreadable or empty) (that fixture is then not a confirmed "lacks the attribute"; `selection.discoveryFailures` counts them and `limitations` names them); the range, its availability and the discovery state are in the binding digest, `outerRef/outerName/outerUnsupported`, `unsupported`, `attributeUnavailable`; plus `selection {count, scanned, fixtures, identityComplete, partial, limitations}`: the attribute scan is bounded by `config.maxSelectionScan` (8) fixtures and `config.maxUIChannels` (64) channels each (a grouping fixture read through its first subfixture), while `fixtures` is the **whole** selection's ids walked without channel reads up to `config.maxSelectionIdentity` (512); `identityComplete` is true only after a traversal that ended by itself within that bound with exactly `count` distinct ids (a nil or raising `SelectionFirst`, a `SelectionNext` that ends early, repeats a fixture, fails or is missing leave it false) |
-| `executorTarget` | page | `params.executor`: `{executor, page, empty, assigned, functions {keyPress, keyUnpress, keyUnpressCombined, fader, encoder, encoderLeft, encoderRight}, configuration, isXKey, width, level {token, value, text} | {unavailable}` (the token of the **configured** fader function, `Fader<fn>`), `active | activeUnavailable, appearance {name, backRGBA, color} | appearanceUnavailable, playbackTarget, reason?, reserved?}`; a `Quickey` object or an executor inside `deps.reservedExecutors()` (the bridge wires its KB-12 bank) is never a playback target |
-| `pageExecutors` | page | index, name and class of every assigned executor of the current page, bounded by `config.maxExecutors` |
+| `executorTarget` | page | `params.executor`: `{executor, page, empty, assigned, functions {keyPress, keyUnpress, keyUnpressCombined, fader, encoder, encoderLeft, encoderRight}, configuration, isXKey, width, level {token, value, text} | {unavailable}` (the token of the **configured** fader function, `Fader<fn>`), `active | activeUnavailable, appearance {name, backRGBA, color} | appearanceUnavailable, playbackTarget, reason?, reserved?}`; a `Quickey` object or an executor inside `deps.reservedExecutors()` (the bridge wires its KB-12 bank) is never a playback target; since 0.5.0 (KB-21) `params.page?` and the explicit identity `pool {name, no}`, `page {no, name, class, addr}`, `mode` (`current` = the user's page through `GetExecutor`, `page` = the explicit page through `ObjectList("Page P.E")`), `expanded` (width > 1), `coveredBy`/`coveredWidth` (a wider neighbour of the same row spans this number: `playbackTarget = false`), `pageMissing` (the page does not exist; nothing is created); see [below](#explicit-executor-targets-and-stable-bindings-gma3_mcp_feedback-050--gma3_mcp_control-040-kb-21) |
+| `pageExecutors` | page | `params.page?` (0.5.0): index, name, class and `width` of every assigned executor of the current page (or of the explicit page, through `ObjectList("Page P")`; a missing page is `pageMissing` with no executors), bounded by `config.maxExecutors` |
 
 A display without an encoder bar (or one that does not exist) makes `encoderBank`/`encoderSlots` unavailable with the
 reason; **no other display is substituted**: the authoritative encoder bar is the one the consumer configured
@@ -580,7 +580,7 @@ explicit field, never a default.
 
 | Method | Effect |
 | --- | --- |
-| `contextItems(spec)` (also a module function) | The items of `spec = { display?, executors? }`: `dataPool`, `page`, `encoderBank`, `encoderSlots` and one `executorTarget` per executor (bounded by `maxExecutors`, the rest a limitation). |
+| `contextItems(spec)` (also a module function) | The items of `spec = { display?, executors?, executorPage? }` (0.5.0: `executorPage` binds every listed executor to that page): `dataPool`, `page`, `encoderBank`, `encoderSlots` and one `executorTarget` per executor (bounded by `maxExecutors`, the rest a limitation). |
 | `contextSnapshot(spec, now, opts?)` | One bounded snapshot: `{observedAt, epoch, atomic=false, identity {showFile, user, profile, dataPool | dataPoolUnavailable}, identityUncertain, invalidated?, display, authoritativeDisplay {display, rule = configured | requested, note}, executorPage | executorPageUnavailable, encoder, slots, executors[], pageExecutors?, limitations[], generation, generationChanged, generationSince, bindingKey, generationNote?}` where `encoder`, `slots` and each executor are observations (`available`, `value` or `reason`/`error`). `spec.allExecutors = true` adds every assigned executor of the page (live reads only). `opts.cached = true` assembles the snapshot from the watched observations without reading: items not observed in this epoch are unavailable (`notObserved`, `stale`), and while any item is missing **no generation is claimed** (`generationUnknown`, `lastGeneration`). |
 | `watchContext(spec, now)` | `watch()` of `contextItems(spec)` (replaces the watch list) so `service()` keeps the snapshot's items observed at the loop's pace; the console is followed without any surface keypress. |
 
@@ -714,10 +714,84 @@ are `{ relative = true, absolute = true, touch = true, button = false, targets =
 The bridge enables it with `control=console` (0.16.0); the live evidence is
 [kb-20-strips-macos-2.5.1.md](probes/kb-20-strips-macos-2.5.1.md).
 
+## Explicit executor targets and stable bindings (`gma3_mcp_feedback` 0.5.0 / `gma3_mcp_control` 0.4.0, KB-21)
+
+Surface banks (which physical control maps to which executor number), bank navigation and device profiles belong to
+the surface service (mtpnxk `KEYBOARD.md` "KB-21"); operations on executors are KB-22. What the console half adds is
+the **identity** of an executor target and the rules that keep a binding stable while the console, the operator or the
+surface's bank changes under it.
+
+**Explicit targets (feedback 0.5.0).** `executorTarget { executor, page? }` reads one executor either on the user's
+current page (`GetExecutor`, `mode = "current"`: the target follows the console's `Page n`) or on an explicit page
+(`ObjectList("Page P.E")`, `mode = "page"`: read whatever page the console shows; KB-12/13 proved the paged forms).
+Every value carries `pool {name, no}` (`DataPool()`), `page {no, name, class, addr}`, `executor`, `mode`, `width` and
+the KB-17 fields. A page that does not exist (`ObjectList("Page P")` nil) is `pageMissing = true, empty, playbackTarget
+= false` with the reason; **nothing creates a page**. The paged dependencies are `pageByNo(p)` and `pagedExecutor(p, n)`
+in `consoleDeps`; without them an explicit page is an explicit error item, the current page still reads.
+
+**Layout (expanded assignments).** An executor's `Width` makes it occupy the following numbers of its row (the same
+hundred block: 201 can cover 202, never 301). For a number `n` the reader scans the preceding `config.maxExecutorWidth
+- 1` (= 4) numbers of the row and, when one of them has `Width w` with `m + w > n`, reports `coveredBy = m,
+coveredWidth = w, playbackTarget = false`: adjacent numbers are never assumed to be separate playbacks. A wider span
+than the bound is not resolved (the bound is a config key). `expanded = true` marks the wide executor itself (it is a
+target). Live evidence: the KB-21 probe's `run` tries `Set Page P.E Property "Width" "2"` on a free executor and
+records what the console answers for the covered number. Live (2026-10-10): both `Set` forms answered OK and changed
+nothing; the property write `ObjectList("Page 1.180")[1]:Set("Width", 2)` took, 181 was reported `coveredBy 180`, and the
+console answers a handle of class `Proxy` (no `Width`, no `Object`) for the covered number, which the reader treats as an
+empty slot of its own.
+
+**Spec and digest.** `contextSnapshot({ executors, executorPage? })` / `watchContext` / `contextItems` bind every
+listed executor to `executorPage` when given (items `executorTarget[executor=n,page=P]`, binding key `...;page=P`,
+snapshot `executorMode = "page"`, `executorSpecPage`); without it the executors follow the user's page (`mode =
+"current"`, the old keys). `allExecutors` lists the explicit page when one is given. The digest now carries, per
+executor, its page number and mode, `width`, `coveredBy`, `pageMissing` and the pool; the user's **current page** is
+part of the digest only while some bound executor follows it (no executors bound, or any current-mode executor), so
+an **independent-page binding does not move when the console changes pages** (verified in the harness and live: `Page 2`
+moved a following binding by one generation and left the independent one alone; a width change, a deleted page, a deleted
+or replaced assignment each move it). A **cached** snapshot of a following binding claims no generation while any
+executor was last observed on another page than the page item names (`generationUnknown`, `pageChangePending`): live, a
+page change had moved the generation four times as the twenty bound executors were re-read a few per tick; now it moves
+once, after the re-read.
+
+**Resolution (control 0.4.0).** An event target is `{ executor = n, element, page? }`. `resolveTarget` matches the
+binding item by **(page, executor)**: a target without `page` names a current-mode item, a target with `page` a
+page-bound item, never the other way round (`target-unavailable "... needs target.page"` / `"... of page P is not in the
+binding"`). `pageMissing` (`"page P does not exist (no page is created)"`, `detail.pageMissing`), `coveredBy` (`"covered
+by executor m (width w): not a separate playback"`, `detail.coveredBy`), empty, reserved and Quickey targets are
+refused `target-unavailable` in that order. The resolved target carries `pool` (`"Default#1"`), `page {no, name}`,
+`pageNo`, `mode`, `assigned`, `assignedClass`, `width`, `expanded`, `function`, `token`, `level` (the binding's last read)
+and a key of the form `exec<pool>/<page>.<n>.<element>|<assigned>|<function>`: executor 201 of two pages or two pools
+are two targets (two owners, two gestures). The console backend still refuses executor elements `unsupported` (KB-22);
+the fake backend records them, which is how the live probe exercises holds.
+
+**Frozen holds.** A touch or button down stores the target it resolved (`gesture.resolved`); the release, a forced end
+(lease expiry, `maxGestureMs`, dispose, backend switch), the unresolved record of a release the backend raised on, its
+`recover()` re-attempt and an adopted record (review of PR #25) carry that record as `resolved` (with `targetKey`) and
+`frozen = true`, whatever the binding says by then. A surface bank change (a replaced spec: new binding revision), a
+console page change (the following item now reads another object) or a reassignment/deletion while the button is held
+therefore neither releases nor activates the newly mapped executor: the release goes to `exec.../1.201.key|Sequence 1|Go+`
+even when 201 now holds Sequence 99 on page 2, and only a fresh down reaches the new mapping (through its own
+resolution; an empty or covered number is refused). `status().sessions[id].gestureList[].frozen` shows `{ kind,
+executor, element, page, pool, assigned }` (or `slot, name` for a slot hold) and `targetKey`. Rebinding still drops
+queued motion and marks held touches `rebound` (`gesture-rebound` for their motion until lift and re-touch), so the
+surface's pickup/takeover starts over on a bank change.
+
+**Bridge 0.17.0.** `feedback.context` and `control.bind` take `executorPage` (`[bad-args]` unless a positive integer;
+`[no-feedback]` on a feedback module without explicit pages); `control.bind` returns `executorMode`; `control.status`
+lists the frozen targets. Harness: `test/lua/feedback_context_test.lua` (148 checks; 28 new: paged reads, a missing
+page, widths and coverage across the row bound, the current-page dependency, `pageExecutors` on a page, the binding
+key and mode, a page change moving only the following binding, width/page/assignment changes, a bad `executorPage`,
+the cached path, an empty executor's page, the no-generation window of a page change), `test/lua/control_admission_test.lua`
+(217; 23 new: identity in the key and the intent, page-bound resolution and its refusals, covered and missing pages, a
+bad page, the frozen release through a bank + page change, the fresh down reaching the new mapping, a forced end, the
+strip gesture cancelled by a rebind), the bridge harness (495; 9 new, the binding source carrying `executorPage`) and
+`test/kb21-probe.test.ts` (4). Live: [kb-21-executors-macos-2.5.1.md](probes/kb-21-executors-macos-2.5.1.md)
+(`node scripts/kb21-probe.mjs run`, 28/28 on 2026-10-10).
+
 ## Vendoring into another plugin (mtpnxk)
 
-Use the immutable upstream revision **`597ba47f7e28c0c50673e8c405b555b942c9b984`** (KB-20 after the PR #24 review, hardkeys 0.10.0 /
-feedback 0.4.0 / control 0.3.0) for the current module set; the earlier pins were `01e1561490fc39ce4e2d510e2d170c9c09e4bc53`
+Use the immutable upstream revision **`d60bb06e080ce2fef2b593b96f0de119462a0767`** (KB-21 after the PR #25 review round 1, hardkeys 0.10.0 /
+feedback 0.5.0 / control 0.4.0) for the current module set; the earlier pins were `597ba47f7e28c0c50673e8c405b555b942c9b984` (KB-20 after the PR #24 review, hardkeys 0.10.0 / feedback 0.4.0 / control 0.3.0), `01e1561490fc39ce4e2d510e2d170c9c09e4bc53`
 (KB-20 before the review), `107f54804a9f7183e8bbedee2ebbac70e38e06fd` (KB-19, hardkeys
 0.10.0 / feedback 0.4.0 / control 0.2.0), `9f08f871f864084afcd670008310b285e8b31bfc` (KB-18, hardkeys
 0.10.0 / feedback 0.3.0 / control 0.1.0), `c8dbb3aa6edf352fc977d5196399bb6daf222d2b` (KB-17,
@@ -730,8 +804,8 @@ manifest, not an automatic updater or a runtime dependency on GitHub.
 | File | Module version | API version | SHA-256 |
 | --- | --- | --- | --- |
 | `plugin/gma3_mcp_hardkeys.lua` | 0.10.0 | 1 | `a57ebd29af3b2c7e9e06ef3dcd8b7059c775db83b0dc61760f49e75973cc7dc3` |
-| `plugin/gma3_mcp_feedback.lua` | 0.4.0 | 1 | `739eb9fe996e9c84f8930fb0532baee6e84895cf8b93c99f05fbd2579910bca4` |
-| `plugin/gma3_mcp_control.lua` | 0.3.0 | 1 | `4b2637d02cba019360921f87b756c2504d0b89a0b286ee98f7a616097fa9358b` |
+| `plugin/gma3_mcp_feedback.lua` | 0.5.0 | 1 | `7108a8854523ee1078ef51c7c5db79a360b770d595ea35d0cd16f2739d89bf4d` |
+| `plugin/gma3_mcp_control.lua` | 0.4.0 | 1 | `aa6e1964f6cd3ea03a101f12063edbe90dc298268a0e78aaa33b99c475aa18e2` |
 
 1. Obtain the Lua files from that exact revision of `bdstark/GrandMA3MCP`, rather than a moving branch.
    Copy them unchanged with [LICENSE](../LICENSE) and the manifest into the surface package. The manifest's
@@ -753,8 +827,8 @@ See the [tested platform/version matrix](compatibility.md) for the evidence and 
 mtpnxk vendored the 0.5.0 pair (its `tools/ma3/VENDOR.md` records those commits and hashes) and qualified the surface
 consumer against it on macOS in its KB-08 record, then the 0.10.0/0.2.0 pair for KB-15; the 0.10.0/0.3.0 pair for KB-17 (the context snapshot carried as a `context` message); the 0.10.0/0.3.0/0.1.0 set
 above is what its KB-18 surface half vendors (continuous-control events admitted on the console side), to be
-qualified there; the 0.10.0/0.4.0/0.2.0 set above is what its KB-19 surface half vendors (the console backend behind
-`control=console`).
+qualified there; the 0.10.0/0.4.0/0.2.0 set is what its KB-19 surface half vendors (the console backend behind
+`control=console`); the 0.10.0/0.5.0/0.4.0 set above is what its KB-21 surface half vendors (explicit executor targets and frozen holds).
 
 ## Verification
 

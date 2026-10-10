@@ -115,6 +115,28 @@
 --   * capabilities on the console backend become { relative, absolute, touch = true, button = false }.
 --     Encoder presses and executor elements stay refused "unsupported" (KB-21/22).
 --
+-- What 0.4.0 adds (KB-21, EXPLICIT executor targets and STABLE bindings; surface banks, bank navigation
+-- and profiles belong to the surface service, operations on executors to KB-22):
+--   * an executor target is resolved against the binding by (page, executor): { executor = n, element,
+--     page? }. Without a page it names the executor the binding reads on the user's CURRENT page (a
+--     following binding, feedback contextSnapshot({ executors })); with a page it names that page's
+--     executor and the binding must have been bound to that page (contextSnapshot({ executors,
+--     executorPage })). The resolved target carries its explicit identity: pool, page {no, name},
+--     executor, element, mode (current | page), the assigned object, the configured function, width,
+--     and a key that includes pool and page, so the same number on two pages is two targets.
+--   * a number the binding reports covered by a wider neighbour (an expanded assignment, feedback
+--     coveredBy), a page that does not exist (pageMissing) and a reserved or Quickey executor are
+--     refused "target-unavailable" with that reason: adjacent numbers are never assumed to be separate
+--     playbacks, and nothing here creates a page.
+--   * FROZEN targets: a touch or button down records the target it resolved (resolved), and the
+--     release, a forced end (lease, gesture bound, dispose) and the unresolved record carry that same
+--     record (frozen = true) whatever the binding says by then: a bank or page change while a button is
+--     held can neither release nor activate the executor newly mapped to the control; the new mapping is
+--     reached by a fresh down only. Rebinding (a replaced spec) still drops queued motion and marks held
+--     touches rebound ("gesture-rebound" for their motion), so a surface's pickup/takeover starts over.
+--     Review (PR #25): the gesture-bound (maxGestureMs) force-end, the unresolved record of a release the
+--     backend raised on, recover() and an adopted record carry the same frozen record (resolved, targetKey).
+--
 -- Rules every consumer must keep (as for the other modules):
 --   * One instance per consumer; the module table is read-only; nothing is published through
 --     package.loaded or globals. Dependencies come through opts.deps: deps.binding(now) returns the
@@ -123,7 +145,7 @@
 --   * Input is disabled on a new instance. enableInput(adapter) is the operator's explicit decision.
 
 local NAME        = "gma3_mcp_control"
-local VERSION     = "0.3.0"
+local VERSION     = "0.4.0"
 local API_VERSION = 1
 
 local EVENT_TYPES = { relative = true, absolute = true, touch = true, button = true }
@@ -514,7 +536,7 @@ function Instance:_endSessionWork(s, now, reason, out)
   for _, key in ipairs(keys) do
     local g = s.gestures[key]
     if g.kind == "touch" or g.kind == "button" then
-      local r = self:_applyNow(s, { kind = g.kind, down = false, target = g.target, targetKey = g.targetKey, generation = g.generation, device = g.device, control = g.control,
+      local r = self:_applyNow(s, { kind = g.kind, down = false, target = g.target, targetKey = g.targetKey, resolved = g.resolved, frozen = true, generation = g.generation, device = g.device, control = g.control,
                                     gesture = g.gesture, forced = true, reason = reason, session = s.id, at = now }, now)
       if r.unresolved then out.unresolved[#out.unresolved + 1] = r.unresolved end
       out.ended[#out.ended + 1] = { kind = g.kind, device = g.device, control = g.control, target = g.target, reason = reason, outcome = r.outcome }
@@ -583,24 +605,40 @@ local function resolveTarget(snap, target)
   elseif target.executor ~= nil then
     if not isInt(target.executor) or target.executor < 1 then return fail("bad-event", "target.executor must be a positive integer") end
     if not ELEMENTS[target.element] then return fail("bad-event", "target.element must be fader, key or encoder") end
+    if target.page ~= nil and (not isInt(target.page) or target.page < 1) then return fail("bad-event", "target.page must be a positive page number (omit it for the executor the binding follows on the user's current page)") end
+    -- KB-21: (page, executor) identifies the binding item. A target without a page names a following
+    -- (current-page) item; a target with a page names an item bound to that page. Never the other way round.
     local x
     for _, o in ipairs(snap.executors or {}) do
       local n = o.available and o.value and o.value.executor or (o.params and o.params.executor)
-      if n == target.executor then x = o end
+      local pg = o.params and o.params.page
+      if n == target.executor and pg == target.page then x = o end
     end
-    if not x then return fail("target-unavailable", string.format("executor %d is not in the binding (bind it first)", target.executor), { target = target }) end
-    if not x.available then return fail("target-unavailable", string.format("executor %d is unavailable: %s", target.executor, tostring(x.reason or x.error)), { target = target }) end
+    local where = target.page ~= nil and string.format("executor %d of page %d", target.executor, target.page) or string.format("executor %d", target.executor)
+    if not x then
+      return fail("target-unavailable", string.format("%s is not in the binding (bind it first%s)", where, target.page ~= nil and "" or "; a page-bound executor needs target.page"), { target = target })
+    end
+    if not x.available then return fail("target-unavailable", string.format("%s is unavailable: %s", where, tostring(x.reason or x.error)), { target = target }) end
     local v = x.value
-    if v.empty then return fail("target-unavailable", string.format("executor %d is empty", target.executor), { target = target }) end
-    if v.playbackTarget == false then return fail("target-unavailable", string.format("executor %d is not a playback target (%s)", target.executor, tostring(v.reason or (v.reserved and "reserved by an owned Quickey bank") or "Quickey object")), { target = target }) end
+    if v.pageMissing then return fail("target-unavailable", string.format("%s: page %d does not exist (no page is created)", where, target.page or (v.page and v.page.no) or 0), { target = target, pageMissing = true }) end
+    if v.coveredBy ~= nil then return fail("target-unavailable", string.format("%s is covered by executor %d (width %d): not a separate playback", where, v.coveredBy, tonumber(v.coveredWidth) or 0), { target = target, coveredBy = v.coveredBy }) end
+    if v.empty then return fail("target-unavailable", string.format("%s is empty", where), { target = target }) end
+    if v.playbackTarget == false then return fail("target-unavailable", string.format("%s is not a playback target (%s)", where, tostring(v.reason or (v.reserved and "reserved by an owned Quickey bank") or "Quickey object")), { target = target }) end
     local f = v.functions or {}
     local fn
     if target.element == "fader" then fn = f.fader elseif target.element == "key" then fn = f.keyPress else fn = f.encoder end
-    if fn == nil then return fail("target-unavailable", string.format("executor %d has no %s function", target.executor, target.element), { target = target }) end
+    if fn == nil then return fail("target-unavailable", string.format("%s has no %s function", where, target.element), { target = target }) end
     local tok = fnToken(target.element == "fader" and (v.level and v.level.token or fn) or fn)
-    return { kind = "executor", executor = target.executor, element = target.element, page = v.page, assigned = v.assigned and (v.assigned.addr or v.assigned.name),
+    local pageNo = (type(v.page) == "table" and v.page.no) or (type(v.page) == "number" and v.page) or target.page
+    local pool = type(v.pool) == "table" and (tostring(v.pool.name) .. "#" .. tostring(v.pool.no)) or nil
+    local assigned = v.assigned and (v.assigned.addr or v.assigned.name)
+    return { kind = "executor", executor = target.executor, element = target.element, page = type(v.page) == "table" and shallowCopy(v.page) or { no = pageNo },
+             pageNo = pageNo, pool = pool, mode = v.mode or (target.page ~= nil and "page" or "current"), assigned = assigned, assignedClass = v.assigned and v.assigned.class,
+             width = v.width, expanded = v.expanded or nil,
              ["function"] = fn, token = tok, stateful = STATEFUL_FUNCTIONS[tok or ""] == true or nil,
-             key = string.format("exec%d.%s|%s|%s", target.executor, target.element, tostring(v.assigned and (v.assigned.addr or v.assigned.name)), tostring(fn)),
+             -- KB-21: the key names pool and page, so executor n of two pages (or pools) are two targets.
+             key = string.format("exec%s/%s.%d.%s|%s|%s", tostring(pool), tostring(pageNo), target.executor, target.element, tostring(assigned), tostring(fn)),
+             level = v.level and v.level.value or nil,
              supersedes = not STATEFUL_FUNCTIONS[tok or ""] }
   end
   return fail("bad-event", "target must name a slot or an executor")
@@ -809,7 +847,9 @@ function Instance:submit(sessionId, now, ev)
       logEvent(self, { at = now, session = sessionId, type = ev.type, device = ev.device, control = ev.control, seq = ev.seq, noop = true })
       return { accepted = true, noop = true, lost = lost, note = "no " .. ev.type .. " of that control is down for this session" }
     end
-    local intent = { kind = ev.type, down = false, target = existing.target, targetKey = existing.targetKey, generation = existing.generation, device = ev.device, control = ev.control,
+    -- KB-21: the release ends the hold on the target the down RESOLVED (frozen), whatever the binding
+    -- maps the control to by now; a bank/page change never redirects a release.
+    local intent = { kind = ev.type, down = false, target = existing.target, targetKey = existing.targetKey, resolved = existing.resolved, frozen = true, generation = existing.generation, device = ev.device, control = ev.control,
                      gesture = existing.gesture, seq = ev.seq, session = sessionId, at = now, rebound = existing.rebound }
     local queued, qerr = self:_enqueue(s, intent, true)
     if not queued then return refuse(qerr) end
@@ -889,7 +929,7 @@ function Instance:submit(sessionId, now, ev)
   -- Gesture records: a touch or button down owns its target until the release; motion refreshes an
   -- idle gesture record so the target stays this session's for gestureIdleMs.
   if ev.type == "touch" or ev.type == "button" then
-    s.gestures[gkey] = { kind = ev.type, device = ev.device, control = ev.control, target = ev.target, targetKey = target.key, generation = snap.generation,
+    s.gestures[gkey] = { kind = ev.type, device = ev.device, control = ev.control, target = ev.target, targetKey = target.key, resolved = target, generation = snap.generation,
                          gesture = ev.gesture, since = now, lastAt = now, downSeq = ev.seq }
   else
     local g = s.gestures[gkey]
@@ -965,14 +1005,17 @@ end
 function Instance:_applyNow(s, intent, now)
   local adapter = self._adapter
   if adapter == nil then
-    local rec = { kind = intent.kind, session = s.id, device = intent.device, control = intent.control, target = intent.target, error = "no backend", at = now }
+    local rec = { kind = intent.kind, session = s.id, device = intent.device, control = intent.control, target = intent.target, targetKey = intent.targetKey, resolved = intent.resolved, frozen = intent.resolved ~= nil or nil, error = "no backend", at = now }
     self._unresolved[#self._unresolved + 1] = rec
     return { outcome = "unresolved", unresolved = rec }
   end
   local ok, res, err = pcall(adapter.apply, adapter, intent, now)
   if not ok then
     self._counters.unresolved = self._counters.unresolved + 1
-    local rec = { kind = intent.kind, session = s.id, device = intent.device, control = intent.control, target = intent.target, generation = intent.generation,
+    -- KB-21 (review): the record keeps the FROZEN target the hold resolved, so a later recover() or an adopting
+    -- instance releases that executor, whatever the binding maps the control to by then.
+    local rec = { kind = intent.kind, session = s.id, device = intent.device, control = intent.control, target = intent.target, targetKey = intent.targetKey,
+                  resolved = intent.resolved, frozen = intent.resolved ~= nil or nil, generation = intent.generation,
                   down = intent.down, error = tostring(res), at = now, backend = adapter.name }
     if (intent.kind == "touch" or intent.kind == "button") and not intent.recovering then self._unresolved[#self._unresolved + 1] = rec end
     self._lastApplied = { outcome = "unresolved", kind = intent.kind, at = now, error = tostring(res) }
@@ -1013,7 +1056,7 @@ function Instance:service(now)
     if s then
       for key, g in pairs(s.gestures) do
         if (g.kind == "touch" or g.kind == "button") and now - g.since > self._config.maxGestureMs / 1000 then
-          local r = self:_applyNow(s, { kind = g.kind, down = false, target = g.target, targetKey = g.targetKey, generation = g.generation, device = g.device, control = g.control,
+          local r = self:_applyNow(s, { kind = g.kind, down = false, target = g.target, targetKey = g.targetKey, resolved = g.resolved, frozen = true, generation = g.generation, device = g.device, control = g.control,
                                         gesture = g.gesture, forced = true, reason = "max-gesture", session = id, at = now }, now)
           if r.unresolved then out.unresolved[#out.unresolved + 1] = r.unresolved end
           out.ended[#out.ended + 1] = { kind = g.kind, device = g.device, control = g.control, target = g.target, reason = "max-gesture", outcome = r.outcome }
@@ -1077,7 +1120,7 @@ function Instance:recover(now)
   local keep = {}
   for _, rec in ipairs(batch) do
     local s = { id = rec.session, counters = { applied = 0 } }
-    local r = self:_applyNow(s, { kind = rec.kind, down = false, target = rec.target, generation = rec.generation, device = rec.device, control = rec.control, forced = true, reason = "recover", recovering = true, session = rec.session, at = now }, now)
+    local r = self:_applyNow(s, { kind = rec.kind, down = false, target = rec.target, targetKey = rec.targetKey, resolved = rec.resolved, frozen = rec.resolved ~= nil or nil, generation = rec.generation, device = rec.device, control = rec.control, forced = true, reason = "recover", recovering = true, session = rec.session, at = now }, now)
     if r.outcome == "applied" then out.resolved[#out.resolved + 1] = rec
     else rec.attempts = (rec.attempts or 1) + 1; rec.error = r.unresolved and r.unresolved.error or (r.error and r.error.message) or rec.error; keep[#keep + 1] = rec; out.unresolved[#out.unresolved + 1] = rec end
   end
@@ -1140,7 +1183,12 @@ function Instance:status(now)
     v.devices = {}
     for dev, d in pairs(s.devices) do v.devices[dev] = { last = d.last, lost = d.lost, duplicates = d.duplicates, reordered = d.reordered, late = d.late or 0, rateDropped = d.rateDropped or 0 } end
     v.gestureList = {}
-    for _, g in pairs(s.gestures) do v.gestureList[#v.gestureList + 1] = { kind = g.kind, device = g.device, control = g.control, target = g.target, generation = g.generation, gesture = g.gesture, since = g.since, rebound = g.rebound } end
+    for _, g in pairs(s.gestures) do
+      local rt = g.resolved
+      v.gestureList[#v.gestureList + 1] = { kind = g.kind, device = g.device, control = g.control, target = g.target, targetKey = g.targetKey, generation = g.generation, gesture = g.gesture, since = g.since, rebound = g.rebound,
+                                            -- KB-21: what the hold is frozen to (a release goes there, whatever the binding says now)
+                                            frozen = rt and { kind = rt.kind, executor = rt.executor, element = rt.element, page = rt.pageNo, pool = rt.pool, assigned = rt.assigned, slot = rt.slot, name = rt.name } or nil }
+    end
     table.sort(v.gestureList, function(a, b) return a.device .. a.control < b.device .. b.control end)
     sessions[id] = v
   end
@@ -1224,6 +1272,7 @@ local M = {
   CALIBRATION = { readouts = shallowCopy(CALIBRATION.readouts), resolutions = shallowCopy(CALIBRATION.resolutions), layers = shallowCopy(CALIBRATION.layers), note = CALIBRATION_NOTE },
   LIMITATIONS = {
     "the console backend serves attribute slots only: relative motion (KB-19) as the selection-scoped Attribute \"<name>\" At +/- <amount> adjustment (an explicitly limited mode, not native encoder equivalence), calibrated for the Percent/PercentFine readouts (1 per Coarse detent) and the Physical readout (the attribute's range / 120 per Coarse detent, in physical units) with Fine at a tenth, on the Absolute layer; a strip touch (KB-20) as a hold that reserves the slot and moves nothing; an absolute position (KB-20) as Attribute \"<name>\" At <value> over the verified travel only (Percent/PercentFine 0..100, Physical PhysicalFrom..PhysicalTo of the binding, never a mixed physical range), refused mixed-values while the selection's values disagree and values-incomplete while they were not completely read, unless the event says takeover; other readouts, Increment/Native, other layers, named channel functions, encoder presses and executor elements are refused unsupported",
+    "an executor target is explicit (pool, page, executor, element; KB-21): a number the binding reports covered by a wider neighbour, on a page that does not exist, reserved or holding a Quickey is refused target-unavailable; a hold's release goes to the target its down resolved (frozen), never to what a bank or page change mapped to the control since; executor operations themselves are KB-22",
     "generations are those of the consumer's binding source (one gma3_mcp_feedback instance and spec); events from a surface bound to another instance are refused as stale",
     "packet loss is reported, never repaired: a lost relative delta is gone, a lost absolute position is superseded by the next one",
   },

@@ -46,13 +46,27 @@
 -- carries the reason. The range and its availability are part of the binding digest (a change moves
 -- the generation, so queued motion calibrated against the old range is dropped). The adjustment backend needs it for the Physical readout, where "At" takes
 -- physical units (live: Pan "At 10" = 10 degrees).
--- MODULE API 1, module version 0.4.0. Lifecycle: new() -> init() -> read()/readMany()/watch()/service()
+--
+-- Explicit executor targets (KB-21, 0.5.0): executorTarget takes { executor, page? }. Without a page it
+-- reads the user's CURRENT page (GetExecutor; the target follows the console's page changes); with a
+-- page number it reads that page through ObjectList("Page P.E") whatever page the console shows (an
+-- independent page; a page that does not exist is reported pageMissing, never created). Every target
+-- carries its identity explicitly: pool (DataPool()), page {no, name}, executor, mode (current | page).
+-- LAYOUT: an executor's Width (an expanded assignment) makes it occupy the following executor numbers
+-- of its row (the same hundred block): executorTarget reports width and, for a number inside a wider
+-- neighbour's span, coveredBy (that executor) with playbackTarget = false: adjacent numbers are not
+-- assumed to be separate playbacks. The neighbour scan is bounded by config.maxExecutorWidth. The page
+-- number, mode, width, coverage and page existence are part of the binding digest; the user's current
+-- page is part of it only while some bound executor follows it, so an independent-page binding does
+-- not move when the console's page changes. contextSnapshot({ executors, executorPage? }) binds every
+-- listed executor to that page.
+-- MODULE API 1, module version 0.5.0. Lifecycle: new() -> init() -> read()/readMany()/watch()/service()
 -- ... -> dispose(). Consumers pass dependencies via opts.deps (consoleDeps(_G) builds lazy closures)
 -- and keep one instance each; the module table is read-only and nothing here uses globals or
 -- package.loaded.
 
 local NAME        = "gma3_mcp_feedback"
-local VERSION     = "0.4.0"
+local VERSION     = "0.5.0"
 local API_VERSION = 1
 
 local DEFAULTS = {
@@ -71,6 +85,8 @@ local DEFAULTS = {
   maxSelectionIdentity = 512, -- selected fixture ids walked for the selection identity (no channel reads)
   maxUIChannels      = 64,    -- UI channels mapped per scanned fixture
   maxGenerations     = 8,     -- binding-generation records kept (one per distinct snapshot spec)
+  -- KB-21 executor layout
+  maxExecutorWidth   = 5,     -- how far back executorTarget looks for a wider neighbour covering the number
 }
 
 -- Strict boolean: the console reports FADERENABLED-style properties as "true"/"false" text or booleans.
@@ -676,19 +692,64 @@ local READERS = {
                slots = slots, slotCount = pp.slotCount, truncated = pp.slotCount > count }
     end,
     identify = encoderIdent },
-  executorTarget = { scope = "page", context = true, params = { "executor" },
-    source = "GetExecutor(executor): Object, KeyPress/KeyUnpress/KeyUnpressCombined, Fader, Encoder, EncoderLeft/EncoderRight, ExecutorConfiguration (display role); the object's Appearance.BackRGBA, HasActivePlayback(), GetFader({token of the configured fader function})",
-    note = "one executor of the user's current page as a control target: assigned-object identity, configured functions, the configured fader function's level, activity and appearance; a Quickey object (the owned KB-12 bank) or an executor the bridge's bank reserved is never a playback target",
-    fn = function(d, p)
+  executorTarget = { scope = "page", context = true, params = { "executor", "page" },
+    source = "GetExecutor(executor) on the user's current page, or ObjectList(\"Page <page>.<executor>\") for an explicit page: Object, KeyPress/KeyUnpress/KeyUnpressCombined, Fader, Encoder, EncoderLeft/EncoderRight, ExecutorConfiguration, Width (display role); the object's Appearance.BackRGBA, HasActivePlayback(), GetFader({token of the configured fader function}); the Width of the preceding executors of the row (maxExecutorWidth)",
+    note = "one executor as a control target with its explicit identity (pool, page, executor, mode current|page): assigned-object identity, configured functions, the configured fader function's level, activity and appearance; a Quickey object (the owned KB-12 bank), an executor the bridge's bank reserved or a number covered by a wider neighbour (an expanded assignment) is never a playback target; a page that does not exist is pageMissing",
+    fn = function(d, p, cfg)
       local n = p and p.executor
       if type(n) ~= "number" then error("params.executor (number) is required", 0) end
-      local exec, page = d.executor(n)
+      local pageNo = p.page
+      if pageNo ~= nil and (type(pageNo) ~= "number" or pageNo ~= math.floor(pageNo) or pageNo < 1) then error("params.page must be a positive integer (omit it to follow the user's current page)", 0) end
+      local out = { executor = n, mode = pageNo ~= nil and "page" or "current" }
+      local okP, pool = pcall(function() return type(d.dataPool) == "function" and d.dataPool() or nil end)
+      if okP and pool ~= nil then out.pool = handleInfo(pool); if out.pool and out.pool.no == nil then out.pool.no = tonumber(field(pool, "index")) end
+      else out.poolUnavailable = okP and "DataPool() returned nothing" or ("DataPool() raised: " .. tostring(pool)) end
+      -- The read path: the user's page through GetExecutor, an explicit page through ObjectList (KB-12/13).
+      local page
+      local function readExec(m)
+        if pageNo == nil then
+          local e, pg = d.executor(m)
+          if page == nil then page = pg end
+          return e
+        end
+        if type(d.pagedExecutor) ~= "function" then error("explicit pages need the pagedExecutor dependency (ObjectList(\"Page P.E\"))", 0) end
+        return d.pagedExecutor(pageNo, m)
+      end
+      if pageNo ~= nil then
+        if type(d.pageByNo) ~= "function" then error("explicit pages need the pageByNo dependency (ObjectList(\"Page P\"))", 0) end
+        page = d.pageByNo(pageNo)
+        if page == nil then
+          out.page = { no = pageNo }
+          out.pageMissing, out.empty, out.playbackTarget = true, true, false
+          out.reason = string.format("page %d does not exist (nothing is created)", pageNo)
+          return out
+        end
+      end
+      local exec = readExec(n)
+      -- KB-21 live: GetExecutor(n) returns no page handle for an EMPTY executor; the identity still names the user's page.
+      if pageNo == nil and page == nil and type(d.currentExecPage) == "function" then page = d.currentExecPage() end
       local pageInfo = handleInfo(page)
-      local out = { executor = n, page = pageInfo }
+      if pageInfo ~= nil and pageInfo.no == nil then pageInfo.no = tonumber(field(page, "index")) end
+      if pageNo ~= nil and pageInfo ~= nil and pageInfo.no == nil then pageInfo.no = pageNo end
+      out.page = pageInfo
       local reserved = reservedBy(d, pageInfo and pageInfo.no, n)
+      -- Layout (KB-21): a wider neighbour of the same row covers this number. Bounded: the preceding
+      -- maxExecutorWidth - 1 numbers of the row are read; a wider span than that is not resolved.
+      local row = math.floor(n / 100)
+      local maxW = (cfg and cfg.maxExecutorWidth) or DEFAULTS.maxExecutorWidth
+      for m = n - 1, math.max(n - maxW + 1, 1), -1 do
+        if math.floor(m / 100) ~= row then break end
+        local okE, e = pcall(readExec, m)
+        if okE and e ~= nil then
+          local w = tonumber(dget(d, e, "Width")) or 1
+          if m + w > n then out.coveredBy, out.coveredWidth = m, w; break end
+        end
+      end
       if exec == nil then
         out.empty, out.playbackTarget = true, false
-        out.reason = reserved and "reserved by the bridge's owned Quickey bank (empty right now)" or "the executor is empty"
+        if out.coveredBy then out.reason = string.format("covered by executor %d (width %d): not a separate playback", out.coveredBy, out.coveredWidth)
+        elseif reserved then out.reason = "reserved by the bridge's owned Quickey bank (empty right now)"
+        else out.reason = "the executor is empty" end
         if reserved then out.reserved = true end
         return out
       end
@@ -700,9 +761,12 @@ local READERS = {
       out.configuration = dget(d, exec, "ExecutorConfiguration")
       out.isXKey = dget(d, exec, "IsXKey")
       out.width = tonumber(dget(d, exec, "Width"))
+      if out.width ~= nil and out.width > 1 then out.expanded = true end
       if obj == nil then
         out.playbackTarget = false
-        out.reason = reserved and "reserved by the bridge's owned Quickey bank (no object right now)" or "no assigned object"
+        if out.coveredBy then out.reason = string.format("covered by executor %d (width %d): not a separate playback", out.coveredBy, out.coveredWidth)
+        elseif reserved then out.reason = "reserved by the bridge's owned Quickey bank (no object right now)"
+        else out.reason = "no assigned object" end
         if reserved then out.reserved = true end
         return out
       end
@@ -737,17 +801,29 @@ local READERS = {
         out.playbackTarget, out.reason = false, "a Quickey object is never a playback target (owned Quickey bank, KB-12)"
       elseif reserved then
         out.playbackTarget, out.reserved, out.reason = false, true, "reserved by the bridge's owned Quickey bank"
+      elseif out.coveredBy then
+        out.playbackTarget, out.reason = false, string.format("covered by executor %d (width %d): its controls belong to that expanded assignment, not to a separate playback", out.coveredBy, out.coveredWidth)
       else
         out.playbackTarget = true
       end
       return out
     end,
-    identify = function(p) return { executor = p and p.executor } end },
-  pageExecutors = { scope = "page", context = true, source = "CurrentExecPage() children with an Object", note = "index, object name and class of every assigned executor on the user's current page (bounded by config.maxExecutors); use executorTarget per executor for functions and levels",
+    identify = function(p) return { executor = p and p.executor, page = p and p.page } end },
+  pageExecutors = { scope = "page", context = true, params = { "page" }, paramless = true, source = "CurrentExecPage() children with an Object, or ObjectList(\"Page <page>\") for an explicit page", note = "index, object name, class and width of every assigned executor on the user's current page or an explicit page (bounded by config.maxExecutors); use executorTarget per executor for functions and levels",
     fn = function(d, p, cfg)
-      local page = d.currentExecPage()
-      if page == nil then return nil, "CurrentExecPage() returned nothing" end
+      local pageNo = p and p.page
+      if pageNo ~= nil and (type(pageNo) ~= "number" or pageNo ~= math.floor(pageNo) or pageNo < 1) then error("params.page must be a positive integer", 0) end
+      local page
+      if pageNo ~= nil then
+        if type(d.pageByNo) ~= "function" then error("explicit pages need the pageByNo dependency", 0) end
+        page = d.pageByNo(pageNo)
+        if page == nil then return { page = { no = pageNo }, pageMissing = true, executors = {}, truncated = false } end
+      else
+        page = d.currentExecPage()
+        if page == nil then return nil, "CurrentExecPage() returned nothing" end
+      end
       local out = { page = handleInfo(page), executors = {}, truncated = false }
+      if out.page and out.page.no == nil then out.page.no = pageNo or tonumber(field(page, "index")) end
       local total = countOf(page)
       for i = 1, total do
         local e = ptr(page, i)
@@ -756,12 +832,13 @@ local READERS = {
           if okO and obj ~= nil then
             if #out.executors >= cfg.maxExecutors then out.truncated = true; break end
             local idx = tonumber(field(e, "index")) or tonumber(dget(d, e, "No"))
-            out.executors[#out.executors + 1] = { index = idx, name = str(field(obj, "name")), class = classOf(obj) }
+            out.executors[#out.executors + 1] = { index = idx, name = str(field(obj, "name")), class = classOf(obj), width = tonumber(dget(d, e, "Width")) }
           end
         end
       end
       return out
-    end },
+    end,
+    identify = function(p) return { page = p and p.page } end },
 }
 
 -- Compatibility alias (0.1.0 named sequence activity after the executor). The result keeps the
@@ -804,6 +881,11 @@ local function consoleDeps(env)
     display = function(n) return env.GetDisplayByIndex(n) end,
     sequence = function(n) local list = env.ObjectList("Sequence " .. tostring(n)); return list and list[1] end,
     executor = function(n) return env.GetExecutor(n) end,
+    -- KB-21: a page by number and an executor of that page, whatever page the user is on. Both are nil
+    -- when the page does not exist; the executor handle is also nil for an EMPTY executor (KB-12: the
+    -- paged object exists only once assigned), so pageByNo decides between "missing" and "empty".
+    pageByNo = function(p) local list = env.ObjectList(string.format("Page %d", p)); return list and list[1] end,
+    pagedExecutor = function(p, n) local list = env.ObjectList(string.format("Page %d.%d", p, n)); return list and list[1] end,
     selectedSequence = function() return env.SelectedSequence() end,
     -- KB-17 control context (the KB-16 read paths). enums gives the display role for Get(prop, role).
     enums = function() return env.Enums end,
@@ -832,7 +914,7 @@ end
 local function keyOf(name, ident)
   if not ident then return name end
   local parts = {}
-  for _, k in ipairs({ "display", "executor", "sequence", "token" }) do
+  for _, k in ipairs({ "display", "executor", "page", "sequence", "token" }) do
     if ident[k] ~= nil and not (k == "token" and ident[k] == "FaderMaster") then parts[#parts + 1] = k .. "=" .. tostring(ident[k]) end
   end
   if #parts == 0 then return name end
@@ -1131,8 +1213,10 @@ end
 -- KB-17 context snapshot: the context readers assembled into one bounded, explicit description of what
 -- each control would operate, with a binding generation.
 -------------------------------------------------------------------------------
--- Items of a snapshot spec = { display?, executors? }. Shared by contextSnapshot() (live reads) and
--- watchContext() (service() polling), so the cache keys agree.
+-- Items of a snapshot spec = { display?, executors?, executorPage? }. Shared by contextSnapshot() (live
+-- reads) and watchContext() (service() polling), so the cache keys agree. KB-21: executorPage (a page
+-- number) binds every listed executor to that page (independent of the user's page); without it the
+-- executors are read on the user's current page (they follow the console's page changes).
 local function contextItems(spec, config)
   spec = spec or {}
   config = config or DEFAULTS
@@ -1141,24 +1225,30 @@ local function contextItems(spec, config)
   local items = { { name = "dataPool" }, { name = "page" }, { name = "encoderBank", params = { display = display } }, { name = "encoderSlots", params = { display = display } } }
   local limitations = {}
   if spec.executors ~= nil and type(spec.executors) ~= "table" then limitations[#limitations + 1] = "executors must be a list of executor numbers; ignored" end
+  local page = spec.executorPage
+  if page ~= nil and (type(page) ~= "number" or page ~= math.floor(page) or page < 1) then
+    limitations[#limitations + 1] = "executorPage must be a positive page number; ignored (the executors follow the user's current page)"
+    page = nil
+  end
   if type(spec.executors) == "table" then
     local max = config.maxExecutors or DEFAULTS.maxExecutors
     for i, n in ipairs(spec.executors) do
       if i > max then limitations[#limitations + 1] = string.format("executors truncated to %d of %d", max, #spec.executors); break end
-      items[#items + 1] = { name = "executorTarget", params = { executor = n } }
+      items[#items + 1] = { name = "executorTarget", params = { executor = n, page = page } }
     end
   end
-  return items, limitations, display
+  return items, limitations, display, page
 end
 
 -- The binding key of a spec: one generation record per distinct (display, executor list), so a consumer
 -- polling one spec sees a generation that moves only when that spec's meaning moved.
-local function generationKey(spec, display)
+local function generationKey(spec, display, page)
   local parts = { "display=" .. tostring(display) }
   if type(spec) == "table" and type(spec.executors) == "table" then
     local xs = {}
     for i, n in ipairs(spec.executors) do xs[i] = tostring(n) end
     parts[#parts + 1] = "executors=" .. table.concat(xs, ",")
+    if page ~= nil then parts[#parts + 1] = "page=" .. tostring(page) end
   end
   return table.concat(parts, ";")
 end
@@ -1196,15 +1286,25 @@ local function bindingDigest(snap)
   else
     parts[#parts + 1] = "slots=unavailable:" .. tostring(s and (s.reason or s.error))
   end
-  parts[#parts + 1] = "execPage=" .. tostring(snap.executorPage and snap.executorPage.no or snap.executorPageUnavailable)
+  -- KB-21: the user's current page is part of the meaning only while some bound executor follows it
+  -- (no executors bound, or any bound on the current page); an independent-page binding does not move
+  -- when the console changes pages.
+  local follows = true
+  if #(snap.executors or {}) > 0 then
+    follows = false
+    for _, x in ipairs(snap.executors) do if not (x.params and x.params.page ~= nil) then follows = true end end
+  end
+  if follows then parts[#parts + 1] = "execPage=" .. tostring(snap.executorPage and snap.executorPage.no or snap.executorPageUnavailable) end
   for _, x in ipairs(snap.executors or {}) do
+    local pg = x.params and x.params.page
     if x.available then
       local v, f = x.value, x.value.functions or {}
-      parts[#parts + 1] = string.format("exec%s=%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s", tostring(v.executor), tostring(v.empty), tostring(v.assigned and (v.assigned.addr or v.assigned.name)),
+      -- KB-21: the explicit identity (pool, page, mode), width, coverage and page existence are part of it.
+      parts[#parts + 1] = string.format("exec%s@%s/%s=%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|w=%s|cov=%s|pm=%s|pool=%s", tostring(v.executor), tostring(pg), tostring(v.page and v.page.no), tostring(v.empty), tostring(v.assigned and (v.assigned.addr or v.assigned.name)),
         tostring(v.assigned and v.assigned.class), tostring(f.keyPress), tostring(f.keyUnpress), tostring(f.keyUnpressCombined), tostring(f.fader), tostring(f.encoder), tostring(f.encoderLeft), tostring(f.encoderRight),
-        tostring(v.level and v.level.token), tostring(v.playbackTarget))
+        tostring(v.level and v.level.token), tostring(v.playbackTarget), tostring(v.width), tostring(v.coveredBy), tostring(v.pageMissing), tostring(v.pool and (v.pool.name .. "#" .. tostring(v.pool.no))))
     else
-      parts[#parts + 1] = string.format("exec%s=unavailable:%s", tostring(x.params and x.params.executor), tostring(x.reason or x.error))
+      parts[#parts + 1] = string.format("exec%s@%s=unavailable:%s", tostring(x.params and x.params.executor), tostring(pg), tostring(x.reason or x.error))
     end
   end
   return table.concat(parts, "\n")
@@ -1232,13 +1332,13 @@ function Instance:contextSnapshot(spec, now, opts)
   opts = opts or {}
   if type(spec) ~= "table" then error(NAME .. ": contextSnapshot(spec) needs a table", 2) end
   local cached = opts.cached == true
-  local items, limitations, display = contextItems(spec, self._config)
+  local items, limitations, display, execPage = contextItems(spec, self._config)
   local pageList
   if spec.allExecutors == true then
     if cached then
       limitations[#limitations + 1] = "allExecutors is a live-read option; a cached snapshot covers the executors of the watched spec"
     else
-      local pe = self:read("pageExecutors", nil, now)
+      local pe = self:read("pageExecutors", execPage ~= nil and { page = execPage } or nil, now)
       if pe.available then
         pageList = pe.value
         local present = {}
@@ -1248,7 +1348,7 @@ function Instance:contextSnapshot(spec, now, opts)
         for _, x in ipairs(pe.value.executors) do
           if x.index ~= nil and not present[x.index] then
             if count >= self._config.maxExecutors then limitations[#limitations + 1] = string.format("allExecutors bounded to %d executors", self._config.maxExecutors); break end
-            items[#items + 1] = { name = "executorTarget", params = { executor = x.index } }
+            items[#items + 1] = { name = "executorTarget", params = { executor = x.index, page = execPage } }
             present[x.index] = true
             count = count + 1
           end
@@ -1292,7 +1392,8 @@ function Instance:contextSnapshot(spec, now, opts)
                  invalidated = invalidated, display = display,
                  authoritativeDisplay = { display = display, rule = (spec.display ~= nil) and "requested" or "configured",
                                           note = "the encoder bar of this display is the one described; a display without an encoder bar is unavailable and no other display is substituted" },
-                 executors = {}, limitations = limitations, stale = cached and anyStale or nil, notObserved = cached and notObserved or nil }
+                 executors = {}, executorSpecPage = execPage, executorMode = execPage ~= nil and "page" or "current",
+                 limitations = limitations, stale = cached and anyStale or nil, notObserved = cached and notObserved or nil }
   for _, o in ipairs(obs) do
     if o.name == "dataPool" then
       if o.available then identity.dataPool = o.value else identity.dataPoolUnavailable = o.reason or o.error end
@@ -1304,7 +1405,7 @@ function Instance:contextSnapshot(spec, now, opts)
   end
   if pageList then snap.pageExecutors = pageList end
   local digest = bindingDigest(snap)
-  local gkey = generationKey(spec, display)
+  local gkey = generationKey(spec, display, execPage)
   local g = self._generations[gkey]
   snap.bindingKey = gkey
   local selIncomplete = snap.slots and snap.slots.available and snap.slots.value.selection and snap.slots.value.selection.identityComplete == false
@@ -1325,6 +1426,25 @@ function Instance:contextSnapshot(spec, now, opts)
     snap.lastGeneration = g and g.generation or nil
     snap.generationNote = "no generation: " .. notObserved .. " item(s) not observed in this epoch (service() must observe every watched item first)"
     return snap
+  end
+  -- KB-21 live: a cached snapshot straddles a page change: the page item already names the new page while
+  -- executors that follow the user's page were last read on the old one (service() re-reads them a few per
+  -- tick), and every re-read batch would move the generation. Until every following executor was observed
+  -- on the page the snapshot names, the binding's meaning is unknown: no generation is claimed or advanced.
+  if cached and snap.executorPage and snap.executorPage.no ~= nil then
+    local behind = 0
+    for _, x in ipairs(snap.executors) do
+      local v = x.available and x.value
+      if v and v.mode == "current" and type(v.page) == "table" and v.page.no ~= nil and v.page.no ~= snap.executorPage.no then behind = behind + 1 end
+    end
+    if behind > 0 then
+      snap.generation = nil
+      snap.generationUnknown = true
+      snap.lastGeneration = g and g.generation or nil
+      snap.pageChangePending = behind
+      snap.generationNote = string.format("no generation: %d executor(s) were observed on another page than the current page %s (a page change is being re-read; service() must observe them again first)", behind, tostring(snap.executorPage.no))
+      return snap
+    end
   end
   if g == nil then
     g = { generation = 1, digest = digest, since = now }
