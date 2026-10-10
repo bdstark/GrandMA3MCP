@@ -69,6 +69,8 @@ local function fresh(opts)
   return inst, backend
 end
 local function lastEvent(b) return b.events[#b.events] end
+-- A Quickey tuple as the module stores it: name plus validated code value (ownership identity).
+local function qk(name) return { quickkey = name, quickkeyCode = VK[name] } end
 local function reset() profile.rows = defaultRows(); profile.shortcutsActive = true; profile.vk = VK; profile.name = "Default" end
 
 -------------------------------------------------------------------------------
@@ -184,8 +186,8 @@ do
   reset()
   local inst, backend = fresh({ routing = { default = "quickkey", keys = { UNDO = { quickkey = "OOPS" } } } })
   local h = inst:press("s", 1, { key = "NUM5" })
-  check("a quickkey press dispatches a Quickey tuple", h and h.quickkey == "NUM5" and h.pcKey == nil and h.tupleKey == "quickkey:NUM5" and h.route.source == "quickkey" and h.method == "quickkey" and h.route.codeValue == 72 and lastEvent(backend).kind == "press" and lastEvent(backend).quickkey == "NUM5", J(h))
-  check("the fake simulates the key down", backend:isDown({ quickkey = "NUM5" }))
+  check("a quickkey press dispatches a Quickey tuple", h and h.quickkey == "NUM5" and h.pcKey == nil and h.tupleKey == "quickkey:#72" and h.quickkeyCode == 72 and h.route.source == "quickkey" and h.method == "quickkey" and h.route.codeValue == 72 and lastEvent(backend).kind == "press" and lastEvent(backend).quickkey == "NUM5", J(h))
+  check("the fake simulates the key down", backend:isDown(qk("NUM5")))
   -- Route retention: switching the policy mid-hold does not change the stored route or the release.
   local r = inst:configureRouting({ default = "shortcut" })
   check("policy changes while a key is held are accepted (nothing released, nothing re-routed)", r and r.default == "shortcut" and inst:status(1.5).holds[1].state == "held", J(r))
@@ -193,12 +195,12 @@ do
   check("the live hold keeps its quickkey route and no mismatch is reported", st.holds[1].route.source == "quickkey" and st.holds[1].routeMismatch == nil, J(st.holds[1]))
   profile.shortcutsActive = false
   local rel = inst:release("s", 2, { hold = h.id })
-  check("release uses the stored Quickey tuple on the same backend despite the policy and mode change", rel.state == "released" and lastEvent(backend).kind == "release" and lastEvent(backend).quickkey == "NUM5" and not backend:isDown({ quickkey = "NUM5" }), J(rel))
+  check("release uses the stored Quickey tuple on the same backend despite the policy and mode change", rel.state == "released" and lastEvent(backend).kind == "release" and lastEvent(backend).quickkey == "NUM5" and not backend:isDown(qk("NUM5")), J(rel))
   reset()
   inst:configureRouting({ default = "quickkey", keys = { UNDO = { quickkey = "OOPS" } } })
   -- Release by logical name resolves through the policy to the same tuple.
   h = inst:press("s", 3, { key = "UNDO" })
-  check("alias override dispatches the configured code", h and h.quickkey == "OOPS" and h.logical == "UNDO" and h.tupleKey == "quickkey:OOPS", J(h))
+  check("alias override dispatches the configured code", h and h.quickkey == "OOPS" and h.logical == "UNDO" and h.tupleKey == "quickkey:#86", J(h))
   rel = inst:release("s", 4, { key = "undo" })
   check("release by logical name finds the Quickey hold", rel.state == "released" and rel.quickkey == "OOPS", J(rel))
   -- MA1 is a valid Quickey code (KB-10) even though the keyboard route cannot distinguish it.
@@ -207,7 +209,7 @@ do
   local c = inst:combo("s", 5, { { key = "STORE" }, { key = "NUM1" } }, { holdMs = 50 })
   check("a chord of Quickeys presses in order", c and c.count == 2 and c.holds[1].quickkey == "STORE" and c.holds[2].quickkey == "NUM1", J(c))
   inst:service(5.1)
-  check("chord tap released at the deadline, MA1 still held", not backend:isDown({ quickkey = "STORE" }) and backend:isDown({ quickkey = "MA1" }))
+  check("chord tap released at the deadline, MA1 still held", not backend:isDown(qk("STORE")) and backend:isDown(qk("MA1")))
   inst:release("s", 6, { hold = h.id })
   local x, err = inst:press("s", 7, { key = "MA" })
   check("MA (a keyboard-only name) is not a Quickey code: refused, nothing guessed", x == nil and err.code == "unsupported" and err.reason == "unknown-key" and err.message:find("MA1") == nil and err.message:find("VirtualKeyCode"), J(err))
@@ -221,13 +223,13 @@ do
   local t = inst:tap("s", 9, { key = "NUM5" }, 50)
   check("tap dispatches and schedules the release", t and t.quickkey == "NUM5" and t.releaseOutcome == "scheduled", J(t))
   inst:service(9.1)
-  check("tap released", not backend:isDown({ quickkey = "NUM5" }) and t.releaseOutcome == "scheduled")
+  check("tap released", not backend:isDown(qk("NUM5")) and t.releaseOutcome == "scheduled")
   -- No fallback once dispatch begins: a raise leaves the record unresolved and nothing else is tried.
   local n = #backend.events
   backend:raiseNext("press", "wedged")
   x, err = inst:press("s", 10, { key = "NUM5" })
   check("a raising Quickey press is unresolved; no keyboard event is attempted", x == nil and err.code == "press-failed" and err.unresolved and #backend.events == n and inst:status(10).unresolved == 1, J(err))
-  backend:failNext("press", { quickkey = "NUM1" }, "busy")
+  backend:failNext("press", qk("NUM1"), "busy")
   x, err = inst:press("s", 10, { key = "NUM1" })
   local noRecord = true
   for _, hh in ipairs(inst:status(10).holds) do if hh.quickkey == "NUM1" and hh.state ~= "released" then noRecord = false end end
@@ -239,7 +241,7 @@ do
   check("sequence steps resolve to Quickey tuples", q and q.state == "running", J(err))
   for i = 1, 12 do inst:service(12 + i * 0.1) end
   local rep = inst:sequenceStatus(q.id, 14)
-  check("sequence completed through Quickeys", rep.state == "completed" and rep.events[3].tupleKey == "quickkey:PLEASE", J(rep))
+  check("sequence completed through Quickeys", rep.state == "completed" and rep.events[3].tupleKey == "quickkey:#84", J(rep))
   -- Backend limits: a fake without Quickey dispatch cannot host a quickkey policy.
   local bare = HK.fakeBackend({ capabilities = { keyboard = true, quickkey = false, char = true } })
   local inst2 = HK.new({ owner = "x", deps = deps, config = { requireInteraction = false }, routing = { default = "quickkey" } }):init()
@@ -265,6 +267,100 @@ do
   reset()
   rel = inst:release("s", 22, { hold = h.id })
   check("restored enum: the hold releases through its stored Quickey tuple, ignoring the new shortcut policy for NUM5", rel.state == "released" and rel.route.source == "quickkey" and rel.routeRestored ~= nil and lastEvent(backend).quickkey == "NUM5", J(rel))
+end
+
+-------------------------------------------------------------------------------
+-- Quickey capability flags: tap / hold / chord are enforced per operation before dispatch
+-------------------------------------------------------------------------------
+do
+  reset()
+  local function withCaps(caps)
+    local inst, backend = fresh({ capabilities = { keyboard = true, quickkey = caps, char = true }, routing = { default = "quickkey" } })
+    inst:openSession({ id = "t" }, 0)
+    return inst, backend
+  end
+  local inst, backend = withCaps({ tap = true, hold = false, chord = false })
+  local x, err = inst:press("s", 1, { key = "NUM5" })
+  check("tap-only adapter: a standalone hold is refused before dispatch", x == nil and err.code == "unsupported" and err.reason == "capability" and J(err.missing) == J({ "hold" }) and #backend.events == 0, J(err))
+  x, err = inst:combo("s", 1, { { key = "NUM5" }, { key = "NUM1" } }, { holdMs = 50 })
+  check("tap-only adapter: a chord tap is refused (chord missing), nothing dispatched", x == nil and err.code == "unsupported" and err.key == 1 and J(err.missing) == J({ "chord" }) and #backend.events == 0, J(err))
+  x, err = inst:combo("s", 1, { { key = "NUM5" }, { key = "NUM1" } })
+  check("tap-only adapter: a combo hold is refused (hold and chord missing)", x == nil and J(err.missing) == J({ "hold", "chord" }) and #backend.events == 0, J(err))
+  local q; q, err = inst:startSequence("s", 2, { { kind = "tap", key = "NUM5" }, { kind = "press", key = "NUM1" } })
+  check("tap-only adapter: a sequence with a press step is refused in preflight, nothing dispatched", q == nil and err.code == "unsupported" and err.step == 2 and #backend.events == 0, J(err))
+  q, err = inst:startSequence("s", 2, { { kind = "tap", key = "NUM5" }, { kind = "combo", keys = { { key = "NUM1" }, { key = "STORE" } }, holdMs = 50 } })
+  check("tap-only adapter: a chord-tap step is refused in preflight (chord), nothing dispatched", q == nil and err.step == 2 and J(err.missing) == J({ "chord" }) and #backend.events == 0, J(err))
+  local t = inst:tap("s", 3, { key = "NUM5" }, 50)
+  check("tap-only adapter: a tap is accepted", t and t.quickkey == "NUM5" and #backend.events == 1, J(t))
+  x, err = inst:tap("s", 3, { key = "NUM1" }, 50)
+  check("tap-only adapter: a second tap while one Quickey is still down needs chord", x == nil and J(err.missing) == J({ "chord" }) and #backend.events == 1, J(err))
+  inst:service(3.1)
+  t = inst:tap("s", 4, { key = "NUM1" }, 50)
+  check("...and is accepted once the first tap released", t and #backend.events == 3, J(t))
+  inst:service(4.1)
+  inst, backend = withCaps({ tap = false, hold = false, chord = false })
+  x, err = inst:tap("s", 1, { key = "NUM5" }, 50)
+  check("all flags false: a tap is refused", x == nil and err.code == "unsupported" and J(err.missing) == J({ "tap" }) and #backend.events == 0, J(err))
+  x, err = inst:press("s", 1, { key = "NUM5" })
+  check("all flags false: a hold is refused", x == nil and J(err.missing) == J({ "hold" }) and #backend.events == 0, J(err))
+  inst, backend = withCaps({ tap = false, hold = true, chord = false })
+  x, err = inst:tap("s", 1, { key = "NUM5" }, 50)
+  check("hold-only adapter: a tap is refused", x == nil and J(err.missing) == J({ "tap" }) and #backend.events == 0, J(err))
+  local q2; q2, err = inst:startSequence("s", 0.5, { { kind = "press", key = "NUM5" }, { kind = "press", key = "NUM1" } })
+  check("hold-only adapter: a second press while the first step's Quickey is still held is refused in preflight (chord)", q2 == nil and err.step == 2 and J(err.missing) == J({ "chord" }) and #backend.events == 0, J(err))
+  q2, err = inst:startSequence("s", 0.5, { { kind = "press", key = "NUM5" }, { kind = "release", key = "NUM5" }, { kind = "press", key = "NUM1" }, { kind = "release", key = "NUM1" } })
+  check("hold-only adapter: press/release pairs in sequence need no chord", q2 ~= nil, J(err))
+  for i = 1, 8 do inst:service(0.5 + i * 0.1) end
+  check("...and the sequence completed", inst:sequenceStatus(q2.id, 2).state == "completed" and #backend.events == 4, J(inst:sequenceStatus(q2.id, 2)))
+  local h = inst:press("s", 1, { key = "NUM5" })
+  check("hold-only adapter: a hold is accepted", h and h.quickkey == "NUM5", J(h))
+  x, err = inst:press("s", 2, { key = "NUM1" })
+  check("hold-only adapter: a second hold next to a held Quickey needs chord", x == nil and J(err.missing) == J({ "chord" }) and #backend.events == 5, J(err))
+  local dup = inst:press("s", 2, { key = "NUM5" })
+  check("a duplicate press of the held tuple is still the duplicate report, not a chord refusal", dup and dup.duplicate == true and dup.id == h.id and #backend.events == 5, J(dup))
+  local kb = inst:press("s", 2, { pcKey = "F3" })
+  check("a PC-key press next to a held Quickey is not a Quickey chord", kb and kb.route.source == "raw", J(kb))
+  inst:releaseAll("s", 3)
+  check("describeRoute reports the flags", inst:describeRoute("NUM5").quickkeyCapabilities.chord == false)
+end
+
+-------------------------------------------------------------------------------
+-- Quickey aliases: ownership is the validated code value, the requested name is reported
+-------------------------------------------------------------------------------
+do
+  reset()
+  local inst, backend = fresh({ routing = { default = "quickkey" } })
+  inst:openSession({ id = "t" }, 0)
+  local h = inst:press("s", 1, { key = "OOPS" })
+  check("OOPS held by code value", h and h.quickkey == "OOPS" and h.quickkeyCode == 86 and h.tupleKey == "quickkey:#86" and #backend.events == 1, J(h))
+  local dup = inst:press("s", 2, { key = "UNDO" })
+  check("UNDO (same code) is the duplicate of the OOPS hold: no second record, no second dispatch", dup and dup.duplicate == true and dup.id == h.id and dup.quickkey == "OOPS" and #backend.events == 1, J(dup))
+  local x, err = inst:tap("s", 2, { key = "UNDO" }, 50)
+  check("a tap of the alias cannot layer on the hold", x == nil and err.code == "conflict" and #backend.events == 1, J(err))
+  x, err = inst:press("t", 2, { key = "UNDO" })
+  check("another session's alias press is an ownership conflict", x == nil and err.code == "conflict" and err.owner == "s" and #backend.events == 1, J(err))
+  x, err = inst:combo("s", 2, { { key = "NUM5" }, { key = "UNDO" } })
+  check("a combo naming the held alias is refused", x == nil and err.code == "conflict" and #backend.events == 1, J(err))
+  local rel = inst:release("s", 3, { key = "UNDO" })
+  check("release by the alias name releases the OOPS hold through its stored tuple", rel.state == "released" and rel.id == h.id and lastEvent(backend).kind == "release" and lastEvent(backend).quickkey == "OOPS" and lastEvent(backend).quickkeyCode == 86, J(rel))
+  x, err = inst:combo("s", 4, { { key = "OOPS" }, { key = "UNDO" } }, { holdMs = 50 })
+  check("a combo of two aliases is one tuple twice: refused before dispatch", x == nil and err.code == "bad-argument" and err.message:find("twice") and #backend.events == 2, J(err))
+  local q; q, err = inst:startSequence("s", 5, { { kind = "combo", keys = { { key = "OOPS" }, { key = "UNDO" } }, holdMs = 50 } })
+  check("the same combo inside a sequence is refused in preflight", q == nil and err.step == 1 and #backend.events == 2, J(err))
+  -- Recovery consistency: a failed release keyed by the code is recovered through the same tuple.
+  h = inst:press("s", 6, { key = "UNDO" })
+  backend:failNext("release", qk("OOPS"), "wedged")
+  rel = inst:release("s", 7, { key = "OOPS" })
+  check("a failed release of the alias hold is unresolved under the code identity", rel.state == "unresolved" and rel.tupleKey == "quickkey:#86" and rel.quickkey == "UNDO", J(rel))
+  x, err = inst:press("s", 8, { key = "OOPS" })
+  check("while unresolved, the code stays owned under either name", x == nil and err.code == "conflict" and err.state == "unresolved", J(err))
+  local rec = inst:recover("s", 9)
+  check("recovery releases it with the stored tuple", #rec.released == 1 and lastEvent(backend).quickkey == "UNDO" and lastEvent(backend).quickkeyCode == 86 and not backend:isDown(qk("OOPS")), J(rec))
+  -- Mixed backends: a Quickey tuple and a PC key never share identity.
+  h = inst:press("s", 10, { key = "NUM5" })
+  local kb = inst:press("s", 10, { pcKey = "5" })
+  check("Quickey NUM5 and PC key 5 are distinct tuples", h and kb and h.tupleKey ~= kb.tupleKey, J({ h.tupleKey, kb.tupleKey }))
+  inst:releaseAll("s", 11)
 end
 
 -------------------------------------------------------------------------------

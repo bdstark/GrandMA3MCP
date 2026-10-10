@@ -502,12 +502,14 @@ end
 local function tupleKey(t)
   -- A Quickey tuple (KB-11) is identified by its VirtualKeyCode name: the same code through two owned
   -- objects would be the same console key, so it is one tuple.
-  if t.quickkey then return "quickkey:" .. tostring(t.quickkey) end
+  -- Identity is the validated code VALUE when known (aliases such as OOPS/UNDO are one console key), the
+  -- name only for tuples that never went through resolution (backend test controls).
+  if t.quickkey then return "quickkey:" .. (t.quickkeyCode ~= nil and ("#" .. tostring(t.quickkeyCode)) or tostring(t.quickkey)) end
   return string.format("%s|s%dc%da%dn%d", t.pcKey, t.shift and 1 or 0, t.ctrl and 1 or 0, t.alt and 1 or 0, t.numlock and 1 or 0)
 end
 
 local function copyTuple(t)
-  if t.quickkey then return { quickkey = t.quickkey, display = t.display } end
+  if t.quickkey then return { quickkey = t.quickkey, quickkeyCode = t.quickkeyCode, display = t.display } end
   return { pcKey = t.pcKey, shift = t.shift and true or false, ctrl = t.ctrl and true or false,
            alt = t.alt and true or false, numlock = t.numlock and true or false, display = t.display }
 end
@@ -627,7 +629,7 @@ function FakeBackend:_raise(op)
 end
 
 function FakeBackend:_log(kind, tuple, extra)
-  local e = { kind = kind, pcKey = tuple.pcKey, quickkey = tuple.quickkey, shift = tuple.shift, ctrl = tuple.ctrl, alt = tuple.alt, numlock = tuple.numlock, display = tuple.display }
+  local e = { kind = kind, pcKey = tuple.pcKey, quickkey = tuple.quickkey, quickkeyCode = tuple.quickkeyCode, shift = tuple.shift, ctrl = tuple.ctrl, alt = tuple.alt, numlock = tuple.numlock, display = tuple.display }
   if extra then for k, v in pairs(extra) do e[k] = v end end
   self.events[#self.events + 1] = e
   while #self.events > self.eventLog do table.remove(self.events, 1) end
@@ -1050,7 +1052,7 @@ function Instance:_route(name, opts, routing)
     if not caps then unavailable("no backend attached")
     elseif not caps.quickkey then unavailable("backend '" .. tostring(self._adapter.name) .. "' has no Quickey dispatch (capabilities.quickkey; the owned-Quickey backend is KB-13)")
     else r.quickkeyCapabilities = caps.quickkey end
-    r.tuple = { quickkey = code }
+    r.tuple = { quickkey = code, quickkeyCode = vk[code] }
   elseif method == "shortcut" then
     local d = self:describeKey(key, { executor = opts.executor, prefer = prefer })
     r.resolution = d
@@ -1728,6 +1730,8 @@ function Instance:_validateSequence(sessionId, steps)
   if #steps > self._config.maxSequenceSteps then return fail("bad-argument", "a sequence accepts at most " .. self._config.maxSequenceSteps .. " steps") end
   local out, estimate = {}, 0
   local pressed = {}
+  local heldQuickkeys = {}  -- Quickey tuples a press/combo step leaves down for later steps (chord capability)
+  local liveQuickkeys = self:_liveQuickkeyCount()
   local unverifiableText = nil  -- index of a text-field text step: a later PLEASE/Enter must not commit it
   local function stepFail(i, code, message, extra)
     local _, e = fail(code, "step " .. i .. ": " .. tostring(message) .. " (nothing was dispatched)", extra)
@@ -1757,6 +1761,13 @@ function Instance:_validateSequence(sessionId, steps)
       if herr then return stepFail(i, "bad-argument", herr) end
       if unverifiableText and commitsText(tuple, route) then
         return stepFail(i, "bad-argument", string.format("PLEASE/Enter after the text-field text of step %d would commit text that cannot be verified; check the field and commit it with a separate explicit call", unverifiableText))
+      end
+      if tuple.quickkey then
+        local tk = tupleKey(tuple)
+        local others = liveQuickkeys > 0 or (next(heldQuickkeys) ~= nil and (count(heldQuickkeys) > 1 or not heldQuickkeys[tk]))
+        local cerr = self:_quickkeyCapabilityError(tuple, route, kind, false, others)
+        if cerr then return stepFail(i, cerr.code, cerr.message, { reason = cerr.reason, missing = cerr.missing, capabilities = cerr.capabilities }) end
+        if kind == "press" then heldQuickkeys[tk] = true end
       end
       if kind == "tap" then
         local holdMs = step.holdMs or 50
@@ -1790,6 +1801,11 @@ function Instance:_validateSequence(sessionId, steps)
         local tk = tupleKey(tuple)
         if seen[tk] then return stepFail(i, "bad-argument", "key " .. k .. " repeats tuple " .. tk) end
         seen[tk] = true
+        if tuple.quickkey then
+          local cerr = self:_quickkeyCapabilityError(tuple, route, step.holdMs and "tap" or "hold", true, true)
+          if cerr then return stepFail(i, cerr.code, "key " .. k .. ": " .. cerr.message, { key = k, reason = cerr.reason, missing = cerr.missing, capabilities = cerr.capabilities }) end
+          if not step.holdMs then heldQuickkeys[tk] = true end
+        end
         s.specs[k] = spec
         s.keyNames[k] = route.logical or tuple.pcKey
         pressed[tk] = i
@@ -1814,6 +1830,7 @@ function Instance:_validateSequence(sessionId, steps)
         return stepFail(i, terr.code, terr.message)
       end
       if not known then return stepFail(i, "bad-argument", "release of a key that no earlier step of this sequence presses and this session does not hold") end
+      if s.tupleKey then heldQuickkeys[s.tupleKey] = nil end
       s.spec = spec
       estimate = estimate + 20
     elseif kind == "text" then
@@ -2433,6 +2450,13 @@ function Instance:_planPress(sessionId, now, spec, ctx)
     return fail("route-changed", string.format("a held key's route changed since it was pressed: %s %s (hold %s, session '%s', original %s); release or recover before new input (the operator restores the route; nothing is toggled here)",
       tostring(m.logical), tostring(m.mismatch), tostring(m.hold), tostring(self._holds[m.hold] and self._holds[m.hold].session), tostring(m.original.tupleKey)), { mismatches = mismatch })
   end
+  -- Quickey capability flags (KB-11): the requested operation must be one the adapter advertises. A tap
+  -- needs tap, a hold needs hold, and pressing while another Quickey record is live (a combo, or a
+  -- second press alongside a held one) needs chord. Checked before any admission or dispatch.
+  if tuple.quickkey then
+    local cerr = self:_quickkeyCapabilityError(tuple, route, ctx.kind, ctx.comboIndex ~= nil, self:_liveQuickkeyCount(tupleKey(tuple)) > 0)
+    if cerr then return nil, cerr end
+  end
   -- An exclusive hold (intended long-press) admits no new press from anyone, the owner included: a
   -- second key or a duplicate press cancels the console's long-press (KB-01).
   local ex = self:_exclusiveHold()
@@ -2555,6 +2579,33 @@ end
 
 -- An exclusive record keeps the interaction lock until its release is RESOLVED: a refused or raised
 -- release leaves the key possibly down, so the long-press is still in effect for everyone.
+-- The requested Quickey operation against the adapter's flags: a tap needs tap, a hold needs hold, and a
+-- combo or a press next to another live Quickey needs chord. Returns the structured error or nil.
+-- Used by _planPress (every dispatch path) and by the sequence preflight (before the first event).
+function Instance:_quickkeyCapabilityError(tuple, route, kind, combo, simultaneous)
+  local caps = route and route.capabilities or {}
+  local need = kind == "tap" and "tap" or "hold"
+  local missing = {}
+  if not caps[need] then missing[#missing + 1] = need end
+  if (combo or simultaneous) and not caps.chord then missing[#missing + 1] = "chord" end
+  if #missing == 0 then return nil end
+  local _, e = fail("unsupported", string.format("Quickey %s: the backend does not advertise %s for Quickeys (capabilities.quickkey = { tap = %s, hold = %s, chord = %s }); %s is refused before dispatch, nothing is substituted",
+      tostring(tuple.quickkey), table.concat(missing, " and "), tostring(caps.tap or false), tostring(caps.hold or false), tostring(caps.chord or false),
+      combo and "the combo" or (kind == "tap" and "the tap" or "the hold")),
+    { reason = "capability", missing = missing, capabilities = caps, kind = kind, combo = combo and true or false })
+  return e
+end
+
+-- Quickey records that may still be down (held, releasing or unresolved): a new Quickey press next to
+-- one is a simultaneous press and needs the chord capability.
+function Instance:_liveQuickkeyCount(exceptTupleKey)
+  local n = 0
+  for _, h in pairs(self._holds) do
+    if h.quickkey and h.state ~= "released" and h.tupleKey ~= exceptTupleKey then n = n + 1 end
+  end
+  return n
+end
+
 function Instance:_exclusiveHold()
   for _, h in pairs(self._holds) do
     if h.exclusive and h.state ~= "released" then return h end
@@ -2603,7 +2654,7 @@ function Instance:_resolveSpec(spec, forPress)
         if not ok then return nil, nil, { code = "unsupported", message = "backend Quickey check failed: " .. tostring(supported) } end
         if not supported then return nil, nil, { code = "unsupported", message = tostring(reason or ("Quickey " .. rr.quickkey .. " is not supported by the backend")) } end
       end
-      local tuple = { quickkey = rr.quickkey, display = display }
+      local tuple = { quickkey = rr.quickkey, quickkeyCode = rr.codeValue, display = display }
       local route = { logical = rr.key, source = "quickkey", method = rr.method, methodSource = rr.methodSource, quickkey = rr.quickkey, codeValue = rr.codeValue,
                       capabilities = rr.quickkeyCapabilities, routing = snapshot }
       return tuple, route, nil
@@ -2648,7 +2699,7 @@ function Instance:_checkRoutes()
       local r = self:_route(h.logical, { executor = h.route.executor, prefer = h.route.prefer }, h.route.routing)
       local why
       if not r.supported then why = "no longer resolvable: " .. tostring(r.reason)
-      elseif r.quickkey ~= h.quickkey then why = string.format("now maps to Quickey code %s (was %s)", tostring(r.quickkey), tostring(h.quickkey)) end
+      elseif r.codeValue ~= h.quickkeyCode then why = string.format("Quickey code %s is now value %s (was %s)", tostring(h.quickkey), tostring(r.codeValue), tostring(h.quickkeyCode)) end
       if why then
         h.routeMismatch = { detected = h.routeMismatch and h.routeMismatch.detected or self._lastServiced, reason = why, current = { quickkey = r.quickkey, supported = r.supported } }
         mismatches = mismatches or {}
@@ -2901,7 +2952,7 @@ end
 function Instance:_holdReport(h, now, extra)
   local r = {
     id = h.id, session = h.session, state = h.state, kind = h.kind,
-    logical = h.logical, pcKey = h.pcKey, quickkey = h.quickkey, shift = h.shift, ctrl = h.ctrl, alt = h.alt, numlock = h.numlock, display = h.display,
+    logical = h.logical, pcKey = h.pcKey, quickkey = h.quickkey, quickkeyCode = h.quickkeyCode, shift = h.shift, ctrl = h.ctrl, alt = h.alt, numlock = h.numlock, display = h.display,
     method = h.route and h.route.method or nil,
     tupleKey = h.tupleKey, route = h.route, backend = h.backend, pressedAt = h.pressedAt, releasedAt = h.releasedAt,
     deadline = h.deadline, deadlineReason = h.deadlineReason,

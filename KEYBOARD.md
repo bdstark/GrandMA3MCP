@@ -932,7 +932,7 @@ or tools; existing tool contracts remain unchanged.
 ### Module change for KB-11 (hardkeys 0.6.0, 2026-10-09)
 
 Implemented in `plugin/gma3_mcp_hardkeys.lua` 0.6.0 with the regression harness
-`test/lua/hardkeys_routing_test.lua` (106 checks on the fake backend; the earlier suites are unchanged and pass).
+`test/lua/hardkeys_routing_test.lua` (137 checks on the fake backend; the earlier suites are unchanged and pass).
 No bridge op, MCP tool or TypeScript contract changed; the bridge keeps the module default, so every existing
 caller behaves as before (its holds now also report `method = "shortcut"`).
 
@@ -950,7 +950,9 @@ caller behaves as before (its holds now also report `method = "shortcut"`).
   (an adapter without the field is a PC-key adapter). `enableInput()` and `configureRouting()` (while a backend is
   attached) refuse a policy naming a method the adapter cannot serve with `policy-unavailable`; nothing attaches
   and no other backend is selected. The `Keyboard()` backend advertises no Quickey dispatch and refuses Quickey
-  tuples outright; the fake backend simulates them (and can be created without, for tests). `type` cannot be
+  tuples outright; the fake backend simulates them (and can be created without, for tests). The Quickey flags are
+  enforced per operation before any dispatch, on every path (press, tap, combo, sequence preflight): a tap needs
+  `tap`, a hold needs `hold`, and a combo or a press next to another live Quickey record needs `chord`. `type` cannot be
   configured against any current backend, and the text branch of `shortcutOrType` is selected but refused as
   `unavailable`, both naming the KB-14 requirements (text-route dispatch; temporary shortcut enable/disable).
 - **Selection.** `shortcut`: the pre-0.6.0 route; a shortcut-table route with shortcuts off keeps the same
@@ -961,7 +963,10 @@ caller behaves as before (its holds now also report `method = "shortcut"`).
   are refusals. `quickkey`: the code must be an `Enums.VirtualKeyCode` name on the console (`MA1` is valid here;
   `MA` is not); an unreadable enum refuses.
 - **Retention.** The decision (`route.method`, `route.methodSource`, `route.routing` snapshot, `quickkey`,
-  `tupleKey = "quickkey:<CODE>"`) is stored on the hold and used for the release; a policy change or mode change
+  `quickkeyCode`, `tupleKey = "quickkey:#<value>"`) is stored on the hold and used for the release. Ownership is
+  the validated code value, so aliases (`OOPS`/`UNDO`) are one tuple: the second is the owner's duplicate or another
+  session's conflict, a combo naming both is refused, and a release or recovery under either name uses the stored
+  tuple; the requested name stays on the record for reporting; a policy change or mode change
   during a hold never re-routes it, and a Quickey hold's route recheck uses the stored snapshot, never the current
   policy. A raised or refused press is `press-failed` with no second backend; a refused press is not queued and
   a later mode/table change dispatches nothing until a new call makes a new decision.
