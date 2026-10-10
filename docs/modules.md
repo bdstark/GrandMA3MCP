@@ -681,7 +681,7 @@ The module publishes `CALIBRATION` and `backends = { fake, console }`. The bridg
 
 ## Vendoring into another plugin (mtpnxk)
 
-Use the immutable upstream revision **`874e7bd2c694f54fc19def7b13de443961696dd5`** (KB-19, hardkeys 0.10.0 / feedback 0.4.0 /
+Use the immutable upstream revision **`e142672e5829e54c5616ddea2b6655da6d174c20`** (KB-19, hardkeys 0.10.0 / feedback 0.4.0 /
 control 0.2.0) for the current module set; the earlier pins were `9f08f871f864084afcd670008310b285e8b31bfc` (KB-18, hardkeys
 0.10.0 / feedback 0.3.0 / control 0.1.0), `c8dbb3aa6edf352fc977d5196399bb6daf222d2b` (KB-17,
 hardkeys 0.10.0 / feedback 0.3.0), `3960334f295aaa2dcd98beb62beeccfcccbef46e` (KB-15, hardkeys 0.10.0 / feedback 0.2.0), `6e0d9c1918dd22e4703a9a36cf0440b20b4014ee`
@@ -693,8 +693,8 @@ manifest, not an automatic updater or a runtime dependency on GitHub.
 | File | Module version | API version | SHA-256 |
 | --- | --- | --- | --- |
 | `plugin/gma3_mcp_hardkeys.lua` | 0.10.0 | 1 | `a57ebd29af3b2c7e9e06ef3dcd8b7059c775db83b0dc61760f49e75973cc7dc3` |
-| `plugin/gma3_mcp_feedback.lua` | 0.4.0 | 1 | `2de74c985c77c1c37e3b15666dfc3cb02d4f4279143c42e55e8d753fa8ef03c7` |
-| `plugin/gma3_mcp_control.lua` | 0.2.0 | 1 | `43bda4a4cb026dc0f5e9c80608ee39d5083c88318219d0e1e4b686ab7bd9e4d1` |
+| `plugin/gma3_mcp_feedback.lua` | 0.4.0 | 1 | `18a1c8888c1b0b28c799c701d0cb52dbdca279a501e9603e82c1ac4c6ca2a641` |
+| `plugin/gma3_mcp_control.lua` | 0.2.0 | 1 | `7dfa327b1cd0076dc0c9c957ba768d6b3814b8ea5008353f4687c6406aa64417` |
 
 1. Obtain the Lua files from that exact revision of `bdstark/GrandMA3MCP`, rather than a moving branch.
    Copy them unchanged with [LICENSE](../LICENSE) and the manifest into the surface package. The manifest's
