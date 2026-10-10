@@ -560,7 +560,7 @@ atomic snapshot against other console activity.
 
 ## Vendoring into another plugin (mtpnxk)
 
-Use the immutable upstream revision **`62df607440c5d365d5d25b60b7681bb415204a9f`** (KB-15, hardkeys 0.10.0 /
+Use the immutable upstream revision **`3960334f295aaa2dcd98beb62beeccfcccbef46e`** (KB-15, hardkeys 0.10.0 /
 feedback 0.2.0) for the current module pair; the earlier pairs were `6e0d9c1918dd22e4703a9a36cf0440b20b4014ee`
 (`main` after PR #12, hardkeys 0.5.0, the pair mtpnxk qualified in KB-08) and `9da14544155f921c5dd4fd1cbb9a1ea4bd6f6e78`
 (the reviewed hardkeys 0.4.0). The machine-readable [modules.lock.json](../plugin/modules.lock.json) records the
@@ -569,7 +569,7 @@ manifest, not an automatic updater or a runtime dependency on GitHub.
 
 | File | Module version | API version | SHA-256 |
 | --- | --- | --- | --- |
-| `plugin/gma3_mcp_hardkeys.lua` | 0.10.0 | 1 | `c3af377f5f3e90a4da78d476b24b58ea5a7e10d870fd996a23bcb275334c8a0f` |
+| `plugin/gma3_mcp_hardkeys.lua` | 0.10.0 | 1 | `a57ebd29af3b2c7e9e06ef3dcd8b7059c775db83b0dc61760f49e75973cc7dc3` |
 | `plugin/gma3_mcp_feedback.lua` | 0.2.0 | 1 | `349bb2ed1cc88bdbaf197aa20e957811df44306133c04652663da01a585d2cf9` |
 
 1. Obtain both Lua files from that exact revision of `bdstark/GrandMA3MCP`, rather than a moving branch.
