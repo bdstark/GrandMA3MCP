@@ -20,9 +20,13 @@
 // backend. `run` needs a show whose name matches "disposable", "mcp-test" or "scratch", Lua enabled (page
 // existence reads) and `Plugin "gma3_mcp_bridge" "control=fake"` (holds are recorded, nothing is pressed on the
 // console; an operator decision this probe never makes). Every change registers its undo before dispatch; the
-// cleanup runs them all. GMA3_BRIDGE_HOST / GMA3_BRIDGE_PORT select the bridge; KB21_PAGE (1) the page,
-// KB21_FREE_EXECUTORS ("180,181,182,183") four EMPTY executors of that page (the KB-12 free range), KB21_SEQUENCES
-// ("auto") two sequences to assign (auto picks two distinct Sequence objects already assigned on the page).
+// cleanup runs them all. While a button is held the bridge refuses console commands [busy] (KB-13/18), so the
+// changes that must happen DURING a hold (a page change, a deletion, a reassignment) are written into a deferred
+// macro the probe creates in an EMPTY slot (KB21_DEFERRED_MACRO, 116 as KB-13; name "MCP kb21 deferred", verified by
+// contents before every rewrite and deleted at the end) and fired with `Go+ Macro N` BEFORE the hold: the console
+// runs the line after its Wait on its own. GMA3_BRIDGE_HOST / GMA3_BRIDGE_PORT select the bridge; KB21_PAGE (1) the
+// page, KB21_FREE_EXECUTORS ("180,181,182,183") four EMPTY executors of that page (the KB-12 free range),
+// KB21_SEQUENCES ("auto") two sequences to assign (auto picks two distinct Sequence objects already assigned on the page).
 import net from "node:net";
 import fs from "node:fs";
 import { createCleanup } from "./lib/kb16-steps.mjs";
@@ -38,6 +42,9 @@ const SHOW_GUARD = /disposable|mcp-test|scratch/i;
 const PAGE = Number(process.env.KB21_PAGE ?? 1);
 const FREE = (process.env.KB21_FREE_EXECUTORS ?? "180,181,182,183").split(",").map(Number);
 const SEQUENCES = process.env.KB21_SEQUENCES ?? "auto";
+const DEFERRED_MACRO = Number(process.env.KB21_DEFERRED_MACRO ?? 116);
+const DEFERRED_NAME = "MCP kb21 deferred";
+const DEFERRED_WAIT_S = 1.5;  // the deferred line runs this long after the macro is fired; the hold starts in between
 const GESTURE_LAPSE_MS = 650;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -45,7 +52,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /** Lua returning which of pages 1..max exist (ObjectList("Page P") is the existence check, KB-12): a list of 0/1. */
 export const LUA_PAGES = (max) => `local t = {}; for p = 1, ${max} do local l = ObjectList("Page " .. p); t[#t + 1] = (l and l[1]) and 1 or 0 end; return t`;
 /** Lua reading what the console itself answers for executor E of page P: GetExecutor (user page) and ObjectList (paged). */
-export const LUA_EXEC = (page, exec) => `local l = ObjectList("Page ${page}.${exec}"); local h = l and l[1]; local g = GetExecutor(${exec}); local function d(x) if x == nil then return "nil" end; local o = x.Object; return string.format("%s|width=%s|object=%s", tostring(x:GetClass()), tostring(x:Get("Width", Enums.Roles.Display)), o and tostring(o:Addr()) or "nil") end; return d(h), d(g)`;
+export const LUA_EXEC = (page, exec) => `local l = ObjectList("Page ${page}.${exec}"); local h = l and l[1]; local g = GetExecutor(${exec}); local function d(x) if x == nil then return "nil" end; local o = x.Object; local w = x:Get("Width", Enums.Roles.Display); local c = x:GetClass(); local a = nil; if o ~= nil then a = o:Addr() end; return string.format("%s|width=%s|object=%s", tostring(c), tostring(w), tostring(a)) end; return d(h), d(g)`;
 
 /** The first page number (2..) the console reports as missing, from the LUA_PAGES list; undefined when every probed page exists. */
 export function firstMissingPage(list) {
@@ -61,6 +68,11 @@ export function targetSummary(x) {
   const v = x.value;
   return { executor: v.executor, page: v.page?.no, mode: v.mode, pool: v.pool?.name, empty: v.empty, assigned: v.assigned?.addr ?? v.assigned?.name, class: v.assigned?.class, width: v.width, expanded: v.expanded, coveredBy: v.coveredBy, pageMissing: v.pageMissing, reserved: v.reserved, playbackTarget: v.playbackTarget, reason: v.reason, keyPress: v.functions?.keyPress, fader: v.functions?.fader };
 }
+
+/** Lua: the deferred macro's state: false when the slot is empty, else { name, lines }. */
+export const LUA_MACRO_READ = (n) => `local m = ObjectList("Macro ${n}")[1]; if not m then return false end; local t = { name = tostring(m.name), lines = {} }; for i = 1, m:Count() do local l = m:Ptr(i); t.lines[#t.lines + 1] = { cmd = tostring(l:Get("Command")), wait = tostring(l:Get("Wait")) } end; return t`;
+/** Lua: writes the deferred macro's lines (one command after a wait), refusing a macro that is not the probe's. */
+export const LUA_MACRO_WRITE = (n, name, cmd, waitS) => `local m = ObjectList("Macro ${n}")[1]; if not m or tostring(m.name) ~= ${JSON.stringify(name)} then error("Macro ${n} is not the probe's deferred macro", 0) end; for i = m:Count() + 1, 2 do Cmd(string.format("Store Macro %d.%d /NoConfirmation", ${n}, i)) end; local a, b = m:Ptr(1), m:Ptr(2); a:Set("Command", "Echo kb21 deferred"); a:Set("Wait", ${JSON.stringify(String(waitS))}); b:Set("Command", ${JSON.stringify(cmd)}); b:Set("Wait", "Follow"); return m:Count()`;
 
 /** Picks two distinct Sequence objects assigned on the page (never a Quickey, never a reserved executor). */
 export function pickSequences(executors, want = 2) {
@@ -218,6 +230,34 @@ async function main() {
     const settle = () => sleep(GESTURE_LAPSE_MS);
     const B = new Conn("b");
     const [e0, e1, e2, e3] = FREE;
+    // The deferred macro (KB-13 pattern): claimed in an empty slot, lines verified before every rewrite, deleted at the end.
+    let deferredOwned = false;
+    const macroRead = async () => (await lua(LUA_MACRO_READ(DEFERRED_MACRO)))?.[0];
+    const claimDeferred = async () => {
+      const existing = await macroRead();
+      if (existing !== false) throw new Error(`Macro ${DEFERRED_MACRO} is occupied by "${existing?.name}"; the probe needs an EMPTY slot it creates and removes itself (KB21_DEFERRED_MACRO)`);
+      await lua(`Cmd("Store Macro ${DEFERRED_MACRO} /NoConfirmation"); local m = ObjectList("Macro ${DEFERRED_MACRO}")[1]; if not m then return false end; m:Set("Name", ${JSON.stringify(DEFERRED_NAME)}); return true`);
+      const read = await macroRead();
+      if (!read || read.name !== DEFERRED_NAME) throw new Error(`could not create the deferred Macro ${DEFERRED_MACRO} (read back ${JSON.stringify(read)})`);
+      deferredOwned = true;
+      cleanup.add(`Delete Macro ${DEFERRED_MACRO} (the probe's deferred macro)`, async () => {
+        const now = await macroRead();
+        if (!now || now.name !== DEFERRED_NAME) return { ok: false, error: `Macro ${DEFERRED_MACRO} is not the probe's any more (${JSON.stringify(now)}); left in place` };
+        await lua(`Cmd("Delete Macro ${DEFERRED_MACRO} /NoConfirmation"); return true`);
+        return { ok: (await macroRead()) === false };
+      });
+      note("deferred macro", `Macro ${DEFERRED_MACRO} created as "${DEFERRED_NAME}"; operator actions during a hold run from it (fired before the hold, ${DEFERRED_WAIT_S} s wait)`);
+    };
+    /** Writes one command into the deferred macro and fires it: the console runs the command DEFERRED_WAIT_S later. */
+    const deferredFire = async (command) => {
+      const now = await macroRead();
+      if (!deferredOwned || !now || now.name !== DEFERRED_NAME) throw new Error(`Macro ${DEFERRED_MACRO} is not the probe's deferred macro (${JSON.stringify(now)}); not rewritten`);
+      await lua(LUA_MACRO_WRITE(DEFERRED_MACRO, DEFERRED_NAME, command, DEFERRED_WAIT_S));
+      const read = await macroRead();
+      if (read?.lines?.[1]?.cmd !== command) throw new Error(`the deferred macro did not read back the command (${JSON.stringify(read)})`);
+      await cmd(`Go+ Macro ${DEFERRED_MACRO}`);
+    };
+    const deferredLapse = () => sleep(DEFERRED_WAIT_S * 1000 + 900);
     try {
       if (pageNo !== PAGE) throw new Error(`the console is on page ${pageNo}, the probe expects page ${PAGE} (KB21_PAGE)`);
       const free = await context({ executors: FREE });
@@ -232,7 +272,7 @@ async function main() {
       cleanup.add(`Page ${PAGE}`, () => A.request("cmd", { command: `Page ${PAGE}` }));
       cleanup.add("control.close A", () => A.request("control.close"));
       cleanup.add("control.close B", () => B.request("control.close").catch(() => ({ ok: true })));
-      cleanup.add("release held buttons", async () => { for (const e of FREE) { await A.request("control.submit", { events: [ev.up(e)] }); } await sleep(200); });
+      await claimDeferred();
 
       // 1. Assignments in the free range: S1 at e0 (to be widened), S1 at e2 (to be deleted while held), S2 at e3 (to be reassigned while held).
       for (const [e, s] of [[e0, S1], [e2, S1], [e3, S2]]) {
@@ -242,13 +282,23 @@ async function main() {
       let c = await context({ executors: FREE });
       record(`run: ${S1} assigned at ${e0} and ${e2}, ${S2} at ${e3}; ${e1} stays empty; each a playback target with width 1`, [e0, e2].every((e) => c.executors.find((x) => x.value.executor === e)?.value.assigned?.addr === S1) && c.executors.find((x) => x.value.executor === e3)?.value.assigned?.addr === S2 && c.executors.find((x) => x.value.executor === e1)?.value.empty && c.executors.filter((x) => !x.value.empty).every((x) => x.value.playbackTarget && x.value.width === 1), c.executors.map(targetSummary));
 
-      // 2. An expanded assignment: widen e0 to 2 and read what the console says about e1.
+      // 2. An expanded assignment: widen e0 to 2 (the command forms, then a direct property write through Lua) and read
+      // what the console says about e1.
       let widened = false;
+      const widthAttempts = [];
       for (const form of [`Set Page ${PAGE}.${e0} Property "Width" "2"`, `Set Page ${PAGE}.${e0} Property Width 2`]) {
         const r = await A.request("cmd", { command: form });
         c = await context({ executors: [e0, e1] });
+        widthAttempts.push({ form, feedback: r.ok ? r.result?.feedback : r.error, widthRead: c.executors[0].value.width });
         if (r.ok && c.executors[0].value.width === 2) { widened = form; break; }
       }
+      if (!widened) {
+        const r = await A.request("lua", { code: `local h = ObjectList("Page ${PAGE}.${e0}")[1]; if not h then return "no-handle" end; local ok, err = pcall(function() h:Set("Width", 2) end); return ok and "set" or ("raised: " .. tostring(err)), tostring(h:Get("Width", Enums.Roles.Display))`, maxMs: 2000 });
+        c = await context({ executors: [e0, e1] });
+        widthAttempts.push({ form: `lua ObjectList("Page ${PAGE}.${e0}")[1]:Set("Width", 2)`, feedback: r.ok ? r.result?.values : r.error, widthRead: c.executors[0].value.width });
+        if (r.ok && c.executors[0].value.width === 2) widened = widthAttempts[widthAttempts.length - 1].form;
+      }
+      note("run: the attempts to widen the executor and what the console answered", widthAttempts);
       const rawE1 = await lua(LUA_EXEC(PAGE, e1));
       if (widened) {
         record(`run: ${widened} makes ${e0} an expanded assignment (width 2, expanded) and the reader reports ${e1} covered by ${e0}: not a separate playback`, c.executors[0].value.expanded === true && c.executors[1].value.coveredBy === e0 && c.executors[1].value.playbackTarget === false, { targets: c.executors.map(targetSummary), consoleSays: { [`Page ${PAGE}.${e1}`]: rawE1?.[0], [`GetExecutor(${e1})`]: rawE1?.[1] } });
@@ -257,23 +307,27 @@ async function main() {
         note("run: neither Set form changed the executor's Width; expanded assignments stay harness evidence (the Width readback is what the reader uses)", { widthRead: c.executors[0].value.width, consoleSays: rawE1 });
       }
 
-      // 3. A following binding: a held button survives a page change frozen to page 1's object.
+      // 3. A following binding: a held button survives a page change frozen to page 1's object. The page change runs
+      // from the deferred macro (fired before the hold: a command while a button is held is refused [busy]).
+      const otherPage = PAGE === 1 ? 2 : 1;
+      const pageExists = pagesBefore?.[0]?.[otherPage - 1] === 1;
+      if (!pageExists) throw new Error(`page ${otherPage} does not exist on this show; the probe needs it for the page-change checks (it never creates pages)`);
+      cleanup.add("release held buttons", async () => { for (const ctl of [...FREE.map((e) => `PFA${e}`), "PFAnopage", "PFAcur", "PFAmissing"]) { await A.request("control.submit", { events: [{ type: "button", device: "probe-mtouch", control: ctl, seq: ++seq, target: { executor: FREE[0], element: "key" }, down: false }] }); } await B.request("control.submit", { events: [{ type: "button", device: "probe-mplay", control: "PFD1", seq: 99, target: { executor: FREE[0], element: "key" }, down: false }] }).catch(() => {}); await sleep(GESTURE_LAPSE_MS); });
       let snap = await bindTo({ executors: [e0, e1, e2, e3] });
       const genFollow = gen;
+      await deferredFire(`Page ${otherPage}`);
       const r1 = await submit([ev.down(e0)], "down e0 (follow)");
       await sleep(150);
       let st = await status();
       const held = st.sessions[st.yourSession]?.gestureList?.[0];
       record(`run: a down on ${e0} (following binding) is admitted on the fake backend and the status shows what it is frozen to (page ${PAGE}, ${S1})`, r1.result.outcomes[0].accepted && held?.frozen?.executor === e0 && held.frozen.page === PAGE && held.frozen.assigned === S1 && held.frozen.pool != null, { outcome: outcomesOf(r1), held });
-      const otherPage = PAGE === 1 ? 2 : 1;
-      const pageExists = pagesBefore?.[0]?.[otherPage - 1] === 1;
-      if (!pageExists) throw new Error(`page ${otherPage} does not exist on this show; the probe needs it for the page-change checks (it never creates pages)`);
-      await cmd(`Page ${otherPage}`);
-      await sleep(500);
+      const busyCmd = await A.request("cmd", { command: `Page ${otherPage}` });
+      record("run: a console command while the button is held is refused [busy] by the bridge (the page change runs from the deferred macro instead)", !busyCmd.ok && busyCmd.code === "busy", busyCmd);
+      await deferredLapse();
       const cF = await context({ executors: [e0, e1, e2, e3], cached: true });
       record(`run: Page ${otherPage} moves the following binding's generation; its targets are now page ${otherPage}'s (${e0} ${cF.executors[0].value.empty ? "empty" : "assigned"} there)`, cF.executorPage?.no === otherPage && cF.generation !== genFollow && cF.executors[0].value.page?.no === otherPage, { generation: [genFollow, cF.generation], target: targetSummary(cF.executors[0]) });
       st = await status();
-      record("run: the hold is still owned, now marked rebound; its frozen target is unchanged", st.sessions[st.yourSession]?.gestureList?.[0]?.rebound === true && st.sessions[st.yourSession].gestureList[0].frozen.page === PAGE && st.sessions[st.yourSession].gestureList[0].frozen.assigned === S1, st.sessions[st.yourSession]?.gestureList);
+      record("run: the hold is still owned under the old generation; its frozen target is unchanged (a page change moves the generation, a replaced binding would mark the hold rebound)", st.sessions[st.yourSession]?.gestureList?.[0]?.generation === genFollow && st.sessions[st.yourSession].gestureList[0].frozen.page === PAGE && st.sessions[st.yourSession].gestureList[0].frozen.assigned === S1, st.sessions[st.yourSession]?.gestureList);
       const rU = await submit([ev.up(e0)], "up e0 after the page change");
       await settle();
       const la = await lastApplied();
@@ -298,12 +352,14 @@ async function main() {
       record(`run: a down naming page ${PAGE} is admitted while the console shows page ${otherPage}; the hold is frozen to page ${PAGE}.${e2}`, rI.result.outcomes[0].accepted && st.sessions[st.yourSession]?.gestureList?.[0]?.frozen?.page === PAGE, { outcome: outcomesOf(rI), held: st.sessions[st.yourSession]?.gestureList });
       const rI2 = await submit([ev.down(e2, { control: "PFAcur" })], "down without page");
       record("run: the same number without target.page is target-unavailable on an independent binding (never silently the current page)", rI2.result.outcomes[0].refused === "target-unavailable" && /needs target\.page/.test(rI2.result.outcomes[0].message ?? ""), outcomesOf(rI2));
+      await submit([ev.up(e2)], "up e2"); await settle();
       await cmd(`Page ${PAGE}`);
       await sleep(400);
 
-      // 5. Deletion while held: the release goes to the recorded target; the next down finds it empty.
-      await cmd(`Delete Page ${PAGE}.${e2} /NoConfirmation`);
-      await sleep(600);
+      // 5. Deletion while held (from the deferred macro): the release goes to the recorded target; the next down finds it empty.
+      await deferredFire(`Delete Page ${PAGE}.${e2} /NoConfirmation`);
+      await submit([ev.down(e2, { target: { executor: e2, element: "key", page: PAGE } })], "down e2 (to be deleted)");
+      await deferredLapse();
       const cD = await context({ executors: [e0, e2, e3], executorPage: PAGE, cached: true });
       const rD = await submit([ev.up(e2)], "up e2 after deletion");
       await settle();
@@ -313,10 +369,10 @@ async function main() {
       const rD2 = await submit([ev.down(e2, { generation: gen, target: { executor: e2, element: "key", page: PAGE } })], "down on the deleted executor");
       record(`run: a new down on ${e2} is target-unavailable (empty)`, rD2.result.outcomes[0].refused === "target-unavailable" && /is empty/.test(rD2.result.outcomes[0].message ?? ""), outcomesOf(rD2));
 
-      // 6. Reassignment while held: same rule, the release names the OLD object.
+      // 6. Reassignment while held (from the deferred macro): same rule, the release names the OLD object.
+      await deferredFire(`Assign ${S1} At Page ${PAGE}.${e3}`);
       const rR = await submit([ev.down(e3, { generation: gen, target: { executor: e3, element: "key", page: PAGE } })], "down e3");
-      await cmd(`Assign ${S1} At Page ${PAGE}.${e3}`);
-      await sleep(600);
+      await deferredLapse();
       const cR = await context({ executors: [e0, e2, e3], executorPage: PAGE, cached: true });
       const rR2 = await submit([ev.up(e3)], "up e3 after reassignment");
       await settle();

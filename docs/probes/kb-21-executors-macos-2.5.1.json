@@ -1,0 +1,1134 @@
+{
+  "mode": "run",
+  "host": "127.0.0.1",
+  "port": 9800,
+  "startedAt": "2026-10-10T22:30:00.704Z",
+  "ping": {
+    "bridgeVersion": "0.17.0",
+    "build": {
+      "version": "2.5.1.0",
+      "hostType": "onPC",
+      "codeType": "Release"
+    },
+    "hostname": "bdsmbpm401",
+    "showfile": "mcp-test-disposable",
+    "user": "Admin",
+    "modules": {
+      "hardkeys": {
+        "loaded": true,
+        "version": "0.10.0"
+      },
+      "feedback": {
+        "loaded": true,
+        "version": "0.5.0"
+      },
+      "control": {
+        "loaded": true,
+        "version": "0.4.0"
+      }
+    },
+    "input": {
+      "quarantined": 0,
+      "retained": 0,
+      "unresolvedFromPreviousRun": 0,
+      "sessions": 0,
+      "enabled": true,
+      "bank": {
+        "provisioned": false
+      },
+      "holds": 0,
+      "note": "ownership records, not physical key state; see input.status. busy: cmd/set/setfader/lua are refused for every connection while it is set",
+      "unresolved": 0,
+      "moduleInputEnabled": true,
+      "backend": "keyboard"
+    },
+    "control": {
+      "unresolvedFromPreviousRun": 0,
+      "gestures": 0,
+      "unresolved": 0,
+      "enabled": true,
+      "spec": {
+        "executorPage": 1,
+        "executors": [
+          191,
+          192,
+          193,
+          194
+        ]
+      },
+      "note": "KB-18: admission, ordering, coalescing and bounds; the fake backend records intents and moves nothing on the console (control=console applies attribute adjustments, KB-19)",
+      "counters": {
+        "rateDropped": 0,
+        "evicted": 0,
+        "admitted": 2,
+        "unresolved": 0,
+        "applied": 2,
+        "lost": 0,
+        "staleDropped": 0,
+        "dropped": 0,
+        "coalesced": 0,
+        "expired": 0,
+        "backendRefused": 0,
+        "refused": 6
+      },
+      "moduleInputEnabled": true,
+      "queued": 0,
+      "sessions": 0,
+      "backend": "fake"
+    },
+    "lua": {
+      "enabled": true
+    }
+  },
+  "steps": [
+    {
+      "name": "console",
+      "note": true,
+      "detail": {
+        "bridgeVersion": "0.17.0",
+        "build": {
+          "version": "2.5.1.0",
+          "hostType": "onPC",
+          "codeType": "Release"
+        },
+        "hostname": "bdsmbpm401",
+        "showfile": "mcp-test-disposable",
+        "user": "Admin",
+        "modules": {
+          "hardkeys": {
+            "loaded": true,
+            "version": "0.10.0"
+          },
+          "feedback": {
+            "loaded": true,
+            "version": "0.5.0"
+          },
+          "control": {
+            "loaded": true,
+            "version": "0.4.0"
+          }
+        },
+        "input": {
+          "quarantined": 0,
+          "retained": 0,
+          "unresolvedFromPreviousRun": 0,
+          "sessions": 0,
+          "enabled": true,
+          "bank": {
+            "provisioned": false
+          },
+          "holds": 0,
+          "note": "ownership records, not physical key state; see input.status. busy: cmd/set/setfader/lua are refused for every connection while it is set",
+          "unresolved": 0,
+          "moduleInputEnabled": true,
+          "backend": "keyboard"
+        },
+        "control": {
+          "unresolvedFromPreviousRun": 0,
+          "gestures": 0,
+          "unresolved": 0,
+          "enabled": true,
+          "spec": {
+            "executorPage": 1,
+            "executors": [
+              191,
+              192,
+              193,
+              194
+            ]
+          },
+          "note": "KB-18: admission, ordering, coalescing and bounds; the fake backend records intents and moves nothing on the console (control=console applies attribute adjustments, KB-19)",
+          "counters": {
+            "rateDropped": 0,
+            "evicted": 0,
+            "admitted": 2,
+            "unresolved": 0,
+            "applied": 2,
+            "lost": 0,
+            "staleDropped": 0,
+            "dropped": 0,
+            "coalesced": 0,
+            "expired": 0,
+            "backendRefused": 0,
+            "refused": 6
+          },
+          "moduleInputEnabled": true,
+          "queued": 0,
+          "sessions": 0,
+          "backend": "fake"
+        },
+        "lua": {
+          "enabled": true
+        }
+      }
+    },
+    {
+      "name": "control.status answers with the module version and a limitation naming explicit targets and frozen holds (KB-21)",
+      "pass": true,
+      "detail": {
+        "version": "0.4.0",
+        "limitations": [
+          "the console backend serves attribute slots only: relative motion (KB-19) as the selection-scoped Attribute \"<name>\" At +/- <amount> adjustment (an explicitly limited mode, not native encoder equivalence), calibrated for the Percent/PercentFine readouts (1 per Coarse detent) and the Physical readout (the attribute's range / 120 per Coarse detent, in physical units) with Fine at a tenth, on the Absolute layer; a strip touch (KB-20) as a hold that reserves the slot and moves nothing; an absolute position (KB-20) as Attribute \"<name>\" At <value> over the verified travel only (Percent/PercentFine 0..100, Physical PhysicalFrom..PhysicalTo of the binding, never a mixed physical range), refused mixed-values while the selection's values disagree and values-incomplete while they were not completely read, unless the event says takeover; other readouts, Increment/Native, other layers, named channel functions, encoder presses and executor elements are refused unsupported",
+          "an executor target is explicit (pool, page, executor, element; KB-21): a number the binding reports covered by a wider neighbour, on a page that does not exist, reserved or holding a Quickey is refused target-unavailable; a hold's release goes to the target its down resolved (frozen), never to what a bank or page change mapped to the control since; executor operations themselves are KB-22",
+          "generations are those of the consumer's binding source (one gma3_mcp_feedback instance and spec); events from a surface bound to another instance are refused as stale",
+          "packet loss is reported, never repaired: a lost relative delta is gone, a lost absolute position is superseded by the next one"
+        ]
+      }
+    },
+    {
+      "name": "feedback.context lists the executors of the user's current page with an explicit identity on each (pool, page, mode=current)",
+      "pass": true,
+      "detail": {
+        "page": {
+          "no": 1,
+          "name": "Page 1"
+        },
+        "count": 27,
+        "first": {
+          "executor": 191,
+          "page": 1,
+          "mode": "current",
+          "pool": "Default",
+          "empty": false,
+          "assigned": "14.14.1.7.5527",
+          "class": "Sequence",
+          "width": 1,
+          "playbackTarget": true,
+          "keyPress": "Top",
+          "fader": "Master"
+        }
+      }
+    },
+    {
+      "name": "widths of the assigned executors as the console reports them (an expanded assignment would be > 1)",
+      "note": true,
+      "detail": {
+        "widths": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "expanded": []
+      }
+    },
+    {
+      "name": "no Quickey or reserved executor on the page (the owned bank is not provisioned); the exclusion is harness evidence",
+      "note": true
+    },
+    {
+      "name": "feedback.context bound to page 1 explicitly reads the same executors through ObjectList (mode=page) with the same assignments",
+      "pass": true,
+      "detail": [
+        {
+          "executor": 191,
+          "page": 1,
+          "mode": "page",
+          "pool": "Default",
+          "empty": false,
+          "assigned": "14.14.1.7.5527",
+          "class": "Sequence",
+          "width": 1,
+          "playbackTarget": true,
+          "keyPress": "Top",
+          "fader": "Master"
+        },
+        {
+          "executor": 192,
+          "page": 1,
+          "mode": "page",
+          "pool": "Default",
+          "empty": false,
+          "assigned": "14.14.1.7.5528",
+          "class": "Sequence",
+          "width": 1,
+          "playbackTarget": true,
+          "keyPress": "Top",
+          "fader": "Master"
+        },
+        {
+          "executor": 193,
+          "page": 1,
+          "mode": "page",
+          "pool": "Default",
+          "empty": false,
+          "assigned": "14.14.1.7.5529",
+          "class": "Sequence",
+          "width": 1,
+          "playbackTarget": true,
+          "keyPress": "Temp",
+          "fader": "Master"
+        },
+        {
+          "executor": 194,
+          "page": 1,
+          "mode": "page",
+          "pool": "Default",
+          "empty": false,
+          "assigned": "14.14.1.7.5530",
+          "class": "Sequence",
+          "width": 1,
+          "playbackTarget": true,
+          "keyPress": "Temp",
+          "fader": "Master"
+        }
+      ]
+    },
+    {
+      "name": "feedback.context bound to page 9999 reports every target pageMissing (and the console still has no such page: nothing is created)",
+      "pass": true,
+      "detail": {
+        "executor": 191,
+        "page": 9999,
+        "mode": "page",
+        "pool": "Default",
+        "empty": true,
+        "pageMissing": true,
+        "playbackTarget": false,
+        "reason": "page 9999 does not exist (nothing is created)"
+      }
+    },
+    {
+      "name": "control.bind with executorPage: the binding key names the page and the cached snapshot claims a generation",
+      "pass": true,
+      "detail": {
+        "bindingKey": "display=1;executors=191,192,193,194;page=1",
+        "generation": 1,
+        "binding": 3
+      }
+    },
+    {
+      "name": "verify (fake backend): a page-bound executor without target.page and a target on page 9999 are both target-unavailable (bind first / not in the binding): nothing is queued, nothing owned",
+      "pass": true,
+      "detail": {
+        "accepted": 0,
+        "refused": 2,
+        "lost": 0,
+        "outcomes": [
+          "target-unavailable",
+          "target-unavailable"
+        ]
+      }
+    },
+    {
+      "name": "verify: nothing queued, no gesture, not busy",
+      "pass": true,
+      "detail": {
+        "conn-33": {
+          "devices": {
+            "probe-mtouch": {
+              "late": 0,
+              "last": 0,
+              "lost": 0,
+              "duplicates": 0,
+              "reordered": 0,
+              "rateDropped": 0
+            }
+          },
+          "openedAt": 1791671401.3354,
+          "gestures": 0,
+          "remainingMs": 14986,
+          "expiresAt": 1791671416.3354,
+          "state": "active",
+          "id": "conn-33",
+          "leaseMs": 15000,
+          "counters": {
+            "evicted": 0,
+            "refused": 2,
+            "admitted": 0,
+            "dropped": 0,
+            "coalesced": 0,
+            "lost": 0,
+            "applied": 0
+          },
+          "binding": "client 33",
+          "renewals": 0,
+          "queued": 0,
+          "gestureList": []
+        }
+      }
+    },
+    {
+      "name": "run: preflight: executors 180,181,182,183 of page 1 are empty (nothing of the operator's is touched)",
+      "pass": true,
+      "detail": [
+        {
+          "executor": 180,
+          "mode": "current",
+          "pool": "Default",
+          "empty": true,
+          "playbackTarget": false,
+          "reason": "the executor is empty"
+        },
+        {
+          "executor": 181,
+          "mode": "current",
+          "pool": "Default",
+          "empty": true,
+          "playbackTarget": false,
+          "reason": "the executor is empty"
+        },
+        {
+          "executor": 182,
+          "mode": "current",
+          "pool": "Default",
+          "empty": true,
+          "playbackTarget": false,
+          "reason": "the executor is empty"
+        },
+        {
+          "executor": 183,
+          "mode": "current",
+          "pool": "Default",
+          "empty": true,
+          "playbackTarget": false,
+          "reason": "the executor is empty"
+        }
+      ]
+    },
+    {
+      "name": "pages that exist (1..32) before the run",
+      "note": true,
+      "detail": {
+        "pages": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "firstMissing": 6
+      }
+    },
+    {
+      "name": "deferred macro",
+      "note": true,
+      "detail": "Macro 116 created as \"MCP kb21 deferred\"; operator actions during a hold run from it (fired before the hold, 1.5 s wait)"
+    },
+    {
+      "name": "run: 14.14.1.7.5527 assigned at 180 and 182, 14.14.1.7.5528 at 183; 181 stays empty; each a playback target with width 1",
+      "pass": true,
+      "detail": [
+        {
+          "executor": 180,
+          "page": 1,
+          "mode": "current",
+          "pool": "Default",
+          "empty": false,
+          "assigned": "14.14.1.7.5527",
+          "class": "Sequence",
+          "width": 1,
+          "playbackTarget": true,
+          "keyPress": "Go+",
+          "fader": "Master"
+        },
+        {
+          "executor": 181,
+          "mode": "current",
+          "pool": "Default",
+          "empty": true,
+          "playbackTarget": false,
+          "reason": "the executor is empty"
+        },
+        {
+          "executor": 182,
+          "page": 1,
+          "mode": "current",
+          "pool": "Default",
+          "empty": false,
+          "assigned": "14.14.1.7.5527",
+          "class": "Sequence",
+          "width": 1,
+          "playbackTarget": true,
+          "keyPress": "Go+",
+          "fader": "Master"
+        },
+        {
+          "executor": 183,
+          "page": 1,
+          "mode": "current",
+          "pool": "Default",
+          "empty": false,
+          "assigned": "14.14.1.7.5528",
+          "class": "Sequence",
+          "width": 1,
+          "playbackTarget": true,
+          "keyPress": "Go+",
+          "fader": "Master"
+        }
+      ]
+    },
+    {
+      "name": "run: the attempts to widen the executor and what the console answered",
+      "note": true,
+      "detail": [
+        {
+          "form": "Set Page 1.180 Property \"Width\" \"2\"",
+          "feedback": "OK",
+          "widthRead": 1
+        },
+        {
+          "form": "Set Page 1.180 Property Width 2",
+          "feedback": "OK",
+          "widthRead": 1
+        },
+        {
+          "form": "lua ObjectList(\"Page 1.180\")[1]:Set(\"Width\", 2)",
+          "feedback": [
+            "set",
+            "2"
+          ],
+          "widthRead": 2
+        }
+      ]
+    },
+    {
+      "name": "run: lua ObjectList(\"Page 1.180\")[1]:Set(\"Width\", 2) makes 180 an expanded assignment (width 2, expanded) and the reader reports 181 covered by 180: not a separate playback",
+      "pass": true,
+      "detail": {
+        "targets": [
+          {
+            "executor": 180,
+            "page": 1,
+            "mode": "current",
+            "pool": "Default",
+            "empty": false,
+            "assigned": "14.14.1.7.5527",
+            "class": "Sequence",
+            "width": 2,
+            "expanded": true,
+            "playbackTarget": true,
+            "keyPress": "Go+",
+            "fader": "Master"
+          },
+          {
+            "executor": 181,
+            "page": 1,
+            "mode": "current",
+            "pool": "Default",
+            "empty": true,
+            "coveredBy": 180,
+            "playbackTarget": false,
+            "reason": "covered by executor 180 (width 2): not a separate playback",
+            "keyPress": "",
+            "fader": ""
+          }
+        ],
+        "consoleSays": {
+          "Page 1.181": "Proxy|width=nil|object=nil",
+          "GetExecutor(181)": "Proxy|width=nil|object=nil"
+        }
+      }
+    },
+    {
+      "name": "what the console itself answers for the covered number 181",
+      "note": true,
+      "detail": {
+        "paged": "Proxy|width=nil|object=nil",
+        "getExecutor": "Proxy|width=nil|object=nil"
+      }
+    },
+    {
+      "name": "run: a down on 180 (following binding) is admitted on the fake backend and the status shows what it is frozen to (page 1, 14.14.1.7.5527)",
+      "pass": true,
+      "detail": {
+        "outcome": {
+          "accepted": 1,
+          "refused": 0,
+          "lost": 0,
+          "outcomes": [
+            "queued"
+          ]
+        },
+        "held": {
+          "generation": 7,
+          "target": {
+            "executor": 180,
+            "element": "key"
+          },
+          "control": "PFA180",
+          "frozen": {
+            "assigned": "14.14.1.7.5527",
+            "pool": "Default#1",
+            "kind": "executor",
+            "element": "key",
+            "page": 1,
+            "executor": 180
+          },
+          "kind": "button",
+          "device": "probe-mtouch",
+          "targetKey": "execDefault#1/1.180.key|14.14.1.7.5527|Go+",
+          "since": 1791671402.2505
+        }
+      }
+    },
+    {
+      "name": "run: a console command while the button is held is refused [busy] by the bridge (the page change runs from the deferred macro instead)",
+      "pass": true,
+      "detail": {
+        "ok": false,
+        "id": "a34",
+        "code": "busy",
+        "error": "[busy] a command is refused while input ownership is active: button is down on probe-mtouch/PFA180 of session conn-33. Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first",
+        "detail": {
+          "owner": "conn-33",
+          "control": "PFA180",
+          "code": "busy",
+          "device": "probe-mtouch",
+          "module": "control",
+          "message": "a command is refused while input ownership is active: button is down on probe-mtouch/PFA180 of session conn-33. Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first",
+          "reason": "button-down"
+        }
+      }
+    },
+    {
+      "name": "run: Page 2 moves the following binding's generation; its targets are now page 2's (180 empty there)",
+      "pass": false,
+      "detail": {
+        "generation": [
+          7,
+          8
+        ],
+        "target": {
+          "executor": 180,
+          "mode": "current",
+          "pool": "Default",
+          "empty": true,
+          "playbackTarget": false,
+          "reason": "the executor is empty"
+        }
+      }
+    },
+    {
+      "name": "run: the hold is still owned, now marked rebound; its frozen target is unchanged",
+      "pass": false,
+      "detail": [
+        {
+          "generation": 7,
+          "target": {
+            "executor": 180,
+            "element": "key"
+          },
+          "control": "PFA180",
+          "frozen": {
+            "assigned": "14.14.1.7.5527",
+            "pool": "Default#1",
+            "kind": "executor",
+            "element": "key",
+            "page": 1,
+            "executor": 180
+          },
+          "kind": "button",
+          "device": "probe-mtouch",
+          "targetKey": "execDefault#1/1.180.key|14.14.1.7.5527|Go+",
+          "since": 1791671402.2505
+        }
+      ]
+    },
+    {
+      "name": "run: the release is admitted without a binding and applied to the FROZEN target (page 1.180 14.14.1.7.5527), not to page 2's 180",
+      "pass": true,
+      "detail": {
+        "outcome": {
+          "accepted": 1,
+          "refused": 0,
+          "lost": 0,
+          "outcomes": [
+            "queued"
+          ]
+        },
+        "lastApplied": {
+          "target": "execDefault#1/1.180.key|14.14.1.7.5527|Go+",
+          "result": {
+            "recorded": true
+          },
+          "down": false,
+          "outcome": "applied",
+          "at": 1791671404.9227,
+          "kind": "button"
+        }
+      }
+    },
+    {
+      "name": "run: a fresh down on 180 while the console shows page 2 resolves against page 2's executor (empty: target-unavailable), never the frozen one",
+      "pass": true,
+      "detail": {
+        "accepted": 0,
+        "refused": 1,
+        "lost": 0,
+        "outcomes": [
+          "target-unavailable"
+        ]
+      }
+    },
+    {
+      "name": "run: with the binding bound to page 1 explicitly, Page 2 does not move its generation and the targets still read page 1's assignments through ObjectList",
+      "pass": true,
+      "detail": {
+        "generation": [
+          1,
+          1
+        ],
+        "userPage": {
+          "no": 2,
+          "name": "Page 2"
+        },
+        "targets": [
+          {
+            "executor": 180,
+            "page": 1,
+            "mode": "page",
+            "pool": "Default",
+            "empty": false,
+            "assigned": "14.14.1.7.5527",
+            "class": "Sequence",
+            "width": 2,
+            "expanded": true,
+            "playbackTarget": true,
+            "keyPress": "Go+",
+            "fader": "Master"
+          },
+          {
+            "executor": 182,
+            "page": 1,
+            "mode": "page",
+            "pool": "Default",
+            "empty": false,
+            "assigned": "14.14.1.7.5527",
+            "class": "Sequence",
+            "width": 1,
+            "playbackTarget": true,
+            "keyPress": "Go+",
+            "fader": "Master"
+          },
+          {
+            "executor": 183,
+            "page": 1,
+            "mode": "page",
+            "pool": "Default",
+            "empty": false,
+            "assigned": "14.14.1.7.5528",
+            "class": "Sequence",
+            "width": 1,
+            "playbackTarget": true,
+            "keyPress": "Go+",
+            "fader": "Master"
+          }
+        ]
+      }
+    },
+    {
+      "name": "run: a down naming page 1 is admitted while the console shows page 2; the hold is frozen to page 1.182",
+      "pass": true,
+      "detail": {
+        "outcome": {
+          "accepted": 1,
+          "refused": 0,
+          "lost": 1,
+          "outcomes": [
+            "queued"
+          ]
+        },
+        "held": [
+          {
+            "generation": 1,
+            "target": {
+              "element": "key",
+              "page": 1,
+              "executor": 182
+            },
+            "control": "PFA182",
+            "frozen": {
+              "assigned": "14.14.1.7.5527",
+              "pool": "Default#1",
+              "kind": "executor",
+              "element": "key",
+              "page": 1,
+              "executor": 182
+            },
+            "kind": "button",
+            "device": "probe-mtouch",
+            "targetKey": "execDefault#1/1.182.key|14.14.1.7.5527|Go+",
+            "since": 1791671407.2172
+          }
+        ]
+      }
+    },
+    {
+      "name": "run: the same number without target.page is target-unavailable on an independent binding (never silently the current page)",
+      "pass": true,
+      "detail": {
+        "accepted": 0,
+        "refused": 1,
+        "lost": 0,
+        "outcomes": [
+          "target-unavailable"
+        ]
+      }
+    },
+    {
+      "name": "run: deleting the assignment of 182 while it is held moves the generation and empties the target; the release still goes to the recorded 14.14.1.7.5527 on page 1.182",
+      "pass": true,
+      "detail": {
+        "generation": [
+          1,
+          2
+        ],
+        "target": {
+          "executor": 182,
+          "page": 1,
+          "mode": "page",
+          "pool": "Default",
+          "empty": true,
+          "playbackTarget": false,
+          "reason": "the executor is empty"
+        },
+        "lastApplied": {
+          "target": "execDefault#1/1.182.key|14.14.1.7.5527|Go+",
+          "result": {
+            "recorded": true
+          },
+          "down": false,
+          "outcome": "applied",
+          "at": 1791671411.0104,
+          "kind": "button"
+        }
+      }
+    },
+    {
+      "name": "run: a new down on 182 is target-unavailable (empty)",
+      "pass": true,
+      "detail": {
+        "accepted": 0,
+        "refused": 1,
+        "lost": 0,
+        "outcomes": [
+          "target-unavailable"
+        ]
+      }
+    },
+    {
+      "name": "run: reassigning 183 (14.14.1.7.5528 -> 14.14.1.7.5527) while held moves the generation; the release names 14.14.1.7.5528, the object that was pressed",
+      "pass": true,
+      "detail": {
+        "generation": [
+          2,
+          3
+        ],
+        "target": {
+          "executor": 183,
+          "page": 1,
+          "mode": "page",
+          "pool": "Default",
+          "empty": false,
+          "assigned": "14.14.1.7.5527",
+          "class": "Sequence",
+          "width": 1,
+          "playbackTarget": true,
+          "keyPress": "Go+",
+          "fader": "Master"
+        },
+        "lastApplied": {
+          "target": "execDefault#1/1.183.key|14.14.1.7.5528|Go+",
+          "result": {
+            "recorded": true
+          },
+          "down": false,
+          "outcome": "applied",
+          "at": 1791671414.2485,
+          "kind": "button"
+        }
+      }
+    },
+    {
+      "name": "run: page 6 does not exist: the target is pageMissing, a down on it is target-unavailable (not in the binding), and the page still does not exist afterwards",
+      "pass": true,
+      "detail": {
+        "target": {
+          "executor": 180,
+          "page": 6,
+          "mode": "page",
+          "pool": "Default",
+          "empty": true,
+          "pageMissing": true,
+          "playbackTarget": false,
+          "reason": "page 6 does not exist (nothing is created)"
+        },
+        "outcome": {
+          "accepted": 0,
+          "refused": 1,
+          "lost": 0,
+          "outcomes": [
+            "target-unavailable"
+          ]
+        },
+        "pages": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "name": "run: a second session pressing page 1.180 while the first holds it is refused conflict naming the owner",
+      "pass": true,
+      "detail": {
+        "a": {
+          "accepted": 1,
+          "refused": 0,
+          "lost": 1,
+          "outcomes": [
+            "queued"
+          ]
+        },
+        "b": {
+          "accepted": 0,
+          "refused": 1,
+          "lost": 0,
+          "outcomes": [
+            "conflict"
+          ]
+        }
+      }
+    },
+    {
+      "name": "run: after the release the second surface's down is admitted",
+      "pass": true,
+      "detail": {
+        "accepted": 1,
+        "refused": 0,
+        "lost": 0,
+        "outcomes": [
+          "queued"
+        ]
+      }
+    },
+    {
+      "name": "run: cleanup ran every registered undo",
+      "pass": true,
+      "detail": [
+        {
+          "label": "release held buttons",
+          "ok": true
+        },
+        {
+          "label": "Delete Page 1.183 /NoConfirmation",
+          "ok": true,
+          "detail": {
+            "ok": true,
+            "id": "a79",
+            "result": {
+              "command": "Delete Page 1.183 /NoConfirmation",
+              "feedback": "OK"
+            }
+          }
+        },
+        {
+          "label": "Delete Page 1.182 /NoConfirmation",
+          "ok": true,
+          "detail": {
+            "ok": true,
+            "id": "a80",
+            "result": {
+              "command": "Delete Page 1.182 /NoConfirmation",
+              "feedback": "Object not found"
+            }
+          }
+        },
+        {
+          "label": "Delete Page 1.180 /NoConfirmation",
+          "ok": true,
+          "detail": {
+            "ok": true,
+            "id": "a81",
+            "result": {
+              "command": "Delete Page 1.180 /NoConfirmation",
+              "feedback": "OK"
+            }
+          }
+        },
+        {
+          "label": "Delete Macro 116 (the probe's deferred macro)",
+          "ok": true,
+          "detail": {
+            "ok": true
+          }
+        },
+        {
+          "label": "control.close B",
+          "ok": true,
+          "detail": {
+            "ok": true,
+            "id": "b5",
+            "result": {
+              "dropped": 0,
+              "unresolved": [],
+              "session": "conn-34",
+              "ended": []
+            }
+          }
+        },
+        {
+          "label": "control.close A",
+          "ok": true,
+          "detail": {
+            "ok": true,
+            "id": "a85",
+            "result": {
+              "dropped": 0,
+              "unresolved": [],
+              "session": "conn-33",
+              "ended": []
+            }
+          }
+        },
+        {
+          "label": "Page 1",
+          "ok": true,
+          "detail": {
+            "ok": true,
+            "id": "a86",
+            "result": {
+              "command": "Page 1",
+              "feedback": "OK"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "run: executors 180,181,182,183 are empty again and the console is back on page 1",
+      "pass": true,
+      "detail": {
+        "page": {
+          "no": 1,
+          "name": "Page 1"
+        },
+        "targets": [
+          {
+            "executor": 180,
+            "mode": "current",
+            "pool": "Default",
+            "empty": true,
+            "playbackTarget": false,
+            "reason": "the executor is empty"
+          },
+          {
+            "executor": 181,
+            "mode": "current",
+            "pool": "Default",
+            "empty": true,
+            "playbackTarget": false,
+            "reason": "the executor is empty"
+          },
+          {
+            "executor": 182,
+            "mode": "current",
+            "pool": "Default",
+            "empty": true,
+            "playbackTarget": false,
+            "reason": "the executor is empty"
+          },
+          {
+            "executor": 183,
+            "mode": "current",
+            "pool": "Default",
+            "empty": true,
+            "playbackTarget": false,
+            "reason": "the executor is empty"
+          }
+        ]
+      }
+    },
+    {
+      "name": "run: no session, gesture or queued intent is left; nothing is unresolved",
+      "pass": true,
+      "detail": {
+        "sessions": [],
+        "unresolved": []
+      }
+    }
+  ],
+  "finishedAt": "2026-10-10T22:30:18.537Z",
+  "passed": 26,
+  "failed": 2
+}

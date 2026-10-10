@@ -726,6 +726,8 @@ local READERS = {
         end
       end
       local exec = readExec(n)
+      -- KB-21 live: GetExecutor(n) returns no page handle for an EMPTY executor; the identity still names the user's page.
+      if pageNo == nil and page == nil and type(d.currentExecPage) == "function" then page = d.currentExecPage() end
       local pageInfo = handleInfo(page)
       if pageInfo ~= nil and pageInfo.no == nil then pageInfo.no = tonumber(field(page, "index")) end
       if pageNo ~= nil and pageInfo ~= nil and pageInfo.no == nil then pageInfo.no = pageNo end

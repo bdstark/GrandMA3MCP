@@ -157,6 +157,7 @@ test("verify on the fake backend queues nothing: every submitted event is a refu
 test("run: a failure after the assignments (the page change refused) runs every registered undo (the assignments are deleted, the page restored, the session closed)", async () => {
   const ops: { op: string; args: any }[] = [];
   const assignments: Record<number, string | null> = { 191: "Sequence 1", 193: "Sequence 2" };
+  let macro: any = false;
   const b = await startFakeBridge((op, args) => {
     ops.push({ op, args });
     if (op === "ping") return ping();
@@ -167,12 +168,22 @@ test("run: a failure after the assignments (the page change refused) runs every 
     if (op === "control.status") return { version: "0.4.0", limitations, yourSession: null, sessions: {}, busy: null, unresolved: [], backend: "fake" };
     if (op === "control.submit") return { session: "conn-1", outcomes: (args.events as any[]).map((e) => e.down === false ? { accepted: true, noop: true } : { refused: "target-unavailable", message: "not in the binding (bind it first; a page-bound executor needs target.page)" }), accepted: 0, refused: args.events.length, lost: 0 };
     if (op === "control.close") return { session: "conn-1", dropped: 0 };
-    if (op === "lua") return { values: [[1, 1, 0, 0]] };
+    if (op === "lua") {
+      if (/Macro 116/.test(args.code)) {
+        if (/return false end; local t/.test(args.code)) return { values: [macro] };
+        if (/Store Macro 116 /.test(args.code)) { macro = { name: "MCP kb21 deferred", lines: [] }; return { values: [true] }; }
+        if (/Delete Macro 116/.test(args.code)) { macro = false; return { values: [true] }; }
+        const m = /b:Set\("Command", ("(?:[^"\\]|\\.)*")\)/.exec(args.code);
+        macro = { name: "MCP kb21 deferred", lines: [{ cmd: "Echo kb21 deferred", wait: "1.5" }, { cmd: m ? JSON.parse(m[1]) : "?", wait: "Follow" }] };
+        return { values: [2] };
+      }
+      return { values: [[1, 1, 0, 0]] };
+    }
     if (op === "cmd") {
       const m = /^Assign (Sequence \d+) At Page 1\.(\d+)$/.exec(args.command);
       if (m) assignments[Number(m[2])] = m[1];
       if (/^Set Page /.test(args.command)) throw new Error("[refused] the Width form is not accepted (tolerated by the probe)");
-      if (args.command === "Page 2") throw new Error("[refused] simulated failure after the assignments");
+      if (/^Go\+ Macro 116$/.test(args.command)) throw new Error("[refused] simulated failure after the assignments (the deferred macro could not be fired)");
       return { command: args.command, feedback: "OK" };
     }
     throw new Error("unexpected " + op);
@@ -188,7 +199,12 @@ test("run: a failure after the assignments (the page change refused) runs every 
     assert.ok(!cmds.some((c) => /Page 1\.181/.test(c)), "181 (left empty) is never touched");
     assert.equal(cmds[cmds.length - 1], "Page 1", "the page is restored last");
     const releases = ops.filter((o) => o.op === "control.submit").flatMap((o) => o.args.events as any[]).filter((e) => e.type === "button" && e.down === false);
-    assert.equal(releases.length, 4, "the cleanup releases the four buttons");
+    assert.ok(releases.length >= 7, "the cleanup releases every button it could have pressed");
+    const releaseIdx = ops.findIndex((o) => o.op === "control.submit" && (o.args.events as any[]).some((e) => e.down === false));
+    const deleteIdx = ops.findIndex((o) => o.op === "cmd" && /^Delete Page 1\.180/.test(o.args.command));
+    assert.ok(releaseIdx >= 0 && releaseIdx < deleteIdx, "buttons are released before the assignments are deleted (a held button makes commands [busy])");
+    assert.ok(ops.some((o) => o.op === "lua" && /Delete Macro 116/.test(o.args.code)), "the deferred macro is deleted by the cleanup");
+    assert.equal(macro, false, "the deferred macro is gone");
     assert.ok(ops.some((o) => o.op === "control.close"), "the session is closed by the cleanup");
   } finally { b.close(); }
 });
