@@ -2806,7 +2806,10 @@ function Instance:recover(sessionId, now)
   local result = self:_releaseHolds(list, now, "recover")
   result.scope = sessionId or "all"
   -- KB-14: an unresolved restoration of this session (or any, operator scope) is re-read and restored.
+  -- A release attempted in this call is a dependent key event for an adopted restoration (its dependency
+  -- list did not survive the previous instance), so the restore window starts now, never in this call.
   local op = self._mode
+  if op and op.adopted and result.attempted > 0 then op.lastEventAt = now end
   if op and op.state == "unresolved" and (sessionId == nil or op.owner == sessionId) then
     result.restoration = self:_recoverMode(now)
   elseif op and op.state == "unresolved" then
@@ -4187,6 +4190,15 @@ function Instance:_recoverMode(now)
   if op.adopted and self:_liveCount() > 0 then
     op.unresolved.reason = string.format("%d record(s) are still held or unresolved; the mode is kept until they are recovered (restore pending)", self:_liveCount())
     op.pending = "dependents"
+    return self:_modeReport(now)
+  end
+  -- Inside the restore window after the last dependent event (a release this very call): the operation
+  -- is valid again and goes back to "active" so service() restores it once the delay elapsed; a restore
+  -- in the call that released a key is exactly what the timing probe ruled out.
+  if now < op.lastEventAt + self._config.modeRestoreDelayMs / 1000 then
+    op.state, op.unresolved, op.pending = "active", nil, "delay"
+    op.revalidated = { at = now, note = "profile and state re-read as expected; the restore waits for the delay after the last dependent event" }
+    for _, hh in ipairs(op.holds) do if hh.state == "quarantined" then hh.state = "retained"; hh.quarantine = nil end end
     return self:_modeReport(now)
   end
   -- Still our temporary state on our profile. A dependent that is still held keeps the operation going

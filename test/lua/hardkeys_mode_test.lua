@@ -463,8 +463,13 @@ do
   local recA = instA:recover(nil, 4)
   check("operator recover with the adopted key still unresolved keeps the restoration pending (nothing written)", recA.restoration.state == "unresolved" and recA.restoration.pending == "dependents" and console.shortcutsActive == true, J(recA.restoration))
   bA:clearFailures()
+  local w0 = #console.writes
   recA = instA:recover(nil, 5)
-  check("once the adopted key is released the restoration is restored on the original profile", #recA.released == 1 and recA.restoration.state == "restored" and console.shortcutsActive == false and instA:status().modeChange == nil, J(recA.restoration))
+  check("once the adopted key is released in a recover call the restoration is re-validated but NOT restored in that call (the release is the last dependent event)", #recA.released == 1 and recA.restoration.state == "active" and recA.restoration.pending == "delay" and recA.restoration.lastEventAt == 5 and console.shortcutsActive == true and #console.writes == w0, J(recA.restoration))
+  instA:service(5 + DELAY / 2)
+  check("not restored before the delay elapsed", console.shortcutsActive == true)
+  instA:service(5 + DELAY + 0.001)
+  check("service() restores it after the delay on the original profile", console.shortcutsActive == false and instA:status().modeChange == nil and instA:status().lastModeChange.restoredBy == "service", J(instA:status().lastModeChange))
   console.shortcutsActive = true
   local inst2 = fresh({ routing = TEXT_POLICY })
   h = inst2:press("s", 2, { key = "NUM5" })

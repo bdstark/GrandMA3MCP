@@ -1257,7 +1257,8 @@ contract changed; `gma3_type` keeps the KB-05 text step, which is refused while 
   set back is left alone (`restoredBy = operator`, `interference` recorded). `dispose()` follows the same rules: it
   restores only when no dependent is still held or unresolved and the delay elapsed since the last release, otherwise it
   hands the pending restoration back as a record (`adoptMode()`, kept by the bridge like unresolved key records; the
-  operator's `input recover` restores it after the adopted keys are recovered). The bridge's stop path waits the delay
+  operator's `input recover` restores it after the adopted keys are recovered; a release made in that recover call restarts
+  the delay and `service()` does the restore). The bridge's stop path waits the delay
   on the loop before disposing; a Cleanup from the console cannot wait and keeps the record instead.
 - **Routes.** `shortcut` with a shortcut-table row and shortcuts off enables them for the hold (`route.modeChange`,
   `route.shortcutsActive = true`, so the operator disabling them mid-hold is the KB-04 route change). `type` and the text
