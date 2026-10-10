@@ -66,6 +66,16 @@
 --     (a dispatch raised or a release stayed unresolved) or unattempted; a failure stops the sequence,
 --     releases what it pressed and never replays anything. A sequence owns an interaction (given or
 --     begun for it) and at most one runs per instance.
+--   * routing policy (KB-11, 0.6.0): a consumer chooses one default dispatch METHOD and overrides it
+--     per logical key (opts.routing at new(), configureRouting() later). Methods: quickkey, shortcut,
+--     shortcutOrType, type. The decision is made and validated before dispatch, stored on the hold and
+--     kept for the whole press/release cycle; an unavailable or refused route never selects another
+--     method, and a configuration change never changes the route a live hold is released with.
+--     describeRoute(name) reports the configured method, the effective route, the backend capabilities
+--     and every unavailable requirement; status().routing summarises the policy. Callers without a
+--     policy keep the pre-0.6.0 behaviour (method "shortcut"). Quickey tuples ({ quickkey = <code> })
+--     need an adapter that advertises capabilities.quickkey (the fake does; the KB-13 backend will);
+--     the text routes of shortcutOrType/type are resolved and reported but their dispatch is KB-14.
 --
 -- Ownership semantics (KB-01/KB-03 findings): the console's key state is shared. A physical release
 -- can end a synthetic hold and MASTATE is aggregate, so an ownership record here means "this session is
@@ -89,7 +99,7 @@
 --   * Input is disabled on a new instance. enableInput(adapter) is the operator's explicit decision.
 
 local NAME        = "gma3_mcp_hardkeys"
-local VERSION     = "0.5.0"
+local VERSION     = "0.6.0"
 local API_VERSION = 1
 
 -- Logical keys with special handling in describeKey() and press(). Since 0.5.0 every other
@@ -125,6 +135,7 @@ local KEYBOARD_LIMITATIONS = {
   "invalid arguments are accepted silently by onPC; validation happens here before dispatch and a no-error return is not evidence of effect",
   "double-press is unsupported; a long-press is promised only as an exclusive hold with no other key down",
   "text goes to whatever the console has focused: a text field with shortcuts enabled, or the command line only while shortcuts are disabled; focus is not observable from Lua and only the command line can be read back",
+  "no Quickey dispatch: the routing method quickkey needs the owned-Quickey backend (KB-12/KB-13); the text routes of shortcutOrType/type and temporary shortcut-mode changes are KB-14 and are reported unavailable, never emulated",
 }
 
 local BACKENDS = {
@@ -133,6 +144,7 @@ local BACKENDS = {
     description = "Keyboard(): PC-key emulation with explicit per-event modifiers, routed through the operator's UserProfile shortcut table or a verified native route; console keys are really pressed",
     requires = { "Keyboard" },
     dispatches = true,
+    capabilities = { keyboard = true, quickkey = false, char = true },
     limitations = KEYBOARD_LIMITATIONS,
   },
   fake = {
@@ -140,6 +152,7 @@ local BACKENDS = {
     description = "in-memory fake: records events and simulates aggregate console key state; nothing reaches the console",
     requires = {},
     dispatches = true,
+    capabilities = { keyboard = true, quickkey = { tap = true, hold = true, chord = true }, char = true },
     limitations = { "nothing reaches a console key; lifecycle behaviour only" },
   },
 }
@@ -193,6 +206,123 @@ local function validateText(text, maxChars)
     cps[#cps + 1] = cp
   end
   return cps
+end
+
+-- Routing policy (KB-11, 0.6.0) ------------------------------------------------
+--
+-- A consumer chooses how its logical keys are dispatched: one default method plus per-key overrides.
+-- The four methods of KEYBOARD.md ("Configurable hardkey dispatch and Quickey migration"):
+--   quickkey        activate the owned Quickey carrying the key's VirtualKeyCode (KB-10 evidence). Needs
+--                   an adapter advertising capabilities.quickkey (KB-13); the fake backend simulates it.
+--   shortcut        resolve the key's shortcut-table/fixed/native route and press the PC key: the
+--                   behaviour every caller had before 0.6.0 and the module default. Temporarily enabling
+--                   the shortcut table when it is off is KB-14; until then a shortcut-table route with
+--                   shortcuts inactive is unsupported and refused, never toggled.
+--   shortcutOrType  the shortcut route when shortcuts are positively enabled and resolution succeeds;
+--                   the key's explicit text mapping when shortcuts are positively off, or when the table
+--                   was read and confirms that no row maps the key. Unreadable state, ambiguity,
+--                   collisions and admission failures refuse; they never select text.
+--   type            the key's explicit text mapping, inserted once on press. KB-14 implements the
+--                   insertion and the bounded mode change; this version resolves, validates and reports
+--                   the route as unavailable, so `type` cannot be configured against any current backend.
+-- The method is decided and validated before dispatch and stored on the hold: a configuration or mode
+-- change during a hold never changes the route its release uses, and an unavailable or refused route
+-- never falls back to another method or backend.
+local METHODS = { quickkey = true, shortcutOrType = true, shortcut = true, type = true }
+local METHOD_LIST = { "quickkey", "shortcutOrType", "shortcut", "type" }
+local DEFAULT_METHOD = "shortcut"
+
+-- Requirements no adapter can satisfy in this module version. They are reported by name so a consumer
+-- can tell "not yet implemented" from "this backend lacks it".
+local KB14_TEXT_ROUTE = "text-route dispatch (inserting a key's text mapping on press) is not implemented in this module version (KB-14)"
+local KB14_MODE_CHANGE = "temporary keyboard-shortcut enable/disable is not implemented in this module version (KB-14); the operator sets the mode, nothing is toggled here"
+
+-- Keys that never get a text mapping (KB-11): they are actions, not characters. Executor, X-key,
+-- encoder and default-executor codes are matched by pattern. Text for any other key is never derived
+-- from the key name; the consumer configures it explicitly.
+local TEXT_FORBIDDEN = { MA = true, MA1 = true, MA2 = true, PLEASE = true, CLEAR = true, OOPS = true, UNDO = true, ESC = true,
+                         EXEC = true, EXECUTOR = true, XKEYS = true, FADER = true }
+local TEXT_FORBIDDEN_PATTERNS = { "^X%d+$", "^ENCODER_", "^DEF_" }
+local function textForbidden(key)
+  if TEXT_FORBIDDEN[key] then return true end
+  for _, p in ipairs(TEXT_FORBIDDEN_PATTERNS) do if key:match(p) then return true end end
+  return false
+end
+
+-- Validates a consumer routing policy and returns a normalised copy, or nil, { code, message, key }.
+-- policy = { default = <method>|nil, keys = { <LOGICAL> = { method, quickkey, prefer, text } } }.
+-- Logical key identity (the table key), Quickey code, shortcut preference and literal text stay
+-- distinct fields; nothing is derived from the key name except that quickkey defaults to it at
+-- resolution time. A digit's text is exactly one character with no whitespace; keyword text is used
+-- exactly as given, separators included (the module adds none).
+local function validateRoutingPolicy(policy, maxTextChars)
+  if policy == nil then policy = {} end
+  if type(policy) ~= "table" then return nil, { code = "policy-invalid", message = "routing policy must be a table { default, keys }" } end
+  for k in pairs(policy) do
+    if k ~= "default" and k ~= "keys" then return nil, { code = "policy-invalid", message = "unknown routing policy field '" .. tostring(k) .. "' (fields: default, keys)" } end
+  end
+  local out = { default = DEFAULT_METHOD, defaultExplicit = false, keys = {} }
+  if policy.default ~= nil then
+    if type(policy.default) ~= "string" or not METHODS[policy.default] then
+      return nil, { code = "policy-invalid", message = "unknown dispatch method '" .. tostring(policy.default) .. "' (methods: " .. table.concat(METHOD_LIST, ", ") .. ")" }
+    end
+    out.default, out.defaultExplicit = policy.default, true
+  end
+  if policy.keys ~= nil then
+    if type(policy.keys) ~= "table" then return nil, { code = "policy-invalid", message = "routing policy keys must be a table keyed by logical key name" } end
+    for name, entry in pairs(policy.keys) do
+      if type(name) ~= "string" or name == "" then return nil, { code = "policy-invalid", message = "routing policy key names must be non-empty strings" } end
+      local key = name:upper()
+      if out.keys[key] then return nil, { code = "policy-invalid", message = "logical key " .. key .. " is configured twice (names are case-insensitive)", key = key } end
+      if type(entry) ~= "table" then return nil, { code = "policy-invalid", message = "routing entry for " .. key .. " must be a table { method, quickkey, prefer, text }", key = key } end
+      local e = {}
+      for f, v in pairs(entry) do
+        if f == "method" then
+          if type(v) ~= "string" or not METHODS[v] then return nil, { code = "policy-invalid", message = key .. ": unknown dispatch method '" .. tostring(v) .. "' (methods: " .. table.concat(METHOD_LIST, ", ") .. ")", key = key } end
+          e.method = v
+        elseif f == "quickkey" then
+          if type(v) ~= "string" or v == "" then return nil, { code = "policy-invalid", message = key .. ": quickkey must be an Enums.VirtualKeyCode name (non-empty string)", key = key } end
+          e.quickkey = v:upper()
+        elseif f == "prefer" then
+          if type(v) ~= "string" or v == "" then return nil, { code = "policy-invalid", message = key .. ": prefer must be a PC key name (non-empty string)", key = key } end
+          e.prefer = v
+        elseif f == "text" then
+          if type(v) ~= "string" or v == "" then return nil, { code = "policy-invalid", message = key .. ": text must be a non-empty string; it is inserted exactly as given, separators included", key = key } end
+          if textForbidden(key) then
+            return nil, { code = "policy-invalid", message = key .. ": no text mapping is allowed for MA, PLEASE, CLEAR, OOPS, ESC, executor, X-key or encoder keys; they are actions, not characters", key = key }
+          end
+          local cps, reason = validateText(v, maxTextChars)
+          if not cps then return nil, { code = "policy-invalid", message = key .. ": text mapping refused: " .. tostring(reason), key = key } end
+          if key:match("^NUM%d$") and (#cps ~= 1 or v:find("%s")) then
+            return nil, { code = "policy-invalid", message = key .. ": a digit maps to exactly one character with no spaces (got " .. #cps .. " characters)", key = key }
+          end
+          e.text, e.textChars = v, #cps
+        else
+          return nil, { code = "policy-invalid", message = key .. ": unknown routing field '" .. tostring(f) .. "' (fields: method, quickkey, prefer, text)", key = key }
+        end
+      end
+      out.keys[key] = e
+    end
+  end
+  return out
+end
+
+-- What an adapter can dispatch (KB-11). An adapter advertises `capabilities`; one without the field is
+-- a PC-key adapter (every adapter before 0.6.0). Keys:
+--   keyboard   PC-key tuples (shortcut-table, fixed, native and raw routes)
+--   quickkey   { tap, hold, chord } Quickey tuples addressed by VirtualKeyCode name (KB-13; the fake simulates it)
+--   char       character events (KB-05 text steps)
+-- Text-route dispatch and temporary shortcut-mode changes are KB-14: no adapter can claim them here.
+local function adapterCapabilities(adapter)
+  if type(adapter) ~= "table" then return nil end
+  local caps = adapter.capabilities
+  if type(caps) ~= "table" then
+    return { keyboard = true, quickkey = false, char = type(adapter.char) == "function" }
+  end
+  local q = caps.quickkey
+  return { keyboard = caps.keyboard and true or false,
+           quickkey = type(q) == "table" and { tap = q.tap and true or false, hold = q.hold and true or false, chord = q.chord and true or false } or false,
+           char = (caps.char or type(adapter.char) == "function") and true or false }
 end
 
 -- Pure helpers ---------------------------------------------------------------
@@ -251,21 +381,21 @@ end
 -- decides on enablement; resolve() only reports the route and its validity.
 local function resolve(rows, vkCodes, name, opts)
   local key = type(name) == "string" and name:upper() or nil
-  if not key then return { key = tostring(name), supported = false, reason = "key name must be a string" } end
-  if UNSUPPORTED_KEYS[key] then return { key = key, supported = false, reason = UNSUPPORTED_KEYS[key] } end
+  if not key then return { key = tostring(name), supported = false, code = "bad-key", reason = "key name must be a string" } end
+  if UNSUPPORTED_KEYS[key] then return { key = key, supported = false, code = "unsupported-key", reason = UNSUPPORTED_KEYS[key] } end
   local def = LOGICAL_KEYS[key]
   -- Any other Enums.VirtualKeyCode name (EDIT, COPY, HIGHLIGHT, ...) resolves through the shortcut table
   -- like STORE does (0.5.0, for surface consumers whose keys go beyond the fixed list). The fixed (MA) and
   -- native (PLEASE) routes stay special; a name the console's enum does not know is unsupported, never guessed.
   if not def then
     if type(vkCodes) == "table" and vkCodes[key] ~= nil then def = { vk = key }
-    else return { key = key, supported = false, reason = "not a logical key of this module" .. ((type(vkCodes) == "table") and (" and not an Enums.VirtualKeyCode name on this console") or "") } end
+    else return { key = key, supported = false, code = "unknown-key", reason = "not a logical key of this module" .. ((type(vkCodes) == "table") and (" and not an Enums.VirtualKeyCode name on this console") or "") } end
   end
   local codes = opts and opts.keyboardCodes
   local function checkPcKey(r)
     if type(codes) == "table" then
       if codes[r.pcKey] == nil then
-        return { key = key, supported = false, reason = "route names PC key '" .. tostring(r.pcKey) .. "', which is not an Enums.KeyboardCodes name on this console", route = r.source, shortcut = r.shortcut }
+        return { key = key, supported = false, code = "bad-pc-key", reason = "route names PC key '" .. tostring(r.pcKey) .. "', which is not an Enums.KeyboardCodes name on this console", route = r.source, shortcut = r.shortcut }
       end
       r.pcKeyValidated = true
     else
@@ -277,21 +407,21 @@ local function resolve(rows, vkCodes, name, opts)
     -- The fixed route is native console behaviour; a shortcut row claiming the same PC key is a collision
     -- whose precedence is unverified.
     local c = type(rows) == "table" and collisions(rows, { key = def.pcKey, shift = false, ctrl = false, alt = false }, nil) or nil
-    if c then return { key = key, supported = false, source = "fixed", pcKey = def.pcKey, reason = "shortcut collision: " .. table.concat(c, ", ") .. " also claims the plain " .. def.pcKey .. " key", collisions = c } end
+    if c then return { key = key, supported = false, code = "collision", source = "fixed", pcKey = def.pcKey, reason = "shortcut collision: " .. table.concat(c, ", ") .. " also claims the plain " .. def.pcKey .. " key", collisions = c } end
     return checkPcKey({ key = key, supported = true, backend = "keyboard", pcKey = def.pcKey, shift = false, ctrl = false, alt = false,
              verify = def.verify, source = "fixed", note = "MA is the PC Shift key itself; it does not use the shortcut table" })
   end
   if type(rows) ~= "table" or type(vkCodes) ~= "table" then
-    return { key = key, supported = false, reason = "shortcut table or VirtualKeyCode enum unavailable" }
+    return { key = key, supported = false, code = "unreadable", reason = "shortcut table or VirtualKeyCode enum unavailable" }
   end
   local vk = vkCodes[def.vk]
-  if vk == nil then return { key = key, supported = false, reason = "VirtualKeyCode " .. def.vk .. " unknown on this console" } end
+  if vk == nil then return { key = key, supported = false, code = "unknown-key", reason = "VirtualKeyCode " .. def.vk .. " unknown on this console" } end
   if def.native then
     -- Native route: the PC key must not be claimed by the shortcut table for another MA key (which
     -- one would win is unverified), and the system redirect, when readable, must still name it.
     local c = collisions(rows, { key = def.native, shift = false, ctrl = false, alt = false }, { keyCode = vk })
     if c then
-      return { key = key, supported = false, source = "native", pcKey = def.native, collisions = c,
+      return { key = key, supported = false, code = "collision", source = "native", pcKey = def.native, collisions = c,
                reason = string.format("ambiguous: %s maps the plain %s key to another target than %s; the native %s redirect cannot be relied on", table.concat(c, ", "), def.native, def.vk, def.native) }
     end
     local redirects = opts and opts.redirects
@@ -301,7 +431,7 @@ local function resolve(rows, vkCodes, name, opts)
       if redirect ~= nil then
         redirectChecked = true
         if tostring(redirect) ~= def.native then
-          return { key = key, supported = false, source = "native", pcKey = def.native,
+          return { key = key, supported = false, code = "redirect", source = "native", pcKey = def.native,
                    reason = string.format("the VirtualKey %s redirect is '%s' on this console, not '%s'", def.vk, tostring(redirect), def.native) }
         end
       end
@@ -312,7 +442,7 @@ local function resolve(rows, vkCodes, name, opts)
   end
   local executor = opts and opts.executor
   if def.needsExecutor then
-    if type(executor) ~= "number" then return { key = key, supported = false, reason = "EXEC needs opts.executor (the ExecutorIndex of a mapped executor shortcut)" } end
+    if type(executor) ~= "number" then return { key = key, supported = false, code = "bad-argument", reason = "EXEC needs opts.executor (the ExecutorIndex of a mapped executor shortcut)" } end
   end
   local best, bestParsed, bestIndex, ties
   for i, row in ipairs(rows) do
@@ -330,7 +460,7 @@ local function resolve(rows, vkCodes, name, opts)
   end
   if not best then
     local what = def.needsExecutor and ("EXEC with ExecutorIndex " .. tostring(executor)) or key
-    return { key = key, supported = false, reason = "no keyboard shortcut maps to " .. what .. " in the current user profile" }
+    return { key = key, supported = false, code = "no-row", reason = "no keyboard shortcut maps to " .. what .. " in the current user profile" }
   end
   -- Several rows with the same key text (the default profile has two "Enter" rows) are one route;
   -- different shortcuts with the same modifier count are ambiguous and are rejected, never guessed.
@@ -353,13 +483,13 @@ local function resolve(rows, vkCodes, name, opts)
       end
     end
     if not preferred then
-      return { key = key, supported = false, reason = "ambiguous: several shortcuts with the same modifier count map to " .. key .. " (" .. table.concat(ties, ", ") .. "); edit the profile or name one with opts.prefer", candidates = ties }
+      return { key = key, supported = false, code = "ambiguous", reason = "ambiguous: several shortcuts with the same modifier count map to " .. key .. " (" .. table.concat(ties, ", ") .. "); edit the profile or name one with opts.prefer", candidates = ties }
     end
   end
   -- The chosen tuple must not also be claimed for another target anywhere in the table.
   local c = collisions(rows, bestParsed, { keyCode = vk, executorIndex = def.needsExecutor and executor or nil, specialExec = best.specialExec })
   if c then
-    return { key = key, supported = false, reason = string.format("shortcut collision: %s is mapped to %s by row %d but also to another target by %s; the console's precedence is unverified, so the route is refused", best.shortcut, key, bestIndex, table.concat(c, ", ")), collisions = c, shortcut = best.shortcut }
+    return { key = key, supported = false, code = "collision", reason = string.format("shortcut collision: %s is mapped to %s by row %d but also to another target by %s; the console's precedence is unverified, so the route is refused", best.shortcut, key, bestIndex, table.concat(c, ", ")), collisions = c, shortcut = best.shortcut }
   end
   return checkPcKey({ key = key, supported = true, backend = "keyboard", pcKey = bestParsed.key, shift = bestParsed.shift, ctrl = bestParsed.ctrl,
            alt = bestParsed.alt, shortcut = best.shortcut, rowIndex = bestIndex, executor = def.needsExecutor and executor or nil, source = "shortcut-table",
@@ -370,10 +500,16 @@ end
 -- deliberately not part of it (display_index does not route input on 2.5.1, KB-01), nor is the logical
 -- name, so MA and a raw LeftShift, or the same key asked for on two displays, are the same tuple.
 local function tupleKey(t)
+  -- A Quickey tuple (KB-11) is identified by its VirtualKeyCode name: the same code through two owned
+  -- objects would be the same console key, so it is one tuple.
+  -- Identity is the validated code VALUE when known (aliases such as OOPS/UNDO are one console key), the
+  -- name only for tuples that never went through resolution (backend test controls).
+  if t.quickkey then return "quickkey:" .. (t.quickkeyCode ~= nil and ("#" .. tostring(t.quickkeyCode)) or tostring(t.quickkey)) end
   return string.format("%s|s%dc%da%dn%d", t.pcKey, t.shift and 1 or 0, t.ctrl and 1 or 0, t.alt and 1 or 0, t.numlock and 1 or 0)
 end
 
 local function copyTuple(t)
+  if t.quickkey then return { quickkey = t.quickkey, quickkeyCode = t.quickkeyCode, display = t.display } end
   return { pcKey = t.pcKey, shift = t.shift and true or false, ctrl = t.ctrl and true or false,
            alt = t.alt and true or false, numlock = t.numlock and true or false, display = t.display }
 end
@@ -386,6 +522,11 @@ local function shallowCopy(t)
 end
 
 local function count(t) local n = 0; for _ in pairs(t) do n = n + 1 end; return n end
+
+local function entryField(policy, key, field)
+  local e = policy and policy.keys and policy.keys[key]
+  return e and e[field] or nil
+end
 
 -- Console dependency builder -------------------------------------------------
 
@@ -468,6 +609,9 @@ local function fakeBackend(opts)
   opts = opts or {}
   return setmetatable({
     name = "fake", dispatches = true, description = BACKENDS.fake.description,
+    -- What the fake claims it can dispatch (KB-11). Tests narrow it (opts.capabilities) to stage a
+    -- backend without Quickey dispatch; the default mirrors what the fake really simulates.
+    capabilities = opts.capabilities or shallowCopy(BACKENDS.fake.capabilities),
     events = {}, eventLog = tonumber(opts.eventLog) or DEFAULT_CONFIG.eventLog,
     down = {},                 -- simulated aggregate console key state
     confirmMode = true,        -- what release()/press() report as "confirmed": true | false | nil
@@ -485,7 +629,7 @@ function FakeBackend:_raise(op)
 end
 
 function FakeBackend:_log(kind, tuple, extra)
-  local e = { kind = kind, pcKey = tuple.pcKey, shift = tuple.shift, ctrl = tuple.ctrl, alt = tuple.alt, numlock = tuple.numlock, display = tuple.display }
+  local e = { kind = kind, pcKey = tuple.pcKey, quickkey = tuple.quickkey, quickkeyCode = tuple.quickkeyCode, shift = tuple.shift, ctrl = tuple.ctrl, alt = tuple.alt, numlock = tuple.numlock, display = tuple.display }
   if extra then for k, v in pairs(extra) do e[k] = v end end
   self.events[#self.events + 1] = e
   while #self.events > self.eventLog do table.remove(self.events, 1) end
@@ -521,6 +665,9 @@ end
 function FakeBackend:press(tuple)
   self.counters.press = self.counters.press + 1
   self:_raise("press")
+  if tuple.quickkey and not (type(self.capabilities) == "table" and self.capabilities.quickkey) then
+    self:_log("press", tuple, { failed = "no Quickey dispatch" }); return false, nil, "the fake backend was created without Quickey dispatch"
+  end
   local err = self:_failure("press", tuple)
   if err then self:_log("press", tuple, { failed = err }); return false, nil, err end
   self.down[tupleKey(tuple)] = true
@@ -608,6 +755,7 @@ local function keyboardBackend(deps, opts)
   opts = opts or {}
   return setmetatable({
     name = "keyboard", dispatches = true, description = BACKENDS.keyboard.description, limitations = KEYBOARD_LIMITATIONS,
+    capabilities = shallowCopy(BACKENDS.keyboard.capabilities),
     deps = deps, defaultDisplay = tonumber(opts.defaultDisplay) or 1,
     counters = { press = 0, release = 0, char = 0, refused = 0, raised = 0, observe = 0 },
     lastEvent = nil,
@@ -649,6 +797,7 @@ end
 
 -- Everything that must hold before the first event of a press or combo goes out. Nothing is sent.
 function KeyboardBackend:preflight(tuple, route)
+  if tuple.quickkey then return false, "the Keyboard() backend has no Quickey dispatch (KB-13)" end
   if type(self.deps.Keyboard) ~= "function" then return false, "Keyboard() is not available in this Lua environment" end
   local ok, reason = self:supportsKey(tuple.pcKey)
   if not ok then return false, reason end
@@ -667,6 +816,10 @@ end
 
 function KeyboardBackend:_send(kind, tuple)
   self.counters[kind] = self.counters[kind] + 1
+  if tuple.quickkey then
+    self.counters.refused = self.counters.refused + 1
+    return false, nil, "the Keyboard() backend has no Quickey dispatch (KB-13); a Quickey tuple is never turned into a PC key"
+  end
   if type(self.deps.Keyboard) ~= "function" then
     self.counters.refused = self.counters.refused + 1
     return false, nil, "Keyboard() is not available in this Lua environment"
@@ -763,11 +916,215 @@ end
 -- Operator decision: attach a dispatching adapter and admit presses.
 function Instance:enableInput(adapter)
   checkReady(self, "enableInput")
+  if type(adapter) ~= "table" or type(adapter.press) ~= "function" or type(adapter.release) ~= "function" or type(adapter.name) ~= "string" then
+    return fail("bad-adapter", "enableInput needs a backend adapter table with name, press() and release()")
+  end
+  -- KB-11: every method the routing policy names must be dispatchable by this adapter. A policy the
+  -- backend cannot serve is refused here rather than accepted as inert configuration (nothing attaches).
+  local okP, problems = self:_policyAvailability(self._routing, adapter)
+  if not okP then return nil, self:_policyUnavailable(problems, adapter) end
   local r, err = self:attachBackend(adapter)
   if not r then return nil, err end
   self._inputEnabled = true
-  return { enabled = true, backend = adapter.name }
+  return { enabled = true, backend = adapter.name, routing = { default = self._routing.default, overrides = count(self._routing.keys) } }
 end
+
+-- Routing policy (KB-11) ----------------------------------------------------------
+
+-- Replaces the routing policy: one default method and per-key overrides (see validateRoutingPolicy).
+-- Validation is complete before anything changes; a refused policy leaves the previous one in place.
+-- While a backend is attached, every method the policy names must be dispatchable by it (an unknown
+-- or unavailable method fails validation; it never selects another backend). Live holds keep the route
+-- they were pressed with: this call never re-routes, releases or re-presses anything.
+function Instance:configureRouting(policy)
+  checkReady(self, "configureRouting")
+  local p, err = validateRoutingPolicy(policy, self._config.maxTextChars)
+  if not p then return nil, err end
+  if self._adapter then
+    local ok, problems = self:_policyAvailability(p, self._adapter)
+    if not ok then return nil, self:_policyUnavailable(problems, self._adapter) end
+  end
+  self._routing = p
+  return self:routingReport()
+end
+
+-- Read-only summary of the policy, the methods the attached backend can serve and the per-key overrides.
+function Instance:routingReport()
+  local p = self._routing
+  local methods = {}
+  for _, m in ipairs(METHOD_LIST) do
+    if self._adapter then
+      local ok, missing = self:_methodAvailability(m, self._adapter)
+      methods[m] = { available = ok, missing = (not ok) and missing or nil }
+    else
+      methods[m] = { available = false, missing = { "no backend attached" } }
+    end
+  end
+  local keys = {}
+  for k, e in pairs(p.keys) do
+    keys[k] = { method = e.method or p.default, methodSource = e.method and "key" or (p.defaultExplicit and "default" or "module-default"),
+                quickkey = e.quickkey, prefer = e.prefer, text = e.text, textChars = e.textChars }
+  end
+  return { default = p.default, defaultSource = p.defaultExplicit and "consumer" or "module", keys = keys, overrideCount = count(keys),
+           methods = methods, methodList = METHOD_LIST, backend = self._backend, capabilities = adapterCapabilities(self._adapter),
+           note = "the method is decided per press before dispatch and kept for the whole press/release cycle; text routes and temporary shortcut-mode changes are KB-14 and are reported unavailable; no method ever falls back to another" }
+end
+
+-- Static availability of one method on an adapter (dynamic requirements such as the shortcut mode are
+-- reported per key by describeRoute()).
+function Instance:_methodAvailability(method, adapter)
+  local caps = adapterCapabilities(adapter)
+  local missing = {}
+  if not caps then
+    missing[#missing + 1] = "no backend attached"
+  elseif method == "quickkey" then
+    if not caps.quickkey then missing[#missing + 1] = "backend '" .. tostring(adapter.name) .. "' has no Quickey dispatch (capabilities.quickkey; the owned-Quickey backend is KB-13)" end
+  elseif method == "shortcut" or method == "shortcutOrType" then
+    if not caps.keyboard then missing[#missing + 1] = "backend '" .. tostring(adapter.name) .. "' has no PC-key dispatch (capabilities.keyboard)" end
+  elseif method == "type" then
+    missing[#missing + 1] = KB14_TEXT_ROUTE
+  else
+    missing[#missing + 1] = "unknown method '" .. tostring(method) .. "'"
+  end
+  return #missing == 0, missing
+end
+
+function Instance:_policyAvailability(policy, adapter)
+  local methods = { [policy.default] = true }
+  for _, e in pairs(policy.keys) do if e.method then methods[e.method] = true end end
+  local problems = {}
+  for _, m in ipairs(METHOD_LIST) do
+    if methods[m] then
+      local ok, missing = self:_methodAvailability(m, adapter)
+      if not ok then problems[#problems + 1] = { method = m, missing = missing } end
+    end
+  end
+  return #problems == 0, problems
+end
+
+function Instance:_policyUnavailable(problems, adapter)
+  local parts = {}
+  for _, pr in ipairs(problems) do parts[#parts + 1] = pr.method .. ": " .. table.concat(pr.missing, "; ") end
+  return { code = "policy-unavailable", message = "the routing policy names dispatch methods backend '" .. tostring(adapter and adapter.name) .. "' cannot serve (" .. table.concat(parts, " / ") .. "); unavailable methods are refused, never replaced by another backend", problems = problems }
+end
+
+-- Resolves a logical key through the routing policy: the configured method (per-key override, consumer
+-- default or the module default "shortcut"), the effective route it selects now, the backend
+-- capabilities it needs and every unavailable requirement. Nothing is dispatched; reads are the
+-- describeKey() reads plus the VirtualKeyCode enum for Quickey codes. `routing` is a stored hold's
+-- snapshot: rechecks use the decision that was pressed with, never the current policy.
+function Instance:describeRoute(name, opts)
+  checkLive(self, "describeRoute")
+  return self:_route(name, opts)
+end
+
+function Instance:_route(name, opts, routing)
+  opts = opts or {}
+  local key = type(name) == "string" and name:upper() or tostring(name)
+  local p = self._routing
+  local entry = routing or p.keys[key] or {}
+  local method = entry.method or p.default
+  local methodSource = routing and (routing.methodSource or "hold") or (entry.method and "key" or (p.defaultExplicit and "default" or "module-default"))
+  local prefer = opts.prefer or entry.prefer
+  local caps = adapterCapabilities(self._adapter)
+  local r = { key = key, method = method, methodSource = methodSource, prefer = prefer, executor = opts.executor,
+              quickkey = entry.quickkey, text = entry.text, textChars = entry.textChars, unavailable = {}, supported = false, dispatchable = false,
+              capabilities = caps, backend = self._adapter and self._adapter.name or nil }
+  local function unavailable(why) r.unavailable[#r.unavailable + 1] = why end
+  local function refuse(code, why) r.supported, r.code, r.reason = false, code, why; return r end
+  local function backendNeeds(cap, what)
+    if not caps then unavailable("no backend attached")
+    elseif not caps[cap] then unavailable("backend '" .. tostring(self._adapter.name) .. "' has no " .. what) end
+  end
+  local function keyboardTuple(d)
+    r.tuple = { pcKey = d.pcKey, shift = d.shift and true or false, ctrl = d.ctrl and true or false, alt = d.alt and true or false }
+    r.resolution = d
+    backendNeeds("keyboard", "PC-key dispatch (capabilities.keyboard)")
+  end
+  if method == "quickkey" then
+    local code = entry.quickkey or key
+    r.quickkey, r.effective = code, "quickkey"
+    if type(self._deps.virtualKeyCodes) ~= "function" then return refuse("unreadable", "Enums.VirtualKeyCode cannot be read (deps.virtualKeyCodes missing); the Quickey code " .. code .. " cannot be validated") end
+    local okV, vk = pcall(self._deps.virtualKeyCodes)
+    if not okV or type(vk) ~= "table" then return refuse("unreadable", "Enums.VirtualKeyCode read failed (" .. tostring(okV and "not a table" or vk) .. "); the Quickey code " .. code .. " cannot be validated") end
+    if vk[code] == nil then return refuse("unknown-key", "Quickey code " .. code .. " is not an Enums.VirtualKeyCode name on this console (nothing is guessed from the key name " .. key .. ")") end
+    r.codeValue, r.codeValidated, r.supported = vk[code], true, true
+    if not caps then unavailable("no backend attached")
+    elseif not caps.quickkey then unavailable("backend '" .. tostring(self._adapter.name) .. "' has no Quickey dispatch (capabilities.quickkey; the owned-Quickey backend is KB-13)")
+    else r.quickkeyCapabilities = caps.quickkey end
+    r.tuple = { quickkey = code, quickkeyCode = vk[code] }
+  elseif method == "shortcut" then
+    local d = self:describeKey(key, { executor = opts.executor, prefer = prefer })
+    r.resolution = d
+    if not d.supported then return refuse(d.code or "unsupported", d.reason) end
+    r.effective = d.source
+    if d.source == "shortcut-table" then
+      if d.shortcutsActive == false then
+        -- The pre-0.6.0 refusal, unchanged for existing callers; the KB-14 requirement is named for reports.
+        unavailable(KB14_MODE_CHANGE)
+        return refuse("shortcuts-inactive", "routes through the shortcut table but keyboard shortcuts are inactive; the operator must enable them (never toggled here)")
+      elseif d.shortcutsActive ~= true then
+        return refuse("unreadable", "routes through the shortcut table but shortcut enablement cannot be established (" .. tostring(d.shortcutsActiveError or "unreadable") .. "); refused rather than guessed")
+      end
+    end
+    r.supported = true
+    keyboardTuple(d)
+  elseif method == "shortcutOrType" then
+    local d = self:describeKey(key, { executor = opts.executor, prefer = prefer })
+    r.resolution = d
+    local active = d.shortcutsActive
+    if d.code == "unknown-key" or d.code == "bad-key" then return refuse(d.code, d.reason) end
+    if d.supported and d.source ~= "shortcut-table" then
+      -- The fixed (MA) and native (PLEASE) routes do not depend on the shortcut table; they are the
+      -- shortcut side of this method whatever the mode (and these keys never have text).
+      r.supported, r.effective = true, d.source
+      keyboardTuple(d)
+    elseif active == true then
+      if d.supported then
+        r.supported, r.effective = true, d.source
+        keyboardTuple(d)
+      elseif d.code == "no-row" then
+        -- A read table that confirms no row maps the key may select the explicit text mapping.
+        if not entry.text then return refuse("no-mapping", "no keyboard shortcut maps to " .. key .. " and no text mapping is configured for it") end
+        r.supported, r.effective, r.textSelectedBecause = true, "text", "shortcut table read: no row maps " .. key
+        unavailable(KB14_MODE_CHANGE)
+        unavailable(KB14_TEXT_ROUTE)
+      else
+        -- Ambiguity, collisions, an unknown PC key or an unreadable table are refusals, never permission to type.
+        return refuse(d.code or "unsupported", tostring(d.reason) .. " (shortcuts are active; this is a refusal, not a fall-through to text)")
+      end
+    elseif active == false then
+      if not entry.text then return refuse("no-mapping", "keyboard shortcuts are inactive and no text mapping is configured for " .. key .. " (a shortcut row is not required for the text route, but the text must be explicit)") end
+      r.supported, r.effective, r.textSelectedBecause = true, "text", "keyboard shortcuts are positively off"
+      unavailable(KB14_TEXT_ROUTE)
+    else
+      return refuse("unreadable", "shortcut enablement cannot be established (" .. tostring(d.shortcutsActiveError or "unreadable") .. "); refused rather than typed")
+    end
+  elseif method == "type" then
+    if not LOGICAL_KEYS[key] then
+      if type(self._deps.virtualKeyCodes) ~= "function" then return refuse("unreadable", "Enums.VirtualKeyCode cannot be read; " .. key .. " cannot be validated as a logical key") end
+      local okV, vk = pcall(self._deps.virtualKeyCodes)
+      if not okV or type(vk) ~= "table" then return refuse("unreadable", "Enums.VirtualKeyCode read failed; " .. key .. " cannot be validated as a logical key") end
+      if vk[key] == nil then return refuse("unknown-key", key .. " is not a logical key of this module and not an Enums.VirtualKeyCode name on this console; text is never derived from arbitrary names") end
+    end
+    if not entry.text then return refuse("no-mapping", "no text mapping is configured for " .. key) end
+    r.supported, r.effective = true, "text"
+    if type(self._deps.shortcutsActive) == "function" then
+      local okA, active = pcall(self._deps.shortcutsActive)
+      if okA and active == true then unavailable(KB14_MODE_CHANGE)
+      elseif not (okA and active == false) then return refuse("unreadable", "shortcut enablement cannot be established (" .. tostring(okA and ("value " .. tostring(active)) or active) .. "); refused rather than typed") end
+    else
+      return refuse("unreadable", "shortcut enablement cannot be established (deps.shortcutsActive missing); refused rather than typed")
+    end
+    unavailable(KB14_TEXT_ROUTE)
+  else
+    return refuse("unknown-method", "unknown dispatch method '" .. tostring(method) .. "'")
+  end
+  r.dispatchable = r.supported and #r.unavailable == 0
+  if r.supported and not r.dispatchable then r.code = "unavailable" end
+  return r
+end
+
 
 -- Operator decision: stop admitting presses and attempt to release everything held. Records whose
 -- release fails or cannot be confirmed stay as unresolved; the adapter stays attached so recover()
@@ -1373,6 +1730,8 @@ function Instance:_validateSequence(sessionId, steps)
   if #steps > self._config.maxSequenceSteps then return fail("bad-argument", "a sequence accepts at most " .. self._config.maxSequenceSteps .. " steps") end
   local out, estimate = {}, 0
   local pressed = {}
+  local heldQuickkeys = {}  -- Quickey tuples a press/combo step leaves down for later steps (chord capability)
+  local liveQuickkeys = self:_liveQuickkeyCount()
   local unverifiableText = nil  -- index of a text-field text step: a later PLEASE/Enter must not commit it
   local function stepFail(i, code, message, extra)
     local _, e = fail(code, "step " .. i .. ": " .. tostring(message) .. " (nothing was dispatched)", extra)
@@ -1402,6 +1761,13 @@ function Instance:_validateSequence(sessionId, steps)
       if herr then return stepFail(i, "bad-argument", herr) end
       if unverifiableText and commitsText(tuple, route) then
         return stepFail(i, "bad-argument", string.format("PLEASE/Enter after the text-field text of step %d would commit text that cannot be verified; check the field and commit it with a separate explicit call", unverifiableText))
+      end
+      if tuple.quickkey then
+        local tk = tupleKey(tuple)
+        local others = liveQuickkeys > 0 or (next(heldQuickkeys) ~= nil and (count(heldQuickkeys) > 1 or not heldQuickkeys[tk]))
+        local cerr = self:_quickkeyCapabilityError(tuple, route, kind, false, others)
+        if cerr then return stepFail(i, cerr.code, cerr.message, { reason = cerr.reason, missing = cerr.missing, capabilities = cerr.capabilities }) end
+        if kind == "press" then heldQuickkeys[tk] = true end
       end
       if kind == "tap" then
         local holdMs = step.holdMs or 50
@@ -1435,6 +1801,11 @@ function Instance:_validateSequence(sessionId, steps)
         local tk = tupleKey(tuple)
         if seen[tk] then return stepFail(i, "bad-argument", "key " .. k .. " repeats tuple " .. tk) end
         seen[tk] = true
+        if tuple.quickkey then
+          local cerr = self:_quickkeyCapabilityError(tuple, route, step.holdMs and "tap" or "hold", true, true)
+          if cerr then return stepFail(i, cerr.code, "key " .. k .. ": " .. cerr.message, { key = k, reason = cerr.reason, missing = cerr.missing, capabilities = cerr.capabilities }) end
+          if not step.holdMs then heldQuickkeys[tk] = true end
+        end
         s.specs[k] = spec
         s.keyNames[k] = route.logical or tuple.pcKey
         pressed[tk] = i
@@ -1459,6 +1830,7 @@ function Instance:_validateSequence(sessionId, steps)
         return stepFail(i, terr.code, terr.message)
       end
       if not known then return stepFail(i, "bad-argument", "release of a key that no earlier step of this sequence presses and this session does not hold") end
+      if s.tupleKey then heldQuickkeys[s.tupleKey] = nil end
       s.spec = spec
       estimate = estimate + 20
     elseif kind == "text" then
@@ -1924,7 +2296,9 @@ function Instance:status(now)
     backend = { name = self._backend, attached = self._adapter ~= nil, dispatches = (self._adapter and self._adapter.dispatches) and true or false,
                 available = avail, missing = missing, description = bdef.description, limitations = bdef.limitations,
                 displayScoped = false, perKeyObservation = self._observed and self._observed.available or false,
+                capabilities = adapterCapabilities(self._adapter),
                 counters = self._adapter and self._adapter.counters or nil },
+    routing = self:routingReport(),
     capacity = { maxHolds = self._config.maxHolds, used = self:_liveCount() },
     config = shallowCopy(self._config),
     sessions = sessions, sessionCount = count(sessions),
@@ -2076,6 +2450,13 @@ function Instance:_planPress(sessionId, now, spec, ctx)
     return fail("route-changed", string.format("a held key's route changed since it was pressed: %s %s (hold %s, session '%s', original %s); release or recover before new input (the operator restores the route; nothing is toggled here)",
       tostring(m.logical), tostring(m.mismatch), tostring(m.hold), tostring(self._holds[m.hold] and self._holds[m.hold].session), tostring(m.original.tupleKey)), { mismatches = mismatch })
   end
+  -- Quickey capability flags (KB-11): the requested operation must be one the adapter advertises. A tap
+  -- needs tap, a hold needs hold, and pressing while another Quickey record is live (a combo, or a
+  -- second press alongside a held one) needs chord. Checked before any admission or dispatch.
+  if tuple.quickkey then
+    local cerr = self:_quickkeyCapabilityError(tuple, route, ctx.kind, ctx.comboIndex ~= nil, self:_liveQuickkeyCount(tupleKey(tuple)) > 0)
+    if cerr then return nil, cerr end
+  end
   -- An exclusive hold (intended long-press) admits no new press from anyone, the owner included: a
   -- second key or a duplicate press cancels the console's long-press (KB-01).
   local ex = self:_exclusiveHold()
@@ -2148,7 +2529,7 @@ function Instance:_planPress(sessionId, now, spec, ctx)
     return fail("bad-argument", "maxHoldMs must be a number in (0, " .. self._config.maxHoldMs .. "]")
   end
   -- Backend preflight (Keyboard() present, key name valid, display exists, MASTATE readable for MA).
-  if type(self._adapter.preflight) == "function" then
+  if type(self._adapter.preflight) == "function" and (tuple.pcKey or tuple.quickkey) then
     local ok, accepted, reason = pcall(self._adapter.preflight, self._adapter, copyTuple(tuple), route)
     if not ok then return fail("unsupported", "backend preflight failed: " .. tostring(accepted)) end
     if not accepted then return fail("unsupported", "backend refuses " .. tk .. ": " .. tostring(reason)) end
@@ -2198,6 +2579,33 @@ end
 
 -- An exclusive record keeps the interaction lock until its release is RESOLVED: a refused or raised
 -- release leaves the key possibly down, so the long-press is still in effect for everyone.
+-- The requested Quickey operation against the adapter's flags: a tap needs tap, a hold needs hold, and a
+-- combo or a press next to another live Quickey needs chord. Returns the structured error or nil.
+-- Used by _planPress (every dispatch path) and by the sequence preflight (before the first event).
+function Instance:_quickkeyCapabilityError(tuple, route, kind, combo, simultaneous)
+  local caps = route and route.capabilities or {}
+  local need = kind == "tap" and "tap" or "hold"
+  local missing = {}
+  if not caps[need] then missing[#missing + 1] = need end
+  if (combo or simultaneous) and not caps.chord then missing[#missing + 1] = "chord" end
+  if #missing == 0 then return nil end
+  local _, e = fail("unsupported", string.format("Quickey %s: the backend does not advertise %s for Quickeys (capabilities.quickkey = { tap = %s, hold = %s, chord = %s }); %s is refused before dispatch, nothing is substituted",
+      tostring(tuple.quickkey), table.concat(missing, " and "), tostring(caps.tap or false), tostring(caps.hold or false), tostring(caps.chord or false),
+      combo and "the combo" or (kind == "tap" and "the tap" or "the hold")),
+    { reason = "capability", missing = missing, capabilities = caps, kind = kind, combo = combo and true or false })
+  return e
+end
+
+-- Quickey records that may still be down (held, releasing or unresolved): a new Quickey press next to
+-- one is a simultaneous press and needs the chord capability.
+function Instance:_liveQuickkeyCount(exceptTupleKey)
+  local n = 0
+  for _, h in pairs(self._holds) do
+    if h.quickkey and h.state ~= "released" and h.tupleKey ~= exceptTupleKey then n = n + 1 end
+  end
+  return n
+end
+
 function Instance:_exclusiveHold()
   for _, h in pairs(self._holds) do
     if h.exclusive and h.state ~= "released" then return h end
@@ -2227,14 +2635,29 @@ function Instance:_resolveSpec(spec, forPress)
       return nil, nil, { code = "bad-argument", message = "modifiers of a logical key come from its shortcut mapping; pass them only with pcKey" }
     end
     if spec.prefer ~= nil and type(spec.prefer) ~= "string" then return nil, nil, { code = "bad-argument", message = "prefer must be a PC key name (string)" } end
-    local r = self:describeKey(spec.key, { executor = spec.executor, prefer = spec.prefer })
-    if not r.supported then return nil, nil, { code = "unsupported", message = "logical key " .. tostring(spec.key) .. " is unsupported: " .. tostring(r.reason), resolution = r } end
-    -- Shortcut-backed keys need the table active; the fixed (MA) and native (PLEASE) routes do not.
-    if r.source == "shortcut-table" and r.shortcutsActive == false then
-      return nil, nil, { code = "unsupported", message = "logical key " .. r.key .. " routes through the shortcut table but keyboard shortcuts are inactive; the operator must enable them (never toggled here)", resolution = r }
+    -- The routing policy (KB-11) decides the method and the effective route before anything is
+    -- dispatched. A refused or unavailable route is an error with the full report; no other method
+    -- or backend is tried, now or later.
+    local rr = self:_route(spec.key, { executor = spec.executor, prefer = spec.prefer })
+    local r = rr.resolution
+    if not rr.supported then
+      return nil, nil, { code = "unsupported", message = "logical key " .. rr.key .. " (" .. rr.method .. ") is unsupported: " .. tostring(rr.reason), reason = rr.code, resolution = r, route = rr }
     end
-    if r.source == "shortcut-table" and r.shortcutsActive ~= true then
-      return nil, nil, { code = "unsupported", message = "logical key " .. r.key .. " routes through the shortcut table but shortcut enablement cannot be established (" .. tostring(r.shortcutsActiveError or "unreadable") .. "); refused rather than guessed", resolution = r }
+    if not rr.dispatchable then
+      return nil, nil, { code = "unavailable", message = "logical key " .. rr.key .. " (" .. rr.method .. ") selects the " .. tostring(rr.effective) .. " route, which cannot be dispatched: " .. table.concat(rr.unavailable, "; ") .. " (nothing dispatched; no other method is selected)",
+                         unavailable = rr.unavailable, effective = rr.effective, resolution = r, route = rr }
+    end
+    local snapshot = { method = rr.method, methodSource = rr.methodSource, quickkey = entryField(self._routing, rr.key, "quickkey"), prefer = rr.prefer, text = rr.text, textChars = rr.textChars }
+    if rr.effective == "quickkey" then
+      if forPress and self._adapter and type(self._adapter.supportsQuickkey) == "function" then
+        local ok, supported, reason = pcall(self._adapter.supportsQuickkey, self._adapter, rr.quickkey)
+        if not ok then return nil, nil, { code = "unsupported", message = "backend Quickey check failed: " .. tostring(supported) } end
+        if not supported then return nil, nil, { code = "unsupported", message = tostring(reason or ("Quickey " .. rr.quickkey .. " is not supported by the backend")) } end
+      end
+      local tuple = { quickkey = rr.quickkey, quickkeyCode = rr.codeValue, display = display }
+      local route = { logical = rr.key, source = "quickkey", method = rr.method, methodSource = rr.methodSource, quickkey = rr.quickkey, codeValue = rr.codeValue,
+                      capabilities = rr.quickkeyCapabilities, routing = snapshot }
+      return tuple, route, nil
     end
     if forPress then
       local ok, err = self:_backendKeyCheck(r.pcKey)
@@ -2243,7 +2666,7 @@ function Instance:_resolveSpec(spec, forPress)
     local tuple = { pcKey = r.pcKey, shift = r.shift, ctrl = r.ctrl, alt = r.alt, numlock = spec.numlock and true or false, display = display }
     local route = { logical = r.key, source = r.source, shortcut = r.shortcut, rowIndex = r.rowIndex, executor = r.executor, profile = r.profile,
                     shortcutsActive = r.shortcutsActive, verify = r.verify, redirectChecked = r.redirectChecked, pcKeyValidated = r.pcKeyValidated,
-                    prefer = r.prefer }
+                    prefer = r.prefer, method = rr.method, methodSource = rr.methodSource, routing = snapshot }
     return tuple, route, nil
   end
   if type(spec.pcKey) ~= "string" or spec.pcKey == "" then return nil, nil, { code = "bad-argument", message = "spec needs key (logical name) or pcKey (non-empty PC key name)" } end
@@ -2270,7 +2693,22 @@ end
 function Instance:_checkRoutes()
   local mismatches
   for _, h in pairs(self._holds) do
-    if h.state ~= "released" and h.logical and h.route and h.route.source ~= "raw" then
+    if h.state ~= "released" and h.logical and h.route and h.route.source == "quickkey" then
+      -- A Quickey hold rechecks the decision it was pressed with (route.routing), never the current
+      -- policy: changing the method or code for the key mid-hold does not touch this record.
+      local r = self:_route(h.logical, { executor = h.route.executor, prefer = h.route.prefer }, h.route.routing)
+      local why
+      if not r.supported then why = "no longer resolvable: " .. tostring(r.reason)
+      elseif r.codeValue ~= h.quickkeyCode then why = string.format("Quickey code %s is now value %s (was %s)", tostring(h.quickkey), tostring(r.codeValue), tostring(h.quickkeyCode)) end
+      if why then
+        h.routeMismatch = { detected = h.routeMismatch and h.routeMismatch.detected or self._lastServiced, reason = why, current = { quickkey = r.quickkey, supported = r.supported } }
+        mismatches = mismatches or {}
+        mismatches[#mismatches + 1] = { hold = h.id, logical = h.logical, original = { tupleKey = h.tupleKey, route = h.route }, mismatch = why }
+      elseif h.routeMismatch then
+        h.routeRestored = { previous = h.routeMismatch.reason }
+        h.routeMismatch = nil
+      end
+    elseif h.state ~= "released" and h.logical and h.route and h.route.source ~= "raw" then
       local r = self:describeKey(h.logical, { executor = h.route.executor, prefer = h.route.prefer })
       local why
       if not r.supported then why = "no longer resolvable: " .. tostring(r.reason)
@@ -2514,7 +2952,8 @@ end
 function Instance:_holdReport(h, now, extra)
   local r = {
     id = h.id, session = h.session, state = h.state, kind = h.kind,
-    logical = h.logical, pcKey = h.pcKey, shift = h.shift, ctrl = h.ctrl, alt = h.alt, numlock = h.numlock, display = h.display,
+    logical = h.logical, pcKey = h.pcKey, quickkey = h.quickkey, quickkeyCode = h.quickkeyCode, shift = h.shift, ctrl = h.ctrl, alt = h.alt, numlock = h.numlock, display = h.display,
+    method = h.route and h.route.method or nil,
     tupleKey = h.tupleKey, route = h.route, backend = h.backend, pressedAt = h.pressedAt, releasedAt = h.releasedAt,
     deadline = h.deadline, deadlineReason = h.deadlineReason,
     exclusive = h.exclusive or nil, group = h.group, groupIndex = h.groupIndex, interaction = h.interaction, sequence = h.sequence,
@@ -2556,8 +2995,10 @@ local function new(opts)
     elseif type(v) ~= "number" or v <= 0 then error(NAME .. ".new: config." .. k .. " must be a positive number", 2) end
     config[k] = v
   end
+  local routing, rerr = validateRoutingPolicy(opts.routing, config.maxTextChars)
+  if not routing then error(NAME .. ".new: opts.routing: " .. tostring(rerr.message), 2) end
   local self = setmetatable({
-    _owner = opts.owner, _backend = backend, _deps = opts.deps or {}, _config = config,
+    _owner = opts.owner, _backend = backend, _deps = opts.deps or {}, _config = config, _routing = routing,
     _adapter = nil, _inputEnabled = false,
     _state = "created", _holds = {}, _byTuple = {}, _released = {}, _sessions = {}, _pendingExpired = {},
     _interactions = {}, _endedInteractions = {}, _interactionSeq = 0,
@@ -2575,6 +3016,9 @@ local M = {
   UNSUPPORTED_KEYS = { "MA1", "MA2" },
   new = new, consoleDeps = consoleDeps, resolve = resolve, parseShortcut = parseShortcut, tupleKey = tupleKey, validateText = validateText,
   fakeBackend = fakeBackend, keyboardBackend = keyboardBackend,
+  -- KB-11 routing policy
+  METHODS = { "quickkey", "shortcutOrType", "shortcut", "type" }, DEFAULT_METHOD = DEFAULT_METHOD,
+  validateRoutingPolicy = validateRoutingPolicy, adapterCapabilities = adapterCapabilities, textForbidden = textForbidden,
   SEQUENCE_STEP_KINDS = { "tap", "press", "release", "combo", "text", "wait" },
   TEXT_CONTEXTS = { "command-line", "text-field" },
   backends = { keyboard = BACKENDS.keyboard.name, fake = BACKENDS.fake.name },

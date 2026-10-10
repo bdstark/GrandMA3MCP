@@ -10,7 +10,7 @@ The bridge plugin ships two reusable, instance-based Lua modules as extra compon
 | `gma3_mcp_hardkeys` | [plugin/gma3_mcp_hardkeys.lua](../plugin/gma3_mcp_hardkeys.lua) | Owned input sessions, leases, deadline servicing and recovery over a backend adapter; read-only logical-key resolution |
 | `gma3_mcp_feedback` | [plugin/gma3_mcp_feedback.lua](../plugin/gma3_mcp_feedback.lua) | Read-only console state readers confirmed in KB-01, with freshness and bounded polling (KB-06) |
 
-Module API version **1**; `gma3_mcp_hardkeys` **0.5.0** (KB-03 to KB-05; 0.5.0 resolves any `Enums.VirtualKeyCode` name, KB-07), `gma3_mcp_feedback` **0.2.0** (KB-02 + KB-06).
+Module API version **1**; `gma3_mcp_hardkeys` **0.6.0** (KB-03 to KB-05; 0.5.0 resolves any `Enums.VirtualKeyCode` name, KB-07; 0.6.0 adds the per-key routing policy, KB-11), `gma3_mcp_feedback` **0.2.0** (KB-02 + KB-06).
 Two backend adapters dispatch: the **fake backend** (records events, simulates aggregate console key state,
 nothing reaches a console key) and the **keyboard backend** (`keyboardBackend(deps)`, KB-04: the console's
 `Keyboard()` PC-key emulation; console keys are really pressed).
@@ -289,6 +289,50 @@ the fake backend raise once (delivery unknown).
 **Limits of recovery.** Deadlines are serviced only while the plugin loop runs. A host call that
 blocks the plugin thread, a plugin crash or process termination prevents release; lease expiry is a
 cleanup *attempt*, not a guaranteed cancellation of a held key or of a blocked host call.
+
+## Routing policy (`gma3_mcp_hardkeys` 0.6.0, KB-11)
+
+A consumer chooses how its logical keys are dispatched: one default **method** and per-key overrides. The
+method is decided and validated before dispatch, stored on the hold and kept for the whole press/release cycle;
+an unavailable or refused route never selects another method or backend, and a policy or mode change during a
+hold never changes the route its release uses. Callers that configure nothing keep the pre-0.6.0 behaviour
+(method `shortcut`).
+
+| Method | Behaviour in 0.6.0 |
+| --- | --- |
+| `quickkey` | Press/release the Quickey tuple `{ quickkey = <name>, quickkeyCode = <value> }` (`tupleKey = "quickkey:#<value>"`: ownership is the validated code value, so aliases such as `OOPS`/`UNDO` are one tuple; the requested name is kept for reporting). Needs an adapter advertising `capabilities.quickkey = { tap, hold, chord }`, and each flag is enforced per operation before dispatch on every path (a tap needs `tap`, a hold needs `hold`, a combo or a press next to another live Quickey needs `chord`; refusals are `unsupported` with `reason = "capability"` and `missing[]`); the fake backend simulates it, the `Keyboard()` backend refuses it, the owned-Quickey backend is KB-12/KB-13. `MA1` is a valid code here. |
+| `shortcut` | The shortcut-table / fixed (`MA`) / native (`PLEASE`) PC-key route as before. A shortcut-table route while shortcuts are off is refused as before and additionally lists the KB-14 requirement (temporary enable); nothing is toggled. |
+| `shortcutOrType` | Fixed/native routes whatever the mode. Otherwise the shortcut route only when enablement reads `true` and resolution succeeds; the key's explicit `text` when the table was read and has no row for the key, or when enablement reads `false` (no row needed). Unreadable enablement, ambiguity, collisions, unknown keys and a missing `text` are refusals, never permission to type. The text branch is selected but refused `unavailable` until KB-14 implements text-route dispatch. |
+| `type` | The key's explicit `text`, inserted once on press (KB-14). Resolved and reported; refused at `enableInput()`/`configureRouting()` as `policy-unavailable` against every current backend. |
+
+```lua
+local inst = HK.new({ owner = "surface", deps = HK.consoleDeps(_G), config = { requireInteraction = false },
+  routing = { default = "quickkey",
+              keys = { STORE = { method = "shortcut" },             -- per-key override
+                       UNDO  = { quickkey = "OOPS" },               -- code distinct from the key name
+                       PLUS  = { method = "shortcut", prefer = "kpAdd" },
+                       NUM5  = { method = "shortcutOrType", text = "5" },
+                       THRU  = { method = "shortcutOrType", text = "Thru " } } } }):init()
+local r, err = inst:enableInput(backend)         -- policy-unavailable if the adapter cannot serve a named method
+local d = inst:describeRoute("THRU")             -- method, methodSource, effective, dispatchable, unavailable[], capabilities
+r, err = inst:configureRouting({ default = "shortcut" })   -- atomic; live holds keep their route
+```
+
+| Call | Effect |
+| --- | --- |
+| `new({ routing })` / `configureRouting(policy)` | `policy = { default = <method>\|nil, keys = { <LOGICAL> = { method, quickkey, prefer, text } } }`. Validation (`policy-invalid`): unknown methods or fields, duplicate names (case-insensitive), `text` empty or with control characters, a digit (`NUM0`–`NUM9`) text that is not exactly one non-space character, and any `text` for `MA`/`MA1`/`MA2`, `PLEASE`, `CLEAR`, `OOPS`/`UNDO`, `ESC`, `EXEC`/`EXECUTOR`/`XKEYS`/`FADER`, `X1`–`X16`, `ENCODER_*`, `DEF_*`. Keyword text is inserted exactly as given, separators included. While a backend is attached, a method it cannot serve is `policy-unavailable`. A refused policy changes nothing; `new()` raises. |
+| `describeRoute(name, { prefer, executor })` | Read-only: `key`, `method`, `methodSource` (`key`, `default`, `module-default`), `effective` (`quickkey`, `shortcut-table`, `fixed`, `native`, `text`), `supported`, `code`, `reason`, `dispatchable`, `unavailable[]` (named requirements, e.g. "no backend attached", the KB-13/KB-14 items), `capabilities` of the attached adapter, `resolution` (the `describeKey()` result), `quickkey`/`codeValue`, `text`. |
+| `routingReport()` / `status().routing` | `default`, `defaultSource`, `keys` (effective method and fields per override), `overrideCount`, `methods[<m>] = { available, missing[] }` for the attached backend, `capabilities`. |
+| `enableInput(adapter)` | Additionally checks every method the policy names against the adapter (`policy-unavailable`, nothing attaches). `attachBackend()` (cleanup-only) does not. |
+
+Adapters advertise `capabilities = { keyboard = bool, quickkey = { tap, hold, chord } \| false, char = bool }`;
+an adapter without the field is a PC-key adapter (`keyboard = true`). Holds report `method` and, for Quickey
+tuples, `quickkey`; `route.routing` is the stored decision a Quickey hold's route recheck uses (never the current
+policy). Press-time refusals: `unsupported` (with `reason` = the resolution code: `unknown-key`, `no-row`,
+`ambiguous`, `collision`, `unreadable`, `no-mapping`, `shortcuts-inactive`, …) and `unavailable` (the route is
+selected but a named requirement is missing; `effective` and `unavailable[]` are attached). Neither dispatches
+anything, and a refused press is never queued for a later mode or table change. Regressions:
+`test/lua/hardkeys_routing_test.lua`.
 
 ## Feedback readers (`gma3_mcp_feedback` 0.2.0, KB-06)
 

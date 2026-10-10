@@ -25,8 +25,11 @@ pin here is hardkeys 0.5.0 / feedback 0.2.0 at `main` after PR #12. KB-09 (short
 profile shortcuts) remains.
 Completion establishes the contracts and limitations below, not production keyboard support or universal
 platform coverage. The keyboard implementation remains available. KB-10–KB-15 now specify Quickey
-qualification, owned resource provisioning and explicit per-key dispatch policies; these are planned work,
-not completed or qualified backends.
+qualification, owned resource provisioning and explicit per-key dispatch policies. **KB-10 probed live on
+2026-10-09** (Quickey tap/hold/release/chord qualified through an executor; see its records). **KB-11 implemented
+in the shared module on 2026-10-09** (hardkeys 0.6.0): the per-key routing policy, its validation, reporting and
+route retention are harness-tested on the fake backend; `quickkey` dispatch awaits the KB-12/KB-13 backend and the
+text routes await KB-14, so no new console path is qualified by it. KB-12–KB-15 remain planned work.
 
 This document expands the initial request from `mtpnxk-client-pico` into dependency-ordered features
 and acceptance criteria, following the format of [FEATURES.md](FEATURES.md). The originating project's
@@ -929,6 +932,57 @@ or tools; existing tool contracts remain unchanged.
   press/release cycle; mode changes and retries do not resurrect it.
 - Test configuration precedence, every selection branch, unsupported mappings, admission failures and
   route retention across configuration/mode changes. Existing callers retain their defaults.
+
+### Module change for KB-11 (hardkeys 0.6.0, 2026-10-09)
+
+Implemented in `plugin/gma3_mcp_hardkeys.lua` 0.6.0 with the regression harness
+`test/lua/hardkeys_routing_test.lua` (137 checks on the fake backend; the earlier suites are unchanged and pass).
+No bridge op, MCP tool or TypeScript contract changed; the bridge keeps the module default, so every existing
+caller behaves as before (its holds now also report `method = "shortcut"`).
+
+- **Policy.** `new({ routing = policy })` or `configureRouting(policy)` with
+  `{ default = <method>, keys = { <LOGICAL> = { method, quickkey, prefer, text } } }`. Logical key, Quickey code,
+  shortcut preference and literal text are distinct fields; `quickkey` defaults to the key name only at resolution
+  time and is never inferred otherwise. Unknown methods, unknown fields, duplicate names, control characters,
+  a digit mapping that is not exactly one non-space character, and any text for `MA`/`MA1`/`MA2`, `PLEASE`,
+  `CLEAR`, `OOPS`/`UNDO`, `ESC`, `EXEC`/`EXECUTOR`/`XKEYS`/`FADER`, `X1`–`X16`, `ENCODER_*` and `DEF_*` fail
+  validation. Keyword text is used exactly as given (`"Thru "` keeps its separator; nothing is trimmed or added).
+  A refused policy changes nothing.
+- **Precedence.** Per-key `method` > consumer `default` > module default `shortcut`; a call-level `spec.prefer`
+  overrides the policy `prefer`. Raw `pcKey` specs bypass the policy.
+- **Availability.** Adapters advertise `capabilities = { keyboard, quickkey = { tap, hold, chord }, char }`
+  (an adapter without the field is a PC-key adapter). `enableInput()` and `configureRouting()` (while a backend is
+  attached) refuse a policy naming a method the adapter cannot serve with `policy-unavailable`; nothing attaches
+  and no other backend is selected. The `Keyboard()` backend advertises no Quickey dispatch and refuses Quickey
+  tuples outright; the fake backend simulates them (and can be created without, for tests). The Quickey flags are
+  enforced per operation before any dispatch, on every path (press, tap, combo, sequence preflight): a tap needs
+  `tap`, a hold needs `hold`, and a combo or a press next to another live Quickey record needs `chord`. `type` cannot be
+  configured against any current backend, and the text branch of `shortcutOrType` is selected but refused as
+  `unavailable`, both naming the KB-14 requirements (text-route dispatch; temporary shortcut enable/disable).
+- **Selection.** `shortcut`: the pre-0.6.0 route; a shortcut-table route with shortcuts off keeps the same
+  `unsupported` refusal and additionally lists the KB-14 requirement. `shortcutOrType`: the fixed/native routes
+  (`MA`, `PLEASE`) whatever the mode; otherwise a shortcut only when enablement reads `true` and resolution
+  succeeds; the explicit text when the table was read and has no row for the key, or when enablement reads
+  `false` (no row required); unreadable enablement, ambiguity, collisions, unknown keys and a missing text mapping
+  are refusals. `quickkey`: the code must be an `Enums.VirtualKeyCode` name on the console (`MA1` is valid here;
+  `MA` is not); an unreadable enum refuses.
+- **Retention.** The decision (`route.method`, `route.methodSource`, `route.routing` snapshot, `quickkey`,
+  `quickkeyCode`, `tupleKey = "quickkey:#<value>"`) is stored on the hold and used for the release. Ownership is
+  the validated code value, so aliases (`OOPS`/`UNDO`) are one tuple: the second is the owner's duplicate or another
+  session's conflict, a combo naming both is refused, and a release or recovery under either name uses the stored
+  tuple; the requested name stays on the record for reporting; a policy change or mode change
+  during a hold never re-routes it, and a Quickey hold's route recheck uses the stored snapshot, never the current
+  policy. A raised or refused press is `press-failed` with no second backend; a refused press is not queued and
+  a later mode/table change dispatches nothing until a new call makes a new decision.
+- **Reporting.** `describeRoute(name, opts)` returns `method`, `methodSource`, `effective` (`quickkey`,
+  `shortcut-table`, `fixed`, `native`, `text`), `supported`/`code`/`reason`, `dispatchable`, `unavailable[]`,
+  `capabilities`, the `describeKey()` resolution and, for Quickeys, `codeValue`. `routingReport()` and
+  `status().routing` summarise the policy and per-method availability; `status().backend.capabilities` and each
+  hold's `method`/`quickkey` are new fields. `resolve()` results now carry a machine-readable `code`
+  (`no-row`, `ambiguous`, `collision`, `unknown-key`, `unreadable`, …) which the text branch depends on.
+
+What is *not* established: no Quickey or text route reached a console through this change. The `modules.lock.json`
+pin still names the reviewed 0.4.0 bytes; re-pin deliberately when a consumer vendors 0.6.0.
 
 ## KB-12 — Provision and cache the complete Quickey bank
 
