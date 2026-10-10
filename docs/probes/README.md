@@ -20,6 +20,7 @@ They are evidence for [KEYBOARD.md](../../KEYBOARD.md), not automated regression
 | [kb-14-timing-macos-2.5.1.md](kb-14-timing-macos-2.5.1.md), [script report](kb-14-timing-macos-2.5.1.json) (11/11; when char/key events are consumed relative to a same-chunk shortcut-mode change: chars and taps in the chunk, Escape/modifier on a later frame, a release in the other mode does not lift a modifier, disabling shortcuts drops MA) | macOS, onPC 2.5.1.0 |
 | [kb-14-run-macos-2.5.1.md](kb-14-run-macos-2.5.1.md), [script report](kb-14-run-macos-2.5.1.json) (32/32; `type`/`shortcutOrType`/`shortcut` routes with temporary shortcut-mode changes: insertion with the mode restored by the loop, mode kept through a hold, mode-conflict refusal, operator interference during a hold, recovery) | macOS, onPC 2.5.1.0 |
 | [kb-16-encoders-macos-2.5.1.md](kb-16-encoders-macos-2.5.1.md), [script report](kb-16-encoders-macos-2.5.1.json) (44/44; encoder bank/page/slot readers, profile pool, programmer values, signed adjustments, selection-dependent pages, executor press/release functions, fader tokens, page navigation; preflight gate on the `programmer` op, undo registered before every change) | macOS, onPC 2.5.1.0 |
+| [kb-17-context-macos-2.5.1.md](kb-17-context-macos-2.5.1.md), [script report](kb-17-context-macos-2.5.1.json) (`feedback.context`: identity, authoritative display, slots, executor targets, cached snapshots through the loop, the generation moving on selection/bank/page/executor-page changes and staying on a value change) | macOS, onPC 2.5.1.0 |
 
 ## Running the KB-01 probe on another platform
 
@@ -136,3 +137,18 @@ page and back to the original one. Every undo is registered before its change (`
 `BEAM_FIXTURE` at the top of `runPhase`; executors are picked by key function). `node scripts/kb16-probe.mjs watch
 [--seconds N]` prints the context whenever it changes while the operator works in onPC. Record:
 [kb-16-encoders-macos-2.5.1.md](kb-16-encoders-macos-2.5.1.md).
+
+## Running the KB-17 control-context probe
+
+`node scripts/kb17-probe.mjs verify [--out ...]` is **read-only** and needs a bridge 0.13.0 or newer with feedback
+0.3.0 (Lua may be disabled): `feedback.context` with every assigned executor of the current page, the identity, the
+configured authoritative display and a requested display without an encoder bar (unavailable, not replaced), the slots'
+identity/unit/readout/resolution/layer/availability/value state, the executor targets (Quickey-bank executors excluded
+from playback targets), a stable generation across reads, `feedback.watch` plus a cached snapshot served by the plugin
+loop, `feedback.unwatch`, and that nothing changed. `node scripts/kb17-probe.mjs run [--out
+docs/probes/kb-17-context-<os>-<version>.json]` adds, on a show whose name matches `disposable`, `mcp-test` or `scratch`
+with Lua enabled, an empty selection and a programmer proven empty through the `programmer` op: `Fixture 401`
+(`KB17_RGB_FIXTURE`), `Select EncoderBank 4` and `4.2` (`KB17_COLOR_BANK`), an `Attribute ... At 50` that must **not**
+move the generation, and `Page <other>`; each undo is registered before its change and run at the end
+(`scripts/lib/kb16-steps.mjs`). `node scripts/kb17-probe.mjs watch [--seconds N]` prints every snapshot whose generation
+moved while the operator works in onPC. Record: [kb-17-context-macos-2.5.1.md](kb-17-context-macos-2.5.1.md).

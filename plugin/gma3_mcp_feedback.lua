@@ -1,7 +1,7 @@
 -- gma3_mcp_feedback.lua
 --
 -- Instance-based read-only console feedback module for grandMA3 onPC plugins (KB-02 packaging,
--- KB-06 readers, freshness and bounded polling).
+-- KB-06 readers, freshness and bounded polling, KB-17 control-context and binding snapshots).
 --
 -- A ComponentLua of a UserPlugin: the console runs this chunk at import/reload and it only returns a
 -- module table. Nothing is read from the console until a consumer calls read()/readMany()/service()
@@ -22,13 +22,25 @@
 --   * lastCommand and maState are observations of shared console state: they do not identify which
 --     request, client or key source produced them.
 --
--- MODULE API 1, module version 0.2.0. Lifecycle: new() -> init() -> read()/readMany()/watch()/service()
+-- Control context (KB-17, 0.3.0): the readers dataPool, encoderBank, encoderSlots, executorTarget and
+-- pageExecutors describe what a surface control would operate (the KB-16 read paths), and
+-- contextSnapshot(spec, now, opts) assembles them into one bounded snapshot with a binding
+-- `generation` that changes whenever an input's meaning changed (bank/page/context, the selection's
+-- fixtures, slot objects, resolution/readout/channel function/availability, executor assignment and
+-- functions, identity, epoch) and never for a value or level alone; no generation is claimed while the
+-- selection identity or a watched part is unknown. The encoder bar of config.encoderDisplay (or params.display) is the
+-- authoritative one: a display without an encoder bar is reported unavailable, another display is
+-- never substituted. The context readers are not part of readAll()/`all` (they cost more than one
+-- property read); watch() them for service() polling and build the snapshot from the cache with
+-- opts.cached = true.
+--
+-- MODULE API 1, module version 0.3.0. Lifecycle: new() -> init() -> read()/readMany()/watch()/service()
 -- ... -> dispose(). Consumers pass dependencies via opts.deps (consoleDeps(_G) builds lazy closures)
 -- and keep one instance each; the module table is read-only and nothing here uses globals or
 -- package.loaded.
 
 local NAME        = "gma3_mcp_feedback"
-local VERSION     = "0.2.0"
+local VERSION     = "0.3.0"
 local API_VERSION = 1
 
 local DEFAULTS = {
@@ -39,6 +51,14 @@ local DEFAULTS = {
   staleMs            = 2000,  -- a cached observation older than this is reported stale
   identityCheckMs    = 1000,  -- show file / user / profile identity re-read at most this often
   defaultDisplay     = 1,
+  -- KB-17 control context
+  encoderDisplay     = 1,     -- the display whose encoder bar is authoritative (KB-16: display 1 on onPC)
+  encoderBar         = 1,     -- the EncoderBar of CurrentProfile().EncoderBarPool whose banks/pages are read
+  maxSlots           = 5,     -- encoder slots read per page (the pool page has five; onPC renders four)
+  maxSelectionScan   = 8,     -- selected (sub)fixtures scanned for availability and value state per read
+  maxSelectionIdentity = 512, -- selected fixture ids walked for the selection identity (no channel reads)
+  maxUIChannels      = 64,    -- UI channels mapped per scanned fixture
+  maxGenerations     = 8,     -- binding-generation records kept (one per distinct snapshot spec)
 }
 
 -- Strict boolean: the console reports FADERENABLED-style properties as "true"/"false" text or booleans.
@@ -72,9 +92,294 @@ local function faderOf(h, token)
   return { token = token, value = v, text = (okT and text ~= nil) and tostring(text) or nil }
 end
 
+-------------------------------------------------------------------------------
+-- KB-17 control context: the read paths KB-16 qualified live on onPC 2.5.1
+-- (docs/probes/kb-16-encoders-macos-2.5.1.md), each one under pcall so a missing widget, property or
+-- object is an explicit field of the result, never a raise that hides the rest.
+-------------------------------------------------------------------------------
+local function field(h, k)
+  if h == nil then return nil end
+  local ok, v = pcall(function() return h[k] end)
+  if ok then return v end
+  return nil
+end
+local function classOf(h) local ok, c = pcall(function() return h:GetClass() end); if ok and c ~= nil then return tostring(c) end; return nil end
+local function countOf(h) local ok, n = pcall(function() return h:Count() end); if ok then return tonumber(n) or 0 end; return 0 end
+local function ptr(h, i) local ok, x = pcall(function() return h:Ptr(i) end); if ok then return x end; return nil end
+local function findClass(h, c)
+  for i = 1, countOf(h) do local x = ptr(h, i); if x ~= nil and classOf(x) == c then return x end end
+  return nil
+end
+local function str(v) if v == nil then return nil end; return tostring(v) end
+
+-- A property in its display role: the string the editors show ("Attribute 107 'ColorRGB_R'", "Temp",
+-- "Coarse"). Plain field access returns nil for link properties on 2.5.1 (KB-16), so this is the one
+-- way to read slot objects and executor functions. nil when the property is absent or the read raises.
+local function roleDisplay(d)
+  if type(d.enums) ~= "function" then return nil end
+  local ok, e = pcall(d.enums)
+  if ok and type(e) == "table" and type(e.Roles) == "table" then return e.Roles.Display end
+  return nil
+end
+local function dget(d, h, prop)
+  if h == nil then return nil end
+  local role = roleDisplay(d)
+  local ok, v = pcall(function() if role ~= nil then return h:Get(prop, role) end; return h:Get(prop) end)
+  if ok and v ~= nil then return tostring(v) end
+  return nil
+end
+
+-- "Attribute 107 'ColorRGB_R'" -> { ref, class = "Attribute", index = 107, name = "ColorRGB_R" }. nil for
+-- an empty reference. A string in another shape is kept as ref/name so nothing is guessed.
+local function parseRef(s)
+  if s == nil then return nil end
+  s = tostring(s)
+  if s == "" then return nil end
+  local class, idx, name = s:match("^(%a+)%s+(%d+)%s+'(.*)'$")
+  if class then return { ref = s, class = class, index = tonumber(idx), name = name } end
+  local class2, idx2 = s:match("^(%a+)%s+(%d+)$")
+  if class2 then return { ref = s, class = class2, index = tonumber(idx2) } end
+  return { ref = s, name = s }
+end
+
+-- A user attribute preference value: "<Percent>" is the inherited default, "Fine" an override.
+local function prefValue(s)
+  if s == nil then return nil, nil end
+  local inner = s:match("^<(.*)>$")
+  if inner then return inner, true end
+  return s, false
+end
+
+-- The encoder bar widgets of one display (KB-16): the bank selector, the preset bar with its page
+-- selector, context and places. nil plus a reason when that display has no encoder bar; the caller
+-- never substitutes another display (the authoritative display is configured or requested, not found).
+local function encoderUi(d, displayIndex)
+  local disp = d.display(displayIndex)
+  if disp == nil then return nil, "display " .. displayIndex .. " does not exist on this console" end
+  local ebc = field(disp, "EncoderBarContainer")
+  if ebc == nil then return nil, "display " .. displayIndex .. " has no encoder bar (no EncoderBarContainer); no other display is substituted" end
+  local grid = field(ebc, "EncoderBarGrid")
+  local base = field(field(grid, "EncoderBarBase"), "EncoderBarContainer")
+  local selector = field(base, "EncoderBankSelector")
+  local presetBar = findClass(field(grid, "EncoderBar"), "PresetBar")
+  if selector == nil or presetBar == nil then return nil, "display " .. displayIndex .. " has an encoder bar without EncoderBankSelector/PresetBar" end
+  return { display = displayIndex, selector = selector, presetBar = presetBar }
+end
+
+-- Bank and page selector values (0-based SelectedItemValueI64, current at the next Lua read; SelectedItemIdx
+-- lags one UI refresh) and the preset-bar context ("Default" = attribute editing).
+local function readBankPage(ui)
+  local bank = tonumber(field(ui.selector, "SelectedItemValueI64"))
+  local pageSel = field(field(ui.presetBar, "Options"), "PageSelector")
+  local page = pageSel ~= nil and tonumber(field(pageSel, "SelectedItemValueI64")) or nil
+  return bank, page, str(field(ui.presetBar, "Context"))
+end
+
+-- On-screen places: the inner band's label (short name), resolution and the channel-function selector per
+-- slot. Places beyond the page's slot count keep stale labels (KB-16), so the caller trims to the pool page.
+local function readPlaces(ui, maxSlots)
+  local out = {}
+  local area = field(ui.presetBar, "EncodersArea")
+  if area == nil then return out end
+  for p = 1, maxSlots do
+    local place = field(area, "EncoderPlace" .. p)
+    if place ~= nil and countOf(place) > 0 then
+      local r, gridNo = {}, 0
+      for i = 1, countOf(place) do
+        local g = ptr(place, i)
+        if g ~= nil and classOf(g) == "UILayoutGrid" then
+          gridNo = gridNo + 1
+          if gridNo == 1 then
+            for j = 1, countOf(g) do
+              local c = ptr(g, j)
+              local k = c ~= nil and classOf(c) or nil
+              local n = c ~= nil and str(field(c, "name")) or ""
+              if k == "BandFader" then r.label = str(field(c, "Text")); r.resolution = str(field(c, "Resolution"))
+              elseif k == "SwipeButtonList" and n:match("^ChannelFunctionSelector") then
+                r.channelFunction = str(field(c, "Text")); r.channelFunctionIndex = tonumber(field(c, "SelectedItemIdx"))
+              end
+            end
+          end
+        end
+      end
+      out[p] = r
+    end
+  end
+  return out
+end
+
+-- The profile's encoder bar pool: bar -> banks -> pages -> encoders (1-based). nil plus a reason when the
+-- bar, bank or page does not exist (a selector value with no pool page is reported, never mapped).
+local function poolPage(d, barIndex, bankNo, pageNo)
+  local pool = field(d.currentProfile(), "EncoderBarPool")
+  if pool == nil then return nil, "CurrentProfile().EncoderBarPool is not readable" end
+  local bar = ptr(pool, barIndex)
+  if bar == nil then return nil, "encoder bar " .. barIndex .. " does not exist in the profile's EncoderBarPool" end
+  local bank = ptr(bar, bankNo)
+  if bank == nil then return nil, string.format("bank %d does not exist in encoder bar %d of the profile pool (%d banks)", bankNo, barIndex, countOf(bar)) end
+  local page = ptr(bank, pageNo)
+  if page == nil then return nil, string.format("page %d does not exist in bank %d '%s' of the profile pool (%d pages)", pageNo, bankNo, str(field(bank, "name")) or "", countOf(bank)) end
+  return { bar = bar, bank = bank, page = page, bankName = str(field(bank, "name")), pageName = str(field(page, "name")), bankCount = countOf(bar), pageCount = countOf(bank), slotCount = countOf(page) }
+end
+
+local ATTR_FIELDS = { feature = "Feature", unit = "PhysicalUnit", readout = "NaturalReadout", resolution = "EncoderResolution", color = "Color", channelFunctions = "ChannelFunctions", special = "Special" }
+local function attributeMeta(d, name)
+  if type(d.attributeDefinitions) ~= "function" then return nil, "deps.attributeDefinitions missing" end
+  local okD, defs = pcall(d.attributeDefinitions)
+  if not okD then return nil, "AttributeDefinitions are not readable: " .. tostring(defs) end
+  local a = field(defs, name)
+  if a == nil then return nil, "attribute '" .. name .. "' is not in the show's attribute definitions" end
+  local out = {}
+  for k, p in pairs(ATTR_FIELDS) do out[k] = dget(d, a, p) end
+  if out.channelFunctions ~= nil then out.channelFunctions = tonumber(out.channelFunctions) or out.channelFunctions end
+  if type(d.attributeIndex) == "function" then local okI, idx = pcall(d.attributeIndex, name); if okI and tonumber(idx) then out.index = tonumber(idx) end end
+  return out
+end
+local function userPreference(d, name)
+  local a = field(field(d.currentProfile(), "UserAttributePreferences"), name)
+  if a == nil then return nil end
+  local out = {}
+  out.readout, out.readoutInherited = prefValue(dget(d, a, "NaturalReadout"))
+  out.resolution, out.resolutionInherited = prefValue(dget(d, a, "EncoderResolution"))
+  out.pressFactor = dget(d, a, "EncoderPressFactor")
+  return out
+end
+
+-- Selected (sub)fixtures with a map attribute name -> UI channel, bounded by config.maxSelectionScan
+-- fixtures and config.maxUIChannels channels each. A grouping fixture without UI channels is read
+-- through its first subfixture (KB-16). `partial` says the scan did not cover the whole selection.
+local function scanSelection(d, cfg)
+  local okC, count = pcall(d.selectionCount)
+  if not okC then error("SelectionCount failed: " .. tostring(count), 0) end
+  count = tonumber(count) or 0
+  -- identityComplete starts false (KB-17 review) and becomes true only after a traversal that ended by itself,
+  -- within the bound, and yielded exactly `count` distinct fixture ids.
+  local scan = { count = count, fixtures = {}, ids = {}, partial = false, identityComplete = false, limitations = {} }
+  if count == 0 then scan.identityComplete = true; return scan end
+  local function incomplete(why) scan.identityLimitation = why; scan.limitations[#scan.limitations + 1] = why end
+  if type(d.selectionFirst) ~= "function" then scan.partial = true; incomplete("deps.selectionFirst missing: the selection cannot be walked"); return scan end
+  local okF, idx = pcall(d.selectionFirst)
+  if not okF then scan.partial = true; incomplete("SelectionFirst() failed: " .. tostring(idx)); return scan end
+  if idx == nil then scan.partial = true; incomplete("SelectionFirst() gave nothing although the selection is not empty"); return scan end
+  local seen, ended, failure = {}, false, nil
+  while idx ~= nil do
+    if seen[idx] then failure = "SelectionNext() returned fixture " .. tostring(idx) .. " again; the walk is not a traversal"; break end
+    if #scan.ids >= cfg.maxSelectionIdentity then failure = string.format("selection identity bounded to %d of %d fixtures", #scan.ids, count); break end
+    seen[idx] = true
+    scan.ids[#scan.ids + 1] = idx
+    if #scan.fixtures < cfg.maxSelectionScan then
+      -- bounded attribute scan: UI channels of this (sub)fixture
+      local target = idx
+      local okU, ui = pcall(d.uiChannels, idx)
+      if not (okU and type(ui) == "table") then ui = {} end
+      if #ui == 0 and type(d.subfixtureCount) == "function" then
+        local okS, sc = pcall(d.subfixtureCount, idx)
+        if okS and (tonumber(sc) or 0) > 0 then
+          local okSub, sub = pcall(d.subfixture, idx, 0)
+          if okSub and sub ~= nil then
+            target = sub
+            local okU2, ui2 = pcall(d.uiChannels, sub)
+            ui = (okU2 and type(ui2) == "table") and ui2 or {}
+          end
+        end
+      end
+      local channels, truncated = {}, false
+      for i = 1, #ui do
+        if i > cfg.maxUIChannels then truncated = true; break end
+        local okA, a = pcall(d.attributeByUIChannel, ui[i])
+        if okA and a ~= nil then
+          local nm = str(field(a, "name"))
+          if nm ~= nil and channels[nm] == nil then channels[nm] = ui[i] end
+        end
+      end
+      scan.fixtures[#scan.fixtures + 1] = { fixture = idx, target = target, channels = channels, channelCount = #ui }
+      if truncated then scan.partial = true; scan.limitations[#scan.limitations + 1] = string.format("fixture %s: only the first %d of %d UI channels were mapped", tostring(idx), cfg.maxUIChannels, #ui) end
+    end
+    if type(d.selectionNext) ~= "function" then failure = "deps.selectionNext missing: only the first selected fixture could be walked"; break end
+    local okN, nxt = pcall(d.selectionNext, idx)
+    if not okN then failure = "SelectionNext() failed after " .. #scan.ids .. " of " .. count .. " fixtures: " .. tostring(nxt); break end
+    idx = nxt
+    if idx == nil then ended = true end
+  end
+  if #scan.fixtures < count then scan.partial = true end
+  if #scan.fixtures == cfg.maxSelectionScan and count > cfg.maxSelectionScan then scan.limitations[#scan.limitations + 1] = string.format("selection scan bounded to %d of %d fixtures", cfg.maxSelectionScan, count) end
+  if failure then incomplete(failure)
+  elseif not ended then incomplete("the selection walk did not end")
+  elseif #scan.ids ~= count then incomplete(string.format("SelectionNext() ended after %d distinct fixture(s) but the selection count is %d", #scan.ids, count))
+  else scan.identityComplete = true end
+  return scan
+end
+
+-- Availability and programmer value state of one attribute across the scanned selection.
+--   availability: no-selection | available (every scanned fixture has the channel) | unavailable (none) | mixed (some)
+--   valueState:   none (nothing selected / no fixture has it) | value (every readable fixture agrees) | empty (the
+--                 programmer holds nothing for it) | mixed (fixtures disagree) | unavailable (GetProgPhaser gave nothing)
+local function slotState(d, scan, attrName)
+  local st = { fixtures = #scan.fixtures, with = 0, partial = scan.partial or nil }
+  if scan.count == 0 then st.availability, st.valueState, st.valueNote = "no-selection", "none", "nothing is selected"; return st end
+  local first, readErr, agree, anyValue, anyEmpty = nil, nil, true, false, false
+  for _, f in ipairs(scan.fixtures) do
+    local ui = f.channels[attrName]
+    if ui ~= nil then
+      st.with = st.with + 1
+      local ok, ph
+      if type(d.progPhaser) == "function" then ok, ph = pcall(d.progPhaser, ui) else ok, ph = false, "deps.progPhaser missing" end
+      -- KB-17 live: GetProgPhaser(ui, false) returns nil for a channel the programmer holds nothing for and a
+      -- table with step 1 for a channel that has a value; nil is therefore "empty", not "unavailable".
+      if ok and (ph == nil or type(ph) == "table") then
+        local step = type(ph) == "table" and ph[1] or nil
+        local abs = type(step) == "table" and tonumber(step.absolute) or nil
+        local rec = { fixture = f.fixture, uiChannel = ui, absolute = abs, raw = type(step) == "table" and tonumber(step.absolute_value) or nil,
+                      channelFunction = type(step) == "table" and tonumber(step.channel_function) or nil }
+        if abs == nil then anyEmpty = true else anyValue = true end
+        if first == nil then first = rec
+        elseif first.absolute ~= rec.absolute or first.channelFunction ~= rec.channelFunction then agree = false end
+      else
+        readErr = readErr or (ok and ("GetProgPhaser returned " .. type(ph)) or tostring(ph))
+      end
+    end
+  end
+  if st.with == 0 then st.availability = "unavailable"
+  elseif st.with == st.fixtures then st.availability = "available"
+  else st.availability = "mixed" end
+  if st.with == 0 then st.valueState, st.valueNote = "none", "no scanned fixture has this attribute"
+  elseif first == nil then st.valueState, st.valueNote = "unavailable", readErr or "GetProgPhaser gave nothing"
+  elseif not agree or (anyValue and anyEmpty) then
+    st.valueState, st.absolute, st.channelFunction, st.valueFixture = "mixed", first.absolute, first.channelFunction, first.fixture
+    st.valueNote = "the scanned fixtures disagree; the first fixture's state is shown"
+  elseif not anyValue then st.valueState, st.valueFixture, st.uiChannel = "empty", first.fixture, first.uiChannel; st.valueNote = "the programmer holds no value for this attribute (output values are not read here)"
+  else st.valueState, st.absolute, st.raw, st.channelFunction, st.valueFixture, st.uiChannel = "value", first.absolute, first.raw, first.channelFunction, first.fixture, first.uiChannel end
+  if readErr and st.valueState ~= "unavailable" then st.valueNote = (st.valueNote and (st.valueNote .. "; ") or "") .. "some fixtures could not be read: " .. readErr end
+  return st
+end
+
+-- Executors the bridge's owned Quickey bank (KB-12) reserved on a page: never playback targets. The
+-- dependency is optional; without it only the object class (Quickey) excludes an executor.
+local function reservedBy(d, pageNo, index)
+  if type(d.reservedExecutors) ~= "function" then return false end
+  local ok, r = pcall(d.reservedExecutors)
+  if not ok or type(r) ~= "table" then return false end
+  if r.first ~= nil then
+    return tonumber(r.page) == tonumber(pageNo) and index >= tonumber(r.first) and index < tonumber(r.first) + (tonumber(r.count) or 0)
+  end
+  for _, x in ipairs(r) do
+    if type(x) == "table" and tonumber(x.page) == tonumber(pageNo) and tonumber(x.index) == index then return true end
+  end
+  return false
+end
+
+local function displayParam(p, cfg)
+  local n = p and p.display
+  if n == nil then n = cfg.encoderDisplay end
+  positiveInt(n, "params.display")
+  return n
+end
+local function encoderIdent(p, cfg) return { display = (p and p.display) or cfg.encoderDisplay } end
+
 -- Readers: fn(deps, params) -> value, reason. A reader returns nil plus a reason when the console gave
 -- nothing usable; it raises when a dependency fails. `params` lists accepted parameters, `paramless`
--- readers are part of readAll(). Scope says what the value belongs to (KB-01).
+-- readers are part of readAll() unless they are `context` readers (KB-17: several console reads each,
+-- requested explicitly or through contextSnapshot()). Scope says what the value belongs to (KB-01).
 local READERS = {
   commandText = { scope = "ui", source = "CmdObj().cmdtext", note = "raw command-line text of the plugin user; keywords are not inferred from it",
     fn = function(d) local v = d.cmdObj().cmdtext; if v == nil then return nil, "the console returned nothing for cmdtext" end; return tostring(v) end },
@@ -164,6 +469,189 @@ local READERS = {
     end,
     identify = function(p) return { executor = p and p.executor, sequence = p and p.sequence, token = (p and p.token) or "FaderMaster" } end },
   freeze = { scope = "show", source = nil, unavailable = "no readable Freeze state was found in KB-01; this is not a false value" },
+
+  -- KB-17 control context ------------------------------------------------------------------------
+  dataPool = { scope = "user", source = "DataPool()", context = true, note = "the user's selected data pool (pages, sequences and macros are addressed inside it)",
+    fn = function(d)
+      if type(d.dataPool) ~= "function" then return nil, "deps.dataPool missing" end
+      local p = d.dataPool()
+      if p == nil then return nil, "DataPool() returned nothing" end
+      local info = handleInfo(p)
+      if info.no == nil then info.no = tonumber(field(p, "index")) end
+      return info
+    end },
+  encoderBank = { scope = "display", context = true, params = { "display" }, paramless = true,
+    source = "GetDisplayByIndex(display).EncoderBarContainer … EncoderBankSelector.SelectedItemValueI64, PresetBar.Options.PageSelector.SelectedItemValueI64, PresetBar.Context; names from CurrentProfile().EncoderBarPool",
+    note = "the configured or requested display is the authoritative encoder bar: a display without one is unavailable and no other display is substituted; indexes are 1-based (the selectors are 0-based)",
+    fn = function(d, p, cfg)
+      local n = displayParam(p, cfg)
+      local ui, why = encoderUi(d, n)
+      if not ui then return nil, why end
+      local bank0, page0, context = readBankPage(ui)
+      if bank0 == nil then return nil, "EncoderBankSelector.SelectedItemValueI64 is not readable on display " .. n end
+      if page0 == nil then return nil, "PageSelector.SelectedItemValueI64 is not readable on display " .. n end
+      local out = { display = n, bar = cfg.encoderBar, bank = { index = bank0 + 1 }, page = { index = page0 + 1 }, context = context }
+      if context == nil then out.attributeEditing = nil; out.unsupported = "the preset-bar context is not readable; whether this is attribute editing is unknown"
+      elseif context == "Default" then out.attributeEditing = true
+      else out.attributeEditing = false; out.unsupported = "preset-bar context '" .. context .. "' is not attribute editing; slots are not qualified in this context (KB-16)" end
+      local pp, preason = poolPage(d, cfg.encoderBar, bank0 + 1, page0 + 1)
+      if pp then
+        out.bank.name, out.bank.pages, out.page.name, out.page.slots, out.banks = pp.bankName, pp.pageCount, pp.pageName, pp.slotCount, pp.bankCount
+      else
+        out.poolUnavailable = preason
+      end
+      return out
+    end,
+    identify = encoderIdent },
+  encoderSlots = { scope = "display", context = true, params = { "display" }, paramless = true,
+    source = "CurrentProfile().EncoderBarPool[bar][bank][page].Encoder n (InnerObject/OuterObject in the display role), AttributeDefinitions, UserAttributePreferences, the display's EncoderPlace bands, GetUIChannels/GetAttributeByUIChannel/GetProgPhaser per selected (sub)fixture",
+    note = "ordered slot assignments of the active page with attribute identity, label, unit, readout, resolution, layer, selection availability and programmer value state; the outer ring and non-attribute slots are reported but unsupported (KB-16)",
+    fn = function(d, p, cfg)
+      local n = displayParam(p, cfg)
+      local ui, why = encoderUi(d, n)
+      if not ui then return nil, why end
+      local bank0, page0, context = readBankPage(ui)
+      if bank0 == nil or page0 == nil then return nil, "bank/page selectors are not readable on display " .. n end
+      local pp, preason = poolPage(d, cfg.encoderBar, bank0 + 1, page0 + 1)
+      if not pp then return nil, preason end
+      local places = readPlaces(ui, cfg.maxSlots)
+      local scan = scanSelection(d, cfg)
+      local layer = dget(d, d.currentProfile(), "Layer")
+      local count = math.min(pp.slotCount, cfg.maxSlots)
+      local slots = {}
+      for s = 1, count do
+        local enc = ptr(pp.page, s)
+        local slot = { slot = s, layer = layer }
+        local inner = parseRef(dget(d, enc, "InnerObject"))
+        local outer = parseRef(dget(d, enc, "OuterObject"))
+        slot.objectType = dget(d, enc, "InnerObjectType")
+        if inner == nil then slot.kind = "empty"
+        elseif inner.class == "Attribute" then slot.kind = "attribute"
+        else slot.kind = "other" end
+        if inner then slot.ref, slot.name, slot.index = inner.ref, inner.name, inner.index end
+        if outer and (inner == nil or outer.ref ~= inner.ref) then slot.outerRef, slot.outerName = outer.ref, outer.name; slot.outerUnsupported = "the outer ring is not qualified (KB-16)" end
+        local place = places[s]
+        if place then slot.label, slot.placeResolution, slot.channelFunction, slot.channelFunctionIndex = place.label, place.resolution, place.channelFunction, place.channelFunctionIndex end
+        if slot.kind == "attribute" then
+          local meta, mreason = attributeMeta(d, inner.name)
+          if meta then
+            slot.attributeIndex = slot.index or meta.index
+            slot.feature, slot.unit, slot.color, slot.channelFunctions, slot.special = meta.feature, meta.unit, meta.color, meta.channelFunctions, meta.special
+          else
+            slot.attributeIndex = slot.index
+            slot.attributeUnavailable = mreason
+          end
+          local pref = userPreference(d, inner.name)
+          if pref and pref.resolution and pref.resolutionInherited == false then slot.resolution, slot.resolutionSource = pref.resolution, "user-preference"
+          elseif meta and meta.resolution then slot.resolution, slot.resolutionSource = meta.resolution, "attribute-definition"
+          elseif place and place.resolution then slot.resolution, slot.resolutionSource = place.resolution, "encoder-band"
+          else slot.resolutionUnavailable = "no resolution readable for this slot" end
+          if pref and pref.readout and pref.readoutInherited == false then slot.readout, slot.readoutSource = pref.readout, "user-preference"
+          elseif meta and meta.readout then slot.readout, slot.readoutSource = meta.readout, "attribute-definition"
+          else slot.readoutUnavailable = "no readout readable for this slot" end
+          if pref and pref.pressFactor then slot.pressFactor = pref.pressFactor end
+          local st = slotState(d, scan, inner.name)
+          slot.availability, slot.fixtures, slot.with, slot.partial = st.availability, st.fixtures, st.with, st.partial
+          slot.valueState, slot.absolute, slot.raw, slot.valueChannelFunction, slot.valueFixture, slot.uiChannel, slot.valueNote = st.valueState, st.absolute, st.raw, st.channelFunction, st.valueFixture, st.uiChannel, st.valueNote
+        elseif slot.kind == "other" then
+          slot.availability, slot.valueState = "unsupported", "unsupported"
+          slot.unsupported = "slot object '" .. tostring(inner.ref) .. "' is not an attribute (InnerObjectType " .. tostring(slot.objectType) .. "); phaser/editor slots are not qualified (KB-16)"
+        else
+          slot.availability, slot.valueState = "empty", "none"
+        end
+        slots[s] = slot
+      end
+      return { display = n, bar = cfg.encoderBar, bank = { index = bank0 + 1, name = pp.bankName }, page = { index = page0 + 1, name = pp.pageName }, context = context, attributeEditing = (context == "Default") and true or (context ~= nil and false or nil),
+               layer = layer, selection = { count = scan.count, scanned = #scan.fixtures, fixtures = scan.ids, identityComplete = scan.identityComplete, partial = scan.partial, limitations = scan.limitations },
+               slots = slots, slotCount = pp.slotCount, truncated = pp.slotCount > count }
+    end,
+    identify = encoderIdent },
+  executorTarget = { scope = "page", context = true, params = { "executor" },
+    source = "GetExecutor(executor): Object, KeyPress/KeyUnpress/KeyUnpressCombined, Fader, Encoder, EncoderLeft/EncoderRight, ExecutorConfiguration (display role); the object's Appearance.BackRGBA, HasActivePlayback(), GetFader({token of the configured fader function})",
+    note = "one executor of the user's current page as a control target: assigned-object identity, configured functions, the configured fader function's level, activity and appearance; a Quickey object (the owned KB-12 bank) or an executor the bridge's bank reserved is never a playback target",
+    fn = function(d, p)
+      local n = p and p.executor
+      if type(n) ~= "number" then error("params.executor (number) is required", 0) end
+      local exec, page = d.executor(n)
+      local pageInfo = handleInfo(page)
+      local out = { executor = n, page = pageInfo }
+      local reserved = reservedBy(d, pageInfo and pageInfo.no, n)
+      if exec == nil then
+        out.empty, out.playbackTarget = true, false
+        out.reason = reserved and "reserved by the bridge's owned Quickey bank (empty right now)" or "the executor is empty"
+        if reserved then out.reserved = true end
+        return out
+      end
+      local okO, obj = pcall(function() return exec.Object end)
+      if not okO then error("reading the executor's Object failed: " .. tostring(obj), 0) end
+      out.empty = obj == nil
+      out.functions = { keyPress = dget(d, exec, "KeyPress"), keyUnpress = dget(d, exec, "KeyUnpress"), keyUnpressCombined = dget(d, exec, "KeyUnpressCombined"),
+                        fader = dget(d, exec, "Fader"), encoder = dget(d, exec, "Encoder"), encoderLeft = dget(d, exec, "EncoderLeft"), encoderRight = dget(d, exec, "EncoderRight") }
+      out.configuration = dget(d, exec, "ExecutorConfiguration")
+      out.isXKey = dget(d, exec, "IsXKey")
+      out.width = tonumber(dget(d, exec, "Width"))
+      if obj == nil then
+        out.playbackTarget = false
+        out.reason = reserved and "reserved by the bridge's owned Quickey bank (no object right now)" or "no assigned object"
+        if reserved then out.reserved = true end
+        return out
+      end
+      out.assigned = handleInfo(obj)
+      local app = field(obj, "Appearance")
+      if app ~= nil and (type(app) == "userdata" or type(app) == "table") then
+        out.appearance = { name = str(field(app, "name")), backRGBA = dget(d, app, "BackRGBA"), color = dget(d, app, "Color") }
+      else
+        out.appearanceUnavailable = "the object has no Appearance"
+      end
+      local okA, act = pcall(function() return obj:HasActivePlayback() end)
+      if okA then
+        local b, why = toBool(act)
+        if b ~= nil then out.active = b else out.activeUnavailable = why end
+      else
+        out.activeUnavailable = "HasActivePlayback raised: " .. tostring(act)
+      end
+      local fn = out.functions.fader
+      if fn ~= nil and fn ~= "" then
+        local token = "Fader" .. fn:gsub("%s+", "")
+        local okV, v = pcall(function() return obj:GetFader({ token = token }) end)
+        if okV and type(v) == "number" then
+          local okT, tx = pcall(function() return obj:GetFaderText({ token = token }) end)
+          out.level = { token = token, value = v, text = (okT and tx ~= nil) and tostring(tx) or nil }
+        else
+          out.level = { token = token, unavailable = okV and ("GetFader returned " .. type(v) .. ", not a level") or ("GetFader raised: " .. tostring(v)) }
+        end
+      else
+        out.level = { unavailable = "no fader function is configured on this executor" }
+      end
+      if out.assigned.class == "Quickey" then
+        out.playbackTarget, out.reason = false, "a Quickey object is never a playback target (owned Quickey bank, KB-12)"
+      elseif reserved then
+        out.playbackTarget, out.reserved, out.reason = false, true, "reserved by the bridge's owned Quickey bank"
+      else
+        out.playbackTarget = true
+      end
+      return out
+    end,
+    identify = function(p) return { executor = p and p.executor } end },
+  pageExecutors = { scope = "page", context = true, source = "CurrentExecPage() children with an Object", note = "index, object name and class of every assigned executor on the user's current page (bounded by config.maxExecutors); use executorTarget per executor for functions and levels",
+    fn = function(d, p, cfg)
+      local page = d.currentExecPage()
+      if page == nil then return nil, "CurrentExecPage() returned nothing" end
+      local out = { page = handleInfo(page), executors = {}, truncated = false }
+      local total = countOf(page)
+      for i = 1, total do
+        local e = ptr(page, i)
+        if e ~= nil then
+          local okO, obj = pcall(function() return e.Object end)
+          if okO and obj ~= nil then
+            if #out.executors >= cfg.maxExecutors then out.truncated = true; break end
+            local idx = tonumber(field(e, "index")) or tonumber(dget(d, e, "No"))
+            out.executors[#out.executors + 1] = { index = idx, name = str(field(obj, "name")), class = classOf(obj) }
+          end
+        end
+      end
+      return out
+    end },
 }
 
 -- Compatibility alias (0.1.0 named sequence activity after the executor). The result keeps the
@@ -189,7 +677,7 @@ local function describeReaders()
     local r = READERS[n]
     local params = nil
     if r.params then params = {}; for i, p in ipairs(r.params) do params[i] = p end end
-    out[#out + 1] = { name = n, scope = r.scope, source = r.source, params = params, paramless = r.params == nil or r.paramless == true, note = r.note, unavailable = r.unavailable }
+    out[#out + 1] = { name = n, scope = r.scope, source = r.source, params = params, paramless = r.params == nil or r.paramless == true, context = r.context, note = r.note, unavailable = r.unavailable }
   end
   for a, al in pairs(ALIASES) do out[#out + 1] = { name = a, alias = al.of, scope = READERS[al.of].scope, source = READERS[al.of].source, note = al.note } end
   return out
@@ -207,6 +695,21 @@ local function consoleDeps(env)
     sequence = function(n) local list = env.ObjectList("Sequence " .. tostring(n)); return list and list[1] end,
     executor = function(n) return env.GetExecutor(n) end,
     selectedSequence = function() return env.SelectedSequence() end,
+    -- KB-17 control context (the KB-16 read paths). enums gives the display role for Get(prop, role).
+    enums = function() return env.Enums end,
+    dataPool = function() return env.DataPool() end,
+    selectionCount = function() return env.SelectionCount() end,
+    selectionFirst = function() return env.SelectionFirst() end,
+    selectionNext = function(i) return env.SelectionNext(i) end,
+    uiChannels = function(i) return env.GetUIChannels(i) end,
+    attributeByUIChannel = function(ui) return env.GetAttributeByUIChannel(ui) end,
+    progPhaser = function(ui) return env.GetProgPhaser(ui, false) end,
+    subfixtureCount = function(i) return env.GetSubfixtureCount(i) end,
+    subfixture = function(i, n) return env.GetSubfixture(i, n) end,
+    attributeDefinitions = function() return env.Root().ShowData.LivePatch.AttributeDefinitions.Attributes end,
+    attributeIndex = function(n) return env.GetAttributeIndex(n) end,
+    -- reservedExecutors is supplied by the consumer that owns a Quickey bank (the bridge): a function
+    -- returning { page, first, count } or a list of { page, index }. Optional.
     -- Identity of what the readers observe; a change invalidates cached observations.
     showFile = function() return env.Root().MANetSocket:Get("ShowFile") end,
     userName = function() local u = env.CurrentUser(); return u and tostring(u.name) or nil end,
@@ -237,7 +740,7 @@ local function itemsFor(spec, config)
     local readers = {}
     for _, n in ipairs(READER_NAMES) do
       local r = READERS[n]
-      if not r.params or r.paramless then readers[#readers + 1] = n end
+      if (not r.params or r.paramless) and not r.context then readers[#readers + 1] = n end
     end
     if type(spec.readers) == "table" then for _, n in ipairs(spec.readers) do readers[#readers + 1] = n end end
     spec = { items = spec.items, readers = readers, display = spec.display, displays = spec.displays, executors = spec.executors, sequences = spec.sequences, tokens = spec.tokens }
@@ -424,7 +927,7 @@ function Instance:readAll(now)
   local out = {}
   for _, name in ipairs(READER_NAMES) do
     local r = READERS[name]
-    if not r.params or r.paramless then out[name] = self:read(name, nil, now) end
+    if (not r.params or r.paramless) and not r.context then out[name] = self:read(name, nil, now) end
   end
   return out
 end
@@ -512,6 +1015,224 @@ function Instance:snapshot(now)
            items = items, notObserved = notObserved, watched = #self._watch }
 end
 
+-------------------------------------------------------------------------------
+-- KB-17 context snapshot: the context readers assembled into one bounded, explicit description of what
+-- each control would operate, with a binding generation.
+-------------------------------------------------------------------------------
+-- Items of a snapshot spec = { display?, executors? }. Shared by contextSnapshot() (live reads) and
+-- watchContext() (service() polling), so the cache keys agree.
+local function contextItems(spec, config)
+  spec = spec or {}
+  config = config or DEFAULTS
+  local display = spec.display
+  if display == nil then display = config.encoderDisplay end
+  local items = { { name = "dataPool" }, { name = "page" }, { name = "encoderBank", params = { display = display } }, { name = "encoderSlots", params = { display = display } } }
+  local limitations = {}
+  if spec.executors ~= nil and type(spec.executors) ~= "table" then limitations[#limitations + 1] = "executors must be a list of executor numbers; ignored" end
+  if type(spec.executors) == "table" then
+    local max = config.maxExecutors or DEFAULTS.maxExecutors
+    for i, n in ipairs(spec.executors) do
+      if i > max then limitations[#limitations + 1] = string.format("executors truncated to %d of %d", max, #spec.executors); break end
+      items[#items + 1] = { name = "executorTarget", params = { executor = n } }
+    end
+  end
+  return items, limitations, display
+end
+
+-- The binding key of a spec: one generation record per distinct (display, executor list), so a consumer
+-- polling one spec sees a generation that moves only when that spec's meaning moved.
+local function generationKey(spec, display)
+  local parts = { "display=" .. tostring(display) }
+  if type(spec) == "table" and type(spec.executors) == "table" then
+    local xs = {}
+    for i, n in ipairs(spec.executors) do xs[i] = tostring(n) end
+    parts[#parts + 1] = "executors=" .. table.concat(xs, ",")
+  end
+  return table.concat(parts, ";")
+end
+
+-- What an input would operate, as text: identity, epoch, bank/page/context, the selection's identity
+-- (count and the scanned fixtures), each slot's object, resolution, readout, channel function, layer and
+-- availability, the executor page, each executor's assignment, every configured function (key press,
+-- release, combined release, fader, encoder, encoder left/right), fader token and playback-target status. Values, levels and activity are left
+-- out on purpose: they change without changing what a control means. An unavailable part is included
+-- with its reason, so losing or regaining a reading is itself a change of meaning.
+local function bindingDigest(snap)
+  local parts = { "epoch=" .. tostring(snap.epoch) }
+  local id = snap.identity or {}
+  parts[#parts + 1] = string.format("show=%s;user=%s;profile=%s;pool=%s;display=%s", tostring(id.showFile), tostring(id.user), tostring(id.profile),
+    tostring(id.dataPool and (id.dataPool.name .. "#" .. tostring(id.dataPool.no)) or id.dataPoolUnavailable), tostring(snap.display))
+  local e = snap.encoder
+  if e and e.available then
+    parts[#parts + 1] = string.format("bank=%s/%s;page=%s/%s;context=%s", tostring(e.value.bank.index), tostring(e.value.bank.name), tostring(e.value.page.index), tostring(e.value.page.name), tostring(e.value.context))
+  else
+    parts[#parts + 1] = "bank=unavailable:" .. tostring(e and (e.reason or e.error))
+  end
+  local s = snap.slots
+  if s and s.available then
+    -- Selection identity (KB-17 review): the same attributes on different fixtures are a different target.
+    local sel = s.value.selection or {}
+    local ids = {}
+    for i, id in ipairs(sel.fixtures or {}) do ids[i] = tostring(id) end
+    parts[#parts + 1] = string.format("selection=%s:%s%s", tostring(sel.count), table.concat(ids, ","), sel.identityComplete == false and ":incomplete" or "")
+    for _, sl in ipairs(s.value.slots) do
+      parts[#parts + 1] = string.format("slot%d=%s|%s|%s|%s|%s|%s|%s|%s", sl.slot, tostring(sl.kind), tostring(sl.ref), tostring(sl.resolution), tostring(sl.readout),
+        tostring(sl.channelFunction), tostring(sl.layer), tostring(sl.availability), tostring(sl.outerRef))
+    end
+  else
+    parts[#parts + 1] = "slots=unavailable:" .. tostring(s and (s.reason or s.error))
+  end
+  parts[#parts + 1] = "execPage=" .. tostring(snap.executorPage and snap.executorPage.no or snap.executorPageUnavailable)
+  for _, x in ipairs(snap.executors or {}) do
+    if x.available then
+      local v, f = x.value, x.value.functions or {}
+      parts[#parts + 1] = string.format("exec%s=%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s", tostring(v.executor), tostring(v.empty), tostring(v.assigned and (v.assigned.addr or v.assigned.name)),
+        tostring(v.assigned and v.assigned.class), tostring(f.keyPress), tostring(f.keyUnpress), tostring(f.keyUnpressCombined), tostring(f.fader), tostring(f.encoder), tostring(f.encoderLeft), tostring(f.encoderRight),
+        tostring(v.level and v.level.token), tostring(v.playbackTarget))
+    else
+      parts[#parts + 1] = string.format("exec%s=unavailable:%s", tostring(x.params and x.params.executor), tostring(x.reason or x.error))
+    end
+  end
+  return table.concat(parts, "\n")
+end
+
+function Instance:contextItems(spec) return contextItems(spec, self._config) end
+
+-- Subscribes the snapshot's items for service() polling (replaces the watch list, like watch()).
+function Instance:watchContext(spec, now)
+  requireReady(self, "watchContext")
+  local items, limitations = contextItems(spec, self._config)
+  local r = self:watch(items, now)
+  r.limitations = limitations
+  r.items = items
+  return r
+end
+
+-- One bounded snapshot. opts.cached = true assembles it from the watched observations (nothing is read;
+-- items never observed in this epoch are unavailable with that reason and the snapshot is stale); otherwise
+-- every item is read now, one after another (not atomic). spec.allExecutors = true (live only) adds every
+-- assigned executor of the current page through pageExecutors, bounded by config.maxExecutors.
+function Instance:contextSnapshot(spec, now, opts)
+  requireReady(self, "contextSnapshot")
+  spec = spec or {}
+  opts = opts or {}
+  if type(spec) ~= "table" then error(NAME .. ": contextSnapshot(spec) needs a table", 2) end
+  local cached = opts.cached == true
+  local items, limitations, display = contextItems(spec, self._config)
+  local pageList
+  if spec.allExecutors == true then
+    if cached then
+      limitations[#limitations + 1] = "allExecutors is a live-read option; a cached snapshot covers the executors of the watched spec"
+    else
+      local pe = self:read("pageExecutors", nil, now)
+      if pe.available then
+        pageList = pe.value
+        local present = {}
+        for _, it in ipairs(items) do if it.name == "executorTarget" then present[it.params.executor] = true end end
+        local count = 0
+        for _, it in ipairs(items) do if it.name == "executorTarget" then count = count + 1 end end
+        for _, x in ipairs(pe.value.executors) do
+          if x.index ~= nil and not present[x.index] then
+            if count >= self._config.maxExecutors then limitations[#limitations + 1] = string.format("allExecutors bounded to %d executors", self._config.maxExecutors); break end
+            items[#items + 1] = { name = "executorTarget", params = { executor = x.index } }
+            present[x.index] = true
+            count = count + 1
+          end
+        end
+        if pe.value.truncated then limitations[#limitations + 1] = "pageExecutors was truncated; not every assigned executor is listed" end
+      else
+        limitations[#limitations + 1] = "allExecutors: pageExecutors unavailable (" .. tostring(pe.reason or pe.error) .. ")"
+      end
+    end
+  end
+  local invalidated = nil
+  if not cached then invalidated = self:_checkIdentity(now) end
+  local obs, anyStale, notObserved = {}, false, 0
+  for _, it in ipairs(items) do
+    local alias = ALIASES[it.name]
+    local r = READERS[alias and alias.of or it.name]
+    local _, key = identifyItem(r, it.name, it.params, self._config)
+    if cached then
+      local c = self._cache[key]
+      if c ~= nil and c.epoch == self._epoch then
+        local copy = {}
+        for k, v in pairs(c) do copy[k] = v end
+        local ageMs = (now ~= nil and c.observedAt ~= nil) and math.floor((now - c.observedAt) * 1000 + 0.5) or nil
+        copy.ageMs = ageMs
+        copy.stale = (ageMs == nil) or ageMs > self._config.staleMs or self._identityUncertain ~= nil
+        if copy.stale then anyStale = true end
+        obs[#obs + 1] = copy
+      else
+        notObserved = notObserved + 1
+        anyStale = true
+        obs[#obs + 1] = { name = it.name, key = key, params = it.params, available = false, epoch = self._epoch, stale = true,
+                          reason = self._lastInvalidation and ("not observed since " .. tostring(self._lastInvalidation.reason) .. " (watchContext() and service() first)") or "not observed yet (watchContext() and service() first)" }
+      end
+    else
+      obs[#obs + 1] = self:read(it.name, it.params, now)
+    end
+  end
+  local identity = {}
+  for k, v in pairs(self._identity or {}) do identity[k] = v end
+  local snap = { observedAt = now, epoch = self._epoch, atomic = false, cached = cached or nil, identity = identity, identityUncertain = self._identityUncertain,
+                 invalidated = invalidated, display = display,
+                 authoritativeDisplay = { display = display, rule = (spec.display ~= nil) and "requested" or "configured",
+                                          note = "the encoder bar of this display is the one described; a display without an encoder bar is unavailable and no other display is substituted" },
+                 executors = {}, limitations = limitations, stale = cached and anyStale or nil, notObserved = cached and notObserved or nil }
+  for _, o in ipairs(obs) do
+    if o.name == "dataPool" then
+      if o.available then identity.dataPool = o.value else identity.dataPoolUnavailable = o.reason or o.error end
+    elseif o.name == "page" then
+      if o.available then snap.executorPage = o.value else snap.executorPageUnavailable = o.reason or o.error end
+    elseif o.name == "encoderBank" then snap.encoder = o
+    elseif o.name == "encoderSlots" then snap.slots = o
+    elseif o.name == "executorTarget" then snap.executors[#snap.executors + 1] = o end
+  end
+  if pageList then snap.pageExecutors = pageList end
+  local digest = bindingDigest(snap)
+  local gkey = generationKey(spec, display)
+  local g = self._generations[gkey]
+  snap.bindingKey = gkey
+  local selIncomplete = snap.slots and snap.slots.available and snap.slots.value.selection and snap.slots.value.selection.identityComplete == false
+  if selIncomplete then
+    -- The scanned attributes are bounded, the identity walk is bounded too: beyond its bound what an encoder
+    -- would operate is not fully known, so no generation is recorded or advanced.
+    snap.generation = nil
+    snap.generationUnknown = true
+    snap.lastGeneration = g and g.generation or nil
+    snap.generationNote = "no generation: the selection identity is incomplete (" .. tostring(snap.slots.value.selection.limitations[#snap.slots.value.selection.limitations]) .. ")"
+    return snap
+  end
+  if cached and notObserved > 0 then
+    -- Not every part has been observed in this epoch: the meaning is unknown, so no generation is
+    -- recorded or advanced. The last recorded one (if any) is reported as such, never as current.
+    snap.generation = nil
+    snap.generationUnknown = true
+    snap.lastGeneration = g and g.generation or nil
+    snap.generationNote = "no generation: " .. notObserved .. " item(s) not observed in this epoch (service() must observe every watched item first)"
+    return snap
+  end
+  if g == nil then
+    g = { generation = 1, digest = digest, since = now }
+    self._generations[gkey] = g
+    self._generationOrder[#self._generationOrder + 1] = gkey
+    while #self._generationOrder > self._config.maxGenerations do
+      local old = table.remove(self._generationOrder, 1)
+      self._generations[old] = nil
+    end
+    snap.generationChanged = false
+    snap.generationNote = "first snapshot of this spec in this instance; compare generations of one spec within one instance (epoch) only"
+  elseif g.digest ~= digest then
+    g.generation, g.digest, g.since = g.generation + 1, digest, now
+    snap.generationChanged = true
+  else
+    snap.generationChanged = false
+  end
+  snap.generation, snap.generationSince = g.generation, g.since
+  if cached and anyStale then snap.generationNote = (snap.generationNote and (snap.generationNote .. "; ") or "") .. "built from stale observations: the generation may lag the console" end
+  return snap
+end
+
 local function new(opts)
   opts = opts or {}
   if type(opts.owner) ~= "string" or opts.owner == "" then error(NAME .. ".new: opts.owner (non-empty string) is required", 2) end
@@ -525,11 +1246,12 @@ local function new(opts)
     config[k] = v
   end
   return setmetatable({ _owner = opts.owner, _deps = opts.deps or {}, _config = config, _state = "created", _reads = 0, _serviced = 0,
-                        _epoch = 1, _cache = {}, _watch = {}, _cursor = 0 }, Instance)
+                        _epoch = 1, _cache = {}, _watch = {}, _cursor = 0, _generations = {}, _generationOrder = {} }, Instance)
 end
 
 local M = { NAME = NAME, VERSION = VERSION, API_VERSION = API_VERSION, READERS = readerNames(), new = new, consoleDeps = consoleDeps,
-            itemsFor = itemsFor, describe = describeReaders, toBool = toBool, keyOf = keyOf }
+            itemsFor = itemsFor, describe = describeReaders, toBool = toBool, keyOf = keyOf,
+            contextItems = contextItems, parseRef = parseRef, bindingDigest = bindingDigest }
 
 -- Registration (the KB-02 loading contract). The console runs this chunk once per import or show
 -- load with (pluginName, componentName, signalTable, handle). signalTable is one table per plugin

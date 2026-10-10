@@ -8,9 +8,9 @@ The bridge plugin ships two reusable, instance-based Lua modules as extra compon
 | Component | File | Purpose |
 | --- | --- | --- |
 | `gma3_mcp_hardkeys` | [plugin/gma3_mcp_hardkeys.lua](../plugin/gma3_mcp_hardkeys.lua) | Owned input sessions, leases, deadline servicing and recovery over a backend adapter; read-only logical-key resolution |
-| `gma3_mcp_feedback` | [plugin/gma3_mcp_feedback.lua](../plugin/gma3_mcp_feedback.lua) | Read-only console state readers confirmed in KB-01, with freshness and bounded polling (KB-06) |
+| `gma3_mcp_feedback` | [plugin/gma3_mcp_feedback.lua](../plugin/gma3_mcp_feedback.lua) | Read-only console state readers confirmed in KB-01, with freshness and bounded polling (KB-06); control-context readers and binding snapshots (KB-17) |
 
-Module API version **1**; `gma3_mcp_hardkeys` **0.10.0** (KB-03 to KB-05; 0.5.0 resolves any `Enums.VirtualKeyCode` name, KB-07; 0.6.0 adds the per-key routing policy, KB-11; 0.7.0 adds the owned Quickey bank, KB-12; 0.8.0 adds the owned-Quickey backend, KB-13; 0.9.0 adds scoped shortcut-mode changes and text routes, KB-14; 0.10.0 adds the mixed backend and the unqualified-mix refusals, KB-15), `gma3_mcp_feedback` **0.2.0** (KB-02 + KB-06).
+Module API version **1**; `gma3_mcp_hardkeys` **0.10.0** (KB-03 to KB-05; 0.5.0 resolves any `Enums.VirtualKeyCode` name, KB-07; 0.6.0 adds the per-key routing policy, KB-11; 0.7.0 adds the owned Quickey bank, KB-12; 0.8.0 adds the owned-Quickey backend, KB-13; 0.9.0 adds scoped shortcut-mode changes and text routes, KB-14; 0.10.0 adds the mixed backend and the unqualified-mix refusals, KB-15), `gma3_mcp_feedback` **0.3.0** (KB-02 + KB-06; 0.3.0 adds the control-context readers and `contextSnapshot()`, KB-17).
 Four backend adapters dispatch: the **fake backend** (records events, simulates aggregate console key state,
 nothing reaches a console key), the **keyboard backend** (`keyboardBackend(deps)`, KB-04: the console's
 `Keyboard()` PC-key emulation; console keys are really pressed), the **owned-Quickey backend**
@@ -558,10 +558,47 @@ is unavailable with the error, never reported empty. `status()` reports `epoch`,
 `watch()`/`snapshot()` path is for surface consumers that poll between input deadlines. Multiple reads are never an
 atomic snapshot against other console activity.
 
+## Control context and binding snapshots (`gma3_mcp_feedback` 0.3.0, KB-17)
+
+Five readers describe what a surface control would operate, each through the read paths KB-16 qualified live
+([record](probes/kb-16-encoders-macos-2.5.1.md)); they are **not** part of `readAll()`/`all` (each costs several
+console reads) and are requested explicitly, through `contextSnapshot()`, or watched for `service()` polling.
+
+| Reader | Scope | Value |
+| --- | --- | --- |
+| `dataPool` | user | `{name, no}` of `DataPool()` |
+| `encoderBank` | display | `params.display` (default `config.encoderDisplay` = 1): `{display, bar, bank {index, name, pages}, page {index, name, slots}, banks, context, attributeEditing, unsupported?, poolUnavailable?}`; indexes are 1-based (the selectors' `SelectedItemValueI64` is 0-based); `context ~= "Default"` is available but `unsupported` (editors, timing, phasers are not qualified); a selector value without a pool page keeps the index and reports `poolUnavailable` |
+| `encoderSlots` | display | the pool page's ordered slots (`config.maxSlots` = 5), **flat** records: `slot, kind (attribute | other | empty), ref, name, attributeIndex, objectType, label` (the on-screen band), `feature, unit, readout, readoutSource, resolution, resolutionSource` (`user-preference` > `attribute-definition` > `encoder-band`), `pressFactor, layer` (the profile's), `color, channelFunctions, channelFunction` (the selector's text), `availability` (`no-selection | available | unavailable | mixed`), `fixtures, with, partial`, `valueState` (`none | value | empty | mixed | unavailable`), `absolute, raw, valueChannelFunction, valueFixture, uiChannel, valueNote`, `outerRef/outerName/outerUnsupported`, `unsupported`, `attributeUnavailable`; plus `selection {count, scanned, fixtures, identityComplete, partial, limitations}`: the attribute scan is bounded by `config.maxSelectionScan` (8) fixtures and `config.maxUIChannels` (64) channels each (a grouping fixture read through its first subfixture), while `fixtures` is the **whole** selection's ids walked without channel reads up to `config.maxSelectionIdentity` (512); `identityComplete` is true only after a traversal that ended by itself within that bound with exactly `count` distinct ids (a nil or raising `SelectionFirst`, a `SelectionNext` that ends early, repeats a fixture, fails or is missing leave it false) |
+| `executorTarget` | page | `params.executor`: `{executor, page, empty, assigned, functions {keyPress, keyUnpress, keyUnpressCombined, fader, encoder, encoderLeft, encoderRight}, configuration, isXKey, width, level {token, value, text} | {unavailable}` (the token of the **configured** fader function, `Fader<fn>`), `active | activeUnavailable, appearance {name, backRGBA, color} | appearanceUnavailable, playbackTarget, reason?, reserved?}`; a `Quickey` object or an executor inside `deps.reservedExecutors()` (the bridge wires its KB-12 bank) is never a playback target |
+| `pageExecutors` | page | index, name and class of every assigned executor of the current page, bounded by `config.maxExecutors` |
+
+A display without an encoder bar (or one that does not exist) makes `encoderBank`/`encoderSlots` unavailable with the
+reason; **no other display is substituted**: the authoritative encoder bar is the one the consumer configured
+(`config.encoderDisplay`) or requested (`params.display`), never one the module found. KB-16 saw an encoder bar on
+display 1 only on onPC. Every missing property, deleted assignment, mixed selection or unsupported context is an
+explicit field, never a default.
+
+| Method | Effect |
+| --- | --- |
+| `contextItems(spec)` (also a module function) | The items of `spec = { display?, executors? }`: `dataPool`, `page`, `encoderBank`, `encoderSlots` and one `executorTarget` per executor (bounded by `maxExecutors`, the rest a limitation). |
+| `contextSnapshot(spec, now, opts?)` | One bounded snapshot: `{observedAt, epoch, atomic=false, identity {showFile, user, profile, dataPool | dataPoolUnavailable}, identityUncertain, invalidated?, display, authoritativeDisplay {display, rule = configured | requested, note}, executorPage | executorPageUnavailable, encoder, slots, executors[], pageExecutors?, limitations[], generation, generationChanged, generationSince, bindingKey, generationNote?}` where `encoder`, `slots` and each executor are observations (`available`, `value` or `reason`/`error`). `spec.allExecutors = true` adds every assigned executor of the page (live reads only). `opts.cached = true` assembles the snapshot from the watched observations without reading: items not observed in this epoch are unavailable (`notObserved`, `stale`), and while any item is missing **no generation is claimed** (`generationUnknown`, `lastGeneration`). |
+| `watchContext(spec, now)` | `watch()` of `contextItems(spec)` (replaces the watch list) so `service()` keeps the snapshot's items observed at the loop's pace; the console is followed without any surface keypress. |
+
+**Binding generation.** `generation` starts at 1 per distinct spec (`bindingKey`: display and executor list; at most
+`config.maxGenerations` = 8 records per instance) and increments whenever the snapshot's *meaning* changed: epoch and
+identity (show, user, profile, data pool), bank/page/context, the selection's identity (count and every fixture id,
+not only the scanned ones), each slot's object, resolution, readout, channel function, layer, availability and outer
+object, the executor page, each executor's assignment, class, every configured function (key press, release, combined
+release, fader, encoder, encoder left/right), fader token and playback-target status, and the availability (with reason)
+of any of these parts. While the selection identity is incomplete (`identityComplete = false`) no generation is
+claimed (`generationUnknown`, `lastGeneration`), exactly as for an unobserved part of a cached snapshot. A programmer value, a fader level, activity or a label alone never moves it. Generations are comparable
+only for one spec within one instance (a bridge restart is a new instance); the bridge's `feedback.context` op
+exposes them ([reference](reference.md#control-context-plugin-v0130-kb-17)).
+
 ## Vendoring into another plugin (mtpnxk)
 
-Use the immutable upstream revision **`3960334f295aaa2dcd98beb62beeccfcccbef46e`** (KB-15, hardkeys 0.10.0 /
-feedback 0.2.0) for the current module pair; the earlier pairs were `6e0d9c1918dd22e4703a9a36cf0440b20b4014ee`
+Use the immutable upstream revision **`c8dbb3aa6edf352fc977d5196399bb6daf222d2b`** (KB-17, hardkeys 0.10.0 /
+feedback 0.3.0) for the current module pair; the earlier pairs were `3960334f295aaa2dcd98beb62beeccfcccbef46e` (KB-15, hardkeys 0.10.0 / feedback 0.2.0), `6e0d9c1918dd22e4703a9a36cf0440b20b4014ee`
 (`main` after PR #12, hardkeys 0.5.0, the pair mtpnxk qualified in KB-08) and `9da14544155f921c5dd4fd1cbb9a1ea4bd6f6e78`
 (the reviewed hardkeys 0.4.0). The machine-readable [modules.lock.json](../plugin/modules.lock.json) records the
 repository, full revision, module versions, API versions and SHA-256 of each file. This is a vendoring
@@ -570,7 +607,7 @@ manifest, not an automatic updater or a runtime dependency on GitHub.
 | File | Module version | API version | SHA-256 |
 | --- | --- | --- | --- |
 | `plugin/gma3_mcp_hardkeys.lua` | 0.10.0 | 1 | `a57ebd29af3b2c7e9e06ef3dcd8b7059c775db83b0dc61760f49e75973cc7dc3` |
-| `plugin/gma3_mcp_feedback.lua` | 0.2.0 | 1 | `349bb2ed1cc88bdbaf197aa20e957811df44306133c04652663da01a585d2cf9` |
+| `plugin/gma3_mcp_feedback.lua` | 0.3.0 | 1 | `7949a11282b97cdbf71cf596957f13231807b217c40c315e10623856053938c0` |
 
 1. Obtain both Lua files from that exact revision of `bdstark/GrandMA3MCP`, rather than a moving branch.
    Copy them unchanged with [LICENSE](../LICENSE) and the manifest into the surface package. The manifest's
@@ -590,13 +627,13 @@ manifest, not an automatic updater or a runtime dependency on GitHub.
 
 See the [tested platform/version matrix](compatibility.md) for the evidence and remaining gaps.
 mtpnxk vendored the 0.5.0 pair (its `tools/ma3/VENDOR.md` records those commits and hashes) and qualified the surface
-consumer against it on macOS in its KB-08 record; the 0.10.0 pin above is what its KB-15 work vendors next (the mixed
-backend, the `quickkey` default and the `unqualified-mix` refusals), to be qualified there.
+consumer against it on macOS in its KB-08 record, then the 0.10.0/0.2.0 pair for KB-15; the 0.10.0/0.3.0 pin above is
+what its KB-17 surface half vendors (the context snapshot carried as a `context` message), to be qualified there.
 
 ## Verification
 
 `npm test` runs [test/lua/modules_test.lua](../test/lua/modules_test.lua) (modules alone, no console
-API, route resolution including the native/ambiguous cases), [test/lua/hardkeys_sessions_test.lua](../test/lua/hardkeys_sessions_test.lua)
+API, route resolution including the native/ambiguous cases), [test/lua/feedback_context_test.lua](../test/lua/feedback_context_test.lua) (KB-17 against a fake console: the registry, bank/page/context on the configured and requested display, slots with definitions, preferences, bands, mixed and empty selections, bounded scans, phaser and empty slots, executor targets including Quickey and reserved exclusions, page executors, live snapshots and every generation rule, cached snapshots through `watchContext()`/`service()`, missing dependencies), [test/lua/hardkeys_sessions_test.lua](../test/lua/hardkeys_sessions_test.lua)
 (the KB-03 session lifecycle on the fake backend: ownership, aliases, leases, taps, bounded deadline servicing, route
 changes, failed releases, disconnect, disable, dispose/adopt; the KB-04 keyboard adapter over stubbed console
 deps: argument passing, pre-dispatch refusals, raising `Keyboard()`, MASTATE readback, exclusive holds, combos,
@@ -612,7 +649,7 @@ a flooding client that cannot starve deadline servicing; and since 0.7.0 the `[b
 shared-connection ownership, `input.sequence` serviced by the loop, a disconnect mid-sequence and cleanup while
 input is disabled; and since 0.8.0 the `feedback.describe`/`feedback.read` ops with Lua and input disabled, partial
 failures, displays, executor and sequence expansion, bounds, the show-change epoch bump, `[no-feedback]` and a read
-answered while another connection owns an interaction; and since 0.9.0 the `bank=` argument: provisioning at start, the record kept across a dispose and adopted at the next load, `bank status`/`verify`/`teardown`, the in-use and preflight refusals; and since 0.10.0 `input=quickey`: the backend and routing switch, a tap issuing `Assign`/`Press`/`Unpress Page`, refusals through the bridge, the switch back; and since 0.12.0 `input=mixed`: overrides accepted, `dispatchBackend` per key, a Quickey hold and a Keyboard() hold each refusing the other kind as `unqualified-mix`) and [test/lua/hardkeys_bank_test.lua](../test/lua/hardkeys_bank_test.lua) (the KB-12 bank against a fake pool: spec validation, discovery, preflight refusals, creation with readback, reuse, partial-failure rollback, verification, dispatch-time target checks, staleness, teardown, dispose/adopt) and [test/lua/hardkeys_quickey_test.lua](../test/lua/hardkeys_quickey_test.lua) (the KB-13 backend against a fake console with executor key state: capabilities and routing reports, taps through executors, holds, chords, duplicates, per-code and discovered-code refusals in both press orders and in sequence preflight, bank-side refusals right before the press, unreserved/foreign executors, release integrity after reassignment, deletion, show change, console refusals and raises, teardown in use, restart with targets, sequences) and [test/lua/hardkeys_mixed_test.lua](../test/lua/hardkeys_mixed_test.lua) (the KB-15 mixed backend: construction and merged capabilities, overrides validated against the parts, `dispatchBackend`, no fallback for unavailable Quickey routes, dispatch and release through the recorded part, recover and adopt across instances, every `unqualified-mix` refusal for presses, combos, sequences and mode changes, the sequence waiting for a restoration, the rules on the fake backend). `node scripts/kb13-probe.mjs run` exercises it against a live bridge started with `input=quickey` and a provisioned bank ([record](probes/kb-13-quickey-macos-2.5.1.md)). `node scripts/kb03-probe.mjs run` exercises the lifecycle against a live bridge
+answered while another connection owns an interaction; and since 0.9.0 the `bank=` argument: provisioning at start, the record kept across a dispose and adopted at the next load, `bank status`/`verify`/`teardown`, the in-use and preflight refusals; and since 0.10.0 `input=quickey`: the backend and routing switch, a tap issuing `Assign`/`Press`/`Unpress Page`, refusals through the bridge, the switch back; and since 0.12.0 `input=mixed`: overrides accepted, `dispatchBackend` per key, a Quickey hold and a Keyboard() hold each refusing the other kind as `unqualified-mix`; and since 0.13.0 `feedback.context`/`feedback.watch`/`feedback.unwatch` with Lua and input disabled: identity, the authoritative display, slots, executor targets, refusals, the generation moving on a bank change, cached snapshots served by the loop and `[no-feedback]` on an older module) and [test/lua/hardkeys_bank_test.lua](../test/lua/hardkeys_bank_test.lua) (the KB-12 bank against a fake pool: spec validation, discovery, preflight refusals, creation with readback, reuse, partial-failure rollback, verification, dispatch-time target checks, staleness, teardown, dispose/adopt) and [test/lua/hardkeys_quickey_test.lua](../test/lua/hardkeys_quickey_test.lua) (the KB-13 backend against a fake console with executor key state: capabilities and routing reports, taps through executors, holds, chords, duplicates, per-code and discovered-code refusals in both press orders and in sequence preflight, bank-side refusals right before the press, unreserved/foreign executors, release integrity after reassignment, deletion, show change, console refusals and raises, teardown in use, restart with targets, sequences) and [test/lua/hardkeys_mixed_test.lua](../test/lua/hardkeys_mixed_test.lua) (the KB-15 mixed backend: construction and merged capabilities, overrides validated against the parts, `dispatchBackend`, no fallback for unavailable Quickey routes, dispatch and release through the recorded part, recover and adopt across instances, every `unqualified-mix` refusal for presses, combos, sequences and mode changes, the sequence waiting for a restoration, the rules on the fake backend). `node scripts/kb13-probe.mjs run` exercises it against a live bridge started with `input=quickey` and a provisioned bank ([record](probes/kb-13-quickey-macos-2.5.1.md)). `node scripts/kb03-probe.mjs run` exercises the lifecycle against a live bridge
 started with `input=fake` over real TCP connections ([record](probes/kb-03-fake-macos-2.5.1.md));
 `node scripts/kb04-probe.mjs run|restart` presses real keys through a bridge started with `lua input=keyboard` on a
 disposable show ([record](probes/kb-04-keyboard-macos-2.5.1.md)); `node scripts/kb05-probe.mjs run` exercises the
@@ -620,6 +657,7 @@ interactions, the busy guard over two connections, sequences, command-line text 
 way ([record](probes/kb-05-input-macos-2.5.1.md)).
 `node scripts/kb06-probe.mjs verify|run` exercises the feedback readers, displays, executor expansion, bounds, side-effect
 freedom and reads while another connection owns input against a live bridge ([record](probes/kb-06-feedback-macos-2.5.1.md)).
+`node scripts/kb17-probe.mjs verify|run|watch` exercises `feedback.context` live: identity, the authoritative display, slots, executor targets, cached snapshots through `feedback.watch`, and (`run`) the generation moving on selection, bank, page and executor-page changes but not on a value change ([record](probes/kb-17-context-macos-2.5.1.md)).
 `node scripts/kb02-probe.mjs verify` checks a live bridge: `ping.modules`, the `modules` op, and that the
 readers and key resolution return successful values (Blind readable, PLEASE resolved, Freeze and MA1
 reported unavailable/unsupported). It lists loose module files in the local library folder for information

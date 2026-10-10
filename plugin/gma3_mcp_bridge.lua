@@ -128,7 +128,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.12.0"
+local VERSION      = "0.13.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -1453,6 +1453,18 @@ local function loadModules()
       rec.loaded, rec.version, rec.apiVersion, rec.module = true, mod.VERSION, mod.API_VERSION, mod
       local okI, inst = pcall(function()
         local deps = type(mod.consoleDeps) == "function" and mod.consoleDeps(_G) or nil
+        if entry.key == "feedback" and type(deps) == "table" then
+          -- KB-17: the executors this bridge's owned Quickey bank (KB-12) reserved are never playback
+          -- targets; the feedback readers get them from the hardkeys instance, lazily and read-only.
+          deps.reservedExecutors = function()
+            local hk = state.modules.hardkeys
+            local hinst = hk and hk.instance
+            if not hinst or type(hinst.bankStatus) ~= "function" then return nil end
+            local b = hinst:bankStatus(now())
+            if type(b) ~= "table" or not b.provisioned or type(b.spec) ~= "table" then return nil end
+            return b.spec.executors
+          end
+        end
         return mod.new({ owner = "gma3_mcp_bridge", deps = deps }):init()
       end)
       if okI then rec.instance = inst else rec.loaded, rec.error = false, "instance: " .. tostring(inst) end
@@ -2145,6 +2157,58 @@ ops["feedback.read"] = function(args)
   res.module = { component = rec.component, version = rec.version }
   res.note = "read-only observations; items are read one after another (not atomic); unavailable items carry reason or error and never a substituted value"
   return res
+end
+
+-- KB-17: one bounded snapshot of what each surface control would operate (identity, the authoritative
+-- display's encoder bank/page and ordered slots, explicit executor targets) with a binding generation.
+-- Read-only, never guarded by the input admission, usable with Lua disabled.
+--   args: { display?, executors?: [n], allExecutors?, cached? }
+-- cached = true assembles the snapshot from the observations the plugin loop keeps for the watched
+-- spec (feedback.watch), so a client can follow console changes at the loop's pace without reading.
+local function feedbackContextRec()
+  local rec = feedbackRec()
+  if type(rec.instance.contextSnapshot) ~= "function" or type(rec.instance.watchContext) ~= "function" then
+    error("[no-feedback] the loaded feedback module has no contextSnapshot() (module " .. tostring(rec.version) .. "; KB-17 needs 0.3.0 or newer)", 0)
+  end
+  return rec
+end
+
+local function checkContextArgs(args)
+  args = args or {}
+  if args.display ~= nil and (type(args.display) ~= "number" or args.display < 1 or args.display ~= math.floor(args.display)) then error("[bad-args] args.display must be a positive integer", 0) end
+  if args.executors ~= nil then
+    if type(args.executors) ~= "table" then error("[bad-args] args.executors must be a list of executor numbers", 0) end
+    for i, n in ipairs(args.executors) do if type(n) ~= "number" then error(string.format("[bad-args] args.executors[%d] is not a number", i), 0) end end
+  end
+  return args
+end
+
+ops["feedback.context"] = function(args)
+  local rec = feedbackContextRec()
+  args = checkContextArgs(args)
+  local snap = rec.instance:contextSnapshot({ display = args.display, executors = args.executors, allExecutors = args.allExecutors == true }, now(), { cached = args.cached == true })
+  snap.limitations = emptyArray(snap.limitations)
+  snap.executors = emptyArray(snap.executors)
+  snap.bridgeVersion = VERSION
+  snap.module = { component = rec.component, version = rec.version }
+  snap.note = "read-only; items are read one after another (not atomic); the generation changes when an input's meaning changed (bank/page/context, slot objects, resolution/readout/channel function/availability, executor assignment/functions, identity), never for a value or level alone"
+  return snap
+end
+
+ops["feedback.watch"] = function(args)
+  local rec = feedbackContextRec()
+  args = checkContextArgs(args)
+  local r = rec.instance:watchContext({ display = args.display, executors = args.executors }, now())
+  r.limitations = emptyArray(r.limitations)
+  r.note = "the plugin loop now keeps these observations (bounded per iteration); feedback.context {cached=true} assembles them without reading; feedback.unwatch stops it"
+  return r
+end
+
+ops["feedback.unwatch"] = function(args)
+  local rec = feedbackRec()
+  if type(rec.instance.unwatch) ~= "function" then error("[no-feedback] the loaded feedback module has no unwatch()", 0) end
+  rec.instance:unwatch()
+  return { watched = 0 }
 end
 
 ops.cmd = function(args)

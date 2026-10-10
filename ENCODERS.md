@@ -132,6 +132,41 @@ reports delivered at open, clean unplug detection and replug). Windows/Linux hos
 - Keep all readers usable with input disabled.
 - Test snapshot consistency, missing properties, deleted assignments, and context changes during polling.
 
+### KB-17 results (console half, 2026-10-10; surface half in mtpnxk)
+
+`gma3_mcp_feedback` 0.3.0 and bridge 0.13.0 ([modules](docs/modules.md#control-context-and-binding-snapshots-gma3_mcp_feedback-030-kb-17),
+[reference](docs/reference.md#control-context-plugin-v0130-kb-17)); live on macOS, onPC 2.5.1.0:
+[record](docs/probes/kb-17-context-macos-2.5.1.md), [script report](docs/probes/kb-17-context-macos-2.5.1.json)
+(`scripts/kb17-probe.mjs run`, 31/31). Existing MCP tools and ops are unchanged.
+
+- **Snapshot** (`feedback.context` / `contextSnapshot()`): identity (show, data pool, user, profile) and the
+  authoritative display; bank/page/context of that display's encoder bar; the ordered pool slots with attribute
+  identity, label, unit, readout, resolution (user preference over definition over band), layer, availability
+  (`no-selection | available | unavailable | mixed`) and programmer value state (`none | value | empty | mixed |
+  unavailable`); one target per executor with assigned-object identity, key/fader/encoder functions, the configured
+  fader function's level, activity, appearance colour and `playbackTarget` (Quickey objects and the bridge's reserved
+  bank executors never are). Every unavailable, stale, mixed or unsupported part is an explicit field with a reason.
+- **Generation:** moves on identity, epoch, bank/page/context, the selection's fixtures (all of them, walked apart from
+  the bounded attribute scan; no generation is claimed while that identity is incomplete), slot object/resolution/
+  readout/channel function/layer/availability, executor page, assignment, every configured function and target status,
+  or on any of these becoming unreadable;
+  stays on values, levels, activity and labels (verified live: selection, bank, page and executor page moved it,
+  `Attribute … At` did not).
+- **Authoritative display:** configured (`config.encoderDisplay`, 1) or requested per call; a display without an
+  encoder bar is unavailable and never replaced (display 2 and 9 live).
+- **Following the console:** `feedback.watch` + `feedback.context {cached=true}` serve the snapshot from the plugin
+  loop's bounded reads (8 per iteration by default); no generation is claimed while any part is unobserved. All of it
+  is usable with Lua and input disabled and is never `[busy]`.
+- **Harness:** `test/lua/feedback_context_test.lua` (85 checks: missing properties, deleted assignments, mixed and
+  empty selections, bounded scans, phaser/empty slots, every generation rule, context changes during polling) and the
+  bridge harness block (16 checks).
+
+**Limitations:** values are the programmer's (`GetProgPhaser`), not output; the selection scan is bounded
+(`maxSelectionScan` 8 fixtures, `maxUIChannels` 64) and says `partial`; non-`Default` preset-bar contexts, phaser slots and
+the outer ring are reported but unsupported; a second physical display, Windows, a data-pool switch and a provisioned bank
+were not exercised live (harness only). The encoder bar's bank/page selectors are per display and only display 1 carries
+them on this onPC; if a console shows an encoder bar on several displays, the consumer configures which one it follows.
+
 ## KB-18 — Continuous-control transport and admission
 
 **Request:** Carry encoder motion and strip gestures without stale input affecting a new target.

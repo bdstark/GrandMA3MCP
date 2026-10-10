@@ -1,0 +1,1815 @@
+{
+  "mode": "run",
+  "host": "127.0.0.1",
+  "port": 9800,
+  "startedAt": "2026-10-10T08:34:21.065Z",
+  "ping": {
+    "bridgeVersion": "0.13.0",
+    "build": {
+      "version": "2.5.1.0",
+      "codeType": "Release",
+      "hostType": "onPC"
+    },
+    "hostname": "bdsmbpm401",
+    "showfile": "mcp-test-disposable",
+    "user": "Admin",
+    "modules": {
+      "hardkeys": {
+        "loaded": true,
+        "version": "0.10.0"
+      },
+      "feedback": {
+        "loaded": true,
+        "version": "0.3.0"
+      }
+    },
+    "input": {
+      "unresolvedFromPreviousRun": 0,
+      "holds": 0,
+      "enabled": true,
+      "sessions": 0,
+      "bank": {
+        "provisioned": false
+      },
+      "backend": "keyboard",
+      "unresolved": 0,
+      "quarantined": 0,
+      "note": "ownership records, not physical key state; see input.status. busy: cmd/set/setfader/lua are refused for every connection while it is set",
+      "retained": 0,
+      "moduleInputEnabled": true
+    },
+    "lua": {
+      "enabled": true
+    }
+  },
+  "steps": [
+    {
+      "name": "console",
+      "pass": null,
+      "detail": {
+        "bridgeVersion": "0.13.0",
+        "build": {
+          "version": "2.5.1.0",
+          "codeType": "Release",
+          "hostType": "onPC"
+        },
+        "hostname": "bdsmbpm401",
+        "showfile": "mcp-test-disposable",
+        "user": "Admin",
+        "modules": {
+          "hardkeys": {
+            "loaded": true,
+            "version": "0.10.0"
+          },
+          "feedback": {
+            "loaded": true,
+            "version": "0.3.0"
+          }
+        },
+        "input": {
+          "unresolvedFromPreviousRun": 0,
+          "holds": 0,
+          "enabled": true,
+          "sessions": 0,
+          "bank": {
+            "provisioned": false
+          },
+          "backend": "keyboard",
+          "unresolved": 0,
+          "quarantined": 0,
+          "note": "ownership records, not physical key state; see input.status. busy: cmd/set/setfader/lua are refused for every connection while it is set",
+          "retained": 0,
+          "moduleInputEnabled": true
+        },
+        "lua": {
+          "enabled": true
+        }
+      }
+    },
+    {
+      "name": "feedback.context answers (bridge 0.13.0+, feedback 0.3.0+)",
+      "pass": true,
+      "detail": {
+        "generation": 1,
+        "module": {
+          "version": "0.3.0",
+          "component": "gma3_mcp_feedback"
+        },
+        "bridgeVersion": "0.13.0"
+      }
+    },
+    {
+      "name": "snapshot",
+      "pass": null,
+      "detail": {
+        "generation": 1,
+        "generationChanged": false,
+        "epoch": 1,
+        "identity": {
+          "profile": "Default",
+          "showFile": "mcp-test-disposable",
+          "user": "Admin",
+          "dataPool": {
+            "addr": "14.14.1",
+            "name": "Default",
+            "no": 1,
+            "class": "Pool"
+          }
+        },
+        "display": {
+          "rule": "configured",
+          "note": "the encoder bar of this display is the one described; a display without an encoder bar is unavailable and no other display is substituted",
+          "display": 1
+        },
+        "executorPage": {
+          "name": "Page 1",
+          "no": 1
+        },
+        "selection": {
+          "partial": false,
+          "count": 0,
+          "scanned": 0,
+          "limitations": []
+        },
+        "encoder": {
+          "bank": {
+            "pages": 1,
+            "name": "Dimmer",
+            "index": 1
+          },
+          "page": {
+            "slots": 5,
+            "name": "Dimmer",
+            "index": 1
+          },
+          "context": "Default",
+          "attributeEditing": true
+        },
+        "slots": [
+          {
+            "slot": 1,
+            "kind": "attribute",
+            "name": "Dimmer",
+            "label": "Dim",
+            "unit": "LuminousIntensity",
+            "readout": "Percent",
+            "resolution": "Coarse",
+            "layer": "Absolute",
+            "channelFunction": "",
+            "availability": "no-selection",
+            "valueState": "none"
+          },
+          {
+            "slot": 2,
+            "kind": "empty",
+            "label": "G",
+            "layer": "Absolute",
+            "channelFunction": "",
+            "availability": "empty",
+            "valueState": "none"
+          },
+          {
+            "slot": 3,
+            "kind": "empty",
+            "label": "B",
+            "layer": "Absolute",
+            "channelFunction": "",
+            "availability": "empty",
+            "valueState": "none"
+          },
+          {
+            "slot": 4,
+            "kind": "empty",
+            "label": "Amber",
+            "layer": "Absolute",
+            "channelFunction": "",
+            "availability": "empty",
+            "valueState": "none"
+          },
+          {
+            "slot": 5,
+            "kind": "empty",
+            "layer": "Absolute",
+            "availability": "empty",
+            "valueState": "none"
+          }
+        ],
+        "executors": [
+          {
+            "executor": 178,
+            "empty": false,
+            "assigned": "Quickey 908 'MCP CLEAR'",
+            "keyPress": "Go+",
+            "keyUnpress": "",
+            "fader": "Master",
+            "level": {
+              "text": "0%",
+              "token": "FaderMaster",
+              "value": 0
+            },
+            "playbackTarget": false,
+            "reason": "a Quickey object is never a playback target (owned Quickey bank, KB-12)"
+          },
+          {
+            "executor": 179,
+            "empty": false,
+            "assigned": "Quickey 909 'MCP RESERVED'",
+            "keyPress": "Go+",
+            "keyUnpress": "",
+            "fader": "Master",
+            "level": {
+              "text": "0%",
+              "token": "FaderMaster",
+              "value": 0
+            },
+            "playbackTarget": false,
+            "reason": "a Quickey object is never a playback target (owned Quickey bank, KB-12)"
+          },
+          {
+            "executor": 180,
+            "empty": false,
+            "assigned": "Quickey 909 'MCP RESERVED'",
+            "keyPress": "Go+",
+            "keyUnpress": "",
+            "fader": "Master",
+            "level": {
+              "text": "0%",
+              "token": "FaderMaster",
+              "value": 0
+            },
+            "playbackTarget": false,
+            "reason": "a Quickey object is never a playback target (owned Quickey bank, KB-12)"
+          },
+          {
+            "executor": 181,
+            "empty": false,
+            "assigned": "Quickey 909 'MCP RESERVED'",
+            "keyPress": "Go+",
+            "keyUnpress": "",
+            "fader": "Master",
+            "level": {
+              "text": "0%",
+              "token": "FaderMaster",
+              "value": 0
+            },
+            "playbackTarget": false,
+            "reason": "a Quickey object is never a playback target (owned Quickey bank, KB-12)"
+          },
+          {
+            "executor": 182,
+            "empty": false,
+            "assigned": "Quickey 909 'MCP RESERVED'",
+            "keyPress": "Go+",
+            "keyUnpress": "",
+            "fader": "Master",
+            "level": {
+              "text": "0%",
+              "token": "FaderMaster",
+              "value": 0
+            },
+            "playbackTarget": false,
+            "reason": "a Quickey object is never a playback target (owned Quickey bank, KB-12)"
+          },
+          {
+            "executor": 183,
+            "empty": false,
+            "assigned": "Quickey 909 'MCP RESERVED'",
+            "keyPress": "Go+",
+            "keyUnpress": "",
+            "fader": "Master",
+            "level": {
+              "text": "0%",
+              "token": "FaderMaster",
+              "value": 0
+            },
+            "playbackTarget": false,
+            "reason": "a Quickey object is never a playback target (owned Quickey bank, KB-12)"
+          },
+          {
+            "executor": 184,
+            "empty": false,
+            "assigned": "Quickey 909 'MCP RESERVED'",
+            "keyPress": "Go+",
+            "keyUnpress": "",
+            "fader": "Master",
+            "level": {
+              "text": "0%",
+              "token": "FaderMaster",
+              "value": 0
+            },
+            "playbackTarget": false,
+            "reason": "a Quickey object is never a playback target (owned Quickey bank, KB-12)"
+          },
+          {
+            "executor": 185,
+            "empty": false,
+            "assigned": "Quickey 909 'MCP RESERVED'",
+            "keyPress": "Go+",
+            "keyUnpress": "",
+            "fader": "Master",
+            "level": {
+              "text": "0%",
+              "token": "FaderMaster",
+              "value": 0
+            },
+            "playbackTarget": false,
+            "reason": "a Quickey object is never a playback target (owned Quickey bank, KB-12)"
+          },
+          {
+            "executor": 186,
+            "empty": false,
+            "assigned": "Quickey 909 'MCP RESERVED'",
+            "keyPress": "Go+",
+            "keyUnpress": "",
+            "fader": "Master",
+            "level": {
+              "text": "0%",
+              "token": "FaderMaster",
+              "value": 0
+            },
+            "playbackTarget": false,
+            "reason": "a Quickey object is never a playback target (owned Quickey bank, KB-12)"
+          },
+          {
+            "executor": 187,
+            "empty": false,
+            "assigned": "Quickey 909 'MCP RESERVED'",
+            "keyPress": "Go+",
+            "keyUnpress": "",
+            "fader": "Master",
+            "level": {
+              "text": "0%",
+              "token": "FaderMaster",
+              "value": 0
+            },
+            "playbackTarget": false,
+            "reason": "a Quickey object is never a playback target (owned Quickey bank, KB-12)"
+          },
+          {
+            "executor": 188,
+            "empty": false,
+            "assigned": "Quickey 909 'MCP RESERVED'",
+            "keyPress": "Go+",
+            "keyUnpress": "",
+            "fader": "Master",
+            "level": {
+              "text": "0%",
+              "token": "FaderMaster",
+              "value": 0
+            },
+            "playbackTarget": false,
+            "reason": "a Quickey object is never a playback target (owned Quickey bank, KB-12)"
+          },
+          {
+            "executor": 189,
+            "empty": false,
+            "assigned": "Quickey 909 'MCP RESERVED'",
+            "keyPress": "Go+",
+            "keyUnpress": "",
+            "fader": "Master",
+            "level": {
+              "text": "0%",
+              "token": "FaderMaster",
+              "value": 0
+            },
+            "playbackTarget": false,
+            "reason": "a Quickey object is never a playback target (owned Quickey bank, KB-12)"
+          },
+          {
+            "executor": 191,
+            "empty": false,
+            "assigned": "Sequence 5527 'LOS2 All DelayA'",
+            "keyPress": "Top",
+            "keyUnpress": "Go+",
+            "fader": "Master",
+            "level": {
+              "text": "100%",
+              "token": "FaderMaster",
+              "value": 100
+            },
+            "active": false,
+            "playbackTarget": true,
+            "backRGBA": "FF7F00FF"
+          },
+          {
+            "executor": 192,
+            "empty": false,
+            "assigned": "Sequence 5528 'LOS2 All DelayB'",
+            "keyPress": "Top",
+            "keyUnpress": "Go+",
+            "fader": "Master",
+            "level": {
+              "text": "100%",
+              "token": "FaderMaster",
+              "value": 100
+            },
+            "active": false,
+            "playbackTarget": true,
+            "backRGBA": "FF7F00FF"
+          },
+          {
+            "executor": 193,
+            "empty": false,
+            "assigned": "Sequence 5529 'LOS2 Odd'",
+            "keyPress": "Temp",
+            "keyUnpress": "",
+            "fader": "Master",
+            "level": {
+              "text": "100%",
+              "token": "FaderMaster",
+              "value": 100
+            },
+            "active": false,
+            "playbackTarget": true
+          },
+          {
+            "executor": 194,
+            "empty": false,
+            "assigned": "Sequence 5530 'LOS2 Even'",
+            "keyPress": "Temp",
+            "keyUnpress": "",
+            "fader": "Master",
+            "level": {
+              "text": "100%",
+              "token": "FaderMaster",
+              "value": 100
+            },
+            "active": false,
+            "playbackTarget": true
+          },
+          {
+            "executor": 195,
+            "empty": false,
+            "assigned": "Sequence 5531 'LOS2 Chase'",
+            "keyPress": "Toggle",
+            "keyUnpress": "",
+            "fader": "Master",
+            "level": {
+              "text": "100%",
+              "token": "FaderMaster",
+              "value": 100
+            },
+            "active": false,
+            "playbackTarget": true
+          },
+          {
+            "executor": 196,
+            "empty": false,
+            "assigned": "Sequence 5532 'LOS2 1/3'",
+            "keyPress": "Temp",
+            "keyUnpress": "",
+            "fader": "Master",
+            "level": {
+              "text": "100%",
+              "token": "FaderMaster",
+              "value": 100
+            },
+            "active": false,
+            "playbackTarget": true
+          },
+          {
+            "executor": 197,
+            "empty": false,
+            "assigned": "Sequence 5533 'LOS2 2/3'",
+            "keyPress": "Temp",
+            "keyUnpress": "",
+            "fader": "Master",
+            "level": {
+              "text": "100%",
+              "token": "FaderMaster",
+              "value": 100
+            },
+            "active": false,
+            "playbackTarget": true
+          },
+          {
+            "executor": 198,
+            "empty": false,
+            "assigned": "Sequence 5534 'LOS2 3/3'",
+            "keyPress": "Temp",
+            "keyUnpress": "",
+            "fader": "Master",
+            "level": {
+              "text": "100%",
+              "token": "FaderMaster",
+              "value": 100
+            },
+            "active": false,
+            "playbackTarget": true
+          },
+          {
+            "executor": 201,
+            "empty": false,
+            "assigned": "Sequence 2 'StartShow 1'",
+            "keyPress": "Flash",
+            "keyUnpress": "",
+            "fader": "Master",
+            "level": {
+              "text": "0%",
+              "token": "FaderMaster",
+              "value": 0
+            },
+            "active": false,
+            "playbackTarget": true
+          },
+          {
+            "executor": 202,
+            "empty": false,
+            "assigned": "Sequence 3 'StartShow 2'",
+            "keyPress": "Flash",
+            "keyUnpress": "",
+            "fader": "Master",
+            "level": {
+              "text": "0%",
+              "token": "FaderMaster",
+              "value": 0
+            },
+            "active": false,
+            "playbackTarget": true
+          },
+          {
+            "executor": 203,
+            "empty": false,
+            "assigned": "Sequence 4 'StartShow 3'",
+            "keyPress": "Flash",
+            "keyUnpress": "",
+            "fader": "Master",
+            "level": {
+              "text": "0%",
+              "token": "FaderMaster",
+              "value": 0
+            },
+            "active": false,
+            "playbackTarget": true
+          },
+          {
+            "executor": 204,
+            "empty": false,
+            "assigned": "Sequence 5 'StartShow 4'",
+            "keyPress": "Flash",
+            "keyUnpress": "",
+            "fader": "Master",
+            "level": {
+              "text": "0%",
+              "token": "FaderMaster",
+              "value": 0
+            },
+            "active": false,
+            "playbackTarget": true
+          },
+          {
+            "executor": 205,
+            "empty": false,
+            "assigned": "Sequence 6 'StartShow 5'",
+            "keyPress": "Flash",
+            "keyUnpress": "",
+            "fader": "Master",
+            "level": {
+              "text": "0%",
+              "token": "FaderMaster",
+              "value": 0
+            },
+            "active": false,
+            "playbackTarget": true
+          },
+          {
+            "executor": 206,
+            "empty": false,
+            "assigned": "Sequence 7 'StartShow 6'",
+            "keyPress": "Flash",
+            "keyUnpress": "",
+            "fader": "Master",
+            "level": {
+              "text": "0%",
+              "token": "FaderMaster",
+              "value": 0
+            },
+            "active": false,
+            "playbackTarget": true
+          },
+          {
+            "executor": 207,
+            "empty": false,
+            "assigned": "Sequence 8 'StartShow 7'",
+            "keyPress": "Flash",
+            "keyUnpress": "",
+            "fader": "Master",
+            "level": {
+              "text": "0%",
+              "token": "FaderMaster",
+              "value": 0
+            },
+            "active": false,
+            "playbackTarget": true
+          },
+          {
+            "executor": 208,
+            "empty": false,
+            "assigned": "Sequence 9 'StartShow 8'",
+            "keyPress": "Flash",
+            "keyUnpress": "",
+            "fader": "Master",
+            "level": {
+              "text": "0%",
+              "token": "FaderMaster",
+              "value": 0
+            },
+            "active": false,
+            "playbackTarget": true
+          },
+          {
+            "executor": 210,
+            "empty": false,
+            "assigned": "Sequence 5437 'Rotate'",
+            "keyPress": "Temp",
+            "keyUnpress": "",
+            "fader": "Temp",
+            "level": {
+              "text": "0%",
+              "token": "FaderTemp",
+              "value": 0
+            },
+            "active": false,
+            "playbackTarget": true
+          },
+          {
+            "executor": 291,
+            "empty": false,
+            "assigned": "Sequence 5509 'LOS1 All DelayA'",
+            "keyPress": "Top",
+            "keyUnpress": "Go+",
+            "fader": "Master",
+            "level": {
+              "text": "100%",
+              "token": "FaderMaster",
+              "value": 100
+            },
+            "active": true,
+            "playbackTarget": true,
+            "backRGBA": "FF7F00FF"
+          },
+          {
+            "executor": 292,
+            "empty": false,
+            "assigned": "Sequence 5510 'LOS1 All DelayB'",
+            "keyPress": "Top",
+            "keyUnpress": "Go+",
+            "fader": "Master",
+            "level": {
+              "text": "100%",
+              "token": "FaderMaster",
+              "value": 100
+            },
+            "active": false,
+            "playbackTarget": true,
+            "backRGBA": "FF7F00FF"
+          },
+          {
+            "executor": 293,
+            "empty": false,
+            "assigned": "Sequence 5511 'LOS1 Odd'",
+            "keyPress": "Temp",
+            "keyUnpress": "",
+            "fader": "Master",
+            "level": {
+              "text": "100%",
+              "token": "FaderMaster",
+              "value": 100
+            },
+            "active": false,
+            "playbackTarget": true
+          }
+        ],
+        "limitations": [
+          "pageExecutors was truncated; not every assigned executor is listed"
+        ]
+      }
+    },
+    {
+      "name": "identity carries show, user, profile and data pool",
+      "pass": true,
+      "detail": {
+        "profile": "Default",
+        "showFile": "mcp-test-disposable",
+        "user": "Admin",
+        "dataPool": {
+          "addr": "14.14.1",
+          "name": "Default",
+          "no": 1,
+          "class": "Pool"
+        }
+      }
+    },
+    {
+      "name": "the authoritative display is the configured one and says so",
+      "pass": true,
+      "detail": {
+        "rule": "configured",
+        "note": "the encoder bar of this display is the one described; a display without an encoder bar is unavailable and no other display is substituted",
+        "display": 1
+      }
+    },
+    {
+      "name": "encoder bank/page/context readable on the authoritative display",
+      "pass": true,
+      "detail": {
+        "bank": {
+          "pages": 1,
+          "name": "Dimmer",
+          "index": 1
+        },
+        "page": {
+          "slots": 5,
+          "name": "Dimmer",
+          "index": 1
+        },
+        "context": "Default",
+        "attributeEditing": true
+      }
+    },
+    {
+      "name": "bank and page names come from the profile pool (no poolUnavailable)",
+      "pass": true,
+      "detail": {
+        "bar": 1,
+        "page": {
+          "slots": 5,
+          "name": "Dimmer",
+          "index": 1
+        },
+        "banks": 10,
+        "bank": {
+          "pages": 1,
+          "name": "Dimmer",
+          "index": 1
+        },
+        "context": "Default",
+        "attributeEditing": true,
+        "display": 1
+      }
+    },
+    {
+      "name": "ordered slots with attribute identity, unit, readout, resolution and layer",
+      "pass": true,
+      "detail": [
+        {
+          "slot": 1,
+          "kind": "attribute",
+          "name": "Dimmer",
+          "label": "Dim",
+          "unit": "LuminousIntensity",
+          "readout": "Percent",
+          "resolution": "Coarse",
+          "layer": "Absolute",
+          "channelFunction": "",
+          "availability": "no-selection",
+          "valueState": "none"
+        },
+        {
+          "slot": 2,
+          "kind": "empty",
+          "label": "G",
+          "layer": "Absolute",
+          "channelFunction": "",
+          "availability": "empty",
+          "valueState": "none"
+        },
+        {
+          "slot": 3,
+          "kind": "empty",
+          "label": "B",
+          "layer": "Absolute",
+          "channelFunction": "",
+          "availability": "empty",
+          "valueState": "none"
+        },
+        {
+          "slot": 4,
+          "kind": "empty",
+          "label": "Amber",
+          "layer": "Absolute",
+          "channelFunction": "",
+          "availability": "empty",
+          "valueState": "none"
+        },
+        {
+          "slot": 5,
+          "kind": "empty",
+          "layer": "Absolute",
+          "availability": "empty",
+          "valueState": "none"
+        }
+      ]
+    },
+    {
+      "name": "slot labels match the on-screen bands for the live slots",
+      "pass": true,
+      "detail": [
+        [
+          "Dimmer",
+          "Dim"
+        ],
+        [
+          null,
+          "G"
+        ],
+        [
+          null,
+          "B"
+        ],
+        [
+          null,
+          "Amber"
+        ],
+        [
+          null,
+          null
+        ]
+      ]
+    },
+    {
+      "name": "availability and value state are explicit per slot",
+      "pass": true,
+      "detail": {
+        "selection": {
+          "partial": false,
+          "count": 0,
+          "scanned": 0,
+          "limitations": []
+        },
+        "states": [
+          [
+            "no-selection",
+            "none"
+          ],
+          [
+            "empty",
+            "none"
+          ],
+          [
+            "empty",
+            "none"
+          ],
+          [
+            "empty",
+            "none"
+          ],
+          [
+            "empty",
+            "none"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "executor targets: every assigned executor of the page, each with functions and a playback-target verdict",
+      "pass": true,
+      "detail": [
+        [
+          178,
+          "Quickey",
+          false
+        ],
+        [
+          179,
+          "Quickey",
+          false
+        ],
+        [
+          180,
+          "Quickey",
+          false
+        ],
+        [
+          181,
+          "Quickey",
+          false
+        ],
+        [
+          182,
+          "Quickey",
+          false
+        ],
+        [
+          183,
+          "Quickey",
+          false
+        ],
+        [
+          184,
+          "Quickey",
+          false
+        ],
+        [
+          185,
+          "Quickey",
+          false
+        ],
+        [
+          186,
+          "Quickey",
+          false
+        ],
+        [
+          187,
+          "Quickey",
+          false
+        ],
+        [
+          188,
+          "Quickey",
+          false
+        ],
+        [
+          189,
+          "Quickey",
+          false
+        ],
+        [
+          191,
+          "Sequence",
+          true
+        ],
+        [
+          192,
+          "Sequence",
+          true
+        ],
+        [
+          193,
+          "Sequence",
+          true
+        ],
+        [
+          194,
+          "Sequence",
+          true
+        ],
+        [
+          195,
+          "Sequence",
+          true
+        ],
+        [
+          196,
+          "Sequence",
+          true
+        ],
+        [
+          197,
+          "Sequence",
+          true
+        ],
+        [
+          198,
+          "Sequence",
+          true
+        ],
+        [
+          201,
+          "Sequence",
+          true
+        ],
+        [
+          202,
+          "Sequence",
+          true
+        ],
+        [
+          203,
+          "Sequence",
+          true
+        ],
+        [
+          204,
+          "Sequence",
+          true
+        ],
+        [
+          205,
+          "Sequence",
+          true
+        ],
+        [
+          206,
+          "Sequence",
+          true
+        ],
+        [
+          207,
+          "Sequence",
+          true
+        ],
+        [
+          208,
+          "Sequence",
+          true
+        ],
+        [
+          210,
+          "Sequence",
+          true
+        ],
+        [
+          291,
+          "Sequence",
+          true
+        ],
+        [
+          292,
+          "Sequence",
+          true
+        ],
+        [
+          293,
+          "Sequence",
+          true
+        ]
+      ]
+    },
+    {
+      "name": "Quickey-bank executors are never playback targets",
+      "pass": true,
+      "detail": [
+        [
+          178,
+          "a Quickey object is never a playback target (owned Quickey bank, KB-12)"
+        ],
+        [
+          179,
+          "a Quickey object is never a playback target (owned Quickey bank, KB-12)"
+        ],
+        [
+          180,
+          "a Quickey object is never a playback target (owned Quickey bank, KB-12)"
+        ],
+        [
+          181,
+          "a Quickey object is never a playback target (owned Quickey bank, KB-12)"
+        ],
+        [
+          182,
+          "a Quickey object is never a playback target (owned Quickey bank, KB-12)"
+        ],
+        [
+          183,
+          "a Quickey object is never a playback target (owned Quickey bank, KB-12)"
+        ],
+        [
+          184,
+          "a Quickey object is never a playback target (owned Quickey bank, KB-12)"
+        ],
+        [
+          185,
+          "a Quickey object is never a playback target (owned Quickey bank, KB-12)"
+        ],
+        [
+          186,
+          "a Quickey object is never a playback target (owned Quickey bank, KB-12)"
+        ],
+        [
+          187,
+          "a Quickey object is never a playback target (owned Quickey bank, KB-12)"
+        ],
+        [
+          188,
+          "a Quickey object is never a playback target (owned Quickey bank, KB-12)"
+        ],
+        [
+          189,
+          "a Quickey object is never a playback target (owned Quickey bank, KB-12)"
+        ]
+      ]
+    },
+    {
+      "name": "sequence executors report the configured fader function's level and activity",
+      "pass": true,
+      "detail": [
+        [
+          191,
+          "Master",
+          {
+            "text": "100%",
+            "token": "FaderMaster",
+            "value": 100
+          },
+          false
+        ],
+        [
+          192,
+          "Master",
+          {
+            "text": "100%",
+            "token": "FaderMaster",
+            "value": 100
+          },
+          false
+        ],
+        [
+          193,
+          "Master",
+          {
+            "text": "100%",
+            "token": "FaderMaster",
+            "value": 100
+          },
+          false
+        ],
+        [
+          194,
+          "Master",
+          {
+            "text": "100%",
+            "token": "FaderMaster",
+            "value": 100
+          },
+          false
+        ],
+        [
+          195,
+          "Master",
+          {
+            "text": "100%",
+            "token": "FaderMaster",
+            "value": 100
+          },
+          false
+        ],
+        [
+          196,
+          "Master",
+          {
+            "text": "100%",
+            "token": "FaderMaster",
+            "value": 100
+          },
+          false
+        ],
+        [
+          197,
+          "Master",
+          {
+            "text": "100%",
+            "token": "FaderMaster",
+            "value": 100
+          },
+          false
+        ],
+        [
+          198,
+          "Master",
+          {
+            "text": "100%",
+            "token": "FaderMaster",
+            "value": 100
+          },
+          false
+        ],
+        [
+          201,
+          "Master",
+          {
+            "text": "0%",
+            "token": "FaderMaster",
+            "value": 0
+          },
+          false
+        ],
+        [
+          202,
+          "Master",
+          {
+            "text": "0%",
+            "token": "FaderMaster",
+            "value": 0
+          },
+          false
+        ],
+        [
+          203,
+          "Master",
+          {
+            "text": "0%",
+            "token": "FaderMaster",
+            "value": 0
+          },
+          false
+        ],
+        [
+          204,
+          "Master",
+          {
+            "text": "0%",
+            "token": "FaderMaster",
+            "value": 0
+          },
+          false
+        ],
+        [
+          205,
+          "Master",
+          {
+            "text": "0%",
+            "token": "FaderMaster",
+            "value": 0
+          },
+          false
+        ],
+        [
+          206,
+          "Master",
+          {
+            "text": "0%",
+            "token": "FaderMaster",
+            "value": 0
+          },
+          false
+        ],
+        [
+          207,
+          "Master",
+          {
+            "text": "0%",
+            "token": "FaderMaster",
+            "value": 0
+          },
+          false
+        ],
+        [
+          208,
+          "Master",
+          {
+            "text": "0%",
+            "token": "FaderMaster",
+            "value": 0
+          },
+          false
+        ],
+        [
+          210,
+          "Temp",
+          {
+            "text": "0%",
+            "token": "FaderTemp",
+            "value": 0
+          },
+          false
+        ],
+        [
+          291,
+          "Master",
+          {
+            "text": "100%",
+            "token": "FaderMaster",
+            "value": 100
+          },
+          true
+        ],
+        [
+          292,
+          "Master",
+          {
+            "text": "100%",
+            "token": "FaderMaster",
+            "value": 100
+          },
+          false
+        ],
+        [
+          293,
+          "Master",
+          {
+            "text": "100%",
+            "token": "FaderMaster",
+            "value": 100
+          },
+          false
+        ]
+      ]
+    },
+    {
+      "name": "appearance colour readable where the object has an appearance",
+      "pass": true,
+      "detail": [
+        [
+          191,
+          "FF7F00FF"
+        ],
+        [
+          192,
+          "FF7F00FF"
+        ],
+        [
+          193,
+          "the object has no Appearance"
+        ],
+        [
+          194,
+          "the object has no Appearance"
+        ],
+        [
+          195,
+          "the object has no Appearance"
+        ],
+        [
+          196,
+          "the object has no Appearance"
+        ],
+        [
+          197,
+          "the object has no Appearance"
+        ],
+        [
+          198,
+          "the object has no Appearance"
+        ],
+        [
+          201,
+          "the object has no Appearance"
+        ],
+        [
+          202,
+          "the object has no Appearance"
+        ],
+        [
+          203,
+          "the object has no Appearance"
+        ],
+        [
+          204,
+          "the object has no Appearance"
+        ],
+        [
+          205,
+          "the object has no Appearance"
+        ],
+        [
+          206,
+          "the object has no Appearance"
+        ],
+        [
+          207,
+          "the object has no Appearance"
+        ],
+        [
+          208,
+          "the object has no Appearance"
+        ],
+        [
+          210,
+          "the object has no Appearance"
+        ],
+        [
+          291,
+          "FF7F00FF"
+        ],
+        [
+          292,
+          "FF7F00FF"
+        ],
+        [
+          293,
+          "the object has no Appearance"
+        ]
+      ]
+    },
+    {
+      "name": "a repeated read keeps the generation (nothing changed)",
+      "pass": true,
+      "detail": {
+        "before": 1,
+        "after": 1
+      }
+    },
+    {
+      "name": "display 2: requested rule; without an encoder bar it is unavailable and not replaced",
+      "pass": true,
+      "detail": {
+        "unavailable": "display 2 has an encoder bar without EncoderBankSelector/PresetBar"
+      }
+    },
+    {
+      "name": "display 9 does not exist: unavailable with the reason",
+      "pass": true,
+      "detail": "display 9 does not exist on this console"
+    },
+    {
+      "name": "malformed executors are refused with bad-args",
+      "pass": true,
+      "detail": "[bad-args] args.executors must be a list of executor numbers"
+    },
+    {
+      "name": "an executor that does not exist is an explicit empty target",
+      "pass": true,
+      "detail": {
+        "playbackTarget": false,
+        "empty": true,
+        "reason": "the executor is empty",
+        "executor": 999
+      }
+    },
+    {
+      "name": "feedback.watch subscribes the context items",
+      "pass": true,
+      "detail": {
+        "items": [
+          {
+            "name": "dataPool"
+          },
+          {
+            "name": "page"
+          },
+          {
+            "name": "encoderBank",
+            "params": {
+              "display": 1
+            }
+          },
+          {
+            "name": "encoderSlots",
+            "params": {
+              "display": 1
+            }
+          },
+          {
+            "name": "executorTarget",
+            "params": {
+              "executor": 178
+            }
+          },
+          {
+            "name": "executorTarget",
+            "params": {
+              "executor": 179
+            }
+          },
+          {
+            "name": "executorTarget",
+            "params": {
+              "executor": 180
+            }
+          },
+          {
+            "name": "executorTarget",
+            "params": {
+              "executor": 181
+            }
+          }
+        ],
+        "limitations": [],
+        "truncated": 0,
+        "note": "the plugin loop now keeps these observations (bounded per iteration); feedback.context {cached=true} assembles them without reading; feedback.unwatch stops it",
+        "watched": 8
+      }
+    },
+    {
+      "name": "a cached snapshot is served from the loop's observations without reading",
+      "pass": true,
+      "detail": {
+        "generation": 1,
+        "notObserved": 0,
+        "ages": [
+          67,
+          67
+        ]
+      }
+    },
+    {
+      "name": "feedback.unwatch stops the loop's reads",
+      "pass": true,
+      "detail": {
+        "watched": 0
+      }
+    },
+    {
+      "name": "reads left the context unchanged",
+      "pass": true,
+      "detail": {
+        "bank": {
+          "pages": 1,
+          "name": "Dimmer",
+          "index": 1
+        },
+        "page": {
+          "slots": 5,
+          "name": "Dimmer",
+          "index": 1
+        },
+        "context": "Default",
+        "attributeEditing": true
+      }
+    },
+    {
+      "name": "the command line is untouched",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "run: preflight gate (programmer provably empty through the programmer op)",
+      "pass": true,
+      "detail": {
+        "scannedFixtures": 70,
+        "totalFixtures": 70,
+        "scannedChannels": 342
+      }
+    },
+    {
+      "name": "run: Fixture 401 changes slot availability and moves the generation",
+      "pass": true,
+      "detail": {
+        "selection": {
+          "partial": false,
+          "count": 1,
+          "scanned": 1,
+          "limitations": []
+        },
+        "availability": [
+          [
+            "Dimmer",
+            "available",
+            "empty"
+          ],
+          [
+            null,
+            "empty",
+            "none"
+          ],
+          [
+            null,
+            "empty",
+            "none"
+          ],
+          [
+            null,
+            "empty",
+            "none"
+          ],
+          [
+            null,
+            "empty",
+            "none"
+          ]
+        ],
+        "generation": [
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "name": "run: Select EncoderBank 4 moves the bank and the generation",
+      "pass": true,
+      "detail": {
+        "encoder": {
+          "bank": {
+            "pages": 3,
+            "name": "Color",
+            "index": 4
+          },
+          "page": {
+            "slots": 5,
+            "name": "RGB",
+            "index": 1
+          },
+          "context": "Default",
+          "attributeEditing": true
+        },
+        "slots": [
+          {
+            "slot": 1,
+            "kind": "attribute",
+            "name": "ColorRGB_R",
+            "label": "R",
+            "unit": "ColorComponent",
+            "readout": "Percent",
+            "resolution": "Coarse",
+            "layer": "Absolute",
+            "channelFunction": "",
+            "availability": "available",
+            "valueState": "empty"
+          },
+          {
+            "slot": 2,
+            "kind": "attribute",
+            "name": "ColorRGB_G",
+            "label": "G",
+            "unit": "ColorComponent",
+            "readout": "Percent",
+            "resolution": "Coarse",
+            "layer": "Absolute",
+            "channelFunction": "",
+            "availability": "available",
+            "valueState": "empty"
+          },
+          {
+            "slot": 3,
+            "kind": "attribute",
+            "name": "ColorRGB_B",
+            "label": "B",
+            "unit": "ColorComponent",
+            "readout": "Percent",
+            "resolution": "Coarse",
+            "layer": "Absolute",
+            "channelFunction": "",
+            "availability": "available",
+            "valueState": "empty"
+          },
+          {
+            "slot": 4,
+            "kind": "attribute",
+            "name": "ColorRGB_RY",
+            "label": "Amber",
+            "unit": "ColorComponent",
+            "readout": "Percent",
+            "resolution": "Coarse",
+            "layer": "Absolute",
+            "channelFunction": "",
+            "availability": "available",
+            "valueState": "empty"
+          },
+          {
+            "slot": 5,
+            "kind": "empty",
+            "layer": "Absolute",
+            "availability": "empty",
+            "valueState": "none"
+          }
+        ],
+        "generation": [
+          2,
+          3
+        ]
+      }
+    },
+    {
+      "name": "run: Select EncoderBank 4.2 moves the page and the generation",
+      "pass": true,
+      "detail": {
+        "page": {
+          "slots": 5,
+          "name": "RGB",
+          "index": 2
+        },
+        "generation": [
+          3,
+          4
+        ]
+      }
+    },
+    {
+      "name": "run: Attribute \"ColorRGB_R\" At 50 is a value change: value state follows, generation stays",
+      "pass": true,
+      "detail": {
+        "slot": [
+          "ColorRGB_R",
+          "value",
+          50
+        ],
+        "generation": [
+          5,
+          5
+        ]
+      }
+    },
+    {
+      "name": "run: Page 2 changes the executor page and every target, moving the generation",
+      "pass": true,
+      "detail": {
+        "executorPage": {
+          "name": "Page 2",
+          "no": 2
+        },
+        "executors": [
+          {
+            "executor": 178,
+            "empty": true,
+            "playbackTarget": false,
+            "reason": "the executor is empty"
+          },
+          {
+            "executor": 179,
+            "empty": true,
+            "playbackTarget": false,
+            "reason": "the executor is empty"
+          },
+          {
+            "executor": 180,
+            "empty": true,
+            "playbackTarget": false,
+            "reason": "the executor is empty"
+          },
+          {
+            "executor": 181,
+            "empty": true,
+            "playbackTarget": false,
+            "reason": "the executor is empty"
+          }
+        ],
+        "generation": [
+          5,
+          6
+        ]
+      }
+    },
+    {
+      "name": "run: cleanup ran every registered undo",
+      "pass": true,
+      "detail": [
+        {
+          "label": "Page 1",
+          "ok": true,
+          "detail": {
+            "ok": true,
+            "result": {
+              "command": "Page 1",
+              "feedback": "OK"
+            }
+          }
+        },
+        {
+          "label": "Off Attribute \"ColorRGB_R\"",
+          "ok": true,
+          "detail": {
+            "ok": true,
+            "result": {
+              "command": "Off Attribute \"ColorRGB_R\"",
+              "feedback": "OK"
+            }
+          }
+        },
+        {
+          "label": "ClearAll",
+          "ok": true,
+          "detail": {
+            "ok": true,
+            "result": {
+              "command": "ClearAll",
+              "feedback": "OK"
+            }
+          }
+        },
+        {
+          "label": "Select EncoderBank 1.1",
+          "ok": true,
+          "detail": {
+            "ok": true,
+            "result": {
+              "command": "Select EncoderBank 1.1",
+              "feedback": "OK"
+            }
+          }
+        },
+        {
+          "label": "ClearSelection",
+          "ok": true,
+          "detail": {
+            "ok": true,
+            "result": {
+              "command": "ClearSelection",
+              "feedback": "OK"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "run: the context is back where it started (bank, page, selection, executor page)",
+      "pass": true,
+      "detail": {
+        "encoder": {
+          "bank": {
+            "pages": 1,
+            "name": "Dimmer",
+            "index": 1
+          },
+          "page": {
+            "slots": 5,
+            "name": "Dimmer",
+            "index": 1
+          },
+          "context": "Default",
+          "attributeEditing": true
+        },
+        "selection": {
+          "partial": false,
+          "count": 0,
+          "scanned": 0,
+          "limitations": []
+        },
+        "generation": 1
+      }
+    },
+    {
+      "name": "run: the programmer is empty again (provably, through the programmer op)",
+      "pass": true,
+      "detail": {
+        "scannedFixtures": 70,
+        "totalFixtures": 70,
+        "scannedChannels": 342
+      }
+    }
+  ],
+  "finishedAt": "2026-10-10T08:34:24.130Z",
+  "passed": 31,
+  "failed": 0
+}
