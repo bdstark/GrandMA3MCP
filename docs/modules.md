@@ -595,7 +595,7 @@ exposes them ([reference](reference.md#control-context-plugin-v0130-kb-17)).
 
 ## Vendoring into another plugin (mtpnxk)
 
-Use the immutable upstream revision **`19883c4637105a594a1bb198d2d2d65db92c037f`** (KB-17, hardkeys 0.10.0 /
+Use the immutable upstream revision **`fe4c8daeb998cc5f8b13b70d438f0d98c68258d6`** (KB-17, hardkeys 0.10.0 /
 feedback 0.3.0) for the current module pair; the earlier pairs were `3960334f295aaa2dcd98beb62beeccfcccbef46e` (KB-15, hardkeys 0.10.0 / feedback 0.2.0), `6e0d9c1918dd22e4703a9a36cf0440b20b4014ee`
 (`main` after PR #12, hardkeys 0.5.0, the pair mtpnxk qualified in KB-08) and `9da14544155f921c5dd4fd1cbb9a1ea4bd6f6e78`
 (the reviewed hardkeys 0.4.0). The machine-readable [modules.lock.json](../plugin/modules.lock.json) records the
@@ -605,7 +605,7 @@ manifest, not an automatic updater or a runtime dependency on GitHub.
 | File | Module version | API version | SHA-256 |
 | --- | --- | --- | --- |
 | `plugin/gma3_mcp_hardkeys.lua` | 0.10.0 | 1 | `a57ebd29af3b2c7e9e06ef3dcd8b7059c775db83b0dc61760f49e75973cc7dc3` |
-| `plugin/gma3_mcp_feedback.lua` | 0.3.0 | 1 | `766f6c1f5940978d1f1e8c05fed3476c9f23b5c88a59bf36fde2f8fe97999b89` |
+| `plugin/gma3_mcp_feedback.lua` | 0.3.0 | 1 | `6f87cc0857033fb7c5926bdd780eafab201a1adc8ebf0bfc91ce8ffc7461961b` |
 
 1. Obtain both Lua files from that exact revision of `bdstark/GrandMA3MCP`, rather than a moving branch.
    Copy them unchanged with [LICENSE](../LICENSE) and the manifest into the surface package. The manifest's
