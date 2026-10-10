@@ -477,6 +477,14 @@ local function resolveTarget(snap, target)
   if type(target) ~= "table" then return fail("bad-event", "target must be { slot = n } or { executor = n, element = ... }") end
   if target.slot ~= nil then
     if not isInt(target.slot) or target.slot < 1 then return fail("bad-event", "target.slot must be a positive integer") end
+    -- Review (PR #23): the slot's meaning depends on the encoder bar's context. Only an explicitly supported
+    -- attribute-editing context (feedback's attributeEditing == true, preset-bar context "Default") is served;
+    -- editors, timing, phasers and an unreadable context are refused, whatever the slot record says.
+    local e = snap.encoder
+    if not (e and e.available and type(e.value) == "table") then return fail("target-unavailable", "the encoder bar context is unavailable: " .. tostring(e and (e.reason or e.error) or "not in the binding"), { target = target }) end
+    if e.value.attributeEditing ~= true then
+      return fail("unsupported", string.format("the encoder bar is not in attribute editing (preset-bar context %s): slots are not qualified in this context", e.value.context == nil and "unreadable" or ("'" .. tostring(e.value.context) .. "'")), { target = target, context = e.value.context })
+    end
     local s = snap.slots
     if not (s and s.available) then return fail("target-unavailable", "encoder slots are unavailable: " .. tostring(s and (s.reason or s.error) or "not in the binding"), { target = target }) end
     local sl

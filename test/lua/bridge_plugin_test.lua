@@ -1680,7 +1680,7 @@ do
   local gen = 1
   local bindingKey = "display=1;executors=201"
   local snapshot = function()
-    return { generation = gen, bindingKey = bindingKey, slots = { available = true, value = { selection = { count = 1, fixtures = { 401 }, identityComplete = true }, slots = {
+    return { generation = gen, bindingKey = bindingKey, encoder = { available = true, value = { context = "Default", attributeEditing = true } }, slots = { available = true, value = { selection = { count = 1, fixtures = { 401 }, identityComplete = true }, slots = {
       { slot = 1, kind = "attribute", ref = "Attribute 1 'Dimmer'", name = "Dimmer", layer = "Absolute", resolution = "Coarse", readout = "Percent", channelFunction = "Dimmer", availability = "available" } } } },
       executors = { { available = true, value = { executor = 201, page = 1, empty = false, playbackTarget = true, assigned = { addr = "Sequence 1" }, functions = { keyPress = "Go+", fader = "Master" }, level = { token = "FaderMaster", value = 0 } } } } }
   end

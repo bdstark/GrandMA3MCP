@@ -40,8 +40,11 @@
 -- the slot's attribute, read from GetUIChannel(ui).logical_channel (the fixture type's logical channel:
 -- its children are the ChannelFunctions with PhysicalFrom/PhysicalTo) for every scanned fixture that
 -- has the channel; with several fixture types the smallest range is reported (the console sizes one
--- encoder click by it, manual "Encoder resolution") and physicalMixed says they differ.
--- physicalUnavailable carries the reason otherwise. The adjustment backend needs it for the Physical readout, where "At" takes
+-- encoder click by it, manual "Encoder resolution") and physicalMixed says they differ. The range is
+-- reported only when it is complete and verified: every fixture with the channel contributed its own
+-- function's range and the bounded scan covered the whole selection; otherwise physicalUnavailable
+-- carries the reason. The range and its availability are part of the binding digest (a change moves
+-- the generation, so queued motion calibrated against the old range is dropped). The adjustment backend needs it for the Physical readout, where "At" takes
 -- physical units (live: Pan "At 10" = 10 degrees).
 -- MODULE API 1, module version 0.4.0. Lifecycle: new() -> init() -> read()/readMany()/watch()/service()
 -- ... -> dispose(). Consumers pass dependencies via opts.deps (consoleDeps(_G) builds lazy closures)
@@ -347,10 +350,8 @@ local function physicalOf(d, ui, attrName)
       end
     end
   end
-  if fallback then
-    fallback.note = "no channel function names attribute '" .. attrName .. "'; the first readable function's range is reported"
-    return fallback
-  end
+  -- Review (PR #23): a function that does not name the attribute is not this attribute's range; no fallback.
+  if fallback then return nil, string.format("no channel function of the logical channel names attribute '%s' (%d function(s), the first is '%s'); its range is not this attribute's", attrName, n, tostring(fallback["function"])) end
   return nil, "no channel function with a readable PhysicalFrom/PhysicalTo"
 end
 
@@ -402,11 +403,21 @@ local function slotState(d, scan, attrName)
   elseif not anyValue then st.valueState, st.valueFixture, st.uiChannel = "empty", first.fixture, first.uiChannel; st.valueNote = "the programmer holds no value for this attribute (output values are not read here)"
   else st.valueState, st.absolute, st.raw, st.channelFunction, st.valueFixture, st.uiChannel = "value", first.absolute, first.raw, first.channelFunction, first.fixture, first.uiChannel end
   if readErr and st.valueState ~= "unavailable" then st.valueNote = (st.valueNote and (st.valueNote .. "; ") or "") .. "some fixtures could not be read: " .. readErr end
-  if phys then
-    if physMixed then phys.mixed = true; phys.note = (phys.note and (phys.note .. "; ") or "") .. "the scanned fixtures have different physical ranges; the smallest is reported (the console sizes one click by it)" end
-    if physErr then phys.note = (phys.note and (phys.note .. "; ") or "") .. "some fixtures' ranges could not be read: " .. physErr end
-    st.physical = phys
-  elseif st.with > 0 then st.physicalUnavailable = physErr or "no physical range readable" end
+  -- Review (PR #23): a range is reported only when it is complete and verified: every scanned fixture with the
+  -- channel contributed its own range for this attribute AND the scan covered the whole selection (a fixture
+  -- outside the bounded scan could have a smaller range, and the console sizes one click by the smallest).
+  if st.with > 0 then
+    if phys and not physErr and not scan.partial then
+      if physMixed then phys.mixed = true; phys.note = "the scanned fixtures have different physical ranges; the smallest is reported (the console sizes one click by it)" end
+      st.physical = phys
+    elseif physErr then
+      st.physicalUnavailable = string.format("the physical range could not be read for every fixture with the channel (%s); no click size is derived from a partial set", physErr)
+    elseif scan.partial then
+      st.physicalUnavailable = string.format("the selection scan is bounded (%d of %d fixtures); the smallest physical range over the whole selection is unknown", #scan.fixtures, scan.count)
+    else
+      st.physicalUnavailable = "no physical range readable"
+    end
+  end
   return st
 end
 
@@ -1140,8 +1151,10 @@ local function bindingDigest(snap)
     for i, id in ipairs(sel.fixtures or {}) do ids[i] = tostring(id) end
     parts[#parts + 1] = string.format("selection=%s:%s%s", tostring(sel.count), table.concat(ids, ","), sel.identityComplete == false and ":incomplete" or "")
     for _, sl in ipairs(s.value.slots) do
-      parts[#parts + 1] = string.format("slot%d=%s|%s|%s|%s|%s|%s|%s|%s", sl.slot, tostring(sl.kind), tostring(sl.ref), tostring(sl.resolution), tostring(sl.readout),
-        tostring(sl.channelFunction), tostring(sl.layer), tostring(sl.availability), tostring(sl.outerRef))
+      -- KB-19 review: the calibration inputs (physical range and its availability) are part of a slot's meaning.
+      parts[#parts + 1] = string.format("slot%d=%s|%s|%s|%s|%s|%s|%s|%s|phys=%s..%s/%s/%s/%s", sl.slot, tostring(sl.kind), tostring(sl.ref), tostring(sl.resolution), tostring(sl.readout),
+        tostring(sl.channelFunction), tostring(sl.layer), tostring(sl.availability), tostring(sl.outerRef),
+        tostring(sl.physicalFrom), tostring(sl.physicalTo), tostring(sl.physicalRange), tostring(sl.physicalMixed), tostring(sl.physicalUnavailable))
     end
   else
     parts[#parts + 1] = "slots=unavailable:" .. tostring(s and (s.reason or s.error))

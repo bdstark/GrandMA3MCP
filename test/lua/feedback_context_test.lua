@@ -220,14 +220,14 @@ check("slot 3: only one fixture has it -> mixed availability; nil from GetProgPh
 check("slot 4: attribute missing from the definitions and from the selection is explicit", s[4].name == "ColorRGB_RY" and s[4].attributeUnavailable:find("not in the show's attribute definitions") and s[4].availability == "unavailable" and s[4].valueState == "none" and s[4].unit == nil and s[4].readoutUnavailable ~= nil and s[4].attributeIndex == 110, json.encode(s[4]))
 check("slot 5: empty slot", s[5].kind == "empty" and s[5].ref == nil and s[5].availability == "empty" and s[5].valueState == "none", json.encode(s[5]))
 check("kb19: slot 1 physical range is the smallest across the scanned fixtures and says they differ (flat fields)", s[1].physicalFrom == 0 and s[1].physicalTo == 0.5 and s[1].physicalRange == 0.5 and s[1].physicalFunction == "ColorRGB_R 1" and s[1].physicalFixtures == 2 and s[1].physicalMixed == true and s[1].physicalNote:find("smallest"), json.encode(s[1]))
-check("kb19: slot 2: one fixture's logical channel raised; the other's range is reported with the error in the note", s[2].physicalRange == 1 and s[2].physicalFixtures == 1 and s[2].physicalNote:find("GetUIChannel exploded"), json.encode(s[2]))
+check("kb19 review: slot 2: one fixture's logical channel raised, so no range is reported (a partial set never sizes a click); the reason names the failure", s[2].physicalRange == nil and s[2].physicalFrom == nil and s[2].physicalUnavailable:find("could not be read for every fixture") and s[2].physicalUnavailable:find("GetUIChannel exploded"), json.encode(s[2].physicalUnavailable))
 check("kb19: slot 3 picks the channel function that names the attribute, not the first one", s[3].physicalFunction == "ColorRGB_B 2" and s[3].physicalFunctionIndex == 2 and s[3].physicalFunctions == 2 and s[3].physicalTo == 1, json.encode(s[3]))
 check("kb19: slot 4 (no fixture has it) carries no physical range", s[4].physicalRange == nil and s[4].physicalUnavailable == nil)
-check("kb19: Dimmer bank: a function that does not name the attribute is the fallback with a note; a channel without functions is unavailable per fixture", (function()
+check("kb19 review: Dimmer bank: a function that does not name the attribute is NOT used as its range (no fallback); the slot is physicalUnavailable with the reason", (function()
   console.bank = 0
   local rd = f:read("encoderSlots", nil, 2).value.slots[1]
   console.bank = 3
-  return rd.name == "Dimmer" and rd.physicalFunction == "Dimmer 1" and rd.physicalNote:find("no channel function names attribute 'Dimmer'") and rd.physicalNote:find("no channel functions") and rd.physicalFixtures == 1 end)(), "see Dimmer slot")
+  return rd.name == "Dimmer" and rd.physicalRange == nil and rd.physicalFunction == nil and rd.physicalUnavailable:find("no channel function of the logical channel names attribute 'Dimmer'") ~= nil end)(), "see Dimmer slot")
 local flat = true
 for _, sl in ipairs(s) do for k, v in pairs(sl) do if type(v) == "table" then flat = false end end end
 check("slots are flat records (serialisable within the bridge's depth bound)", flat)
@@ -339,12 +339,30 @@ check("back to the two-fixture selection: moved again", snap.generation == 8)
 -- Review: the identity covers the whole selection, not only the scanned fixtures.
 local big = {}
 for i = 1, 9 do big[i] = 100 + i end
+-- KB-19 review: the nine fixtures all have R (ui 1010+i); the ninth has a ten times smaller physical range than the
+-- first eight, so a range taken from the bounded scan alone would be wrong by a factor of ten.
+for i = 1, 9 do uiOf[100 + i] = { 1010 + i }; attrOfUi[1010 + i] = "ColorRGB_R"; logical[1010 + i] = H({}, { cf("ColorRGB_R 1", "ColorRGB_R", 0, i == 9 and 0.1 or 1) }) end
 selection.list = big
 local s9 = f:contextSnapshot(spec, 16.8)
+check("kb19 review: with a partial scan no physical range is reported (the ninth fixture's smaller range is outside the scan); the reason says the scan is bounded", s9.slots.value.slots[1].availability == "available" and s9.slots.value.slots[1].physicalRange == nil and s9.slots.value.slots[1].physicalUnavailable:find("scan is bounded %(8 of 9 fixtures%)") ~= nil, json.encode({ range = s9.slots.value.slots[1].physicalRange, why = s9.slots.value.slots[1].physicalUnavailable }))
 check("nine fixtures with maxSelectionScan 8: the scan is partial but the identity is complete and the generation moves", s9.slots.value.selection.scanned == 8 and s9.slots.value.selection.partial == true and s9.slots.value.selection.identityComplete == true and #s9.slots.value.selection.fixtures == 9 and s9.slots.value.selection.fixtures[9] == 109 and s9.generation == 9 and s9.generationUnknown == nil, json.encode(s9.slots.value.selection))
 big[9] = 999
 local s9b = f:contextSnapshot(spec, 16.9)
 check("replacing only the ninth fixture (same count, same first eight) moves the generation (review)", s9b.generation == 10 and s9b.generationChanged == true and s9b.slots.value.selection.fixtures[9] == 999, json.encode({ s9b.generation, s9b.slots.value.selection.fixtures }))
+-- KB-19 review: the physical range and its availability are calibration inputs, so they are part of the digest.
+selection.list = { 63, 64 }
+local fD = FB.new({ owner = "kb19d", deps = deps() }):init()
+local d1 = fD:contextSnapshot(spec, 18)
+logical[420] = H({}, { cf("ColorRGB_R 1", "ColorRGB_R", 0, 0.25) })
+local d2 = fD:contextSnapshot(spec, 18.1)
+logical[420] = H({}, { cf("ColorRGB_R 1", "ColorRGB_R", 0, 0.5) })
+local d3 = fD:contextSnapshot(spec, 18.2)
+logical[420] = H({}, {})
+local d4 = fD:contextSnapshot(spec, 18.3)
+logical[420] = H({}, { cf("ColorRGB_R 1", "ColorRGB_R", 0, 0.5) })
+local d5 = fD:contextSnapshot(spec, 18.4)
+check("kb19 review: a changed physical range moves the generation (1 -> 0.25 -> back), and so does the range becoming unreadable and readable again", d1.generation == 1 and d1.slots.value.slots[1].physicalRange == 0.5 and d2.generation == 2 and d2.slots.value.slots[1].physicalRange == 0.25 and d3.generation == 3 and d4.generation == 4 and d4.slots.value.slots[1].physicalUnavailable ~= nil and d5.generation == 5 and d5.slots.value.slots[1].physicalRange == 0.5, json.encode({ d1.generation, d2.generation, d3.generation, d4.generation, d5.generation }))
+selection.list = big  -- the identity-bound checks below expect the nine-fixture selection
 local fBig = FB.new({ owner = "kb17big", deps = deps(), config = { maxSelectionScan = 2, maxSelectionIdentity = 5 } }):init()
 local sb = fBig:contextSnapshot(spec, 17)
 check("beyond maxSelectionIdentity the identity is incomplete and no generation is claimed", sb.generation == nil and sb.generationUnknown == true and sb.slots.value.selection.identityComplete == false and #sb.slots.value.selection.fixtures == 5 and sb.generationNote:find("selection identity is incomplete") and sb.slots.value.selection.limitations[#sb.slots.value.selection.limitations]:find("bounded to 5 of 9"), tostring(sb.generation) .. " " .. tostring(sb.generationNote))

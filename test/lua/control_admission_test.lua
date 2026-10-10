@@ -39,6 +39,7 @@ check("new() refuses unknown and non-positive config, and a non-boolean flag", n
 -------------------------------------------------------------------------------
 local binding = {
   generation = 1,
+  encoder = { available = true, value = { context = "Default", attributeEditing = true } },
   slots = { available = true, value = { selection = { count = 2, fixtures = { 401, 402 }, identityComplete = true }, slots = {
     { slot = 1, kind = "attribute", ref = "Attribute 1 'Dimmer'", name = "Dimmer", layer = "Absolute", resolution = "Coarse", readout = "Percent", channelFunction = "Dimmer", availability = "available" },
     { slot = 2, kind = "attribute", ref = "Attribute 3 'Pan'", name = "Pan", layer = "Absolute", resolution = "Fine", readout = "Physical", channelFunction = "Pan", availability = "mixed", physicalRange = 450, physicalFrom = -225, physicalTo = 225, physicalMixed = true },
@@ -613,6 +614,37 @@ do
   check("kb19: a slot whose channel-function selector names a function other than the attribute's own is refused unsupported with the reason (the attribute's own name or an empty selector is qualified)", okG == nil and eG.code == "unsupported" and eG.reason:find("Gobo1 Shake"), J(eG))
   binding.slots.value.slots[3].availability = "unavailable"; binding.slots.value.slots[3].channelFunction = "Gobo1"
   check("kb19: a refused event is counted and logged, nothing queued", inst:status(1).sessions.s.queued == 1 and inst:status(1).counters.refused >= 5)
+  -- Review (PR #23): the encoder bar's context decides whether a slot is served at all.
+  inst, b = freshConsole()
+  binding.encoder = { available = true, value = { context = "Editor", attributeEditing = false } }
+  local okC1, eC1 = inst:submit("s", 1, rel(1, 1, 1))
+  binding.encoder = { available = true, value = { context = nil, attributeEditing = nil } }
+  local okC2, eC2 = inst:submit("s", 1, rel(2, 1, 1))
+  binding.encoder = { available = false, reason = "display 1 has no encoder bar" }
+  local okC3, eC3 = inst:submit("s", 1, rel(3, 1, 1))
+  binding.encoder = { available = true, value = { context = "Default", attributeEditing = true } }
+  local okC4 = inst:submit("s", 1, rel(4, 1, 1))
+  check("kb19 review: an Editor context and an unreadable context refuse slot motion unsupported, an unavailable encoder bar target-unavailable; Default is served (the fake backend too: this is resolution, not the backend)",
+    okC1 == nil and eC1.code == "unsupported" and eC1.message:find("'Editor'") and okC2 == nil and eC2.code == "unsupported" and eC2.message:find("unreadable") and okC3 == nil and eC3.code == "target-unavailable" and eC3.message:find("no encoder bar") and okC4 and okC4.accepted, J({ eC1, eC2, eC3 }))
+  check("kb19 review: the refusals issued no command", #cmds == 0)
+  local iF = fresh(); iF:openSession({ id = "s" }, 1)
+  binding.encoder = { available = true, value = { context = "Phaser", attributeEditing = false } }
+  local okC5, eC5 = iF:submit("s", 1, rel(1, 1, 1))
+  binding.encoder = { available = true, value = { context = "Default", attributeEditing = true } }
+  check("kb19 review: resolveTarget refuses the context on the fake backend as well", okC5 == nil and eC5.code == "unsupported", J(eC5))
+  -- Review (PR #23): a calibration change is a binding change; queued motion against the old range is dropped.
+  inst, b = freshConsole()
+  inst:submit("s", 1, rel(1, 2, 4))  -- Pan, range 450
+  binding.slots.value.slots[2].physicalRange = 112.5
+  binding.generation = binding.generation + 1  -- what the feedback digest does when a range field changes
+  local svR = inst:service(1.01)
+  binding.slots.value.slots[2].physicalRange = 450
+  check("kb19 review: queued motion is dropped (staleGeneration), not applied with the old step, when the range changed", svR.dropped.staleGeneration == 1 and svR.applied == 0 and #cmds == 0, J(svR))
+  local okR, eR = inst:submit("s", 1.02, rel(2, 2, 4, { generation = binding.generation - 1 }))
+  check("kb19 review: an event still carrying the pre-change generation is stale-generation", okR == nil and eR.code == "stale-generation", J(eR))
+  local okN = inst:submit("s", 1.03, rel(3, 2, 4, { gesture = 2 }))
+  inst:service(1.04)
+  check("kb19 review: a fresh gesture uses the new binding (slot 2 is Fine: 4 x 450 / 120 / 10 = At + 1.5)", okN and okN.accepted and cmds[1] == 'Attribute "Pan" At + 1.5', J(cmds))
   -- Apply: the command text, sign, coalesced deltas, fine, feedback verdicts.
   inst, b = freshConsole()
   for i = 1, 3 do inst:submit("s", 1, rel(i, 1, 1)) end

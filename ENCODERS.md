@@ -280,8 +280,15 @@ the service) is the mtpnxk half.
   console's resolution toggle.
 - **Qualified only:** readouts other than Percent/PercentFine/Physical, resolutions other than Coarse/Fine, layers
   other than Absolute, a channel-function selector naming a function other than the attribute's own, phaser/editor
-  slots (non-`Default` context) and an unreadable range are refused `unsupported` with the reason at admission, before
-  any gesture or queue entry exists (`adapter.supports()`), so nothing is owned or applied for them.
+  slots and an unreadable range are refused `unsupported` with the reason at admission, before any gesture or queue
+  entry exists (`adapter.supports()`), so nothing is owned or applied for them. Review (PR #23): a slot is served only
+  while the encoder bar is in attribute editing (`attributeEditing == true`, preset-bar context `Default`); an editor,
+  phaser or unreadable context refuses every slot event in target resolution, whatever the slot record says.
+- **Calibration coverage (review):** a physical range is reported only when it is complete and verified: every
+  scanned fixture with the channel contributed the range of the channel function that names the attribute (no
+  fallback to another function) and the bounded scan covered the whole selection; otherwise `physicalUnavailable`
+  carries the reason and the Physical readout is refused. The range and its availability are part of the binding
+  digest, so a range change moves the generation and queued motion calibrated against the old range is dropped.
 - **Presses separate from rotation:** a `button` event is refused `unsupported` on the console backend (calculator /
   open / select behaviour is not qualified; nothing is pressed); touches, positions and executor elements likewise
   (KB-20/21/22). The target still resolves first: a press on a slot with nothing selected is `target-unavailable`.
@@ -300,12 +307,13 @@ the service) is the mtpnxk half.
 - **Bridge:** `control=console` (Macro 120 on the test show) next to `control=fake|off`; switching backends ends the
   gestures through the previous one; `control.status` carries the backend's capabilities, calibration, counters and
   last command; `lastApplied.result` carries the command issued.
-- **Harness:** `test/lua/control_admission_test.lua` (159 checks; 19 new: calibration per readout/resolution/layer/
+- **Harness:** `test/lua/control_admission_test.lua` (165 checks; 25 new, including the review's context refusals and the
+  range-change drop: calibration per readout/resolution/layer/
   channel function/range, admission refusals for presses, touches, positions, executor elements and unqualified slots,
   the command text, coalesced and negative deltas, fine, Physical steps, feedback verdicts, a raising `Cmd`, a hold
-  ended as a noop, backend switching, amount formatting), `test/lua/feedback_context_test.lua` (107; physical ranges:
-  smallest over the selection, mixed ranges, the function that names the attribute, a raising `GetUIChannel`, a
-  fallback function, a channel without functions), the bridge harness block (`control=console`, the commands through
+  ended as a noop, backend switching, amount formatting), `test/lua/feedback_context_test.lua` (109; physical ranges:
+  smallest over the selection, mixed ranges, the function that names the attribute, a raising `GetUIChannel`, a function
+  that does not name the attribute, a bounded scan and a range change each refusing or moving the generation), the bridge harness block (`control=console`, the commands through
   `Cmd()`, status, switching) and `test/kb19-probe.test.ts` (4).
 
 **Limitations:** the adjustment is the explicitly limited mode KB-16 allowed (a selection-scoped relative `At`), not native
@@ -313,7 +321,7 @@ encoder equivalence: the console's own encoder modifiers (press factor, dual-enc
 but not reproduced; editor contexts, Increment/Native, non-Absolute layers, Dec8/Dec16/Hex readouts and multi-function
 selection are refused, not served; a relative step from an empty programmer starts at the output value (a colour
 component's default is 100 on the test fixture, so it clamps at once); mixed physical ranges on one slot, Fine as the
-configured resolution and editor contexts were exercised in the harness only; the NX-K hardware and the surface's
+configured resolution, editor contexts (refused since the PR review) and partial range coverage were exercised in the harness only; the NX-K hardware and the surface's
 `--rotary-slots` mode are the mtpnxk half.
 
 ## KB-20 — M-Touch parameter strips act as encoders

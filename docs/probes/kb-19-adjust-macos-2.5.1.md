@@ -68,8 +68,13 @@ colour component adjusted from an empty programmer started at its output default
 
 ## Not exercised live
 
-Editor contexts (a preset-bar context other than `Default`: the feedback reader marks such slots unsupported and the
-module refuses them, harness only), Fine/Increment/Native as the slot's **configured** resolution (every attribute here
+Editor contexts: a preset-bar context other than `Default` was **not** refused by the module as recorded here (review
+of PR #23 reproduced an Editor context issuing `Attribute "Dimmer" At + 1`); since the review fix target resolution
+requires `attributeEditing == true` from the encoder-bar reading and refuses editors, phasers and an unreadable context
+`unsupported` (harness only; no live run in an editor). Likewise the harness-only review fixes: a physical range is
+reported only when every fixture with the channel contributed its own function's range and the scan covered the whole
+selection (otherwise the Physical readout is refused), and a range change moves the binding generation so queued motion
+is dropped. Fine/Increment/Native as the slot's **configured** resolution (every attribute here
 is Coarse; Fine is exercised through the fine gesture only), non-Default layers, mixed fixture types with different
 physical ranges on one slot (the smallest range is chosen in the harness only), a second physical display, Windows,
 the outer ring and a fifth slot (reported, refused), the NX-K hardware itself (the surface half is mtpnxk's). Nothing
