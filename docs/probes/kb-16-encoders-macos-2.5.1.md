@@ -10,7 +10,8 @@ programmer is provably empty through the bridge's `programmer` op (complete cove
 channels, no data); every undo is registered before the change it belongs to, on a page-qualified target with the
 original value read first, and the cleanup runs all of them at the end even if one fails (`scripts/lib/kb16-steps.mjs`,
 injected-failure tests in `test/kb16-steps.test.ts`). An executor that is already active or whose activity cannot be
-read is refused before any dispatch with nothing registered for it, and the next candidate with the same key
+read (only an explicit `active=true`/`active=false` from the reader counts; `ERR`, `nil`, a missing executor or no line are
+unreadable) is refused before any dispatch with nothing registered for it, and the next candidate with the same key
 function is tried (none was refused in this run: every target read inactive). The closing `ClearAll` was a no-op by
 the gate.
 

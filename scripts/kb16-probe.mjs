@@ -21,7 +21,7 @@
 // GMA3_BRIDGE_HOST / GMA3_BRIDGE_PORT select the bridge.
 import net from "node:net";
 import fs from "node:fs";
-import { createCleanup, execRef, probeExecutorButton, probeFader, programmerEmpty, TargetRefused } from "./lib/kb16-steps.mjs";
+import { createCleanup, execRef, parseActivity, probeExecutorButton, probeFader, programmerEmpty, TargetRefused } from "./lib/kb16-steps.mjs";
 
 const host = process.env.GMA3_BRIDGE_HOST ?? "127.0.0.1";
 const port = Number(process.env.GMA3_BRIDGE_PORT ?? 9800);
@@ -594,7 +594,9 @@ async function runPhase(A, ctx0, banks, playback, tokens) {
     // middle is recorded and the registered undo runs in the cleanup at the end (scripts/lib/kb16-steps.mjs).
     const page = (await lua(A, LUA_EXECUTORS([101], tokens))).value?.page;
     const pageNo = Number(String(page ?? "").replace(/^.*#/, "")) || 1;
-    const activity = async (n) => { const c = await lua(A, LUA_EXECUTORS([n], tokens)); if (!c.ok) throw new Error(`activity read failed: ${c.error}`); const l = c.value?.executors?.[0] ?? ""; return { active: /active=true/.test(l), line: l }; };
+    // Only an explicit active=true/false counts; ERR, nil, a missing executor or no line throw (parseActivity),
+    // so the helpers refuse such a target instead of treating it as inactive.
+    const activity = async (n) => { const c = await lua(A, LUA_EXECUTORS([n], tokens)); if (!c.ok) throw new Error(`activity read failed: ${c.error}`); const l = c.value?.executors?.[0]; return { active: parseActivity(l), line: l }; };
     const faderValue = async (n, token) => { const c = await lua(A, LUA_EXECUTORS([n], [token])); if (!c.ok) throw new Error(`fader read failed: ${c.error}`); const m = (c.value?.executors?.[0] ?? "").match(new RegExp(`${token}=([-\\d.]+)`)); return m ? Number(m[1]) : undefined; };
     const io = { cmd: (c) => cmd(A, c), activity, faderValue, setfader: async (ref, value) => { const r = await A.request("setfader", { ref, value }); return r.ok ? { ok: true } : { ok: false, error: r.error }; }, sleep };
     // A candidate that is already active or unreadable is refused by the helper before anything is dispatched

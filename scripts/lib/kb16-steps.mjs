@@ -64,6 +64,22 @@ export function programmerEmpty(result) {
   return { ok: true, detail: { scannedFixtures: cov.scannedFixtures, totalFixtures: cov.totalFixtures, scannedChannels: cov.scannedChannels } };
 }
 
+/**
+ * Parses the `active=` field of one executor line of the probe's LUA_EXECUTORS reader. Only an explicit
+ * `active=true` or `active=false` is accepted; `active=ERR …` (HasActivePlayback raised), `active=nil`, a
+ * `missing` executor, an empty line or no line at all throw, so an unreadable target can never pass for an
+ * inactive one.
+ */
+export function parseActivity(line) {
+  if (typeof line !== "string" || line.trim() === "") throw new Error("activity unavailable: the executor reader returned no line");
+  if (/^\d+\|missing\b/.test(line)) throw new Error(`activity unavailable: ${line.split("|")[0].trim()} is missing on the page`);
+  const m = line.match(/(?:^|\|\s*)active=(\S+)/);
+  if (!m) throw new Error("activity unavailable: the executor line carries no active= field");
+  if (m[1] === "true") return true;
+  if (m[1] === "false") return false;
+  throw new Error(`activity unavailable: active=${m[1]}${/^ERR/.test(m[1]) ? " (HasActivePlayback raised)" : ""}`);
+}
+
 /** Thrown before any dispatch when a target must not be touched; nothing is registered for it. */
 export class TargetRefused extends Error {
   constructor(message, detail) { super(message); this.refused = true; this.detail = detail; }

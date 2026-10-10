@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 // @ts-ignore plain ES module without types
-import { createCleanup, execRef, probeExecutorButton, probeFader, programmerEmpty, TargetRefused } from "../scripts/lib/kb16-steps.mjs";
+import { createCleanup, execRef, parseActivity, probeExecutorButton, probeFader, programmerEmpty, TargetRefused } from "../scripts/lib/kb16-steps.mjs";
 
 /**
  * scripts/lib/kb16-steps.mjs with injected failures: an intermediate error must never skip an executor
@@ -159,6 +159,31 @@ test("the programmer gate accepts only a complete scan with no data", () => {
   assert.match(programmerEmpty({ ok: false, error: "busy" }).reason, /programmer op failed: busy/);
   assert.match(programmerEmpty({ result: { note: "x" } }).reason, /cannot be established/);
   assert.match(programmerEmpty(undefined).reason, /no result/);
+});
+
+test("the activity parser accepts only an explicit active=true/false", () => {
+  const line = (active: string) => `193 | exec=Page 1.Executor 193 : Sequence 5529 'LOS2 Odd' | object=Sequence 5529 'LOS2 Odd' | class=Sequence | name=LOS2 Odd | keyPress=Temp keyUnpress= | config=Configuration 17 'LOS' | appearance= | active=${active} | faders FaderMaster=100.0(100%)`;
+  assert.equal(parseActivity(line("true")), true);
+  assert.equal(parseActivity(line("false")), false);
+  assert.throws(() => parseActivity(line("ERR attempt to call a nil value (method 'HasActivePlayback')")), /active=ERR.*HasActivePlayback raised/);
+  assert.throws(() => parseActivity(line("nil")), /active=nil/);
+  assert.throws(() => parseActivity("190|missing"), /190 is missing/);
+  assert.throws(() => parseActivity(""), /no line/);
+  assert.throws(() => parseActivity(undefined), /no line/);
+  assert.throws(() => parseActivity("193 | exec=Page 1.Executor 193 | object=nil"), /no active= field/);
+  assert.throws(() => parseActivity(line("TRUE")), /active=TRUE/);
+});
+
+test("an executor line without a parsable activity refuses the target through the real reader shape", async () => {
+  // The probe's reader wraps parseActivity; mirror it here so the refusal is exercised end to end.
+  const lines: Record<number, string | undefined> = { 193: "193 | name=LOS2 Odd | active=ERR boom | faders", 190: "190|missing", 5: undefined };
+  const io = { ...fakeIo(), async activity(index: number) { return { active: parseActivity(lines[index]), line: lines[index] }; } };
+  for (const index of [193, 190, 5]) {
+    const cleanup = createCleanup();
+    await assert.rejects(() => probeExecutorButton({ io, cleanup, pageNo: 1, exec: { ...temp, index }, holdMs: 1 }), (e: any) => e instanceof TargetRefused && e.detail.reason === "unreadable");
+    assert.deepEqual(cleanup.pending(), []);
+  }
+  assert.equal(io.calls.filter((c: Call) => c.kind === "cmd").length, 0);
 });
 
 test("execRef is page-qualified", () => {
