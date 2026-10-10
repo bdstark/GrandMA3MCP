@@ -196,6 +196,8 @@ async function main() {
     const rebind = async () => { await sleep(400); snap = await cached(); if (typeof snap.generation !== "number") throw new Error(`no generation claimed: ${snap.generationNote}`); gen = snap.generation; return snap; };
     const submit = async (events, what) => need(await A.request("control.submit", { events }), what);
     const lastApplied = async () => (await A.request("control.status")).result?.lastApplied;
+    // A request that bundles touch, position and lift leaves the lift as lastApplied; the backend's last command is the placement.
+    const lastCommand = async () => (await A.request("control.status")).result?.backendStatus?.lastCommand;
     const settle = () => sleep(GESTURE_LAPSE_MS);
     let gesture = 100;
     try {
@@ -283,8 +285,8 @@ async function main() {
       r = await submit([ev.touch(1, true, { gesture: g }), ev.absolute(1, 0.6, { gesture: g, takeover: true }), ev.touch(1, false)], "takeover");
       await settle();
       const [tA, tB] = [await value(fxA, "Dimmer"), await value(fxB, "Dimmer")];
-      const laK = await lastApplied();
-      record("run: with takeover = true the position is placed on both: Attribute \"Dimmer\" At 60, 60/60, the record says takeover", r.result.outcomes[1].accepted && near(tA, 60) && near(tB, 60) && laK?.result?.command === 'Attribute "Dimmer" At 60' && laK.result?.takeover === true, { a: tA, b: tB, lastApplied: laK });
+      const laK = await lastCommand();
+      record("run: with takeover = true the position is placed on both: Attribute \"Dimmer\" At 60, 60/60, the backend's record says takeover", r.result.outcomes[1].accepted && near(tA, 60) && near(tB, 60) && laK?.command === 'Attribute "Dimmer" At 60' && laK?.takeover === true && laK?.outcome === "applied", { a: tA, b: tB, lastCommand: laK });
       await cmd("ClearAll");
 
       // 4. Physical readout: positions are placed in physical units (Pan From..To), the programmer reads percent.
@@ -297,14 +299,14 @@ async function main() {
         g = ++gesture;
         await submit([ev.touch(pan.slot, true, { gesture: g }), ev.absolute(pan.slot, 0.5, { gesture: g }), ev.touch(pan.slot, false)], "pan centre"); await settle();
         const p1 = await value(MOVER, "Pan");
-        const laP = await lastApplied();
+        const laP = await lastCommand();
         const centre = placedValue(pan, 0.5);
-        record(`run: position 0.5 on Pan is Attribute "Pan" At ${centre} (physical units: the middle of ${pan.physicalFrom}..${pan.physicalTo}) and the programmer reads 50 percent`, laP?.result?.amount === centre && laP.result?.readout === "Physical" && near(p1, 50, 0.05), { after: p1, lastApplied: laP });
+        record(`run: position 0.5 on Pan is Attribute "Pan" At ${centre} (physical units: the middle of ${pan.physicalFrom}..${pan.physicalTo}) and the programmer reads 50 percent`, laP?.amount === centre && laP?.readout === "Physical" && laP?.outcome === "applied" && near(p1, 50, 0.05), { after: p1, lastCommand: laP });
         g = ++gesture;
         await submit([ev.touch(pan.slot, true, { gesture: g }), ev.absolute(pan.slot, 0.1, { gesture: g }), ev.touch(pan.slot, false)], "pan low"); await settle();
         const p2 = await value(MOVER, "Pan");
-        const laP2 = await lastApplied();
-        record(`run: position 0.1 on Pan is At ${placedValue(pan, 0.1)} and reads 10 percent`, near(laP2?.result?.amount, placedValue(pan, 0.1), 1e-6) && near(p2, 10, 0.05), { after: p2, lastApplied: laP2 });
+        const laP2 = await lastCommand();
+        record(`run: position 0.1 on Pan is At ${placedValue(pan, 0.1)} and reads 10 percent`, near(laP2?.amount, placedValue(pan, 0.1), 1e-6) && laP2?.outcome === "applied" && near(p2, 10, 0.05), { after: p2, lastCommand: laP2 });
       }
       await cmd("ClearAll");
 

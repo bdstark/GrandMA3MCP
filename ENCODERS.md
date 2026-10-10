@@ -354,7 +354,7 @@ configured resolution, editor contexts (refused since the PR review) and partial
 `gma3_mcp_control` 0.3.0 and bridge 0.16.0 ([modules](docs/modules.md#parameter-strips-on-the-console-backend-gma3_mcp_control-030-kb-20),
 [reference](docs/reference.md#continuous-control-plugin-v0140-kb-18)); the live record is
 [kb-20-strips-macos-2.5.1.md](docs/probes/kb-20-strips-macos-2.5.1.md) with the
-[script report](docs/probes/kb-20-strips-macos-2.5.1.json) (`node scripts/kb20-probe.mjs run`). The feedback module is
+[script report](docs/probes/kb-20-strips-macos-2.5.1.json) (`node scripts/kb20-probe.mjs run`, **28/28** on 2026-10-10). The feedback module is
 unchanged (0.4.0); no TypeScript changed. The gesture conversion (anchor on touch, re-anchor on retouch, sensitivity,
 fine, pressure ignored, pickup/takeover) is the surface service's half (mtpnxk `KEYBOARD.md` "KB-20"); what the console
 half serves:
@@ -376,6 +376,10 @@ half serves:
   (for every backend) unless the event carries `takeover = true`; relative motion keeps the relationship. The resolved
   slot forwards the binding's `valueState` and last read `absolute` as a pickup hint (values are not in the digest).
 - **Pressure:** no event type carries it; nothing to ignore here (the surface drops the M-Touch pressure keys).
+- **Live (28/28):** the touch hold made the bridge `[busy]` (reason `touch-down`) and refused a console command; the
+  drag inside it read 40 -> 42, the re-touch 42 -> 37; `At 25`, the ends 100 and 0; a two-fixture selection at 20/50
+  reported `valueState mixed`, the position was refused `mixed-values`, five detents kept 25/55, `takeover` placed
+  60/60; Pan (-225..225) placed `At 0` (50 percent) and `At -180` (10 percent); the empty selection and a press refused.
 - **Bridge:** `control=console` serves the three kinds on slots; `control.status` capabilities say
   `{ relative, absolute, touch = true, button = false }`; `lastApplied.result` carries the placement (`value, amount,
   from, to, readout, takeover`).

@@ -1,0 +1,890 @@
+{
+  "mode": "run",
+  "host": "127.0.0.1",
+  "port": 9800,
+  "startedAt": "2026-10-10T20:34:17.668Z",
+  "ping": {
+    "bridgeVersion": "0.16.0",
+    "build": {
+      "version": "2.5.1.0",
+      "hostType": "onPC",
+      "codeType": "Release"
+    },
+    "hostname": "bdsmbpm401",
+    "showfile": "mcp-test-disposable",
+    "user": "Admin",
+    "modules": {
+      "hardkeys": {
+        "loaded": true,
+        "version": "0.10.0"
+      },
+      "feedback": {
+        "loaded": true,
+        "version": "0.4.0"
+      },
+      "control": {
+        "loaded": true,
+        "version": "0.3.0"
+      }
+    },
+    "input": {
+      "quarantined": 0,
+      "retained": 0,
+      "unresolvedFromPreviousRun": 0,
+      "sessions": 0,
+      "enabled": true,
+      "bank": {
+        "provisioned": false
+      },
+      "holds": 0,
+      "note": "ownership records, not physical key state; see input.status. busy: cmd/set/setfader/lua are refused for every connection while it is set",
+      "unresolved": 0,
+      "moduleInputEnabled": true,
+      "backend": "keyboard"
+    },
+    "control": {
+      "unresolvedFromPreviousRun": 0,
+      "gestures": 0,
+      "sessions": 0,
+      "enabled": true,
+      "spec": {
+        "executors": [
+          191,
+          192,
+          193,
+          194
+        ]
+      },
+      "note": "KB-19: relative motion on attribute slots is applied as Attribute \"<name>\" At +/- <amount> for the selection; KB-20: a strip touch holds the slot and moves nothing, a position is Attribute \"<name>\" At <value> over the verified travel (mixed values need takeover); presses and executors are refused unsupported",
+      "backendStatus": {
+        "lastCommand": {
+          "feedback": "OK",
+          "outcome": "applied",
+          "readout": "Physical",
+          "attribute": "Pan",
+          "at": 1791664436.3151,
+          "physicalRange": 450,
+          "valueState": "value",
+          "from": -225,
+          "session": "conn-3",
+          "lost": 0,
+          "command": "Attribute \"Pan\" At -180",
+          "to": 225,
+          "amount": -180,
+          "slot": 1,
+          "value": 0.1
+        },
+        "commands": 9,
+        "name": "console",
+        "calibration": {
+          "readouts": {
+            "PercentFine": 1,
+            "Physical": "range/120",
+            "Percent": 1
+          },
+          "resolutions": {
+            "Fine": 0.1,
+            "Coarse": 1
+          },
+          "note": "one physical detent = one console encoder click: 1 at Coarse and 0.1 at Fine for the Percent/PercentFine readouts, the attribute's physical range / 120 (x 0.1 at Fine) in physical units for the Physical readout, where At takes physical units (manual: 24 clicks per turn, 5 turns per range, Fine ten times finer; KB-16 measured At + 1 = one Coarse click at Percent, KB-19 At 10 = 10 degrees of Pan); other readouts, Increment/Native, non-Absolute layers and channel functions other than the attribute's own are refused",
+          "layers": {
+            "Absolute": true
+          },
+          "fineDivisor": 10
+        },
+        "counters": {
+          "raised": 0,
+          "noop": 20,
+          "refused": 0,
+          "applied": 9
+        }
+      },
+      "counters": {
+        "rateDropped": 0,
+        "evicted": 0,
+        "admitted": 33,
+        "unresolved": 0,
+        "applied": 29,
+        "lost": 1,
+        "staleDropped": 0,
+        "dropped": 0,
+        "coalesced": 3,
+        "expired": 0,
+        "backendRefused": 0,
+        "refused": 13
+      },
+      "moduleInputEnabled": true,
+      "queued": 0,
+      "unresolved": 0,
+      "backend": "console"
+    },
+    "lua": {
+      "enabled": true
+    }
+  },
+  "steps": [
+    {
+      "name": "console",
+      "note": true,
+      "detail": {
+        "bridgeVersion": "0.16.0",
+        "build": {
+          "version": "2.5.1.0",
+          "hostType": "onPC",
+          "codeType": "Release"
+        },
+        "hostname": "bdsmbpm401",
+        "showfile": "mcp-test-disposable",
+        "user": "Admin",
+        "modules": {
+          "hardkeys": {
+            "loaded": true,
+            "version": "0.10.0"
+          },
+          "feedback": {
+            "loaded": true,
+            "version": "0.4.0"
+          },
+          "control": {
+            "loaded": true,
+            "version": "0.3.0"
+          }
+        },
+        "input": {
+          "quarantined": 0,
+          "retained": 0,
+          "unresolvedFromPreviousRun": 0,
+          "sessions": 0,
+          "enabled": true,
+          "bank": {
+            "provisioned": false
+          },
+          "holds": 0,
+          "note": "ownership records, not physical key state; see input.status. busy: cmd/set/setfader/lua are refused for every connection while it is set",
+          "unresolved": 0,
+          "moduleInputEnabled": true,
+          "backend": "keyboard"
+        },
+        "control": {
+          "unresolvedFromPreviousRun": 0,
+          "gestures": 0,
+          "sessions": 0,
+          "enabled": true,
+          "spec": {
+            "executors": [
+              191,
+              192,
+              193,
+              194
+            ]
+          },
+          "note": "KB-19: relative motion on attribute slots is applied as Attribute \"<name>\" At +/- <amount> for the selection; KB-20: a strip touch holds the slot and moves nothing, a position is Attribute \"<name>\" At <value> over the verified travel (mixed values need takeover); presses and executors are refused unsupported",
+          "backendStatus": {
+            "lastCommand": {
+              "feedback": "OK",
+              "outcome": "applied",
+              "readout": "Physical",
+              "attribute": "Pan",
+              "at": 1791664436.3151,
+              "physicalRange": 450,
+              "valueState": "value",
+              "from": -225,
+              "session": "conn-3",
+              "lost": 0,
+              "command": "Attribute \"Pan\" At -180",
+              "to": 225,
+              "amount": -180,
+              "slot": 1,
+              "value": 0.1
+            },
+            "commands": 9,
+            "name": "console",
+            "calibration": {
+              "readouts": {
+                "PercentFine": 1,
+                "Physical": "range/120",
+                "Percent": 1
+              },
+              "resolutions": {
+                "Fine": 0.1,
+                "Coarse": 1
+              },
+              "note": "one physical detent = one console encoder click: 1 at Coarse and 0.1 at Fine for the Percent/PercentFine readouts, the attribute's physical range / 120 (x 0.1 at Fine) in physical units for the Physical readout, where At takes physical units (manual: 24 clicks per turn, 5 turns per range, Fine ten times finer; KB-16 measured At + 1 = one Coarse click at Percent, KB-19 At 10 = 10 degrees of Pan); other readouts, Increment/Native, non-Absolute layers and channel functions other than the attribute's own are refused",
+              "layers": {
+                "Absolute": true
+              },
+              "fineDivisor": 10
+            },
+            "counters": {
+              "raised": 0,
+              "noop": 20,
+              "refused": 0,
+              "applied": 9
+            }
+          },
+          "counters": {
+            "rateDropped": 0,
+            "evicted": 0,
+            "admitted": 33,
+            "unresolved": 0,
+            "applied": 29,
+            "lost": 1,
+            "staleDropped": 0,
+            "dropped": 0,
+            "coalesced": 3,
+            "expired": 0,
+            "backendRefused": 0,
+            "refused": 13
+          },
+          "moduleInputEnabled": true,
+          "queued": 0,
+          "unresolved": 0,
+          "backend": "console"
+        },
+        "lua": {
+          "enabled": true
+        }
+      }
+    },
+    {
+      "name": "control.status answers with the module version and limitations naming strips (KB-20) and the mixed-values rule",
+      "pass": true,
+      "detail": {
+        "version": "0.3.0",
+        "limitations": [
+          "the console backend serves attribute slots only: relative motion (KB-19) as the selection-scoped Attribute \"<name>\" At +/- <amount> adjustment (an explicitly limited mode, not native encoder equivalence), calibrated for the Percent/PercentFine readouts (1 per Coarse detent) and the Physical readout (the attribute's range / 120 per Coarse detent, in physical units) with Fine at a tenth, on the Absolute layer; a strip touch (KB-20) as a hold that reserves the slot and moves nothing; an absolute position (KB-20) as Attribute \"<name>\" At <value> over the verified travel only (Percent/PercentFine 0..100, Physical PhysicalFrom..PhysicalTo of the binding, never a mixed physical range), refused mixed-values while the selection's values disagree unless the event says takeover; other readouts, Increment/Native, other layers, named channel functions, encoder presses and executor elements are refused unsupported",
+          "generations are those of the consumer's binding source (one gma3_mcp_feedback instance and spec); events from a surface bound to another instance are refused as stale",
+          "packet loss is reported, never repaired: a lost relative delta is gone, a lost absolute position is superseded by the next one"
+        ]
+      }
+    },
+    {
+      "name": "control.status: the console backend declares touch and absolute on slots, no presses, no executors",
+      "pass": true,
+      "detail": {
+        "backend": "console",
+        "capabilities": {
+          "absolute": true,
+          "button": false,
+          "targets": {
+            "slot": true,
+            "executor": false
+          },
+          "touch": true,
+          "relative": true
+        }
+      }
+    },
+    {
+      "name": "feedback.context lists the executors of the current page",
+      "pass": true,
+      "detail": 27
+    },
+    {
+      "name": "control.bind watches the context and reports the binding revision",
+      "pass": true,
+      "detail": {
+        "watched": 8,
+        "binding": 1
+      }
+    },
+    {
+      "name": "the cached snapshot claims a generation once the loop observed every part",
+      "pass": true,
+      "detail": {
+        "generation": 7,
+        "notObserved": 0
+      }
+    },
+    {
+      "name": "verify: a press is refused; a touch and a position on an executor fader are unsupported (KB-21/22); a touch and a position on slot 1 while nothing is selected are target-unavailable (the target resolves before the backend): nothing is queued, nothing owned",
+      "pass": true,
+      "detail": {
+        "accepted": 0,
+        "refused": 5,
+        "lost": 0,
+        "outcomes": [
+          "target-unavailable",
+          "unsupported",
+          "unsupported",
+          "target-unavailable",
+          "target-unavailable"
+        ]
+      }
+    },
+    {
+      "name": "verify: the session opened on demand has nothing queued and no gesture; the backend issued no command",
+      "pass": true,
+      "detail": {
+        "sessions": {
+          "conn-4": {
+            "devices": {
+              "probe-mtouch": {
+                "late": 0,
+                "last": 0,
+                "lost": 0,
+                "duplicates": 0,
+                "reordered": 0,
+                "rateDropped": 0
+              },
+              "probe-nxk": {
+                "late": 0,
+                "last": 0,
+                "lost": 0,
+                "duplicates": 0,
+                "reordered": 0,
+                "rateDropped": 0
+              }
+            },
+            "openedAt": 1791664458.2501,
+            "gestures": 0,
+            "remainingMs": 14968,
+            "expiresAt": 1791664473.2501,
+            "state": "active",
+            "id": "conn-4",
+            "leaseMs": 15000,
+            "counters": {
+              "evicted": 0,
+              "refused": 5,
+              "admitted": 0,
+              "dropped": 0,
+              "coalesced": 0,
+              "lost": 0,
+              "applied": 0
+            },
+            "binding": "client 4",
+            "renewals": 0,
+            "queued": 0,
+            "gestureList": []
+          }
+        },
+        "backend": {
+          "raised": 0,
+          "noop": 20,
+          "refused": 0,
+          "applied": 9
+        }
+      }
+    },
+    {
+      "name": "run: preflight gate (programmer provably empty through the programmer op)",
+      "pass": true,
+      "detail": {
+        "scannedFixtures": 70,
+        "totalFixtures": 70,
+        "scannedChannels": 342
+      }
+    },
+    {
+      "name": "run: Fixture 401 on the Dimmer bank: slot 1 is Dimmer (Percent/Coarse), available, programmer empty",
+      "pass": true,
+      "detail": [
+        {
+          "slot": 1,
+          "name": "Dimmer",
+          "readout": "Percent",
+          "resolution": "Coarse",
+          "availability": "available",
+          "valueState": "empty",
+          "physicalRange": 1,
+          "channelFunction": ""
+        },
+        {
+          "slot": 2,
+          "availability": "empty",
+          "valueState": "none",
+          "channelFunction": ""
+        },
+        {
+          "slot": 3,
+          "availability": "empty",
+          "valueState": "none"
+        },
+        {
+          "slot": 4,
+          "availability": "empty",
+          "valueState": "none"
+        },
+        {
+          "slot": 5,
+          "availability": "empty",
+          "valueState": "none"
+        }
+      ]
+    },
+    {
+      "name": "run: a touch down on slot 1 is admitted as a hold: the bridge is [busy] with it (a console command is refused busy, reason touch-down), the touch applied as a noop, no command issued",
+      "pass": true,
+      "detail": {
+        "outcome": {
+          "accepted": 1,
+          "refused": 0,
+          "lost": 0,
+          "outcomes": [
+            "queued"
+          ]
+        },
+        "busy": {
+          "owner": "conn-4",
+          "control": "Strip1",
+          "code": "busy",
+          "device": "probe-mtouch",
+          "description": "touch is down on probe-mtouch/Strip1 of session conn-4",
+          "target": {
+            "slot": 1
+          },
+          "reason": "touch-down"
+        },
+        "cmd": {
+          "ok": false,
+          "error": "[busy] a command is refused while input ownership is active: touch is down on probe-mtouch/Strip1 of session conn-4. Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first",
+          "code": "busy",
+          "detail": {
+            "owner": "conn-4",
+            "control": "Strip1",
+            "code": "busy",
+            "device": "probe-mtouch",
+            "module": "control",
+            "message": "a command is refused while input ownership is active: touch is down on probe-mtouch/Strip1 of session conn-4. Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first",
+            "reason": "touch-down"
+          }
+        },
+        "lastApplied": {
+          "target": "slot1|Attribute 1 'Dimmer'|Absolute|Coarse",
+          "result": {
+            "noop": true,
+            "note": "a strip touch moves nothing on the console; the hold reserved its slot for the gesture (KB-20)"
+          },
+          "down": true,
+          "outcome": "applied",
+          "at": 1791664458.9154,
+          "kind": "touch"
+        }
+      }
+    },
+    {
+      "name": "run: the drag inside the touch (three detents up, one back) coalesces into the KB-19 adjustment At + 2: 40 -> 42",
+      "pass": true,
+      "detail": {
+        "before": 39.999997615814,
+        "after": 41.999995708466,
+        "lastApplied": {
+          "target": "slot1|Attribute 1 'Dimmer'|Absolute|Coarse",
+          "result": {
+            "fine": false,
+            "feedback": "OK",
+            "delta": 2,
+            "attribute": "Dimmer",
+            "resolution": "Coarse",
+            "command": "Attribute \"Dimmer\" At + 2",
+            "slot": 1,
+            "amount": 2,
+            "readout": "Percent",
+            "step": 1
+          },
+          "delta": 2,
+          "outcome": "applied",
+          "at": 1791664459.2334,
+          "kind": "relative"
+        },
+        "outcomes": {
+          "accepted": 4,
+          "refused": 0,
+          "lost": 0,
+          "outcomes": [
+            "queued",
+            "coalesced",
+            "coalesced",
+            "coalesced"
+          ]
+        }
+      }
+    },
+    {
+      "name": "run: the lift is a boundary (noop end): the hold is gone, the bridge is free again (a console command and a Lua read are accepted)",
+      "pass": true,
+      "detail": {
+        "outcome": {
+          "accepted": 1,
+          "refused": 0,
+          "lost": 0,
+          "outcomes": [
+            "queued"
+          ]
+        },
+        "cmd": {
+          "ok": true,
+          "result": {
+            "command": "Fixture 401",
+            "feedback": "OK"
+          }
+        }
+      }
+    },
+    {
+      "name": "run: lift and re-touch: a new gesture on the same slot drags five detents back (42 -> 37); touch, motion and lift in one request keep their order",
+      "pass": true,
+      "detail": {
+        "after": 36.999994516373
+      }
+    },
+    {
+      "name": "run: two positions in one request: the newer superseded the older, Attribute \"Dimmer\" At 25 was placed (the programmer reads 25 after the lift) and lastApplied carries the travel",
+      "pass": true,
+      "detail": {
+        "after": 25,
+        "lastApplied": {
+          "target": "slot1|Attribute 1 'Dimmer'|Absolute|Coarse",
+          "result": {
+            "feedback": "OK",
+            "readout": "Percent",
+            "attribute": "Dimmer",
+            "valueState": "value",
+            "from": 0,
+            "command": "Attribute \"Dimmer\" At 25",
+            "to": 100,
+            "amount": 25,
+            "slot": 1,
+            "value": 0.25
+          },
+          "outcome": "applied",
+          "at": 1791664461.3721,
+          "value": 0.25,
+          "kind": "absolute"
+        },
+        "outcomes": {
+          "accepted": 3,
+          "refused": 0,
+          "lost": 0,
+          "outcomes": [
+            "queued",
+            "queued",
+            "superseded:1"
+          ]
+        }
+      }
+    },
+    {
+      "name": "run: the ends of the travel place 100 and 0 (touch, position and lift in one request each)",
+      "pass": true,
+      "detail": {
+        "top": 100,
+        "bottom": 0
+      }
+    },
+    {
+      "name": "run: Fixture 401 + 402 at 20/50: the binding reports slot 1's values as mixed",
+      "pass": true,
+      "detail": [
+        {
+          "slot": 1,
+          "name": "Dimmer",
+          "readout": "Percent",
+          "resolution": "Coarse",
+          "availability": "available",
+          "valueState": "mixed",
+          "absolute": 19.999998807907,
+          "physicalRange": 1,
+          "channelFunction": ""
+        },
+        {
+          "slot": 2,
+          "availability": "empty",
+          "valueState": "none",
+          "channelFunction": ""
+        },
+        {
+          "slot": 3,
+          "availability": "empty",
+          "valueState": "none"
+        },
+        {
+          "slot": 4,
+          "availability": "empty",
+          "valueState": "none"
+        },
+        {
+          "slot": 5,
+          "availability": "empty",
+          "valueState": "none"
+        }
+      ]
+    },
+    {
+      "name": "run: a position on the mixed slot is refused mixed-values (the message names takeover); both fixtures keep 20/50",
+      "pass": true,
+      "detail": {
+        "a": 19.999998807907,
+        "b": 50,
+        "outcome": {
+          "accepted": 2,
+          "refused": 1,
+          "lost": 1,
+          "outcomes": [
+            "queued",
+            "mixed-values",
+            "queued"
+          ]
+        }
+      }
+    },
+    {
+      "name": "run: relative motion on the mixed slot is served and keeps the relationship (20/50 -> 25/55)",
+      "pass": true,
+      "detail": {
+        "a": 25,
+        "b": 55.000001192093,
+        "outcome": {
+          "accepted": 3,
+          "refused": 0,
+          "lost": 0,
+          "outcomes": [
+            "queued",
+            "queued",
+            "queued"
+          ]
+        }
+      }
+    },
+    {
+      "name": "run: with takeover = true the position is placed on both: Attribute \"Dimmer\" At 60, 60/60, the backend's record says takeover",
+      "pass": true,
+      "detail": {
+        "a": 60.000002384186,
+        "b": 60.000002384186,
+        "lastCommand": {
+          "feedback": "OK",
+          "attribute": "Dimmer",
+          "readout": "Percent",
+          "outcome": "applied",
+          "at": 1791664466.0055,
+          "takeover": true,
+          "valueState": "mixed",
+          "from": 0,
+          "session": "conn-4",
+          "lost": 0,
+          "command": "Attribute \"Dimmer\" At 60",
+          "slot": 1,
+          "amount": 60,
+          "value": 0.6,
+          "to": 100
+        }
+      }
+    },
+    {
+      "name": "run: Fixture 601 on the position bank: Pan is a Physical-readout slot with PhysicalFrom/To from the fixture type",
+      "pass": true,
+      "detail": [
+        {
+          "slot": 1,
+          "name": "Pan",
+          "readout": "Physical",
+          "resolution": "Coarse",
+          "availability": "available",
+          "valueState": "empty",
+          "physicalRange": 450,
+          "channelFunction": ""
+        },
+        {
+          "slot": 2,
+          "name": "Tilt",
+          "readout": "Physical",
+          "resolution": "Coarse",
+          "availability": "available",
+          "valueState": "empty",
+          "physicalRange": 210,
+          "channelFunction": ""
+        },
+        {
+          "slot": 3,
+          "availability": "empty",
+          "valueState": "none"
+        },
+        {
+          "slot": 4,
+          "availability": "empty",
+          "valueState": "none"
+        },
+        {
+          "slot": 5,
+          "availability": "empty",
+          "valueState": "none"
+        }
+      ]
+    },
+    {
+      "name": "run: position 0.5 on Pan is Attribute \"Pan\" At 0 (physical units: the middle of -225..225) and the programmer reads 50 percent",
+      "pass": true,
+      "detail": {
+        "after": 50,
+        "lastCommand": {
+          "feedback": "OK",
+          "outcome": "applied",
+          "readout": "Physical",
+          "attribute": "Pan",
+          "at": 1791664467.24,
+          "physicalRange": 450,
+          "valueState": "empty",
+          "from": -225,
+          "session": "conn-4",
+          "lost": 0,
+          "command": "Attribute \"Pan\" At 0",
+          "to": 225,
+          "amount": 0,
+          "slot": 1,
+          "value": 0.5
+        }
+      }
+    },
+    {
+      "name": "run: position 0.1 on Pan is At -180 and reads 10 percent",
+      "pass": true,
+      "detail": {
+        "after": 10.000002384186,
+        "lastCommand": {
+          "feedback": "OK",
+          "outcome": "applied",
+          "readout": "Physical",
+          "attribute": "Pan",
+          "at": 1791664467.9762,
+          "physicalRange": 450,
+          "valueState": "value",
+          "from": -225,
+          "session": "conn-4",
+          "lost": 0,
+          "command": "Attribute \"Pan\" At -180",
+          "to": 225,
+          "amount": -180,
+          "slot": 1,
+          "value": 0.1
+        }
+      }
+    },
+    {
+      "name": "run: with the selection cleared a touch on slot 1 is target-unavailable (no fixture is selected): no hold, the bridge is not busy",
+      "pass": true,
+      "detail": {
+        "accepted": 0,
+        "refused": 1,
+        "lost": 0,
+        "outcomes": [
+          "target-unavailable"
+        ]
+      }
+    },
+    {
+      "name": "run: an encoder press with a live target is still refused unsupported (calculator/open/select not qualified)",
+      "pass": true,
+      "detail": {
+        "accepted": 0,
+        "refused": 1,
+        "lost": 0,
+        "outcomes": [
+          "unsupported"
+        ]
+      }
+    },
+    {
+      "name": "run: cleanup ran every registered undo",
+      "pass": true,
+      "detail": [
+        {
+          "label": "release strips",
+          "ok": true
+        },
+        {
+          "label": "control.close A",
+          "ok": true,
+          "detail": {
+            "ok": true,
+            "result": {
+              "dropped": 0,
+              "unresolved": [],
+              "session": "conn-4",
+              "ended": []
+            }
+          }
+        },
+        {
+          "label": "Select EncoderBank 1.1",
+          "ok": true,
+          "detail": {
+            "ok": true,
+            "result": {
+              "command": "Select EncoderBank 1.1",
+              "feedback": "OK"
+            }
+          }
+        },
+        {
+          "label": "ClearSelection",
+          "ok": true,
+          "detail": {
+            "ok": true,
+            "result": {
+              "command": "ClearSelection",
+              "feedback": "OK"
+            }
+          }
+        },
+        {
+          "label": "ClearAll",
+          "ok": true,
+          "detail": {
+            "ok": true,
+            "result": {
+              "command": "ClearAll",
+              "feedback": "OK"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "run: the selection is empty again and the bank is back",
+      "pass": true,
+      "detail": {
+        "selection": {
+          "identityComplete": true,
+          "fixtures": [],
+          "partial": false,
+          "count": 0,
+          "scanned": 0,
+          "limitations": [],
+          "discoveryFailures": 0
+        },
+        "bank": {
+          "index": 1,
+          "pages": 1,
+          "name": "Dimmer"
+        }
+      }
+    },
+    {
+      "name": "run: the programmer is empty again (provably, through the programmer op)",
+      "pass": true,
+      "detail": {
+        "scannedFixtures": 70,
+        "totalFixtures": 70,
+        "scannedChannels": 342
+      }
+    },
+    {
+      "name": "run: no session, gesture or queued intent is left; nothing is unresolved",
+      "pass": true,
+      "detail": {
+        "sessions": [],
+        "unresolved": [],
+        "backend": {
+          "raised": 0,
+          "noop": 40,
+          "refused": 0,
+          "applied": 18
+        }
+      }
+    }
+  ],
+  "finishedAt": "2026-10-10T20:34:31.210Z",
+  "passed": 28,
+  "failed": 0
+}
