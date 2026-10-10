@@ -82,11 +82,13 @@ local attrIndex = { ColorRGB_R = 107, ColorRGB_G = 108, ColorRGB_B = 109, Dimmer
 
 -- Selection: fixture 63 (RGB: R/G/B + Dimmer) and 64 (R/G + Dimmer). UI channel -> attribute name.
 local selection = { list = { 63, 64 } }
-local uiOf = { [63] = { 320, 321, 322, 1 }, [64] = { 420, 421, 2 } }
-local attrOfUi = { [320] = "ColorRGB_R", [321] = "ColorRGB_G", [322] = "ColorRGB_B", [1] = "Dimmer", [420] = "ColorRGB_R", [421] = "ColorRGB_G", [2] = "Dimmer" }
+local uiOf = { [63] = { 320, 321, 322, 1 }, [64] = { 420, 421, 2 }, [65] = { 520, 521, 522, 3 } }
+local attrOfUi = { [320] = "ColorRGB_R", [321] = "ColorRGB_G", [322] = "ColorRGB_B", [1] = "Dimmer", [420] = "ColorRGB_R", [421] = "ColorRGB_G", [2] = "Dimmer",
+                   [520] = "ColorRGB_R", [521] = "ColorRGB_G", [522] = "ColorRGB_B", [3] = "Dimmer" }
 local programmer = { [320] = { { absolute = 50, absolute_value = 8388608, channel_function = 0 } }, [420] = { { absolute = 50, channel_function = 0 } },
                      [321] = { { absolute = 50, channel_function = 0 } }, [421] = { { absolute = 60, channel_function = 0 } },
-                     [322] = nil, [1] = { { absolute = 100 } }, [2] = { { absolute = 100 } } }
+                     [322] = nil, [1] = { { absolute = 100 } }, [2] = { { absolute = 100 } },
+                     [520] = { { absolute = 50, absolute_value = 8388608, channel_function = 0 } }, [521] = { { absolute = 50, channel_function = 0 } }, [3] = { { absolute = 100 } } }
 
 -- Executors on page 1.
 local function obj(name, class, no, extra)
@@ -102,7 +104,7 @@ local seqMain = obj("Main", "Sequence", 10, { faders = { FaderMaster = 100, Fade
 local seqTemp = obj("Odd", "Sequence", 11, { faders = { FaderTemp = 0 }, active = "maybe" })
 local quickey = obj("MCP CLEAR", "Quickey", 901, { faders = { FaderMaster = 100 } })
 local function ex(index, object, fns)
-  local e = H({ index = index, KeyPress = fns.keyPress, KeyUnpress = fns.keyUnpress or "", KeyUnpressCombined = fns.keyUnpressCombined, Fader = fns.fader, Encoder = fns.encoder or "Master", EncoderLeft = "", EncoderRight = "", ExecutorConfiguration = "Configuration 1 'Default'", IsXKey = "No", Width = "1" })
+  local e = H({ index = index, KeyPress = fns.keyPress, KeyUnpress = fns.keyUnpress or "", KeyUnpressCombined = fns.keyUnpressCombined, Fader = fns.fader, Encoder = fns.encoder or "Master", EncoderLeft = fns.encoderLeft or "", EncoderRight = fns.encoderRight or "", ExecutorConfiguration = "Configuration 1 'Default'", IsXKey = "No", Width = "1" })
   e.Object = object
   return e
 end
@@ -303,35 +305,56 @@ snap = f:contextSnapshot(spec, 15)
 check("a selection change that alters a slot's availability moves the generation", snap.generation == 4 and snap.slots.value.slots[3].availability == "unavailable")
 selection.list = { 63, 64 }
 snap = f:contextSnapshot(spec, 16)
+check("the snapshot carries the selection identity", snap.generation == 5 and snap.slots.value.selection.fixtures[1] == 63 and snap.slots.value.selection.fixtures[2] == 64, json.encode(snap.slots.value.selection))
+selection.list = { 65 }
+local s65 = f:contextSnapshot(spec, 16.5)
+selection.list = { 63 }
+local s63 = f:contextSnapshot(spec, 16.6)
+check("switching to a fixture with identical availability and value states still moves the generation (review 1)",
+  json.encode((function() local t = {}; for i, x in ipairs(s65.slots.value.slots) do t[i] = { x.availability, x.valueState } end; return t end)()) ==
+  json.encode((function() local t = {}; for i, x in ipairs(s63.slots.value.slots) do t[i] = { x.availability, x.valueState } end; return t end)())
+  and s65.generation == 6 and s65.generationChanged == true and s63.generation == 7 and s63.generationChanged == true, json.encode({ s65.generation, s63.generation }))
+selection.list = { 63, 64 }
+snap = f:contextSnapshot(spec, 16.7)
+check("back to the two-fixture selection: moved again", snap.generation == 8)
 band1.Text = "Red"
 snap = f:contextSnapshot(spec, 17)
-check("a label-only change does not move the generation", snap.generation == 5 and snap.generationChanged == false and snap.slots.value.slots[1].label == "Red")
+check("a label-only change does not move the generation", snap.generation == 8 and snap.generationChanged == false and snap.slots.value.slots[1].label == "Red")
 cf1.Text = "Rotate"
 snap = f:contextSnapshot(spec, 18)
-check("a channel-function change moves the generation", snap.generation == 6 and snap.generationChanged == true)
+check("a channel-function change moves the generation", snap.generation == 9 and snap.generationChanged == true)
 execs[201].Object = nil
 snap = f:contextSnapshot(spec, 19)
-check("a deleted assignment moves the generation and is reported empty", snap.generation == 7 and snap.executors[1].value.empty == true and snap.executors[1].value.playbackTarget == false and snap.executors[1].value.reason == "no assigned object")
+check("a deleted assignment moves the generation and is reported empty", snap.generation == 10 and snap.executors[1].value.empty == true and snap.executors[1].value.playbackTarget == false and snap.executors[1].value.reason == "no assigned object")
 execs[201].Object = seqMain
 snap = f:contextSnapshot(spec, 20)
 execs[201] = ex(201, seqMain, { keyPress = "Flash", fader = "Master" })
 snap = f:contextSnapshot(spec, 21)
-check("a changed key function moves the generation", snap.generation == 9 and snap.executors[1].value.functions.keyPress == "Flash")
+check("a changed key function moves the generation", snap.generation == 12 and snap.executors[1].value.functions.keyPress == "Flash")
+execs[201] = ex(201, seqMain, { keyPress = "Flash", fader = "Master", encoderLeft = "Rate" })
+snap = f:contextSnapshot(spec, 21.2)
+check("a changed EncoderLeft function moves the generation (review 1)", snap.generation == 13 and snap.generationChanged == true and snap.executors[1].value.functions.encoderLeft == "Rate")
+execs[201] = ex(201, seqMain, { keyPress = "Flash", fader = "Master", encoderLeft = "Rate", encoderRight = "Speed" })
+snap = f:contextSnapshot(spec, 21.4)
+check("a changed EncoderRight function moves the generation", snap.generation == 14 and snap.generationChanged == true)
+execs[201] = ex(201, seqMain, { keyPress = "Flash", fader = "Master", encoderLeft = "Rate", encoderRight = "Speed", keyUnpressCombined = "<Go+>" })
+snap = f:contextSnapshot(spec, 21.6)
+check("a changed KeyUnpressCombined function moves the generation", snap.generation == 15 and snap.generationChanged == true)
 displays[1] = nil
 snap = f:contextSnapshot(spec, 22)
-check("losing the encoder bar is a change of meaning: encoder/slots unavailable with reasons", snap.generation == 10 and snap.encoder.available == false and snap.encoder.reason:find("does not exist") and snap.slots.available == false)
+check("losing the encoder bar is a change of meaning: encoder/slots unavailable with reasons", snap.generation == 16 and snap.encoder.available == false and snap.encoder.reason:find("does not exist") and snap.slots.available == false)
 displays[1] = display1
 snap = f:contextSnapshot(spec, 23)
 f:invalidate("test", 24)
 snap = f:contextSnapshot(spec, 24)
-check("a new epoch moves the generation", snap.epoch == 2 and snap.generation == 12 and snap.generationChanged == true)
+check("a new epoch moves the generation", snap.epoch == 2 and snap.generation == 18 and snap.generationChanged == true)
 console.showFile = "show-b"
 snap = f:contextSnapshot(spec, 30)
-check("a show change is detected by the snapshot and moves the generation", snap.invalidated == "show-changed" and snap.epoch == 3 and snap.identity.showFile == "show-b" and snap.generation == 13)
+check("a show change is detected by the snapshot and moves the generation", snap.invalidated == "show-changed" and snap.epoch == 3 and snap.identity.showFile == "show-b" and snap.generation == 19)
 local other = f:contextSnapshot({ executors = { 205 }, display = 1 }, 31)
 check("another spec has its own generation record and the requested rule", other.generation == 1 and other.bindingKey == "display=1;executors=205" and other.authoritativeDisplay.rule == "requested" and #other.executors == 1)
 snap = f:contextSnapshot(spec, 32)
-check("the first spec's record is untouched by the other", snap.generation == 13 and snap.generationChanged == false)
+check("the first spec's record is untouched by the other", snap.generation == 19 and snap.generationChanged == false)
 snap = f:contextSnapshot({ executors = { 201 }, allExecutors = true }, 33)
 local idx = {}
 for _, x in ipairs(snap.executors) do idx[#idx + 1] = x.value and x.value.executor or x.params.executor end

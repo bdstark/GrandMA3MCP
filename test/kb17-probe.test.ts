@@ -134,6 +134,35 @@ test("verify sends only reads and reports the contract checks", async () => {
   } finally { b.close(); }
 });
 
+test("run: a failure after a successful mutation still runs the registered undos (review 2)", async () => {
+  const ops: { op: string; args: any }[] = [];
+  let mutated = false;
+  const b = await startFakeBridge((op, args) => {
+    ops.push({ op, args });
+    if (op === "ping") return ping();
+    if (op === "programmer") return { ok: true, coverage: { complete: true, scannedFixtures: 1, totalFixtures: 1, scannedChannels: 8 }, stats: { channelsWithData: 0, channelErrors: 0 }, total: 0 };
+    if (op === "feedback.context") {
+      if (mutated) throw new Error("[not-running] simulated failure after the mutation");
+      if (args.allExecutors) return snapshot([191]);
+      return snapshot(args.executors ?? [], 1, args.cached ? { cached: true, notObserved: 0, encoder: { available: true, ageMs: 40, value: snapshot([]).encoder.value }, slots: { available: true, ageMs: 40, value: snapshot([]).slots.value } } : {});
+    }
+    if (op === "feedback.watch") return { watched: 5 };
+    if (op === "feedback.unwatch") return { watched: 0 };
+    if (op === "feedback.read") return { items: [{ name: "commandText", available: true, value: "" }] };
+    if (op === "cmd") { if (/^Fixture /.test(args.command)) mutated = true; return { command: args.command, feedback: "OK" }; }
+    throw new Error("unexpected " + op);
+  });
+  try {
+    const r = await run(["run"], { GMA3_BRIDGE_PORT: String(b.port) });
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stdout, /FAIL {2}run: the mutation phase failed; running the registered undos/);
+    assert.match(r.stdout, /PASS {2}run: cleanup ran every registered undo/);
+    const cmds = ops.filter((o) => o.op === "cmd").map((o) => o.args.command);
+    assert.deepEqual(cmds, ["Fixture 401", "ClearSelection"], `the selection is undone after the failure: ${cmds.join(" | ")}`);
+    assert.match(r.stdout, /failed \(aborted: /);
+  } finally { b.close(); }
+});
+
 test("summarize keeps the parts that matter and generationMoved needs a higher, changed generation", () => {
   const s = summarize(snapshot([191, 178]) as any);
   assert.equal(s!.encoder.bank.name, "Dimmer");

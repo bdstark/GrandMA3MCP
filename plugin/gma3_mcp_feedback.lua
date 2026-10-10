@@ -549,8 +549,10 @@ local READERS = {
         end
         slots[s] = slot
       end
+      local scannedIds = {}
+      for i, f in ipairs(scan.fixtures) do scannedIds[i] = f.fixture end
       return { display = n, bar = cfg.encoderBar, bank = { index = bank0 + 1, name = pp.bankName }, page = { index = page0 + 1, name = pp.pageName }, context = context, attributeEditing = (context == "Default") and true or (context ~= nil and false or nil),
-               layer = layer, selection = { count = scan.count, scanned = #scan.fixtures, partial = scan.partial, limitations = scan.limitations },
+               layer = layer, selection = { count = scan.count, scanned = #scan.fixtures, fixtures = scannedIds, partial = scan.partial, limitations = scan.limitations },
                slots = slots, slotCount = pp.slotCount, truncated = pp.slotCount > count }
     end,
     identify = encoderIdent },
@@ -1039,9 +1041,10 @@ local function generationKey(spec, display)
   return table.concat(parts, ";")
 end
 
--- What an input would operate, as text: identity, epoch, bank/page/context, each slot's object,
--- resolution, readout, channel function, layer and availability, the executor page, each executor's
--- assignment, functions, fader token and playback-target status. Values, levels and activity are left
+-- What an input would operate, as text: identity, epoch, bank/page/context, the selection's identity
+-- (count and the scanned fixtures), each slot's object, resolution, readout, channel function, layer and
+-- availability, the executor page, each executor's assignment, every configured function (key press,
+-- release, combined release, fader, encoder, encoder left/right), fader token and playback-target status. Values, levels and activity are left
 -- out on purpose: they change without changing what a control means. An unavailable part is included
 -- with its reason, so losing or regaining a reading is itself a change of meaning.
 local function bindingDigest(snap)
@@ -1057,6 +1060,11 @@ local function bindingDigest(snap)
   end
   local s = snap.slots
   if s and s.available then
+    -- Selection identity (KB-17 review): the same attributes on different fixtures are a different target.
+    local sel = s.value.selection or {}
+    local ids = {}
+    for i, id in ipairs(sel.fixtures or {}) do ids[i] = tostring(id) end
+    parts[#parts + 1] = string.format("selection=%s:%s%s", tostring(sel.count), table.concat(ids, ","), sel.partial and ":partial" or "")
     for _, sl in ipairs(s.value.slots) do
       parts[#parts + 1] = string.format("slot%d=%s|%s|%s|%s|%s|%s|%s|%s", sl.slot, tostring(sl.kind), tostring(sl.ref), tostring(sl.resolution), tostring(sl.readout),
         tostring(sl.channelFunction), tostring(sl.layer), tostring(sl.availability), tostring(sl.outerRef))
@@ -1068,8 +1076,9 @@ local function bindingDigest(snap)
   for _, x in ipairs(snap.executors or {}) do
     if x.available then
       local v, f = x.value, x.value.functions or {}
-      parts[#parts + 1] = string.format("exec%s=%s|%s|%s|%s|%s|%s|%s|%s|%s", tostring(v.executor), tostring(v.empty), tostring(v.assigned and (v.assigned.addr or v.assigned.name)),
-        tostring(v.assigned and v.assigned.class), tostring(f.keyPress), tostring(f.keyUnpress), tostring(f.fader), tostring(f.encoder), tostring(v.level and v.level.token), tostring(v.playbackTarget))
+      parts[#parts + 1] = string.format("exec%s=%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s", tostring(v.executor), tostring(v.empty), tostring(v.assigned and (v.assigned.addr or v.assigned.name)),
+        tostring(v.assigned and v.assigned.class), tostring(f.keyPress), tostring(f.keyUnpress), tostring(f.keyUnpressCombined), tostring(f.fader), tostring(f.encoder), tostring(f.encoderLeft), tostring(f.encoderRight),
+        tostring(v.level and v.level.token), tostring(v.playbackTarget))
     else
       parts[#parts + 1] = string.format("exec%s=unavailable:%s", tostring(x.params and x.params.executor), tostring(x.reason or x.error))
     end

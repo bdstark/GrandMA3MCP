@@ -202,6 +202,10 @@ async function main() {
 
   if (mode === "run") {
     const cleanup = createCleanup();
+    // Review 2: the mutation phase runs inside try/finally so a timeout, a refused read or any other
+    // exception after a change still runs every registered undo before the probe exits.
+    let mutationError = null;
+    try {
     const sel0 = s0.slots?.value?.selection?.count;
     if (sel0 !== 0) { record("run: preflight: the selection must be empty", false, sel0); }
     else {
@@ -260,8 +264,22 @@ async function main() {
         } else note("run: no second executor page in the data pool; the page step is not exercised", { execPage0, pages: pagesR.result?.values?.[0] });
       }
     }
-    const outcomes = await cleanup.run();
-    record("run: cleanup ran every registered undo", outcomes.every((o) => o.ok), outcomes);
+    } catch (e) {
+      mutationError = e;
+      record("run: the mutation phase failed; running the registered undos", false, { error: String(e?.message ?? e), pending: cleanup.pending() });
+    } finally {
+      const outcomes = await cleanup.run();
+      record("run: cleanup ran every registered undo", outcomes.every((o) => o.ok), outcomes);
+    }
+    if (mutationError) {
+      await A.end().catch(() => {});
+      report.finishedAt = new Date().toISOString();
+      report.passed = steps.filter((x) => x.pass === true).length;
+      report.failed = failed;
+      if (outFile) fs.writeFileSync(outFile, JSON.stringify(report, null, 2));
+      console.log(`\n${report.passed} passed, ${failed} failed (aborted: ${mutationError?.message ?? mutationError})`);
+      process.exit(1);
+    }
     await sleep(300);
     const fin = (await context(A, { allExecutors: true })).snap;
     record("run: the context is back where it started (bank, page, selection, executor page)", fin && JSON.stringify(summarize(fin).encoder) === JSON.stringify(summarize(s0).encoder) && fin.slots.value.selection.count === 0 && fin.executorPage?.no === s0.executorPage?.no, { encoder: summarize(fin)?.encoder, selection: fin?.slots?.value?.selection, generation: fin?.generation });
