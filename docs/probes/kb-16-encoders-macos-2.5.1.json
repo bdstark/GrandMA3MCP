@@ -1,0 +1,918 @@
+{
+  "mode": "run",
+  "host": "127.0.0.1",
+  "port": 9800,
+  "startedAt": "2026-10-10T07:52:47.712Z",
+  "ping": {
+    "bridgeVersion": "0.12.0",
+    "build": {
+      "version": "2.5.1.0",
+      "codeType": "Release",
+      "hostType": "onPC"
+    },
+    "hostname": "bdsmbpm401",
+    "showfile": "mcp-test-disposable",
+    "user": "Admin",
+    "modules": {
+      "hardkeys": {
+        "loaded": true,
+        "version": "0.10.0"
+      },
+      "feedback": {
+        "loaded": true,
+        "version": "0.2.0"
+      }
+    },
+    "lua": {
+      "enabled": true
+    }
+  },
+  "steps": [
+    {
+      "name": "console",
+      "pass": null,
+      "detail": {
+        "bridgeVersion": "0.12.0",
+        "build": {
+          "version": "2.5.1.0",
+          "codeType": "Release",
+          "hostType": "onPC"
+        },
+        "hostname": "bdsmbpm401",
+        "showfile": "mcp-test-disposable",
+        "user": "Admin",
+        "modules": {
+          "hardkeys": {
+            "loaded": true,
+            "version": "0.10.0"
+          },
+          "feedback": {
+            "loaded": true,
+            "version": "0.2.0"
+          }
+        },
+        "lua": {
+          "enabled": true
+        }
+      }
+    },
+    {
+      "name": "encoder context objects exist on display 1 (EncoderBankSelector, PresetBar, PageSelector)",
+      "pass": true,
+      "detail": {
+        "bank": {
+          "text": "",
+          "idx": 0,
+          "i64": 0
+        },
+        "page": {
+          "text": "",
+          "idx": 0,
+          "i64": 0
+        },
+        "context": "Default",
+        "selectedFeature": "Dimmer#1",
+        "selectedFeatureGroup": "Dimmer#1",
+        "selectedAttribute": "Dimmer#1",
+        "selectionCount": 0,
+        "places": [
+          "1:Dim=0.0(Coarse)",
+          "2:G=0.0(Coarse)",
+          "3:B=0.0(Coarse)",
+          "4:Amber=0.0(Coarse)",
+          "5:undefined=undefined(undefined)"
+        ]
+      }
+    },
+    {
+      "name": "active encoder bank is a readable index (EncoderBankSelector.SelectedItemValueI64, 0-based; SelectedItemIdx follows on the next UI refresh)",
+      "pass": true,
+      "detail": {
+        "text": "",
+        "idx": 0,
+        "i64": 0
+      }
+    },
+    {
+      "name": "active encoder page is a readable index (PageSelector.SelectedItemValueI64, 0-based; SelectedItemIdx lags)",
+      "pass": true,
+      "detail": {
+        "text": "",
+        "idx": 0,
+        "i64": 0
+      }
+    },
+    {
+      "name": "preset-bar context is readable (Default = attribute editing)",
+      "pass": true,
+      "detail": "Default"
+    },
+    {
+      "name": "selected feature and attribute are readable handles",
+      "pass": true,
+      "detail": {
+        "feature": "Dimmer#1",
+        "group": "Dimmer#1",
+        "attribute": "Dimmer#1",
+        "meta": "feature=FeatureGroup 1 'Dimmer'.Feature 1 'Dimmer' unit=LuminousIntensity readout=Percent resolution=Coarse special=Dimmer"
+      }
+    },
+    {
+      "name": "on-screen encoder places expose label, value and resolution per slot (four on onPC)",
+      "pass": true,
+      "detail": [
+        "1:Dim=0.0(Coarse)",
+        "2:G=0.0(Coarse)",
+        "3:B=0.0(Coarse)",
+        "4:Amber=0.0(Coarse)",
+        "5:undefined=undefined(undefined)"
+      ]
+    },
+    {
+      "name": "fifth place (onPC renders four encoders; the fifth place has no widgets here)",
+      "pass": null,
+      "detail": []
+    },
+    {
+      "name": "profile settings relevant to encoders",
+      "pass": null,
+      "detail": "Default layer=Absolute valueReadout=Natural encoderLinkValues=Single wheelResolution=Normal wheelMode=Additive"
+    },
+    {
+      "name": "profile EncoderBarPool lists banks, pages and slot attributes (Get(..., Roles.Display))",
+      "pass": true,
+      "detail": [
+        "1 Dimmer: 1 Dimmer [Dimmer]",
+        "2 Position: 1 PanTilt [Pan, Tilt]",
+        "3 Gobo: 1 Gobo [Gobo1] / 2 GOBOMISC [PIXELMASK, PIXELMASKEFFECTTIME]",
+        "4 Color: 1 RGB [ColorRGB_R, ColorRGB_G, ColorRGB_B, ColorRGB_RY] / 2 RGB [ColorRGB_W, ColorRGB_UV] / 3 Color [Color1, COLORMIXER]",
+        "5 Beam: 1 Beam [Shutter1, Iris, EFFECTWHEEL, EFFECTWHEEL2]",
+        "6 Focus: 1 Focus [Focus1, Zoom]",
+        "7 Control: 1 Control [PositionMSpeed, FixtureGlobalReset, MACROS, MACRORATE]",
+        "8 Shapers: (no pages)",
+        "9 Video: (no pages)",
+        "10 Phaser: 1 Phaser [Speed, Phase, Transition, Width, NShot]"
+      ]
+    },
+    {
+      "name": "user attribute preferences (resolution, readout per attribute)",
+      "pass": null,
+      "detail": {
+        "prefs": "dualEncoderFactor=Div5 dualEncoderPressFactor=Div25 timeLayerResolution=Fine phaserLayerResolution=Coarse linkResolution=Single count=415",
+        "sample": [
+          "Dimmer: readout=<Percent> resolution=<Coarse> pressFactor=Mul5",
+          "Pan: absent",
+          "Tilt: absent",
+          "ColorRGB_R: absent",
+          "ColorRGB_G: absent",
+          "ColorRGB_B: absent",
+          "Gobo1: absent",
+          "Zoom: absent"
+        ]
+      }
+    },
+    {
+      "name": "the on-screen labels of the page's live slots correspond to the pool page selected by (bank i64 + 1, page i64 + 1)",
+      "pass": true,
+      "detail": {
+        "bank": "Dimmer",
+        "page": "Dimmer",
+        "slots": [
+          "Dimmer",
+          "",
+          "",
+          "",
+          ""
+        ],
+        "labels": [
+          "Dim",
+          "G",
+          "B",
+          "Amber"
+        ]
+      }
+    },
+    {
+      "name": "places beyond the page's slot count keep the label of their last use (stale, not an assignment); the live slot count comes from the pool page",
+      "pass": null,
+      "detail": {
+        "liveSlots": 1,
+        "labels": [
+          "Dim",
+          "G",
+          "B",
+          "Amber"
+        ]
+      }
+    },
+    {
+      "name": "attribute definitions expose feature, unit, readout, resolution, colour and channel-function count",
+      "pass": true,
+      "detail": [
+        "Dimmer: index=0 feature=FeatureGroup 1 'Dimmer'.Feature 1 'Dimmer' unit=LuminousIntensity readout=Percent resolution=Coarse color=0.0000000000,0.0000000000,0.0000000000,1.0000000000 special=Dimmer channelFunctions=9"
+      ]
+    },
+    {
+      "name": "selection UI channels (read-only; empty when nothing is selected)",
+      "pass": null,
+      "detail": "empty"
+    },
+    {
+      "name": "encoder context on display 2 (onPC exposes a display 2 handle on one monitor)",
+      "pass": null,
+      "detail": {
+        "unavailable": "no EncoderBankSelector/PresetBar (display 2)"
+      }
+    },
+    {
+      "name": "a display that does not exist is reported unavailable, not as a context",
+      "pass": true,
+      "detail": {
+        "unavailable": "no display 9"
+      }
+    },
+    {
+      "name": "assigned executors of the current page are enumerable with their key/fader functions",
+      "pass": true,
+      "detail": [
+        "178 MCP CLEAR (Quickey) key=Go+/ fader=Master",
+        "179 MCP RESERVED (Quickey) key=Go+/ fader=Master",
+        "180 MCP RESERVED (Quickey) key=Go+/ fader=Master",
+        "181 MCP RESERVED (Quickey) key=Go+/ fader=Master",
+        "182 MCP RESERVED (Quickey) key=Go+/ fader=Master",
+        "183 MCP RESERVED (Quickey) key=Go+/ fader=Master",
+        "184 MCP RESERVED (Quickey) key=Go+/ fader=Master",
+        "185 MCP RESERVED (Quickey) key=Go+/ fader=Master",
+        "186 MCP RESERVED (Quickey) key=Go+/ fader=Master",
+        "187 MCP RESERVED (Quickey) key=Go+/ fader=Master",
+        "188 MCP RESERVED (Quickey) key=Go+/ fader=Master",
+        "189 MCP RESERVED (Quickey) key=Go+/ fader=Master",
+        "191 LOS2 All DelayA (Sequence) key=Top/Go+ fader=Master",
+        "192 LOS2 All DelayB (Sequence) key=Top/Go+ fader=Master",
+        "193 LOS2 Odd (Sequence) key=Temp/ fader=Master",
+        "194 LOS2 Even (Sequence) key=Temp/ fader=Master",
+        "195 LOS2 Chase (Sequence) key=Toggle/ fader=Master",
+        "196 LOS2 1/3 (Sequence) key=Temp/ fader=Master",
+        "197 LOS2 2/3 (Sequence) key=Temp/ fader=Master",
+        "198 LOS2 3/3 (Sequence) key=Temp/ fader=Master",
+        "201 StartShow 1 (Sequence) key=Flash/ fader=Master",
+        "202 StartShow 2 (Sequence) key=Flash/ fader=Master",
+        "203 StartShow 3 (Sequence) key=Flash/ fader=Master",
+        "204 StartShow 4 (Sequence) key=Flash/ fader=Master",
+        "205 StartShow 5 (Sequence) key=Flash/ fader=Master",
+        "206 StartShow 6 (Sequence) key=Flash/ fader=Master",
+        "207 StartShow 7 (Sequence) key=Flash/ fader=Master",
+        "208 StartShow 8 (Sequence) key=Flash/ fader=Master",
+        "210 Rotate (Sequence) key=Temp/ fader=Temp",
+        "291 LOS1 All DelayA (Sequence) key=Top/Go+ fader=Master",
+        "292 LOS1 All DelayB (Sequence) key=Top/Go+ fader=Master",
+        "293 LOS1 Odd (Sequence) key=Temp/ fader=Master",
+        "294 LOS1 Even (Sequence) key=Temp/ fader=Master",
+        "295 LOS1 Chase (Sequence) key=Toggle/ fader=Master",
+        "296 LOS1 1/3 (Sequence) key=Temp/ fader=Master",
+        "297 LOS1 2/3 (Sequence) key=Temp/ fader=Master",
+        "298 LOS1 3/3 (Sequence) key=Temp/ fader=Master",
+        "401 Beat (MasterSpeed) key=LearnSpeed/ fader=Master",
+        "402 Position Speed (MasterSpeed) key=LearnSpeed/ fader=Master"
+      ]
+    },
+    {
+      "name": "Quickey-bank executors (KB-12) are visible on the page and must be filtered out of playback targets",
+      "pass": null,
+      "detail": [
+        "178 MCP CLEAR",
+        "179 MCP RESERVED",
+        "180 MCP RESERVED",
+        "181 MCP RESERVED",
+        "182 MCP RESERVED",
+        "183 MCP RESERVED",
+        "184 MCP RESERVED",
+        "185 MCP RESERVED",
+        "186 MCP RESERVED",
+        "187 MCP RESERVED",
+        "188 MCP RESERVED",
+        "189 MCP RESERVED"
+      ]
+    },
+    {
+      "name": "executor identity, functions, appearance colour and activity are readable per executor",
+      "pass": true,
+      "detail": [
+        "193 | exec=Page 1.Executor 193 : Sequence 5529 'LOS2 Odd' | object=Sequence 5529 'LOS2 Odd' | class=Sequence | name=LOS2 Odd | keyPress=Temp keyUnpress= keyUnpressCombined=<Temp>\n fader=Master encoder=Master encoderLeft= encoderRight= isXKey=Yes width=1 | config=Configuration 17 'LOS' | appearance= | active=false | faders FaderMaster=100.0(100%) FaderX=0.0(0%) FaderXA=0.0(0%) FaderXB=0.0(0%) FaderRate=50.0(50%) FaderSpeed=50.0(50%) FaderTemp=0.0(0%) FaderTime=0.0(0%) FaderCrossFade=0.0(0%) FaderCrossFadeA=0.0(0%) FaderCrossFadeB=0.0(0%)",
+        "201 | exec=Page 1.Executor 201 : Sequence 2 'StartShow 1' | object=Sequence 2 'StartShow 1' | class=Sequence | name=StartShow 1 | keyPress=Flash keyUnpress= keyUnpressCombined=<Flash>\n fader=Master encoder=Master encoderLeft= encoderRight= isXKey=No width=1 | config=Configuration 1 'DefaultSequence' | appearance= | active=false | faders FaderMaster=0.0(0%) FaderX=0.0(0%) FaderXA=0.0(0%) FaderXB=0.0(0%) FaderRate=50.0(50%) FaderSpeed=50.0(50%) FaderTemp=0.0(0%) FaderTime=0.0(0%) FaderCrossFade=0.0(0%) FaderCrossFadeA=0.0(0%) FaderCrossFadeB=0.0(0%)",
+        "195 | exec=Page 1.Executor 195 : Sequence 5531 'LOS2 Chase' | object=Sequence 5531 'LOS2 Chase' | class=Sequence | name=LOS2 Chase | keyPress=Toggle keyUnpress= keyUnpressCombined= fader=Master encoder=Master encoderLeft= encoderRight= isXKey=Yes width=1 | config=Configuration 17 'LOS' | appearance= | active=false | faders FaderMaster=100.0(100%) FaderX=0.0(0%) FaderXA=0.0(0%) FaderXB=0.0(0%) FaderRate=49.802583456039429(50%) FaderSpeed=50.0(50%) FaderTemp=0.0(0%) FaderTime=0.0(0%) FaderCrossFade=0.0(0%) FaderCrossFadeA=0.0(0%) FaderCrossFadeB=0.0(0%)",
+        "191 | exec=Page 1.Executor 191 : Sequence 5527 'LOS2 All DelayA' | object=Sequence 5527 'LOS2 All DelayA' | class=Sequence | name=LOS2 All DelayA | keyPress=Top keyUnpress=Go+ keyUnpressCombined=Go+ fader=Master encoder=Master encoderLeft= encoderRight= isXKey=Yes width=1 | config=Configuration 17 'LOS' | appearance=Appearance 5010 'Orange' | backRGBA=FF7F00FF color=1.0000000000,1.0000000000,1.0000000000,1.0000000000 | active=false | faders FaderMaster=100.0(100%) FaderX=0.0(0%) FaderXA=0.0(0%) FaderXB=0.0(0%) FaderRate=50.0(50%) FaderSpeed=50.0(50%) FaderTemp=0.0(0%) FaderTime=0.0(0%) FaderCrossFade=0.0(0%) FaderCrossFadeA=0.0(0%) FaderCrossFadeB=0.0(0%)",
+        "210 | exec=Page 1.Executor 210 : Sequence 5437 'Rotate' | object=Sequence 5437 'Rotate' | class=Sequence | name=Rotate | keyPress=Temp keyUnpress= keyUnpressCombined=<Temp>\n fader=Temp encoder=Temp encoderLeft= encoderRight= isXKey=No width=1 | config=Configuration 1 'DefaultSequence' | appearance= | active=false | faders FaderMaster=100.0(100%) FaderX=0.0(0%) FaderXA=0.0(0%) FaderXB=0.0(0%) FaderRate=50.0(50%) FaderSpeed=50.0(50%) FaderTemp=0.0(0%) FaderTime=0.0(0%) FaderCrossFade=0.0(0%) FaderCrossFadeA=0.0(0%) FaderCrossFadeB=0.0(0%)",
+        "401 | exec=Page 1.Executor 401 : MasterSpeed 1 'Beat' | object=MasterPoolSpeed 3 'Speed'.MasterSpeed 1 'Beat' | class=MasterSpeed | name=Beat | keyPress=LearnSpeed keyUnpress= keyUnpressCombined= fader=Master encoder=Master encoderLeft= encoderRight= isXKey=No width=1 | config=Configuration 14 'DefaultPlaybackMaster' | appearance= | active=nil | faders FaderMaster=49.802583456039429(60 B) FaderX=49.802583456039429(60 B) FaderXA=49.802583456039429(60 B) FaderXB=49.802583456039429(60 B) FaderRate=49.802583456039429(60 B) FaderSpeed=49.802583456039429(60 B) FaderTemp=49.802583456039429(60 B) FaderTime=49.802583456039429(60 B) FaderCrossFade=49.802583456039429(60 B) FaderCrossFadeA=49.802583456039429(60 B) FaderCrossFadeB=49.802583456039429(60 B)",
+        "190|missing",
+        "101|missing"
+      ]
+    },
+    {
+      "name": "fader tokens: GetFader answers for the configured function and reports the others",
+      "pass": true,
+      "detail": [
+        "193 | exec=Page 1.Executor 193 : Sequence 5529 'LOS2 Odd' | object=Sequence 5529 'LOS2 Odd' | class=Sequence | name=LOS2 Odd | keyPress=Temp keyUnpress= keyUnpressCombined=<Temp>\n fader=Master encoder=Master encoderLeft= encoderRight= isXKey=Yes width=1 | config=Configuration 17 'LOS' | appearance= | active=false | faders FaderMaster=100.0(100%) FaderX=0.0(0%) FaderXA=0.0(0%) FaderXB=0.0(0%) FaderRate=50.0(50%) FaderSpeed=50.0(50%) FaderTemp=0.0(0%) FaderTime=0.0(0%) FaderCrossFade=0.0(0%) FaderCrossFadeA=0.0(0%) FaderCrossFadeB=0.0(0%)",
+        "201 | exec=Page 1.Executor 201 : Sequence 2 'StartShow 1' | object=Sequence 2 'StartShow 1' | class=Sequence | name=StartShow 1 | keyPress=Flash keyUnpress= keyUnpressCombined=<Flash>\n fader=Master encoder=Master encoderLeft= encoderRight= isXKey=No width=1 | config=Configuration 1 'DefaultSequence' | appearance= | active=false | faders FaderMaster=0.0(0%) FaderX=0.0(0%) FaderXA=0.0(0%) FaderXB=0.0(0%) FaderRate=50.0(50%) FaderSpeed=50.0(50%) FaderTemp=0.0(0%) FaderTime=0.0(0%) FaderCrossFade=0.0(0%) FaderCrossFadeA=0.0(0%) FaderCrossFadeB=0.0(0%)",
+        "FaderMaster=100.0(100%) FaderX=0.0(0%) FaderXA=0.0(0%) FaderXB=0.0(0%) FaderRate=49.802583456039429(50%) FaderSpeed=50.0(50%) FaderTemp=0.0(0%) FaderTime=0.0(0%) FaderCrossFade=0.0(0%) FaderCrossFadeA=0.0(0%) FaderCrossFadeB=0.0(0%)",
+        "FaderMaster=100.0(100%) FaderX=0.0(0%) FaderXA=0.0(0%) FaderXB=0.0(0%) FaderRate=50.0(50%) FaderSpeed=50.0(50%) FaderTemp=0.0(0%) FaderTime=0.0(0%) FaderCrossFade=0.0(0%) FaderCrossFadeA=0.0(0%) FaderCrossFadeB=0.0(0%)",
+        "210 | exec=Page 1.Executor 210 : Sequence 5437 'Rotate' | object=Sequence 5437 'Rotate' | class=Sequence | name=Rotate | keyPress=Temp keyUnpress= keyUnpressCombined=<Temp>\n fader=Temp encoder=Temp encoderLeft= encoderRight= isXKey=No width=1 | config=Configuration 1 'DefaultSequence' | appearance= | active=false | faders FaderMaster=100.0(100%) FaderX=0.0(0%) FaderXA=0.0(0%) FaderXB=0.0(0%) FaderRate=50.0(50%) FaderSpeed=50.0(50%) FaderTemp=0.0(0%) FaderTime=0.0(0%) FaderCrossFade=0.0(0%) FaderCrossFadeA=0.0(0%) FaderCrossFadeB=0.0(0%)",
+        "FaderMaster=49.802583456039429(60 B) FaderX=49.802583456039429(60 B) FaderXA=49.802583456039429(60 B) FaderXB=49.802583456039429(60 B) FaderRate=49.802583456039429(60 B) FaderSpeed=49.802583456039429(60 B) FaderTemp=49.802583456039429(60 B) FaderTime=49.802583456039429(60 B) FaderCrossFade=49.802583456039429(60 B) FaderCrossFadeA=49.802583456039429(60 B) FaderCrossFadeB=49.802583456039429(60 B)"
+      ]
+    },
+    {
+      "name": "an empty executor reports no object (empty is explicit, not a zero level)",
+      "pass": true,
+      "detail": "190|missing"
+    },
+    {
+      "name": "reads left bank, page and selection unchanged",
+      "pass": true,
+      "detail": {
+        "bank": {
+          "text": "",
+          "idx": 0,
+          "i64": 0
+        },
+        "page": {
+          "text": "",
+          "idx": 0,
+          "i64": 0
+        },
+        "context": "Default",
+        "selectedFeature": "Dimmer#1",
+        "selectedFeatureGroup": "Dimmer#1",
+        "selectedAttribute": "Dimmer#1",
+        "selectionCount": 0,
+        "places": [
+          "1:Dim=0.0(Coarse)",
+          "2:G=0.0(Coarse)",
+          "3:B=0.0(Coarse)",
+          "4:Amber=0.0(Coarse)",
+          "5:undefined=undefined(undefined)"
+        ]
+      }
+    },
+    {
+      "name": "run: preflight gate (empty selection, no holds, programmer provably empty through the programmer op)",
+      "pass": true,
+      "detail": {
+        "scannedFixtures": 70,
+        "totalFixtures": 70,
+        "scannedChannels": 342
+      }
+    },
+    {
+      "name": "run: Fixture 401 selects (SelectionCount > 0); bank and page unchanged by a selection",
+      "pass": true,
+      "detail": {
+        "bank": {
+          "text": "",
+          "idx": 0,
+          "i64": 0
+        },
+        "page": {
+          "text": "",
+          "idx": 0,
+          "i64": 0
+        },
+        "context": "Default",
+        "selectedFeature": "Dimmer#1",
+        "selectedFeatureGroup": "Dimmer#1",
+        "selectedAttribute": "Dimmer#1",
+        "selectionCount": 1,
+        "places": [
+          "1:Dim=0.0(Coarse)",
+          "2:G=0.0(Coarse)",
+          "3:B=0.0(Coarse)",
+          "4:Amber=0.0(Coarse)",
+          "5:undefined=undefined(undefined)"
+        ]
+      }
+    },
+    {
+      "name": "run: the selection's UI channels and attribute names are readable (GetUIChannels/GetAttributeByUIChannel on SelectionFirst)",
+      "pass": true,
+      "detail": [
+        "selectionFirst=63",
+        "uiChannelsOfFirst=8",
+        "attributes=Dimmer,ColorRGB_R,ColorRGB_G,ColorRGB_B,ColorRGB_W,ColorRGB_RY,ColorRGB_UV,Shutter1"
+      ]
+    },
+    {
+      "name": "run: Select EncoderBank 4 (Color) moves EncoderBankSelector to 3; the bank reopens on a page the selection supports and the live labels match that page",
+      "pass": true,
+      "detail": {
+        "bank": {
+          "text": "",
+          "idx": 3,
+          "i64": 3
+        },
+        "page": {
+          "text": "",
+          "idx": 0,
+          "i64": 0
+        },
+        "context": "Default",
+        "selectedFeature": "RGB#1",
+        "selectedFeatureGroup": "Color#4",
+        "selectedAttribute": "ColorRGB_R#107",
+        "selectionCount": 1,
+        "places": [
+          "1:R=0.0(Coarse)",
+          "2:G=0.0(Coarse)",
+          "3:B=0.0(Coarse)",
+          "4:Amber=0.0(Coarse)",
+          "5:undefined=undefined(undefined)"
+        ],
+        "landedPage": "RGB",
+        "landedSlots": [
+          "ColorRGB_R",
+          "ColorRGB_G",
+          "ColorRGB_B",
+          "ColorRGB_RY",
+          ""
+        ]
+      }
+    },
+    {
+      "name": "run: SelectedFeature/GetSelectedAttribute follow the bank (feature group of the first slot)",
+      "pass": true,
+      "detail": {
+        "before": "Dimmer#1",
+        "after": "ColorRGB_R#107",
+        "feature": "RGB#1",
+        "group": "Color#4"
+      }
+    },
+    {
+      "name": "run: Select EncoderBank 4.2 moves PageSelector to 1 with the page's live labels (the selection has the page's attributes)",
+      "pass": true,
+      "detail": {
+        "bank": {
+          "text": "",
+          "idx": 3,
+          "i64": 3
+        },
+        "page": {
+          "text": "",
+          "idx": 1,
+          "i64": 1
+        },
+        "context": "Default",
+        "selectedFeature": "RGB#1",
+        "selectedFeatureGroup": "Color#4",
+        "selectedAttribute": "ColorRGB_W#119",
+        "selectionCount": 1,
+        "places": [
+          "1:W=100.0(Coarse)",
+          "2:UV=100.0(Coarse)",
+          "3:B=0.0(Coarse)",
+          "4:Amber=0.0(Coarse)",
+          "5:undefined=undefined(undefined)"
+        ]
+      }
+    },
+    {
+      "name": "run: Select EncoderBank N.1 goes back to page 1 and GetSelectedAttribute is the page's first attribute",
+      "pass": true,
+      "detail": {
+        "page": {
+          "text": "",
+          "idx": 0,
+          "i64": 0
+        },
+        "selectedAttribute": "ColorRGB_R#107",
+        "selectedFeature": "RGB#1"
+      }
+    },
+    {
+      "name": "run: Attribute \"ColorRGB_R\" At 50 lands in the programmer (GetProgPhaser step 1 absolute = 50)",
+      "pass": true,
+      "detail": {
+        "after": "50.0",
+        "feedback": "OK",
+        "raw": "1.absolute=50.0 1.absolute_value=8388608 1.channel_function=0 1.mask_individual=2 1.mask_integrated=0 gridpos=0 gridposmatr=0 mask_active_phaser=64 mask_active_value=2 mask_cooked=0 mask_individual=64 preset_store_mode=0 selective=false uiChannel=320 ui_channel_index=320"
+      }
+    },
+    {
+      "name": "run: the on-screen BandFader.Value of the slot does not follow the programmer value (it is not the readable value state)",
+      "pass": true,
+      "detail": {
+        "before": "0.0",
+        "after": "0.0"
+      }
+    },
+    {
+      "name": "run: Attribute \"ColorRGB_R\" At + 10 is a relative adjustment (50 -> 60)",
+      "pass": true,
+      "detail": {
+        "after": "60.000002384185791",
+        "feedback": "OK"
+      }
+    },
+    {
+      "name": "run: Attribute \"ColorRGB_R\" At - 25 subtracts (60 -> 35)",
+      "pass": true,
+      "detail": {
+        "after": "35.000002384185791",
+        "feedback": "OK"
+      }
+    },
+    {
+      "name": "run: one Coarse click at Percent readout = At + 1 (manual: Coarse Percent 1 per click)",
+      "pass": true,
+      "detail": {
+        "after": "36.000001430511475",
+        "resolution": "Coarse"
+      }
+    },
+    {
+      "name": "run: an adjustment past the range clamps at the attribute's maximum (100)",
+      "pass": true,
+      "detail": {
+        "after": "100.0",
+        "feedback": "OK"
+      }
+    },
+    {
+      "name": "run: and at the minimum (0)",
+      "pass": true,
+      "detail": {
+        "after": "0.0"
+      }
+    },
+    {
+      "name": "run: `Encoder 1 At + 5` (no such keyword is documented; recorded for the limitations)",
+      "pass": null,
+      "detail": {
+        "ok": true,
+        "feedback": "Nothing to be done"
+      }
+    },
+    {
+      "name": "run: a named-attribute adjustment ignores the active bank (the slot identity must be derived by the reader)",
+      "pass": true,
+      "detail": "1.absolute=19.999998807907104 1.absolute_value=3355443 1.channel_function=0 1.mask_individual=2 1.mask_integrated=0 gridpos=0 gridposmatr=0 mask_active_phaser=64 mask_active_value=2 mask_cooked=0 mask_individual=64 preset_store_mode=0 selective=false uiChannel=320 ui_channel_index=320"
+    },
+    {
+      "name": "run: with Fixture 601 (no RGB) selected, Select EncoderBank 4.1 reports OK but the page stays off the RGB page (pages follow the selection's attributes)",
+      "pass": true,
+      "detail": {
+        "feedback": "OK",
+        "bank": {
+          "text": "",
+          "idx": 3,
+          "i64": 3
+        },
+        "page": {
+          "text": "",
+          "idx": 0,
+          "i64": 2
+        },
+        "context": "Default",
+        "selectedFeature": "Color#2",
+        "selectedFeatureGroup": "Color#4",
+        "selectedAttribute": "Color1#87",
+        "selectionCount": 1,
+        "places": [
+          "1:C1=0.0(Coarse)",
+          "2:G=0.0(Coarse)",
+          "3:B=0.0(Coarse)",
+          "4:Amber=0.0(Coarse)",
+          "5:undefined=undefined(undefined)"
+        ]
+      }
+    },
+    {
+      "name": "run: Attribute \"ColorRGB_R\" At 50 on a fixture without the attribute returns OK and changes nothing (no refusal to detect)",
+      "pass": true,
+      "detail": {
+        "feedback": "OK",
+        "value": "attribute not in the first (sub)fixture's UI channels"
+      }
+    },
+    {
+      "name": "run: a mixed selection (RGB par + beam) keeps the RGB page available and shows the slot labels",
+      "pass": true,
+      "detail": {
+        "bank": {
+          "text": "",
+          "idx": 3,
+          "i64": 3
+        },
+        "page": {
+          "text": "",
+          "idx": 0,
+          "i64": 0
+        },
+        "context": "Default",
+        "selectedFeature": "RGB#1",
+        "selectedFeatureGroup": "Color#4",
+        "selectedAttribute": "ColorRGB_R#107",
+        "selectionCount": 2,
+        "places": [
+          "1:R=0.0(Coarse)",
+          "2:G=0.0(Coarse)",
+          "3:B=0.0(Coarse)",
+          "4:Amber=0.0(Coarse)",
+          "5:undefined=undefined(undefined)"
+        ],
+        "channels": [
+          "selectionFirst=63",
+          "uiChannelsOfFirst=8",
+          "attributes=Dimmer,ColorRGB_R,ColorRGB_G,ColorRGB_B,ColorRGB_W,ColorRGB_RY,ColorRGB_UV,Shutter1"
+        ]
+      }
+    },
+    {
+      "name": "run: ClearSelection empties the selection; the bank/page and slot labels remain",
+      "pass": true,
+      "detail": {
+        "bank": {
+          "text": "",
+          "idx": 3,
+          "i64": 3
+        },
+        "page": {
+          "text": "",
+          "idx": 0,
+          "i64": 0
+        },
+        "context": "Default",
+        "selectedFeature": "RGB#1",
+        "selectedFeatureGroup": "Color#4",
+        "selectedAttribute": "ColorRGB_R#107",
+        "selectionCount": 0,
+        "places": [
+          "1:R=0.0(Coarse)",
+          "2:G=0.0(Coarse)",
+          "3:B=0.0(Coarse)",
+          "4:Amber=0.0(Coarse)",
+          "5:undefined=undefined(undefined)"
+        ]
+      }
+    },
+    {
+      "name": "run: LOS2 Odd (Temp/): Press Page 1.193 -> active=true, Unpress -> active=false",
+      "pass": true,
+      "detail": {
+        "ref": "Page 1.193",
+        "name": "LOS2 Odd",
+        "keyPress": "Temp",
+        "keyUnpress": "",
+        "before": false,
+        "press": {
+          "ok": true,
+          "feedback": "OK"
+        },
+        "during": true,
+        "unpress": {
+          "ok": true,
+          "feedback": "OK"
+        },
+        "after": false
+      }
+    },
+    {
+      "name": "run: StartShow 1 (Flash/): Press Page 1.201 -> active=true, Unpress -> active=false",
+      "pass": true,
+      "detail": {
+        "ref": "Page 1.201",
+        "name": "StartShow 1",
+        "keyPress": "Flash",
+        "keyUnpress": "",
+        "before": false,
+        "press": {
+          "ok": true,
+          "feedback": "OK"
+        },
+        "during": true,
+        "unpress": {
+          "ok": true,
+          "feedback": "OK"
+        },
+        "after": false
+      }
+    },
+    {
+      "name": "run: LOS2 Chase (Toggle): Press Page 1.195 -> active=true, Unpress -> still active=true, Off -> active=false",
+      "pass": true,
+      "detail": {
+        "ref": "Page 1.195",
+        "name": "LOS2 Chase",
+        "keyPress": "Toggle",
+        "keyUnpress": "",
+        "before": false,
+        "press": {
+          "ok": true,
+          "feedback": "OK"
+        },
+        "during": true,
+        "unpress": {
+          "ok": true,
+          "feedback": "OK"
+        },
+        "after": true,
+        "off": {
+          "ok": true,
+          "feedback": "OK"
+        },
+        "afterOff": false
+      }
+    },
+    {
+      "name": "run: LOS2 All DelayA (Top/Go+): Press Page 1.191 runs Top (active=true), Unpress runs Go+ (observed active=false), Off -> active=false",
+      "pass": true,
+      "detail": {
+        "ref": "Page 1.191",
+        "name": "LOS2 All DelayA",
+        "keyPress": "Top",
+        "keyUnpress": "Go+",
+        "before": false,
+        "press": {
+          "ok": true,
+          "feedback": "OK"
+        },
+        "during": true,
+        "unpress": {
+          "ok": true,
+          "feedback": "OK"
+        },
+        "after": false,
+        "off": {
+          "ok": true,
+          "feedback": "OK"
+        },
+        "afterOff": false
+      }
+    },
+    {
+      "name": "run: a Temp held for 1.2 s stays active until the Unpress Page 1.193 (release is the holder's responsibility): during=true, after=false",
+      "pass": true,
+      "detail": {
+        "ref": "Page 1.193",
+        "name": "LOS2 Odd",
+        "keyPress": "Temp",
+        "keyUnpress": "",
+        "before": false,
+        "press": {
+          "ok": true,
+          "feedback": "OK"
+        },
+        "during": true,
+        "unpress": {
+          "ok": true,
+          "feedback": "OK"
+        },
+        "after": false
+      }
+    },
+    {
+      "name": "run: Master fader of LOS2 All DelayA (Page 1.191) set to 25 and read back through GetFader{FaderMaster}, then restored to 100",
+      "pass": true,
+      "detail": {
+        "ref": "Page 1.191",
+        "name": "LOS2 All DelayA",
+        "token": "FaderMaster",
+        "original": 100,
+        "target": 25,
+        "set": {
+          "ok": true
+        },
+        "moved": 25,
+        "activeAfterMove": false,
+        "restoreCall": {
+          "ok": true
+        },
+        "restored": 100,
+        "activeAfterRestore": false
+      }
+    },
+    {
+      "name": "run: FaderRate keyword on a Master-fader executor (function-specific setter, read back through GetFader{FaderRate})",
+      "pass": null,
+      "detail": {
+        "ref": "Page 1.191",
+        "name": "LOS2 All DelayA",
+        "token": "FaderRate",
+        "original": 50,
+        "target": 75,
+        "set": {
+          "ok": true,
+          "feedback": "OK"
+        },
+        "moved": 50,
+        "activeAfterMove": false,
+        "restoreCall": {
+          "ok": true,
+          "feedback": "OK"
+        },
+        "restored": 50,
+        "activeAfterRestore": false
+      }
+    },
+    {
+      "name": "run: Temp fader of Rotate (Page 1.210): FaderTemp At 60 read back through GetFader{FaderTemp} (59.99…) and the sequence becomes active; back to 0 and inactive again",
+      "pass": true,
+      "detail": {
+        "ref": "Page 1.210",
+        "name": "Rotate",
+        "token": "FaderTemp",
+        "original": 0,
+        "target": 60,
+        "set": {
+          "ok": true,
+          "feedback": "OK"
+        },
+        "moved": 59.99999642372131,
+        "activeAfterMove": true,
+        "restoreCall": {
+          "ok": true,
+          "feedback": "OK"
+        },
+        "restored": 0,
+        "activeAfterRestore": false
+      }
+    },
+    {
+      "name": "run: Page 2 / Page 1 (both exist; 1 is the original page) changes the page and back without starting or stopping playbacks",
+      "pass": true,
+      "detail": {
+        "before": "Page 1#1",
+        "other": "Page 2#2",
+        "after": "Page 1#1",
+        "activity": [
+          false,
+          false
+        ]
+      }
+    },
+    {
+      "name": "run: cleanup ran 3 registered undo(s) (3 were still pending)",
+      "pass": true,
+      "detail": [
+        {
+          "label": "Off Attribute \"ColorRGB_R\"",
+          "ok": true,
+          "detail": {
+            "ok": true,
+            "feedback": "OK"
+          }
+        },
+        {
+          "label": "Select EncoderBank 1.1",
+          "ok": true,
+          "detail": {
+            "ok": true,
+            "feedback": "OK"
+          }
+        },
+        {
+          "label": "ClearSelection",
+          "ok": true,
+          "detail": {
+            "ok": true,
+            "feedback": "OK"
+          }
+        }
+      ]
+    },
+    {
+      "name": "run: ClearAll (the programmer was provably empty at the preflight gate)",
+      "pass": null,
+      "detail": "OK"
+    },
+    {
+      "name": "run: final context equals the initial one (bank, page, selection, values)",
+      "pass": true,
+      "detail": {
+        "bank": {
+          "text": "",
+          "idx": 0,
+          "i64": 0
+        },
+        "page": {
+          "text": "",
+          "idx": 0,
+          "i64": 0
+        },
+        "context": "Default",
+        "selectedFeature": "Dimmer#1",
+        "selectedFeatureGroup": "Dimmer#1",
+        "selectedAttribute": "Dimmer#1",
+        "selectionCount": 0,
+        "places": [
+          "1:Dim=0.0(Coarse)",
+          "2:G=0.0(Coarse)",
+          "3:B=0.0(Coarse)",
+          "4:Amber=0.0(Coarse)",
+          "5:undefined=undefined(undefined)"
+        ]
+      }
+    }
+  ],
+  "finishedAt": "2026-10-10T07:53:00.484Z",
+  "failed": 0,
+  "passed": 44
+}
