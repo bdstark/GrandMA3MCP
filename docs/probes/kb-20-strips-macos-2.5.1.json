@@ -2,7 +2,7 @@
   "mode": "run",
   "host": "127.0.0.1",
   "port": 9800,
-  "startedAt": "2026-10-10T20:34:17.668Z",
+  "startedAt": "2026-10-10T20:59:53.730Z",
   "ping": {
     "bridgeVersion": "0.16.0",
     "build": {
@@ -45,37 +45,10 @@
     "control": {
       "unresolvedFromPreviousRun": 0,
       "gestures": 0,
-      "sessions": 0,
+      "unresolved": 0,
       "enabled": true,
-      "spec": {
-        "executors": [
-          191,
-          192,
-          193,
-          194
-        ]
-      },
-      "note": "KB-19: relative motion on attribute slots is applied as Attribute \"<name>\" At +/- <amount> for the selection; KB-20: a strip touch holds the slot and moves nothing, a position is Attribute \"<name>\" At <value> over the verified travel (mixed values need takeover); presses and executors are refused unsupported",
+      "sessions": 0,
       "backendStatus": {
-        "lastCommand": {
-          "feedback": "OK",
-          "outcome": "applied",
-          "readout": "Physical",
-          "attribute": "Pan",
-          "at": 1791664436.3151,
-          "physicalRange": 450,
-          "valueState": "value",
-          "from": -225,
-          "session": "conn-3",
-          "lost": 0,
-          "command": "Attribute \"Pan\" At -180",
-          "to": 225,
-          "amount": -180,
-          "slot": 1,
-          "value": 0.1
-        },
-        "commands": 9,
-        "name": "console",
         "calibration": {
           "readouts": {
             "PercentFine": 1,
@@ -94,28 +67,30 @@
         },
         "counters": {
           "raised": 0,
-          "noop": 20,
+          "noop": 0,
           "refused": 0,
-          "applied": 9
-        }
+          "applied": 0
+        },
+        "commands": 0,
+        "name": "console"
       },
       "counters": {
         "rateDropped": 0,
         "evicted": 0,
-        "admitted": 33,
+        "admitted": 0,
         "unresolved": 0,
-        "applied": 29,
-        "lost": 1,
+        "applied": 0,
+        "lost": 0,
         "staleDropped": 0,
         "dropped": 0,
-        "coalesced": 3,
+        "coalesced": 0,
         "expired": 0,
         "backendRefused": 0,
-        "refused": 13
+        "refused": 0
       },
       "moduleInputEnabled": true,
       "queued": 0,
-      "unresolved": 0,
+      "note": "KB-19: relative motion on attribute slots is applied as Attribute \"<name>\" At +/- <amount> for the selection; KB-20: a strip touch holds the slot and moves nothing, a position is Attribute \"<name>\" At <value> over the verified travel (mixed values need takeover); presses and executors are refused unsupported",
       "backend": "console"
     },
     "lua": {
@@ -168,37 +143,10 @@
         "control": {
           "unresolvedFromPreviousRun": 0,
           "gestures": 0,
-          "sessions": 0,
+          "unresolved": 0,
           "enabled": true,
-          "spec": {
-            "executors": [
-              191,
-              192,
-              193,
-              194
-            ]
-          },
-          "note": "KB-19: relative motion on attribute slots is applied as Attribute \"<name>\" At +/- <amount> for the selection; KB-20: a strip touch holds the slot and moves nothing, a position is Attribute \"<name>\" At <value> over the verified travel (mixed values need takeover); presses and executors are refused unsupported",
+          "sessions": 0,
           "backendStatus": {
-            "lastCommand": {
-              "feedback": "OK",
-              "outcome": "applied",
-              "readout": "Physical",
-              "attribute": "Pan",
-              "at": 1791664436.3151,
-              "physicalRange": 450,
-              "valueState": "value",
-              "from": -225,
-              "session": "conn-3",
-              "lost": 0,
-              "command": "Attribute \"Pan\" At -180",
-              "to": 225,
-              "amount": -180,
-              "slot": 1,
-              "value": 0.1
-            },
-            "commands": 9,
-            "name": "console",
             "calibration": {
               "readouts": {
                 "PercentFine": 1,
@@ -217,28 +165,30 @@
             },
             "counters": {
               "raised": 0,
-              "noop": 20,
+              "noop": 0,
               "refused": 0,
-              "applied": 9
-            }
+              "applied": 0
+            },
+            "commands": 0,
+            "name": "console"
           },
           "counters": {
             "rateDropped": 0,
             "evicted": 0,
-            "admitted": 33,
+            "admitted": 0,
             "unresolved": 0,
-            "applied": 29,
-            "lost": 1,
+            "applied": 0,
+            "lost": 0,
             "staleDropped": 0,
             "dropped": 0,
-            "coalesced": 3,
+            "coalesced": 0,
             "expired": 0,
             "backendRefused": 0,
-            "refused": 13
+            "refused": 0
           },
           "moduleInputEnabled": true,
           "queued": 0,
-          "unresolved": 0,
+          "note": "KB-19: relative motion on attribute slots is applied as Attribute \"<name>\" At +/- <amount> for the selection; KB-20: a strip touch holds the slot and moves nothing, a position is Attribute \"<name>\" At <value> over the verified travel (mixed values need takeover); presses and executors are refused unsupported",
           "backend": "console"
         },
         "lua": {
@@ -252,7 +202,7 @@
       "detail": {
         "version": "0.3.0",
         "limitations": [
-          "the console backend serves attribute slots only: relative motion (KB-19) as the selection-scoped Attribute \"<name>\" At +/- <amount> adjustment (an explicitly limited mode, not native encoder equivalence), calibrated for the Percent/PercentFine readouts (1 per Coarse detent) and the Physical readout (the attribute's range / 120 per Coarse detent, in physical units) with Fine at a tenth, on the Absolute layer; a strip touch (KB-20) as a hold that reserves the slot and moves nothing; an absolute position (KB-20) as Attribute \"<name>\" At <value> over the verified travel only (Percent/PercentFine 0..100, Physical PhysicalFrom..PhysicalTo of the binding, never a mixed physical range), refused mixed-values while the selection's values disagree unless the event says takeover; other readouts, Increment/Native, other layers, named channel functions, encoder presses and executor elements are refused unsupported",
+          "the console backend serves attribute slots only: relative motion (KB-19) as the selection-scoped Attribute \"<name>\" At +/- <amount> adjustment (an explicitly limited mode, not native encoder equivalence), calibrated for the Percent/PercentFine readouts (1 per Coarse detent) and the Physical readout (the attribute's range / 120 per Coarse detent, in physical units) with Fine at a tenth, on the Absolute layer; a strip touch (KB-20) as a hold that reserves the slot and moves nothing; an absolute position (KB-20) as Attribute \"<name>\" At <value> over the verified travel only (Percent/PercentFine 0..100, Physical PhysicalFrom..PhysicalTo of the binding, never a mixed physical range), refused mixed-values while the selection's values disagree and values-incomplete while they were not completely read, unless the event says takeover; other readouts, Increment/Native, other layers, named channel functions, encoder presses and executor elements are refused unsupported",
           "generations are those of the consumer's binding source (one gma3_mcp_feedback instance and spec); events from a surface bound to another instance are refused as stale",
           "packet loss is reported, never repaired: a lost relative delta is gone, a lost absolute position is superseded by the next one"
         ]
@@ -292,8 +242,9 @@
       "name": "the cached snapshot claims a generation once the loop observed every part",
       "pass": true,
       "detail": {
-        "generation": 7,
-        "notObserved": 0
+        "generation": 1,
+        "notObserved": 0,
+        "note": "first snapshot of this spec in this instance; compare generations of one spec within one instance (epoch) only"
       }
     },
     {
@@ -317,7 +268,7 @@
       "pass": true,
       "detail": {
         "sessions": {
-          "conn-4": {
+          "conn-15": {
             "devices": {
               "probe-mtouch": {
                 "late": 0,
@@ -336,12 +287,12 @@
                 "rateDropped": 0
               }
             },
-            "openedAt": 1791664458.2501,
+            "openedAt": 1791665994.2942,
             "gestures": 0,
-            "remainingMs": 14968,
-            "expiresAt": 1791664473.2501,
+            "remainingMs": 14966,
+            "expiresAt": 1791666009.2942,
             "state": "active",
-            "id": "conn-4",
+            "id": "conn-15",
             "leaseMs": 15000,
             "counters": {
               "evicted": 0,
@@ -352,7 +303,7 @@
               "lost": 0,
               "applied": 0
             },
-            "binding": "client 4",
+            "binding": "client 15",
             "renewals": 0,
             "queued": 0,
             "gestureList": []
@@ -360,9 +311,9 @@
         },
         "backend": {
           "raised": 0,
-          "noop": 20,
+          "noop": 0,
           "refused": 0,
-          "applied": 9
+          "applied": 0
         }
       }
     },
@@ -425,11 +376,11 @@
           ]
         },
         "busy": {
-          "owner": "conn-4",
+          "owner": "conn-15",
           "control": "Strip1",
           "code": "busy",
           "device": "probe-mtouch",
-          "description": "touch is down on probe-mtouch/Strip1 of session conn-4",
+          "description": "touch is down on probe-mtouch/Strip1 of session conn-15",
           "target": {
             "slot": 1
           },
@@ -437,15 +388,15 @@
         },
         "cmd": {
           "ok": false,
-          "error": "[busy] a command is refused while input ownership is active: touch is down on probe-mtouch/Strip1 of session conn-4. Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first",
+          "error": "[busy] a command is refused while input ownership is active: touch is down on probe-mtouch/Strip1 of session conn-15. Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first",
           "code": "busy",
           "detail": {
-            "owner": "conn-4",
+            "owner": "conn-15",
             "control": "Strip1",
             "code": "busy",
             "device": "probe-mtouch",
             "module": "control",
-            "message": "a command is refused while input ownership is active: touch is down on probe-mtouch/Strip1 of session conn-4. Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first",
+            "message": "a command is refused while input ownership is active: touch is down on probe-mtouch/Strip1 of session conn-15. Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first",
             "reason": "touch-down"
           }
         },
@@ -457,7 +408,7 @@
           },
           "down": true,
           "outcome": "applied",
-          "at": 1791664458.9154,
+          "at": 1791665994.9178,
           "kind": "touch"
         }
       }
@@ -484,7 +435,7 @@
           },
           "delta": 2,
           "outcome": "applied",
-          "at": 1791664459.2334,
+          "at": 1791665995.1838,
           "kind": "relative"
         },
         "outcomes": {
@@ -548,7 +499,7 @@
             "value": 0.25
           },
           "outcome": "applied",
-          "at": 1791664461.3721,
+          "at": 1791665997.2771,
           "value": 0.25,
           "kind": "absolute"
         },
@@ -657,11 +608,11 @@
           "attribute": "Dimmer",
           "readout": "Percent",
           "outcome": "applied",
-          "at": 1791664466.0055,
+          "at": 1791666001.906,
           "takeover": true,
           "valueState": "mixed",
           "from": 0,
-          "session": "conn-4",
+          "session": "conn-15",
           "lost": 0,
           "command": "Attribute \"Dimmer\" At 60",
           "slot": 1,
@@ -722,11 +673,11 @@
           "outcome": "applied",
           "readout": "Physical",
           "attribute": "Pan",
-          "at": 1791664467.24,
+          "at": 1791666003.1318,
           "physicalRange": 450,
           "valueState": "empty",
           "from": -225,
-          "session": "conn-4",
+          "session": "conn-15",
           "lost": 0,
           "command": "Attribute \"Pan\" At 0",
           "to": 225,
@@ -746,11 +697,11 @@
           "outcome": "applied",
           "readout": "Physical",
           "attribute": "Pan",
-          "at": 1791664467.9762,
+          "at": 1791666003.8501,
           "physicalRange": 450,
           "valueState": "value",
           "from": -225,
-          "session": "conn-4",
+          "session": "conn-15",
           "lost": 0,
           "command": "Attribute \"Pan\" At -180",
           "to": 225,
@@ -800,7 +751,7 @@
             "result": {
               "dropped": 0,
               "unresolved": [],
-              "session": "conn-4",
+              "session": "conn-15",
               "ended": []
             }
           }
@@ -877,14 +828,14 @@
         "unresolved": [],
         "backend": {
           "raised": 0,
-          "noop": 40,
+          "noop": 20,
           "refused": 0,
-          "applied": 18
+          "applied": 9
         }
       }
     }
   ],
-  "finishedAt": "2026-10-10T20:34:31.210Z",
+  "finishedAt": "2026-10-10T21:00:07.078Z",
   "passed": 28,
   "failed": 0
 }
