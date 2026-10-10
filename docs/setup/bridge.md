@@ -36,6 +36,7 @@ sessions (off by default and reset at every start):
 
 ```text
 Plugin "gma3_mcp_bridge" "input=keyboard"
+Plugin "gma3_mcp_bridge" "input=quickey"
 Plugin "gma3_mcp_bridge" "input=fake"
 Plugin "gma3_mcp_bridge" "input=off"
 Plugin "gma3_mcp_bridge" "input status"
@@ -44,7 +45,13 @@ Plugin "gma3_mcp_bridge" "input recover"
 
 `input=keyboard` (v0.6.0, KB-04) admits the `input.*` bridge ops on the console keyboard backend: **console
 keys are really pressed** through `Keyboard()`, routed through the current user profile's keyboard shortcuts
-(or the native MA/PLEASE routes), so use it on a show you are prepared to have operated. `input=fake` admits
+(or the native MA/PLEASE routes), so use it on a show you are prepared to have operated. `input=quickey` (v0.10.0,
+KB-13) admits them on the **owned-Quickey backend**: logical keys are routed with the `quickkey` method and every tap,
+hold and chord is an executor press of the bank's Quickey for that code (`Assign Quickey N At Page P.E`, `Press` /
+`Unpress Page P.E`), so the Quickey bank below must be provisioned first (or in the same argument); only the nine codes
+with KB-10 evidence dispatch (NUM1, NUM5, THRU, FIXTURE, PLEASE, CLEAR, STORE, MA1, OOPS), PC keys and text are refused,
+and a release is issued only on the executor the key was pressed on (an executor reassigned during a hold leaves the key
+down and the record unresolved until you restore the assignment and run `input recover`). `input=fake` admits
 them on the fake backend (events are recorded, nothing reaches a console key). `input=off` stops admitting
 input and attempts to release every held key. `input status` prints sessions, holds and unresolved releases;
 `input recover` is the operator's recovery action: it re-attempts every unresolved release, including records
@@ -56,7 +63,7 @@ first, then run `input recover`: the bridge never changes mappings or toggles F1
 is pending it refuses every new press, including an injected F10. See
 [docs/reference.md](../reference.md#owned-input-sessions-plugin-v050-kb-03).
 
-Since v0.9.0 (KB-12) the operator can provision the **Quickey bank** the Quickey dispatch of KB-13 will use. This is the
+Since v0.9.0 (KB-12) the operator can provision the **Quickey bank** the `input=quickey` backend (KB-13) dispatches through. This is the
 only path that creates or deletes show objects, and it is a plugin argument, never a client request:
 
 ```text

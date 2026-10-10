@@ -10,10 +10,12 @@ The bridge plugin ships two reusable, instance-based Lua modules as extra compon
 | `gma3_mcp_hardkeys` | [plugin/gma3_mcp_hardkeys.lua](../plugin/gma3_mcp_hardkeys.lua) | Owned input sessions, leases, deadline servicing and recovery over a backend adapter; read-only logical-key resolution |
 | `gma3_mcp_feedback` | [plugin/gma3_mcp_feedback.lua](../plugin/gma3_mcp_feedback.lua) | Read-only console state readers confirmed in KB-01, with freshness and bounded polling (KB-06) |
 
-Module API version **1**; `gma3_mcp_hardkeys` **0.7.0** (KB-03 to KB-05; 0.5.0 resolves any `Enums.VirtualKeyCode` name, KB-07; 0.6.0 adds the per-key routing policy, KB-11; 0.7.0 adds the owned Quickey bank, KB-12), `gma3_mcp_feedback` **0.2.0** (KB-02 + KB-06).
-Two backend adapters dispatch: the **fake backend** (records events, simulates aggregate console key state,
-nothing reaches a console key) and the **keyboard backend** (`keyboardBackend(deps)`, KB-04: the console's
-`Keyboard()` PC-key emulation; console keys are really pressed).
+Module API version **1**; `gma3_mcp_hardkeys` **0.8.0** (KB-03 to KB-05; 0.5.0 resolves any `Enums.VirtualKeyCode` name, KB-07; 0.6.0 adds the per-key routing policy, KB-11; 0.7.0 adds the owned Quickey bank, KB-12; 0.8.0 adds the owned-Quickey backend, KB-13), `gma3_mcp_feedback` **0.2.0** (KB-02 + KB-06).
+Three backend adapters dispatch: the **fake backend** (records events, simulates aggregate console key state,
+nothing reaches a console key), the **keyboard backend** (`keyboardBackend(deps)`, KB-04: the console's
+`Keyboard()` PC-key emulation; console keys are really pressed) and the **owned-Quickey backend**
+(`quickeyBackend(instance)`, KB-13: Quickey tuples pressed and released through the instance's KB-12 bank on its
+reserved executors; console keys are really pressed).
 
 ## Loading contract (what the console does and does not do)
 
@@ -300,7 +302,7 @@ hold never changes the route its release uses. Callers that configure nothing ke
 
 | Method | Behaviour in 0.6.0 |
 | --- | --- |
-| `quickkey` | Press/release the Quickey tuple `{ quickkey = <name>, quickkeyCode = <value> }` (`tupleKey = "quickkey:#<value>"`: ownership is the validated code value, so aliases such as `OOPS`/`UNDO` are one tuple; the requested name is kept for reporting). Needs an adapter advertising `capabilities.quickkey = { tap, hold, chord }`, and each flag is enforced per operation before dispatch on every path (a tap needs `tap`, a hold needs `hold`, a combo or a press next to another live Quickey needs `chord`; refusals are `unsupported` with `reason = "capability"` and `missing[]`); the fake backend simulates it, the `Keyboard()` backend refuses it, the owned-Quickey backend is KB-12/KB-13. `MA1` is a valid code here. |
+| `quickkey` | Press/release the Quickey tuple `{ quickkey = <name>, quickkeyCode = <value> }` (`tupleKey = "quickkey:#<value>"`: ownership is the validated code value, so aliases such as `OOPS`/`UNDO` are one tuple; the requested name is kept for reporting). Needs an adapter advertising `capabilities.quickkey = { tap, hold, chord }`, and each flag is enforced per operation before dispatch on every path (a tap needs `tap`, a hold needs `hold`, a combo or a press next to another live Quickey needs `chord`; refusals are `unsupported` with `reason = "capability"` and `missing[]`); the fake backend simulates it, the `Keyboard()` backend refuses it, the owned-Quickey backend (`quickeyBackend()`, KB-13, 0.8.0) dispatches it with per-code flags from the KB-10 evidence. `MA1` is a valid code here. |
 | `shortcut` | The shortcut-table / fixed (`MA`) / native (`PLEASE`) PC-key route as before. A shortcut-table route while shortcuts are off is refused as before and additionally lists the KB-14 requirement (temporary enable); nothing is toggled. |
 | `shortcutOrType` | Fixed/native routes whatever the mode. Otherwise the shortcut route only when enablement reads `true` and resolution succeeds; the key's explicit `text` when the table was read and has no row for the key, or when enablement reads `false` (no row needed). Unreadable enablement, ambiguity, collisions, unknown keys and a missing `text` are refusals, never permission to type. The text branch is selected but refused `unavailable` until KB-14 implements text-route dispatch. |
 | `type` | The key's explicit `text`, inserted once on press (KB-14). Resolved and reported; refused at `enableInput()`/`configureRouting()` as `policy-unavailable` against every current backend. |
@@ -371,6 +373,44 @@ over `ObjectList("Quickey N")` and `Store`/`Delete Quickey N /NoConfirmation`; `
 command's return text. On 2.5.1 an empty executor has no object under `Page P.N` (the deps report `empty` when the page
 exists), and the show identity is `Root().MANetSocket:Get("ShowFile")` plus the data pool name. Qualified live on the
 disposable show ([record](probes/kb-12-bank-macos-2.5.1.md)); regressions: `test/lua/hardkeys_bank_test.lua`.
+
+## Owned-Quickey backend (`gma3_mcp_hardkeys` 0.8.0, KB-13)
+
+`quickeyBackend(instance)` is the console adapter for Quickey tuples, bound to the instance that owns the bank. A Quickey
+addressed directly is always a complete tap (KB-10), so every tap, hold and key of a chord is an **executor press**: right
+before the press the code's Quickey is re-read through `bankTarget()`, a free reserved executor is re-read through
+`bankExecutor()`, the Quickey is assigned to it when another one is there (`Assign Quickey N At Page P.E`, verified by
+readback) and `Press Page P.E` is issued; the release issues `Unpress Page P.E` on the **recorded** executor only, and only
+while it still holds the recorded Quickey. The target travels with the hold record (`hold.target`, `dispose()` records,
+`adopt()`), so a record of a previous run is released through the same executor and reserves it meanwhile. Nothing is ever
+re-resolved for a release, a direct `Unpress Quickey` is never issued (it re-activates non-latching keys), and nothing is
+repaired.
+
+```lua
+local inst = HK.new({ owner = "gma3_mcp_bridge", deps = HK.consoleDeps(_G) }):init()
+inst:provisionBank({ authorized = true, quickeys = { first = 900 }, executors = { page = 1, first = 180, count = 8 } }, now)
+local qk = HK.quickeyBackend(inst)
+inst:enableInput(qk, { routing = { default = "quickkey" } })   -- the policy is applied with the backend (no PC keys here)
+inst:tap("s", now, { key = "NUM5" }, 50)        -- Assign Quickey 949 At Page 1.180 (if needed), Press Page 1.180; Unpress at the deadline
+inst:press("s", now, { key = "MA1" })           -- held on the next free reserved executor; release(...) issues Unpress there
+inst:describeRoute("ESC")                       -- dispatchable = false, unavailable = { "... discovered only ..." }
+```
+
+| Element | Behaviour |
+| --- | --- |
+| Capabilities | `capabilities = { keyboard = false, quickkey = { tap, hold, chord }, char = false }`; per code `quickkeyCapabilities(code)` = the KB-10 evidence (`tap` is granted whenever `hold` is, because a tap here is an executor press/release pair; MA1 taps, OOPS does not hold, NUM1/THRU/FIXTURE/PLEASE/CLEAR do not chord), all `false` for a discovered-only code. `describeRoute()` reports them (`quickkeyCapabilitySource = "code"`) and the press/combo/sequence checks refuse before dispatch (`unsupported`, `reason = "capability"`). |
+| Admission | `supportsQuickkey(code)` refuses codes outside the bank and the discovered-only codes; `unavailable(code)` lists "no Quickey bank", "partial bank", "not in bank", "discovered only" and missing deps for `describeRoute()`/`unavailable`; `supportsKey()` refuses every PC key; the `shortcut`, `shortcutOrType` and `type` methods are `policy-unavailable` on this backend. |
+| `preflight(tuple, route, { kind, combo, extra })` | Qualified code, `bankTarget()` readback, and enough free reserved executors that verify now for this key and the `extra` keys planned with it (a combo never starts without a place for every key). Nothing is sent. |
+| `press(tuple)` | `bankTarget()`, the first free executor whose `bankExecutor()` verifies (held, unreserved, foreign and occupied ones are skipped with reasons), `Assign` + readback when needed, `Press Page P.E`. Returns `true, nil, nil, target` (dispatched; never confirmed), `false, nil, err` before anything reached the console, or raises `{ message, target }` when the Press raised (delivery unknown; the record keeps its target). A console feedback other than `OK` (e.g. `Object not found`) is "not accepted", nothing pressed. |
+| `release(tuple, target)` | Refuses without a target, with another bank id or page, when the bank's entry for the code is not at the recorded index, when `bankExecutor()` does not verify (show gate, unreserved, foreign, occupied, missing) or holds another bank code; otherwise `Unpress Page P.E` (`dispatched`). A refusal leaves the record unresolved for the operator (restore the assignment) and `recover()`. |
+| `observe()` | `available = false` (no per-key state), `aggregate.maState`, `executors = { total, inUse }`. |
+| Instance hooks (0.8.0) | `enableInput(adapter, { routing })` validates and applies a policy together with the backend; `_route()` takes `quickkeyCapabilities()`/`unavailable()` from the adapter; `preflight` receives the operation context; `hold.target`, `dispose().records[].target`, `adopt()` keeps it; `_executorsInUse()` is derived from the live records. |
+
+Console deps (`consoleDeps(_G)`): `executors.press(page, index)` / `unpress(page, index)` issue `Press Page P.E` /
+`Unpress Page P.E` and return `true, feedback` for an `OK` feedback, `false, feedback` otherwise (the paged form was confirmed
+live: it holds MA1 exactly like the KB-10 `Press Executor E`; `Unpress` on an empty executor answers `Object not found`).
+Bridge: `Plugin "gma3_mcp_bridge" "input=quickey"` (bank first or in the same argument). Qualified live on the disposable
+show ([record](probes/kb-13-quickey-macos-2.5.1.md), 46/46); regressions: `test/lua/hardkeys_quickey_test.lua`.
 
 ## Feedback readers (`gma3_mcp_feedback` 0.2.0, KB-06)
 
@@ -478,7 +518,7 @@ a flooding client that cannot starve deadline servicing; and since 0.7.0 the `[b
 shared-connection ownership, `input.sequence` serviced by the loop, a disconnect mid-sequence and cleanup while
 input is disabled; and since 0.8.0 the `feedback.describe`/`feedback.read` ops with Lua and input disabled, partial
 failures, displays, executor and sequence expansion, bounds, the show-change epoch bump, `[no-feedback]` and a read
-answered while another connection owns an interaction; and since 0.9.0 the `bank=` argument: provisioning at start, the record kept across a dispose and adopted at the next load, `bank status`/`verify`/`teardown`, the in-use and preflight refusals) and [test/lua/hardkeys_bank_test.lua](../test/lua/hardkeys_bank_test.lua) (the KB-12 bank against a fake pool: spec validation, discovery, preflight refusals, creation with readback, reuse, partial-failure rollback, verification, dispatch-time target checks, staleness, teardown, dispose/adopt). `node scripts/kb03-probe.mjs run` exercises the lifecycle against a live bridge
+answered while another connection owns an interaction; and since 0.9.0 the `bank=` argument: provisioning at start, the record kept across a dispose and adopted at the next load, `bank status`/`verify`/`teardown`, the in-use and preflight refusals; and since 0.10.0 `input=quickey`: the backend and routing switch, a tap issuing `Assign`/`Press`/`Unpress Page`, refusals through the bridge, the switch back) and [test/lua/hardkeys_bank_test.lua](../test/lua/hardkeys_bank_test.lua) (the KB-12 bank against a fake pool: spec validation, discovery, preflight refusals, creation with readback, reuse, partial-failure rollback, verification, dispatch-time target checks, staleness, teardown, dispose/adopt) and [test/lua/hardkeys_quickey_test.lua](../test/lua/hardkeys_quickey_test.lua) (the KB-13 backend against a fake console with executor key state: capabilities and routing reports, taps through executors, holds, chords, duplicates, per-code and discovered-code refusals, bank-side refusals right before the press, unreserved/foreign executors, release integrity after reassignment, deletion, show change, console refusals and raises, teardown in use, restart with targets, sequences). `node scripts/kb13-probe.mjs run` exercises it against a live bridge started with `input=quickey` and a provisioned bank ([record](probes/kb-13-quickey-macos-2.5.1.md)). `node scripts/kb03-probe.mjs run` exercises the lifecycle against a live bridge
 started with `input=fake` over real TCP connections ([record](probes/kb-03-fake-macos-2.5.1.md));
 `node scripts/kb04-probe.mjs run|restart` presses real keys through a bridge started with `lua input=keyboard` on a
 disposable show ([record](probes/kb-04-keyboard-macos-2.5.1.md)); `node scripts/kb05-probe.mjs run` exercises the

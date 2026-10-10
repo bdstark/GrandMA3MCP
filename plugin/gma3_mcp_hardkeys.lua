@@ -87,6 +87,18 @@
 --     service() marks the bank stale on a show/data-pool change, teardownBank() removes only verified
 --     owned objects and refuses while Quickey records are live, dispose() hands the record back for
 --     adoptBank(). A second owner on the same slots is rejected (no shared arbitration yet).
+--   * owned-Quickey backend (KB-13, 0.8.0): quickeyBackend(instance) dispatches Quickey tuples through
+--     the instance's bank. A Quickey addressed directly is always a complete tap (KB-10), so every tap,
+--     hold and chord is an EXECUTOR press: right before the press the code's Quickey is re-read through
+--     bankTarget(), a free reserved executor is re-read through bankExecutor(), the Quickey is assigned
+--     to it when needed (verified by readback) and "Press Page P.E" is issued; the release issues
+--     "Unpress Page P.E" on the RECORDED executor only, and only while it still holds the recorded
+--     Quickey (index, marker, Code). Nothing is re-resolved for a release, a direct "Unpress Quickey"
+--     is never issued (it re-activates non-latching keys), and an executor emptied, reassigned or
+--     deleted during a hold leaves the record unresolved for the operator and recover(). The recorded
+--     target travels with the hold (dispose() records, adopt()), so a restart releases through the
+--     same executor. Only codes with KB-10 evidence are dispatched, each with its own tap/hold/chord
+--     flags; discovered-only codes are refused before dispatch. No PC-key or text dispatch.
 --
 -- Ownership semantics (KB-01/KB-03 findings): the console's key state is shared. A physical release
 -- can end a synthetic hold and MASTATE is aggregate, so an ownership record here means "this session is
@@ -110,7 +122,7 @@
 --   * Input is disabled on a new instance. enableInput(adapter) is the operator's explicit decision.
 
 local NAME        = "gma3_mcp_hardkeys"
-local VERSION     = "0.7.0"
+local VERSION     = "0.8.0"
 local API_VERSION = 1
 
 -- Logical keys with special handling in describeKey() and press(). Since 0.5.0 every other
@@ -146,10 +158,30 @@ local KEYBOARD_LIMITATIONS = {
   "invalid arguments are accepted silently by onPC; validation happens here before dispatch and a no-error return is not evidence of effect",
   "double-press is unsupported; a long-press is promised only as an exclusive hold with no other key down",
   "text goes to whatever the console has focused: a text field with shortcuts enabled, or the command line only while shortcuts are disabled; focus is not observable from Lua and only the command line can be read back",
-  "no Quickey dispatch: the routing method quickkey needs the owned-Quickey backend (KB-12/KB-13); the text routes of shortcutOrType/type and temporary shortcut-mode changes are KB-14 and are reported unavailable, never emulated",
+  "no Quickey dispatch: the routing method quickkey needs the owned-Quickey backend (quickeyBackend(), KB-13); the text routes of shortcutOrType/type and temporary shortcut-mode changes are KB-14 and are reported unavailable, never emulated",
+}
+
+-- What the owned-Quickey backend can and cannot promise (KB-10/KB-12/KB-13 evidence, onPC 2.5.1.0).
+local QUICKEY_LIMITATIONS = {
+  "every event goes through the KB-12 bank: a code is dispatched only when its owned Quickey re-reads as the bank's (show identity, marker, Code, Name) right before the press; a missing, changed or replaced object refuses and nothing is repaired",
+  "only codes with KB-10 evidence are dispatched (NUM1, NUM5, THRU, FIXTURE, PLEASE, CLEAR, STORE, MA1, OOPS), each only for the operations evidenced for it (tap / hold / chord); discovered-only codes are refused before dispatch",
+  "a Quickey addressed directly is always a complete tap (KB-10), so every tap, hold and chord is an executor press: the code's Quickey is assigned to a reserved executor and Press / Unpress Page P.E is issued; one reserved executor per concurrently held key",
+  "no per-key readback exists: a press and a release are reported as dispatched, never confirmed; only the aggregate MASTATE is observable (MA1)",
+  "a release is issued only on the recorded executor and only while it still holds the recorded Quickey; an executor emptied, reassigned or deleted during a hold leaves the key down on the console and the record unresolved until the operator restores the assignment and recovery runs; a direct Unpress Quickey is never issued (it re-activates non-latching keys)",
+  "effects are synchronous in the issuing chunk, except that with the Edit Command pop-up or another text field focused digits land one frame after keywords and all text keys go to the focused field (KB-10); nothing here reads the command line",
+  "OOPS on an empty command line is Undo (it reverts show data) and PLEASE executes the command line; neither is checked or prevented here",
+  "no PC-key or text dispatch (capabilities.keyboard = false, char = false): the shortcut, shortcutOrType and type methods are unavailable on this backend",
 }
 
 local BACKENDS = {
+  quickey = {
+    name = "quickey",
+    description = "owned-Quickey backend: Quickey tuples pressed and released through the instance's KB-12 bank on reserved executors (Assign Quickey N At Page P.E, Press / Unpress Page P.E); console keys are really pressed",
+    requires = {},
+    dispatches = true,
+    capabilities = { keyboard = false, quickkey = { tap = true, hold = true, chord = true }, char = false },
+    limitations = QUICKEY_LIMITATIONS,
+  },
   keyboard = {
     name = "keyboard",
     description = "Keyboard(): PC-key emulation with explicit per-event modifiers, routed through the operator's UserProfile shortcut table or a verified native route; console keys are really pressed",
@@ -864,6 +896,20 @@ local function consoleDeps(env)
       -- Clears an executor's assignment ("Delete Page P.N" is the paged form of the "Delete Executor N"
       -- the KB-10 probe used); the module only calls it for an executor it verified holds a bank Quickey.
       clear = function(page, index) env.Cmd(string.format("Delete Page %d.%d /NoConfirmation", page, index)); return true end,
+      -- Executor key-down / key-up (KB-13): the paged form of the KB-10 "Press Executor E" (confirmed
+      -- live on 2.5.1: "Press Page 1.180" held MA1 until "Unpress Page 1.180"). The console's feedback
+      -- is the parser's verdict: "OK" when the command was dispatched, "Object not found" for an empty
+      -- executor; anything but OK is reported as not accepted (nothing changed), a raise as unknown.
+      press = function(page, index)
+        local fb = env.Cmd(string.format("Press Page %d.%d", page, index))
+        if type(fb) == "string" and fb:sub(1, 2) == "OK" then return true, fb end
+        return false, tostring(fb)
+      end,
+      unpress = function(page, index)
+        local fb = env.Cmd(string.format("Unpress Page %d.%d", page, index))
+        if type(fb) == "string" and fb:sub(1, 2) == "OK" then return true, fb end
+        return false, tostring(fb)
+      end,
     },
   }
 end
@@ -1191,18 +1237,28 @@ function Instance:attachBackend(adapter)
   return { attached = true, backend = adapter.name, enabled = self._inputEnabled and true or false }
 end
 
--- Operator decision: attach a dispatching adapter and admit presses.
-function Instance:enableInput(adapter)
+-- Operator decision: attach a dispatching adapter and admit presses. opts.routing (KB-13) replaces the
+-- routing policy in the same step, validated against the NEW adapter: a consumer switching to a backend
+-- that serves other methods (the Quickey backend has no PC keys) could otherwise neither change the
+-- policy first (refused against the old adapter) nor attach first (refused against the old policy).
+function Instance:enableInput(adapter, opts)
   checkReady(self, "enableInput")
   if type(adapter) ~= "table" or type(adapter.press) ~= "function" or type(adapter.release) ~= "function" or type(adapter.name) ~= "string" then
     return fail("bad-adapter", "enableInput needs a backend adapter table with name, press() and release()")
   end
+  local policy = self._routing
+  if type(opts) == "table" and opts.routing ~= nil then
+    local p, perr = validateRoutingPolicy(opts.routing, self._config.maxTextChars)
+    if not p then return nil, perr end
+    policy = p
+  end
   -- KB-11: every method the routing policy names must be dispatchable by this adapter. A policy the
   -- backend cannot serve is refused here rather than accepted as inert configuration (nothing attaches).
-  local okP, problems = self:_policyAvailability(self._routing, adapter)
+  local okP, problems = self:_policyAvailability(policy, adapter)
   if not okP then return nil, self:_policyUnavailable(problems, adapter) end
   local r, err = self:attachBackend(adapter)
   if not r then return nil, err end
+  self._routing = policy
   self._inputEnabled = true
   return { enabled = true, backend = adapter.name, routing = { default = self._routing.default, overrides = count(self._routing.keys) } }
 end
@@ -1328,8 +1384,21 @@ function Instance:_route(name, opts, routing)
     if vk[code] == nil then return refuse("unknown-key", "Quickey code " .. code .. " is not an Enums.VirtualKeyCode name on this console (nothing is guessed from the key name " .. key .. ")") end
     r.codeValue, r.codeValidated, r.supported = vk[code], true, true
     if not caps then unavailable("no backend attached")
-    elseif not caps.quickkey then unavailable("backend '" .. tostring(self._adapter.name) .. "' has no Quickey dispatch (capabilities.quickkey; the owned-Quickey backend is KB-13)")
-    else r.quickkeyCapabilities = caps.quickkey end
+    elseif not caps.quickkey then unavailable("backend '" .. tostring(self._adapter.name) .. "' has no Quickey dispatch (capabilities.quickkey; use the owned-Quickey backend, quickeyBackend(), KB-13)")
+    else
+      r.quickkeyCapabilities, r.quickkeyCapabilitySource = caps.quickkey, "backend"
+      -- KB-13: an adapter may qualify codes individually (the owned-Quickey backend: KB-10 evidence per
+      -- code) and name requirements a route is missing right now (no bank, code not in the bank).
+      if type(self._adapter.quickkeyCapabilities) == "function" then
+        local okC, pc = pcall(self._adapter.quickkeyCapabilities, self._adapter, code)
+        if okC and type(pc) == "table" then r.quickkeyCapabilities, r.quickkeyCapabilitySource = pc, "code" end
+      end
+      if type(self._adapter.unavailable) == "function" then
+        local okU, list = pcall(self._adapter.unavailable, self._adapter, code)
+        if okU and type(list) == "table" then for _, why in ipairs(list) do unavailable(tostring(why)) end
+        elseif not okU then unavailable("backend availability check raised: " .. tostring(list)) end
+      end
+    end
     r.tuple = { quickkey = code, quickkeyCode = vk[code] }
   elseif method == "shortcut" then
     local d = self:describeKey(key, { executor = opts.executor, prefer = prefer })
@@ -1447,6 +1516,278 @@ local function bankOp(fn, ...)
   if not ok then return false, b end
   if a == false then return false, tostring(b or "refused") end
   return true
+end
+
+-- Owned-Quickey backend (KB-13) --------------------------------------------------
+--
+-- The console adapter for Quickey tuples. It is bound to the instance that owns the bank (the bank
+-- is the only source of Quickey objects and reserved executors) and dispatches nothing the bank
+-- cannot prove it owns right now. Contract (the fake and Keyboard() adapters' plus the target):
+--   press(tuple)   -> true, nil, nil, target   dispatched on target = { page, executor, quickeyIndex, code, value, bank }
+--                  -> false, nil, err          refused before anything reached the console
+--                  -> raises { message, target } | string   "Press Page P.E" raised: delivery unknown; the
+--                                              instance keeps the record unresolved with the target
+--   release(tuple, target) -> true, nil        "Unpress Page P.E" dispatched on the RECORDED target
+--                  -> false, nil, err          the recorded executor no longer holds the recorded
+--                                              Quickey (or the bank/show differs): nothing issued,
+--                                              the record stays unresolved for the operator + recover()
+--   preflight(tuple, route, ctx), supportsQuickkey(code), quickkeyCapabilities(code), unavailable(code),
+--   observe() (aggregate MASTATE only), supportsKey(pcKey) -> false (no PC keys)
+-- Every console read goes through the instance's bankTarget()/bankExecutor() (show identity gate,
+-- marker/Code/index verification); the only writes are Assign (verified by readback) and Press/Unpress.
+local QuickeyBackend = {}
+QuickeyBackend.__index = QuickeyBackend
+
+local function quickeyBackend(instance, opts)
+  if type(instance) ~= "table" or type(instance.bankTarget) ~= "function" or type(instance.bankExecutor) ~= "function" then
+    error(NAME .. ".quickeyBackend: the hardkeys instance that owns the Quickey bank is required", 2)
+  end
+  opts = opts or {}
+  return setmetatable({
+    name = "quickey", dispatches = true, description = BACKENDS.quickey.description, limitations = QUICKEY_LIMITATIONS,
+    capabilities = shallowCopy(BACKENDS.quickey.capabilities),
+    instance = instance,
+    counters = { press = 0, release = 0, refused = 0, raised = 0, assigned = 0, observe = 0 },
+    lastEvent = nil, events = {}, eventLog = tonumber(opts.eventLog) or DEFAULT_CONFIG.eventLog,
+  }, QuickeyBackend)
+end
+
+function QuickeyBackend:_log(kind, tuple, extra)
+  local e = { kind = kind, quickkey = tuple and tuple.quickkey, quickkeyCode = tuple and tuple.quickkeyCode }
+  if extra then for k, v in pairs(extra) do e[k] = v end end
+  self.events[#self.events + 1] = e
+  while #self.events > self.eventLog do table.remove(self.events, 1) end
+  self.lastEvent = e
+  return e
+end
+
+function QuickeyBackend:_bank()
+  local b = self.instance._bank
+  if b and b.state ~= "removed" then return b end
+  return nil
+end
+
+-- The bank entry a code name selects (aliases folded), or nil, reason.
+function QuickeyBackend:_entry(code)
+  local bank = self:_bank()
+  if not bank then return nil, "no Quickey bank is provisioned on this instance (KB-12: provisionBank(), bridge argument bank=...)" end
+  local key = type(code) == "string" and code:upper() or tostring(code)
+  local canonical = BANK_ALIASES[key] or key
+  local e = bank.byName[canonical]
+  if not e or e.placeholder then return nil, "Quickey code " .. key .. " is not in bank " .. bank.id .. (bank.spec.codes == "qualified" and " (codes = \"qualified\")" or "") end
+  return e, nil, bank
+end
+
+function QuickeyBackend:_deps()
+  local d = self.instance._deps
+  local x = type(d) == "table" and d.executors or nil
+  if type(x) ~= "table" or type(x.press) ~= "function" or type(x.unpress) ~= "function" or type(x.assign) ~= "function" then
+    return nil, "console deps executors.press / unpress / assign are missing (consoleDeps(_G) provides them)"
+  end
+  return x
+end
+
+function QuickeyBackend:supportsKey(pcKey)
+  return false, "the owned-Quickey backend dispatches no PC keys (capabilities.keyboard = false); route the key with the quickkey method"
+end
+
+-- Press-time admission of a code (the instance calls it from _resolveSpec): the code must be in the
+-- bank and carry KB-10 evidence. No console read happens here.
+function QuickeyBackend:supportsQuickkey(code)
+  local e, why = self:_entry(code)
+  if not e then return false, why end
+  if not e.qualified then
+    return false, string.format("Quickey code %s is discovered only (no KB-10 evidence%s); this backend dispatches only qualified codes, nothing is tried", e.name, e.note and (": " .. e.note) or "")
+  end
+  return true
+end
+
+-- Per-code capability flags (the instance prefers them over the adapter-wide ones): the KB-10 evidence
+-- of the code, or all false for a discovered-only code. nil when there is no bank or the code is not in it.
+function QuickeyBackend:quickkeyCapabilities(code)
+  local e = self:_entry(code)
+  if not e then return nil end
+  if not e.qualified then return { tap = false, hold = false, chord = false, note = "discovered only: no KB-10 evidence for this code" .. (e.note and ("; " .. e.note) or "") } end
+  -- A tap on this backend IS a bounded executor hold (Press, then Unpress at the deadline), so a code
+  -- qualified for holds is qualified for taps here (MA1: a direct tap holds nothing, an executor pair does).
+  return { tap = (e.qualified.tap or e.qualified.hold) and true or false, hold = e.qualified.hold and true or false, chord = e.qualified.chord and true or false, note = e.qualified.note }
+end
+
+-- Named requirements a route through this backend is missing right now (reported by describeRoute()).
+function QuickeyBackend:unavailable(code)
+  local out = {}
+  local bank = self:_bank()
+  if not bank then out[1] = "no Quickey bank is provisioned on this instance (KB-12: provisionBank(), bridge argument bank=...)"; return out end
+  if bank.partial then out[#out + 1] = "the Quickey bank was partially torn down; it exists for cleanup only and dispatches nothing" end
+  local e, why = self:_entry(code)
+  if not e then out[#out + 1] = why
+  elseif not e.qualified then out[#out + 1] = string.format("Quickey code %s is discovered only (no KB-10 evidence); this backend dispatches only qualified codes", e.name) end
+  local x, xerr = self:_deps()
+  if not x then out[#out + 1] = xerr end
+  return out
+end
+
+-- Executors of the bank not reserved by a live record of the instance (held, releasing or unresolved).
+function QuickeyBackend:_freeExecutors()
+  local bank = self:_bank()
+  if not bank then return 0, 0 end
+  local inUse = self.instance:_executorsInUse()
+  local free, total = 0, #bank.executors
+  for _, x in ipairs(bank.executors) do if not inUse[x.index] then free = free + 1 end end
+  return free, total
+end
+
+-- Everything that must hold before the first event of a press or combo goes out: a Quickey tuple, a
+-- qualified code, the Quickey re-read as the bank's (bankTarget: show identity, marker, Code, Name)
+-- and enough free reserved executors for this press and the ones planned with it. Nothing is sent.
+function QuickeyBackend:preflight(tuple, route, ctx)
+  if type(tuple) ~= "table" or tuple.pcKey or not tuple.quickkey then return false, "the owned-Quickey backend dispatches Quickey tuples only (no PC keys, no text)" end
+  local ok, why = self:supportsQuickkey(tuple.quickkey)
+  if not ok then return false, why end
+  local x, xerr = self:_deps()
+  if not x then return false, xerr end
+  local t, err = self.instance:bankTarget(tuple.quickkey, self.instance._now)
+  if not t then return false, err.message, err end
+  -- Enough reserved executors that are free AND verify right now (placeholder or a bank code on them),
+  -- for this key and the ones planned with it in a combo, so a chord never starts without a place for
+  -- every key. Each is re-read again right before the press.
+  local need = 1 + (ctx and tonumber(ctx.extra) or 0)
+  local free, total = self:_freeExecutors()
+  if free < need then
+    return false, string.format("no free reserved executor: %d of %d are reserved by live Quickey records and %d would be needed; release or recover before pressing", total - free, total, need)
+  end
+  local inUse, verified, problems = self.instance:_executorsInUse(), 0, {}
+  for _, cand in ipairs(self.instance._bank.executors) do
+    if verified >= need then break end
+    if not inUse[cand.index] then
+      local xr, xerr = self.instance:bankExecutor(cand.index, self.instance._now)
+      if xr then verified = verified + 1 else problems[#problems + 1] = string.format("%d.%d: %s", cand.page, cand.index, tostring(xerr and xerr.message)) end
+    end
+  end
+  if verified < need then
+    return false, string.format("no free reserved executor verifies (%d needed, %d verified, %d held): %s; nothing is re-assigned or repaired here", need, verified, total - free, table.concat(problems, "; "))
+  end
+  return true
+end
+
+function QuickeyBackend:press(tuple)
+  self.counters.press = self.counters.press + 1
+  local function refuse(why)
+    self.counters.refused = self.counters.refused + 1
+    self:_log("press", tuple, { failed = why })
+    return false, nil, why
+  end
+  if type(tuple) ~= "table" or tuple.pcKey or not tuple.quickkey then return refuse("the owned-Quickey backend dispatches Quickey tuples only (no PC keys, no text)") end
+  local okS, why = self:supportsQuickkey(tuple.quickkey)
+  if not okS then return refuse(why) end
+  local x, xerr = self:_deps()
+  if not x then return refuse(xerr) end
+  local inst = self.instance
+  -- The Quickey, re-read right now (show identity, marker, Code, Name). A refusal is the bank's reason.
+  local t, err = inst:bankTarget(tuple.quickkey, inst._now)
+  if not t then return refuse(err.message) end
+  local bank = inst._bank
+  -- A reserved executor nobody holds, re-read right now: it must hold the bank's placeholder or one of
+  -- the bank's code Quickeys (index, marker and Code verified by bankExecutor).
+  local inUse = inst:_executorsInUse()
+  local chosen, reasons = nil, {}
+  for _, cand in ipairs(bank.executors) do
+    if not inUse[cand.index] then
+      local xr, xerr2 = inst:bankExecutor(cand.index, inst._now)
+      if xr then chosen = xr; break end
+      reasons[#reasons + 1] = string.format("%d.%d: %s", cand.page, cand.index, tostring(xerr2 and xerr2.message))
+    end
+  end
+  if not chosen then
+    return refuse("no reserved executor is free and verified: " .. (#reasons > 0 and table.concat(reasons, "; ") or "every reserved executor is held by a live Quickey record") .. "; nothing pressed")
+  end
+  -- Put the code's Quickey on it when another bank Quickey (or the placeholder) is there, verified by readback.
+  if chosen.assigned ~= t.name then
+    local okA, aerr = bankOp(x.assign, chosen.page, chosen.index, t.index)
+    if not okA then return refuse(string.format("Assign Quickey %d At Page %d.%d failed: %s; nothing pressed", t.index, chosen.page, chosen.index, tostring(aerr))) end
+    self.counters.assigned = self.counters.assigned + 1
+    local again, aerr2 = inst:bankExecutor(chosen.index, inst._now)
+    if not again then return refuse(string.format("Page %d.%d does not verify after the assignment: %s; nothing pressed", chosen.page, chosen.index, tostring(aerr2 and aerr2.message))) end
+    if again.assigned ~= t.name then
+      return refuse(string.format("Page %d.%d does not hold Quickey %d (%s) after the assignment (reads %s%s); nothing pressed", chosen.page, chosen.index, t.index, t.name, tostring(again.state), again.assigned and (" " .. again.assigned) or ""))
+    end
+    chosen = again
+  end
+  local target = { page = chosen.page, executor = chosen.index, quickeyIndex = t.index, code = t.name, value = t.value, bank = bank.id }
+  local ok, accepted, feedback = pcall(x.press, chosen.page, chosen.index)
+  if not ok then
+    self.counters.raised = self.counters.raised + 1
+    self:_log("press", tuple, { target = target, raised = tostring(accepted) })
+    error({ message = string.format("Press Page %d.%d (Quickey %d, %s) raised: %s (whether the key went down is unknown)", chosen.page, chosen.index, t.index, t.name, tostring(accepted)), target = target }, 0)
+  end
+  if accepted == false then
+    return refuse(string.format("Press Page %d.%d (Quickey %d, %s) was not accepted by the console: %s; nothing pressed", chosen.page, chosen.index, t.index, t.name, tostring(feedback)))
+  end
+  self:_log("press", tuple, { target = target, feedback = feedback })
+  return true, nil, nil, target  -- dispatched; no per-key confirmation exists on this backend
+end
+
+-- Release on the recorded target only. The executor is re-read and must still hold the recorded
+-- Quickey (the bank's object at the recorded index with the recorded code); otherwise nothing is
+-- issued and the record stays unresolved: the console key may still be down, and the operator restores
+-- the assignment before recover() (KB-10: reassigning the original Quickey back made Unpress work).
+function QuickeyBackend:release(tuple, target)
+  self.counters.release = self.counters.release + 1
+  local function refuse(why)
+    self.counters.refused = self.counters.refused + 1
+    self:_log("release", tuple, { target = target, failed = why })
+    return false, nil, why
+  end
+  if type(target) ~= "table" or type(target.executor) ~= "number" or type(target.page) ~= "number" or type(target.code) ~= "string" then
+    return refuse("the record carries no executor target; a Quickey record is released only on the executor it was pressed on and nothing is resolved again (a record pressed before 0.8.0 or by another backend cannot be released here)")
+  end
+  local x, xerr = self:_deps()
+  if not x then return refuse(xerr) end
+  local inst = self.instance
+  local bank = self:_bank()
+  if not bank then return refuse("no Quickey bank on this instance: the recorded target cannot be verified (adopt the bank record first); nothing issued") end
+  if target.bank and target.bank ~= bank.id then return refuse(string.format("the record belongs to bank %s, this instance holds bank %s; nothing issued", tostring(target.bank), bank.id)) end
+  if target.page ~= bank.spec.executors.page then return refuse(string.format("the recorded executor is on page %d, the bank's executors are on page %d; nothing issued", target.page, bank.spec.executors.page)) end
+  local e = bank.byName[target.code]
+  if not e or e.index ~= target.quickeyIndex then
+    return refuse(string.format("the bank's Quickey for %s is %s, the record was pressed through Quickey %s; nothing issued", target.code, e and tostring(e.index) or "absent", tostring(target.quickeyIndex)))
+  end
+  local xr, err = inst:bankExecutor(target.executor, inst._now)
+  if not xr then
+    return refuse(string.format("Page %d.%d does not verify: %s; the key may still be down on the console: restore Quickey %d (%s) on Page %d.%d and recover (no direct Unpress Quickey is issued)",
+      target.page, target.executor, tostring(err and err.message), target.quickeyIndex, target.code, target.page, target.executor))
+  end
+  if xr.assigned ~= target.code then
+    return refuse(string.format("Page %d.%d holds %s, not the recorded Quickey %d (%s); the key may still be down on the console: restore the assignment and recover (no direct Unpress Quickey is issued)",
+      target.page, target.executor, xr.assigned and ("the bank's " .. xr.assigned) or ("the bank's " .. tostring(xr.state) .. " placeholder"), target.quickeyIndex, target.code))
+  end
+  local ok, accepted, feedback = pcall(x.unpress, target.page, target.executor)
+  if not ok then
+    self.counters.raised = self.counters.raised + 1
+    self:_log("release", tuple, { target = target, raised = tostring(accepted) })
+    error(string.format("Unpress Page %d.%d (Quickey %d, %s) raised: %s (whether the key came up is unknown)", target.page, target.executor, target.quickeyIndex, target.code, tostring(accepted)), 0)
+  end
+  if accepted == false then
+    return refuse(string.format("Unpress Page %d.%d (Quickey %d, %s) was not accepted by the console: %s; the key may still be down", target.page, target.executor, target.quickeyIndex, target.code, tostring(feedback)))
+  end
+  self:_log("release", tuple, { target = target, feedback = feedback })
+  return true, nil  -- dispatched; no per-key confirmation exists on this backend
+end
+
+function QuickeyBackend:observe()
+  self.counters.observe = self.counters.observe + 1
+  local out = { available = false, reason = "a Quickey's pressed state is not readable from Lua; only the aggregate MASTATE is", aggregate = {} }
+  local d = self.instance._deps
+  if type(d) == "table" and type(d.maState) == "function" then
+    local ok, v = pcall(d.maState)
+    if ok and type(v) == "boolean" then out.aggregate.maState = v
+    else out.aggregate.error = ok and ("MASTATE value " .. tostring(v)) or tostring(v) end
+  else
+    out.aggregate.error = "deps.maState missing"
+  end
+  local free, total = self:_freeExecutors()
+  out.executors = { total = total, inUse = total - free }
+  return out
 end
 
 function Instance:_readShowIdentity()
@@ -2430,6 +2771,7 @@ function Instance:adopt(records, now, sessionId)
         hold.logical = rec.logical
         -- The originating backend travels with the record; "unknown" is never released through any adapter.
         hold.backend = type(rec.backend) == "string" and rec.backend or "unknown"
+        hold.target = type(rec.target) == "table" and shallowCopy(rec.target) or nil
         hold.exclusive = rec.exclusive and true or false
         hold.pressedAt = rec.pressedAt or now
         hold.dispatch = shallowCopy(rec.dispatch) or hold.dispatch
@@ -3225,6 +3567,7 @@ function Instance:dispose(now)
       local rec = copyTuple(h)
       rec.logical, rec.route, rec.session, rec.pressedAt, rec.dispatch, rec.id = h.logical, h.route, h.session, h.pressedAt, h.dispatch, h.id
       rec.backend = h.backend or "unknown"
+      rec.target = h.target  -- KB-13: the executor a Quickey was pressed on; the only place it is ever released
       rec.exclusive = h.exclusive or nil
       rec.unresolved = h.unresolved or { reason = "instance disposed without a release attempt (no clock or adapter)", since = now }
       rec.tupleKey = h.tupleKey
@@ -3423,9 +3766,11 @@ function Instance:_planPress(sessionId, now, spec, ctx)
   end
   -- Backend preflight (Keyboard() present, key name valid, display exists, MASTATE readable for MA).
   if type(self._adapter.preflight) == "function" and (tuple.pcKey or tuple.quickkey) then
-    local ok, accepted, reason = pcall(self._adapter.preflight, self._adapter, copyTuple(tuple), route)
+    -- The operation context lets a backend check per-press requirements (KB-13: one free reserved
+    -- executor per key of a combo). detail is the backend's structured reason when it has one.
+    local ok, accepted, reason, detail = pcall(self._adapter.preflight, self._adapter, copyTuple(tuple), route, { kind = ctx.kind, combo = ctx.comboIndex ~= nil, extra = ctx.extra or 0 })
     if not ok then return fail("unsupported", "backend preflight failed: " .. tostring(accepted)) end
-    if not accepted then return fail("unsupported", "backend refuses " .. tk .. ": " .. tostring(reason)) end
+    if not accepted then return fail("unsupported", "backend refuses " .. tk .. ": " .. tostring(reason), { reason = type(detail) == "table" and detail.code or "backend", detail = type(detail) == "table" and detail or nil }) end
   end
   return { tuple = tuple, route = route, tupleKey = tk, maxHoldMs = maxHoldMs, exclusive = spec.exclusive and true or false, interaction = ia and ia.id or nil }
 end
@@ -3438,18 +3783,24 @@ function Instance:_dispatchPress(s, plan, now)
   local hold = self:_newHold(s, plan.tuple, plan.route, now, now + plan.maxHoldMs / 1000, "max-hold")
   hold.exclusive = plan.exclusive
   hold.interaction = plan.interaction
-  local ok, aOk, confirmed, err = pcall(self._adapter.press, self._adapter, copyTuple(plan.tuple))
+  self._now = now
+  local ok, aOk, confirmed, err, target = pcall(self._adapter.press, self._adapter, copyTuple(plan.tuple))
   if not ok then
-    hold.dispatch.press = { ok = false, at = now, error = tostring(aOk) }
-    self:_markUnresolved(hold, now, "press raised an error; whether the key went down is unknown: " .. tostring(aOk))
-    return nil, { code = "press-failed", message = "press raised an error: " .. tostring(aOk), hold = hold.id, unresolved = true }
+    -- A backend that raises may raise { message, target } so the record keeps the target it was
+    -- dispatched on (KB-13: the executor) and recovery can release through it.
+    local msg = aOk
+    if type(aOk) == "table" then msg = aOk.message; if type(aOk.target) == "table" then hold.target = aOk.target end end
+    hold.dispatch.press = { ok = false, at = now, error = tostring(msg) }
+    self:_markUnresolved(hold, now, "press raised an error; whether the key went down is unknown: " .. tostring(msg))
+    return nil, { code = "press-failed", message = "press raised an error: " .. tostring(msg), hold = hold.id, unresolved = true, target = hold.target }
   end
   if aOk == false then
     hold.dispatch.press = { ok = false, at = now, error = tostring(err or confirmed) }
     self:_dropHold(hold)
     return nil, { code = "press-failed", message = "press was refused by the backend: " .. tostring(err or confirmed) }
   end
-  hold.dispatch.press = { ok = true, confirmed = confirmed, at = now, outcome = confirmed == true and "confirmed" or "dispatched" }
+  if type(target) == "table" then hold.target = target end
+  hold.dispatch.press = { ok = true, confirmed = confirmed, at = now, outcome = confirmed == true and "confirmed" or "dispatched", target = hold.target }
   self:_scheduleReadback(hold, "press", true, now)
   self._pressCount = self._pressCount + 1
   return hold
@@ -3504,6 +3855,17 @@ function Instance:_exclusiveHold()
     if h.exclusive and h.state ~= "released" then return h end
   end
   return nil
+end
+
+-- Executors reserved by live records (held, releasing or unresolved) through their recorded target
+-- (KB-13): index -> hold id. The single source of truth for "in use"; a backend keeps no copy, so an
+-- adopted record from a previous run reserves its executor exactly like a fresh one.
+function Instance:_executorsInUse()
+  local out = {}
+  for _, h in pairs(self._holds) do
+    if h.state ~= "released" and type(h.target) == "table" and h.target.executor ~= nil then out[h.target.executor] = h.id end
+  end
+  return out
 end
 
 -- Turns a press spec into a stored tuple plus the route it was resolved by. Nothing is dispatched.
@@ -3702,7 +4064,10 @@ function Instance:_attemptRelease(hold, now, reason)
     return attempt
   end
   hold.state = "releasing"
-  local ok, aOk, confirmed, err = pcall(self._adapter.release, self._adapter, copyTuple(hold))
+  self._now = now
+  -- The recorded target (KB-13: the executor the Quickey was pressed on) goes with the stored tuple;
+  -- adapters without targets ignore it.
+  local ok, aOk, confirmed, err = pcall(self._adapter.release, self._adapter, copyTuple(hold), hold.target)
   if not ok then
     attempt.ok, attempt.error = false, "release raised an error: " .. tostring(aOk)
   elseif aOk == false then
@@ -3847,7 +4212,7 @@ function Instance:_holdReport(h, now, extra)
     id = h.id, session = h.session, state = h.state, kind = h.kind,
     logical = h.logical, pcKey = h.pcKey, quickkey = h.quickkey, quickkeyCode = h.quickkeyCode, shift = h.shift, ctrl = h.ctrl, alt = h.alt, numlock = h.numlock, display = h.display,
     method = h.route and h.route.method or nil,
-    tupleKey = h.tupleKey, route = h.route, backend = h.backend, pressedAt = h.pressedAt, releasedAt = h.releasedAt,
+    tupleKey = h.tupleKey, route = h.route, backend = h.backend, target = h.target, pressedAt = h.pressedAt, releasedAt = h.releasedAt,
     deadline = h.deadline, deadlineReason = h.deadlineReason,
     exclusive = h.exclusive or nil, group = h.group, groupIndex = h.groupIndex, interaction = h.interaction, sequence = h.sequence,
     dispatch = h.dispatch, unresolved = h.unresolved, routeMismatch = h.routeMismatch, observed = h.observed,
@@ -3909,7 +4274,7 @@ local M = {
   GENERIC_VIRTUAL_KEYS = true,
   UNSUPPORTED_KEYS = { "MA1", "MA2" },
   new = new, consoleDeps = consoleDeps, resolve = resolve, parseShortcut = parseShortcut, tupleKey = tupleKey, validateText = validateText,
-  fakeBackend = fakeBackend, keyboardBackend = keyboardBackend,
+  fakeBackend = fakeBackend, keyboardBackend = keyboardBackend, quickeyBackend = quickeyBackend,
   -- KB-11 routing policy
   METHODS = { "quickkey", "shortcutOrType", "shortcut", "type" }, DEFAULT_METHOD = DEFAULT_METHOD,
   validateRoutingPolicy = validateRoutingPolicy, adapterCapabilities = adapterCapabilities, textForbidden = textForbidden,
@@ -3919,8 +4284,8 @@ local M = {
   validateBankSpec = validateBankSpec, discoverBankCodes = discoverBankCodes, parseBankMarker = parseBankMarker, bankMarkerText = bankMarkerText, bankId = bankId,
   SEQUENCE_STEP_KINDS = { "tap", "press", "release", "combo", "text", "wait" },
   TEXT_CONTEXTS = { "command-line", "text-field" },
-  backends = { keyboard = BACKENDS.keyboard.name, fake = BACKENDS.fake.name },
-  KEYBOARD_LIMITATIONS = KEYBOARD_LIMITATIONS,
+  backends = { keyboard = BACKENDS.keyboard.name, fake = BACKENDS.fake.name, quickey = BACKENDS.quickey.name },
+  KEYBOARD_LIMITATIONS = KEYBOARD_LIMITATIONS, QUICKEY_LIMITATIONS = QUICKEY_LIMITATIONS,
   DEFAULT_CONFIG = shallowCopy(DEFAULT_CONFIG),
 }
 

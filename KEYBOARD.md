@@ -35,7 +35,12 @@ executor range, marker-based ownership verified by readback before every mutatio
 the bridge's `bank=` arguments are harness-tested against a fake console and **qualified live on the disposable show**
 (94 Quickeys provisioned and read back, an operator edit reported by `bank verify`, the record adopted across a bridge
 restart, teardown removing exactly the owned objects, paged executor assign/clear confirmed; see its record). Save/reload
-of the show was not exercised. KB-13–KB-15 remain planned work.
+of the show was not exercised. **KB-13 implemented on 2026-10-09** (hardkeys 0.8.0, bridge 0.10.0): the owned-Quickey
+backend dispatches taps, holds and chords of the nine KB-10 qualified codes as executor presses of the bank's Quickeys,
+releases only on the recorded executor, keeps the executor target with every record across recovery and restarts, and
+refuses discovered-only codes and unevidenced operations before dispatch; harness-tested (100 checks) and **qualified live
+on the disposable show (46/46)**, including an executor reassigned during a hold and a restart with the stuck record. The
+NX-K surface path is not qualified (mtpnxk has not vendored 0.8.0). KB-14 and KB-15 remain planned work.
 
 This document expands the initial request from `mtpnxk-client-pico` into dependency-ordered features
 and acceptance criteria, following the format of [FEATURES.md](FEATURES.md). The originating project's
@@ -1116,6 +1121,63 @@ machinery. No MCP/TypeScript changes should be needed for the initial surface ba
   console-derived feedback.
 - Test simultaneous keys, long holds, rapid sequences, duplicate/reordered packets, interruption,
   object deletion and backend exceptions. Add live NX-K qualification for the actual surface path.
+
+### Module change for KB-13 (hardkeys 0.8.0, bridge 0.10.0, 2026-10-09)
+
+Implemented in `plugin/gma3_mcp_hardkeys.lua` 0.8.0 (`quickeyBackend(instance)`) with the regression harness
+`test/lua/hardkeys_quickey_test.lua` (100 checks against a fake console with executor key state) and the bridge section of
+`test/lua/bridge_plugin_test.lua` (`input=quickey`). No MCP tool or TypeScript contract changed; the backend is an
+operator decision (`Plugin "gma3_mcp_bridge" "input=quickey"`, with the KB-12 bank provisioned).
+
+- **Everything is an executor press.** A Quickey addressed directly is always a complete tap (KB-10), so a tap, a hold
+  and every key of a chord are `Press Page P.E` on a reserved executor and `Unpress Page P.E` at the release (a tap is a
+  bounded hold released by `service()`). Confirmed live before the change: the paged form holds exactly like the KB-10
+  `Press Executor E`, and `Unpress` on an empty executor answers `Object not found`. The console deps gained
+  `executors.press/unpress`; any feedback other than `OK` is "not accepted" (nothing changed), a raise is "unknown".
+- **Right before every press** the code's Quickey is re-read through `bankTarget()` (show identity, marker, Code, Name),
+  a free reserved executor is re-read through `bankExecutor()` (placeholder or a bank code on it, by index, marker and
+  Code), the Quickey is assigned when another one is there (`Assign Quickey N At Page P.E`, verified by readback), then the
+  press goes out. `preflight()` does the same reads for every key of a combo before the first event. Executors that lost
+  their reservation, hold a foreign object or are held by a live record are skipped and never repaired. The assignment
+  stays after the release (the next press of the same code is Press/Unpress only).
+- **Qualification per code.** The adapter advertises `capabilities.quickkey = { tap, hold, chord }` and, per code,
+  `quickkeyCapabilities(code)` = the KB-10 evidence (`tap` is granted whenever `hold` is, because a tap here is an
+  executor pair: MA1 taps, OOPS does not hold, NUM1/THRU/FIXTURE/PLEASE/CLEAR do not chord). `_route()` uses the per-code
+  flags, so the existing capability checks (press, combo, sequence preflight) refuse before dispatch; `supportsQuickkey()`
+  refuses the 85 discovered-only codes and `unavailable(code)` names "no Quickey bank", "partial bank", "not in bank"
+  and "discovered only" in `describeRoute()`. No PC keys (`capabilities.keyboard = false`, `supportsKey()` refuses) and
+  no text; the shortcut/shortcutOrType/type methods are unavailable on this backend.
+- **The target travels with the record.** `press()` returns a 4th value `target = { page, executor, quickeyIndex, code,
+  value, bank }`; the instance stores it on the hold (`hold.target`, reported in `_holdReport`, `dispose()` records,
+  `adopt()`), passes it to `release(tuple, target)` and derives the executors in use from the live records
+  (`_executorsInUse()`), so a backend keeps no state of its own and an adopted record from a previous run reserves its
+  executor exactly like a fresh one. A press that raises may raise `{ message, target }` so the unresolved record keeps
+  the executor it was dispatched on.
+- **Release integrity.** `release()` issues `Unpress` only when the recorded executor still holds the recorded Quickey
+  (bank id, page, entry index and Code checked, then `bankExecutor()`); otherwise nothing is issued and the record stays
+  unresolved with the reason (the key may still be down; the operator restores the assignment, then `recover()`). A direct
+  `Unpress Quickey N` is never issued (it re-activates non-latching keys, KB-10). A record without a target, a record of
+  another backend, another show (`bank-stale`), a missing bank or a bank mismatch are all refusals, never guesses.
+- **Instance changes.** `enableInput(adapter, { routing })` applies a routing policy together with the backend, validated
+  against the new adapter (the Quickey backend cannot serve the module-default `shortcut` policy, and the old adapter
+  cannot serve `quickkey`); `preflight(tuple, route, ctx)` receives `{ kind, combo, extra }`; `_now` is recorded at the
+  two dispatch points so the backend can stamp the bank reads.
+- **Bridge.** `input=quickey` (also `quickkey`, `qk`); `adapterFor()` builds `quickeyBackend(rec.instance)`;
+  `enableInputOn()` passes `{ routing = { default = "quickkey" } }` for it and `{ default = "shortcut" }` for the others;
+  messages name the three backends. Without a bank every press is `unavailable` naming the KB-12 requirement; a kept
+  Quickey record of a previous run makes the bridge `[busy]` until the operator's `input recover` releases it.
+
+Live on 2026-10-09 ([record](docs/probes/kb-13-quickey-macos-2.5.1.md), 46/46 with `node scripts/kb13-probe.mjs run`):
+NUM5 tap → `5`, OOPS tap removed it, MA1 hold with `MASTATE` true/false, duplicate press answered with the same record,
+MA1+STORE chord → `Record `, `Fixture 1 Thru 5 Please` sequence selected 5 fixtures and CLEAR cleared them, ESC/GO/raw PC
+key/MA/non-chord combos refused before dispatch, an executor reassigned during an MA1 hold left the key down and the
+record unresolved until the operator restored the assignment, a bridge restart with that stuck record adopted it with its
+executor target and blocked all input until `input recover`, and `bank teardown` was refused `bank-in-use` during a hold.
+
+What is *not* established: the NX-K surface path (mtpnxk must vendor 0.8.0 and bind its own instance; the module-side
+behaviour it needs is covered), hold/chord evidence for any code beyond the nine KB-10 codes (none is dispatched), a
+`Press` the console rejects or a raise during dispatch (harness only), and save/reload. The `modules.lock.json` pin still
+names the reviewed 0.4.0 bytes.
 
 ## KB-14 — Scoped shortcut-state changes and text alternatives
 
