@@ -35,6 +35,8 @@ local fakeProfile = { name = "Default", shortcutsActive = "true", rows = { { Sho
 CurrentProfile = function()
   return { name = fakeProfile.name, KeyboardShortCuts = {
     Get = function(_, k) if k == "KeyboardShortcutsActive" then return fakeProfile.shortcutsActive end end,
+    -- KB-14: the one property the hardkeys module writes (strings, as the console reads them back).
+    Set = function(_, k, v) if k == "KeyboardShortcutsActive" then fakeProfile.shortcutsActive = v and "true" or "false"; fakeProfile.writes = (fakeProfile.writes or 0) + 1 end end,
     Count = function() return #fakeProfile.rows end,
     Ptr = function(_, i) local row = fakeProfile.rows[i]; return row and { Get = function(_, k) return row[k] end } end } }
 end
@@ -1011,7 +1013,7 @@ do
   start("")  -- bind fails in this harness, so serverMain returns and the instances are disposed again
   local hk, fb = state.modules.hardkeys, state.modules.feedback
   check("modules found through the plugin signal table", hk and hk.loaded and fb and fb.loaded, json.encode({ hk = hk and hk.error, fb = fb and fb.error }))
-  check("module versions recorded", hk.version == "0.8.0" and hk.apiVersion == 1 and fb.version == "0.2.0", json.encode({ hk.version, fb.version }))
+  check("module versions recorded", hk.version == "0.9.0" and hk.apiVersion == 1 and fb.version == "0.2.0", json.encode({ hk.version, fb.version }))
   check("modules start log line", lastLog():find("stopped") or true)
   local disposed = hk.instance and hk.instance:status().state == "disposed" and fb.instance:status().state == "disposed"
   check("instances disposed when the loop ends", disposed, hk.instance and hk.instance:status().state)
@@ -1519,7 +1521,7 @@ do
   r = request("feedback.read", {}, nil, C)
   check("feedback.read without items is refused with a code", r.ok == false and r.code == "no-items", r.error)
   r = request("feedback.read", { readers = { "commandText", "lastCommand", "blind", "solo", "page", "freeze", "selectedSequence", "previewBar", "sequenceActive" }, displays = { 1, 2, 9 }, executors = { 201, 202 }, sequences = { 5, 6 } }, nil, C)
-  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.10.0" and r.result.module.version == "0.2.0" and r.result.identity.showFile == "mcp-test-disposable", J(r))
+  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.11.0" and r.result.module.version == "0.2.0" and r.result.identity.showFile == "mcp-test-disposable", J(r))
   local by = {}
   if r.ok then for _, it in ipairs(r.result.items) do by[it.key] = it end end
   check("feedback.read: command text and last command are raw observations", by.commandText and by.commandText.value == "Store " and by.lastCommand.value == "Go+ Sequence 5 : OK" and by.lastCommand.note:find("not confirmation"), J(by.lastCommand))
@@ -1703,6 +1705,83 @@ do
   check("an unowned object in the range refuses provisioning with nothing created", logFound("bank provision refused %[bank%-preflight%]", before) and logFound("slot%-occupied 903", before) and countPool() == 1, lastLog())
   pool[903] = nil
   Cleanup()
+end
+
+-------------------------------------------------------------------------------
+-- KB-14: routing ops, text routes and the temporary shortcut mode through the bridge
+-------------------------------------------------------------------------------
+do
+  start("input=keyboard")
+  state._loadModules(); state.running = true; state.stopRequested = false; state.ignoreNextCleanup = false
+  local hk = state.modules.hardkeys
+  local A, B = { id = 41 }, { id = 42 }
+  request("input.open", {}, nil, A); request("input.open", {}, nil, B)
+  fakeProfile.shortcutsActive = "true"; fakeProfile.writes = 0
+  keyboardCalls = {}
+  local r = request("input.routing", {}, nil, A)
+  check("input.routing without a policy reports the current policy (module default shortcut, type available on the keyboard backend)", r.ok and r.result.routing.default == "shortcut" and r.result.routing.methods.type.available == true and r.result.routing.capabilities.modeChange == true, J(r))
+  r = request("input.routing", { policy = { keys = { STORE = { method = "nope" } } } }, nil, A)
+  check("an invalid policy is refused with its code and changes nothing", r.ok == false and r.code == "policy-invalid" and hk.instance:routingReport().overrideCount == 0, r.error)
+  r = request("input.routing", { policy = { keys = { STORE = { method = "type", text = "Store " } } } }, nil, A)
+  check("a policy with a text route is accepted and logged", r.ok and r.result.routing.keys.STORE.method == "type" and logFound("routing policy replaced by conn%-41") ~= nil, J(r))
+  r = request("input.route", { key = "STORE" }, nil, B)
+  check("input.route reports the text route with the mode change it needs (shortcuts on -> off)", r.ok and r.result.route.effective == "text" and r.result.route.modeChange.target == false and r.result.route.dispatchable == true, J(r))
+  r = request("input.route", {}, nil, B)
+  check("input.route needs a key", r.ok == false and r.error:find("bad%-argument"), r.error)
+  r = request("input.tap", { key = "STORE" }, nil, A)
+  check("a text-route tap writes the mode off, sends the characters through Keyboard('char') and is retained", r.ok and r.result.hold.kind == "text" and r.result.hold.state == "retained" and r.result.hold.text.typed == 6 and fakeProfile.shortcutsActive == "false" and fakeProfile.writes == 1 and #keyboardCalls == 6 and keyboardCalls[1].kind == "char" and keyboardCalls[1].key == "S" and keyboardCalls[6].key == " ", J({ hold = r.result and r.result.hold, calls = keyboardCalls }))
+  r = request("ping", {}, nil, B)
+  check("ping.input reports the active mode change and the retained record", r.ok and r.result.input.modeChange and r.result.input.modeChange.state == "active" and r.result.input.modeChange.target == false and r.result.input.retained == 1, J(r.result.input))
+  r = request("cmd", { command = "Go+ Sequence 1" }, nil, B)
+  check("a pending restoration does not make the guarded ops busy", r.ok == true, r.error)
+  _G.FAKE_CLOCK_OFFSET = (_G.FAKE_CLOCK_OFFSET or 0) + 0.2
+  state._serviceModules(require("socket").gettime() + _G.FAKE_CLOCK_OFFSET)
+  r = request("input.status", {}, nil, A)
+  check("the loop restored the mode after the delay and released the record", fakeProfile.shortcutsActive == "true" and fakeProfile.writes == 2 and r.result.status.modeChange == nil and r.result.status.lastModeChange.restoredBy == "service" and r.result.status.holds[#r.result.status.holds].state == "released", J(r.result.status.lastModeChange))
+  check("ping.input shows no mode change afterwards", request("ping", {}, nil, B).result.input.modeChange == nil)
+  -- A shortcut-table hold with shortcuts off: temporary enable for the hold through the bridge.
+  request("input.routing", { policy = {} }, nil, A)
+  fakeProfile.shortcutsActive = "false"
+  keyboardCalls = {}
+  r = request("input.begin", { leaseMs = 60000 }, nil, A)
+  local IA = r.result.interaction.id
+  r = request("input.press", { key = "STORE", interaction = IA }, nil, A)
+  check("STORE with shortcuts off: enabled for the hold, pressed through Keyboard()", r.ok and r.result.hold.state == "held" and r.result.hold.modeOp ~= nil and fakeProfile.shortcutsActive == "true" and keyboardCalls[1].kind == "press" and keyboardCalls[1].key == "S", J(r))
+  r = request("input.routing", { policy = { default = "shortcut" } }, nil, B)
+  check("the policy is not changed by another connection while A holds a key", r.ok == false and r.error:find("busy"), r.error)
+  r = request("input.release", { key = "STORE" }, nil, A)
+  check("released and retained while the mode is still enabled", r.ok and r.result.hold.state == "retained" and fakeProfile.shortcutsActive == "true", J(r.result.hold))
+  _G.FAKE_CLOCK_OFFSET = _G.FAKE_CLOCK_OFFSET + 0.2
+  state._serviceModules(require("socket").gettime() + _G.FAKE_CLOCK_OFFSET)
+  check("the mode is restored to off after the release", fakeProfile.shortcutsActive == "false" and hk.instance:status().modeChange == nil)
+  request("input.end", { interaction = IA }, nil, A)
+  -- An unresolved restoration (profile switched meanwhile) blocks the guarded ops and survives a restart.
+  fakeProfile.shortcutsActive = "true"
+  request("input.routing", { policy = { keys = { STORE = { method = "type", text = "Store " } } } }, nil, A)
+  r = request("input.tap", { key = "STORE" }, nil, A)
+  fakeProfile.name = "Other"
+  _G.FAKE_CLOCK_OFFSET = _G.FAKE_CLOCK_OFFSET + 0.2
+  state._serviceModules(require("socket").gettime() + _G.FAKE_CLOCK_OFFSET)
+  r = request("ping", {}, nil, B)
+  check("a profile switch leaves the restoration unresolved; nothing written; busy for everyone", r.ok and r.result.input.modeChange.state == "unresolved" and r.result.input.busy.reason == "restoration" and fakeProfile.shortcutsActive == "false" and fakeProfile.writes == 5, J(r.result.input))
+  r = request("lua", { code = "return 1" }, nil, B)
+  check("lua is refused while the restoration is unresolved", r.ok == false and r.code == "busy" and r.detail.reason == "restoration", r.error)
+  r = request("input.tap", { key = "STORE" }, nil, A)
+  check("new input is refused too", r.ok == false and r.code == "busy" and r.detail.reason == "restoration", r.error)
+  r = request("input.recover", {}, nil, A)
+  check("the owner's recover on the other profile does not write and stays unresolved", r.ok and r.result.restoration.state == "unresolved" and fakeProfile.writes == 5, J(r.result.restoration))
+  state.clients = { A, B }
+  Cleanup()
+  check("the owning-call Cleanup keeps the unresolved restoration for the next start", state.running == false and type(state.input.mode) == "table" and state.input.mode.profile == "Default" and state.input.mode.original == true and state.input.mode.keptReason == "cleanup" and logFound("keeping the unresolved keyboard%-shortcut mode restoration") ~= nil, J(state.input.mode))
+  start("input=keyboard")
+  state._loadModules(); state.running = true; state.stopRequested = false; state.ignoreNextCleanup = false
+  hk = state.modules.hardkeys
+  check("the next start adopts it as unresolved (previous-run) and says so", state.input.mode == nil and hk.instance:status().modeChange and hk.instance:status().modeChange.owner == "previous-run" and logFound("from a previous run is unresolved") ~= nil, J(hk.instance:status().modeChange))
+  fakeProfile.name = "Default"
+  Main(nil, "input recover"); Cleanup()
+  check("the operator's input recover restores the original state on the original profile", fakeProfile.shortcutsActive == "true" and hk.instance:status().modeChange == nil and logFound("mode restoration m%d+ restored") ~= nil, lastLog())
+  request("input.close", {}, nil, A); request("input.close", {}, nil, B)
+  Main(nil, "stop"); Cleanup()
 end
 
 print(string.format("%d passed, %d failed", passes, failures))

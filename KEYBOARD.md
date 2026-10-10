@@ -40,7 +40,13 @@ backend dispatches taps, holds and chords of the nine KB-10 qualified codes as e
 releases only on the recorded executor, keeps the executor target with every record across recovery and restarts, and
 refuses discovered-only codes and unevidenced operations before dispatch; harness-tested (107 checks) and **qualified live
 on the disposable show (47/47)**, including an executor reassigned during a hold and a restart with the stuck record. The
-NX-K surface path is not qualified (mtpnxk has not vendored 0.8.0). KB-14 and KB-15 remain planned work.
+NX-K surface path is not qualified (mtpnxk has not vendored 0.8.0). **KB-14 implemented on 2026-10-09** (hardkeys 0.9.0, bridge
+0.11.0): the `type` and `shortcutOrType` text routes and the temporary enable of `shortcut` run through a bounded, readback-verified
+change of the operator's keyboard-shortcut mode that is kept through the hold, restored by the loop after the last dependent event and
+never written over a state the operator changed meanwhile (unresolved restorations block input until recovery); the bridge gained
+`input.routing` / `input.route`; harness-tested (98 + 21 bridge checks) and **qualified live on the disposable show (32/32, plus the
+11/11 consumption-order probe behind the restore delay)**. Profile switches, failed restores and the kept restoration across a restart
+are harness-only. KB-15 remains planned work.
 
 This document expands the initial request from `mtpnxk-client-pico` into dependency-ordered features
 and acceptance criteria, following the format of [FEATURES.md](FEATURES.md). The originating project's
@@ -1219,6 +1225,67 @@ own toggles. MCP/TypeScript changes are needed only for explicit exposure of the
   partial text and restoration failure, including interaction with existing held inputs.
 - Document that physical keys and other controllers can interfere; instance ownership is not a complete
   inventory of keys held on the console.
+
+### Module change for KB-14 (hardkeys 0.9.0, bridge 0.11.0, 2026-10-09)
+
+Implemented in `plugin/gma3_mcp_hardkeys.lua` 0.9.0 with the regression harness `test/lua/hardkeys_mode_test.lua`
+(98 checks on the fake backend with a fake profile, state and mode writer) and a bridge section of
+`test/lua/bridge_plugin_test.lua` (21 checks: the ops, a text tap and a mode-changing hold through `Keyboard()`, an
+unresolved restoration refusing the guarded ops, kept across a stop and restored by `input recover`). Live evidence:
+[kb-14-timing-macos-2.5.1.md](docs/probes/kb-14-timing-macos-2.5.1.md) (the consumption-order probe, 11/11) and
+[kb-14-run-macos-2.5.1.md](docs/probes/kb-14-run-macos-2.5.1.md) (the module paths, 32/32). No MCP tool or TypeScript
+contract changed; `gma3_type` keeps the KB-05 text step, which is refused while a mode operation is pending.
+
+- **Probe first.** Character events and a printable shortcut tap are consumed inside `Keyboard()`; Escape (shortcuts
+  on) and a modifier press are consumed on a later frame, a same-chunk restore after a LeftShift press was dropped in one
+  run and registered in others, a release under the other mode did not lift a registered modifier, and disabling
+  shortcuts drops a held MA. Hence: the mode is kept through every dependent hold, the release goes out in the mode of
+  the press, and the restore happens in `service()` after `config.modeRestoreDelayMs` (60 ms) since the last dependent
+  event, never in the call that dispatched it.
+- **One mode operation at a time** (`status().modeChange`): the profile name and the state are captured first (refused
+  as `unreadable` if either cannot be read; nothing written), the state is written only when it differs from what the
+  route needs (`route-changed` when it changed between resolution and dispatch), verified by readback (`mode-change-failed`
+  when the write had no effect: nothing dispatched, nothing to restore; a write that raises or cannot be read back leaves
+  an unresolved restoration). Routes needing the opposite state while one is active are `mode-conflict`, never
+  pre-empted; routes needing the same state join it. The write is `deps.setShortcutsActive` (`consoleDeps`:
+  `KeyboardShortCuts:Set("KeyboardShortcutsActive")`); adapters advertise `capabilities.modeChange` (keyboard: only with
+  the dep; quickey: false), and without it the pre-0.9.0 refusals stand.
+- **Interference, not overwrite.** Before each restore `service()` re-reads the profile and the state: a changed profile
+  or an unreadable state makes the restoration **unresolved** (`busy` reason `restoration`, dependents `quarantined`,
+  every new press and the bridge's guarded ops refused) until `recover()` (owner, or the operator's `input recover`)
+  re-reads it on the original profile and restores it; a replacement profile is never written. A state somebody already
+  set back is left alone (`restoredBy = operator`, `interference` recorded). `dispose()` follows the same rules: it
+  restores only when no dependent is still held or unresolved and the delay elapsed since the last release, otherwise it
+  hands the pending restoration back as a record (`adoptMode()`, kept by the bridge like unresolved key records; the
+  operator's `input recover` restores it after the adopted keys are recovered; a release made in that recover call restarts
+  the delay and `service()` does the restore). The bridge's stop path waits the delay
+  on the loop before disposing; a Cleanup from the console cannot wait and keeps the record instead.
+- **Routes.** `shortcut` with a shortcut-table row and shortcuts off enables them for the hold (`route.modeChange`,
+  `route.shortcutsActive = true`, so the operator disabling them mid-hold is the KB-04 route change). `type` and the text
+  side of `shortcutOrType` insert the key's text once on press through `adapter.char`, in chunks of
+  `textCharsPerService`, rechecking the mode, the profile, exclusivity and routes between chunks; partial progress is
+  reported (`text.typed`, `outcome partial|uncertain`, nothing erased or replayed; in a sequence a partial or uncertain
+  insertion stops the sequence so a following PLEASE never commits it), the command line is read back when
+  readable (`text.readback` observed/inconclusive), focus is best-effort and reported as such, no Enter/Please is added.
+  A press refused after the mode was changed (or a first character refused) drops its record as terminal, so the
+  restoration still completes.
+  A text record owns no key (`tupleKey = "text:<KEY>"`, `releaseOutcome = "none"`), needs no interaction, refuses combos,
+  exclusivity and every other instance-owned record (held, releasing, unresolved, retained, quarantined; consecutive
+  text records of the same operation excepted) and is itself `released` at once or `retained` until the restore. Native
+  and fixed routes (PLEASE, MA) never become text.
+- **New record states.** `retained` (the key is up, the mode restoration is pending; not live for capacity, busy or
+  exclusivity) and `quarantined` (retained when the restoration went unresolved). Sequences wait for a pending
+  restoration before a step that needs the operator's own mode (a text step) or the opposite temporary mode.
+- **Bridge 0.11.0.** `input.routing` (`{ policy }` replaces the attached backend's policy, refused while another
+  connection owns input; without a policy it reports) and `input.route` (`{ key, prefer, executor }` → `describeRoute`);
+  `pressSpec` forwards `prefer`; `ping.input` / `input.status` report `modeChange`, `retained`, `quarantined`; the
+  guard's `[busy]` names `restoration`; `state.input.mode` keeps an unresolved restoration across a restart.
+
+What is *not* established: a profile switch, an unreadable state or a failed restore write on the console (harness
+only); the kept restoration across a real restart; a KB-05 text step racing a 60 ms restore; the NX-K surface path.
+Physical keys, other plugins and another console user can change the mode or the profile at any time: the operation is a
+property write verified by readback, not a lock, and abrupt termination defeats the restore guarantee (the record is kept
+for `input recover`).
 
 ## KB-15 — Surface defaults, migration and qualification
 

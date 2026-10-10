@@ -370,10 +370,10 @@ do
   reset()
   local inst = fresh({ disabled = true, routing = { keys = { NUM5 = { method = "type", text = "5" }, THRU = { method = "type", text = "Thru " }, STORE = { method = "type" } } } })
   local d = inst:describeRoute("THRU")
-  check("type resolves to the text route with the exact text and names the KB-14 requirement", d.supported and d.effective == "text" and d.text == "Thru " and has(d.unavailable, "KB-14") and has(d.unavailable, "enable/disable") and not d.dispatchable, J(d))
+  check("type resolves to the text route with the exact text and a mode change (shortcuts off) while shortcuts are on", d.supported and d.effective == "text" and d.text == "Thru " and d.modeChange and d.modeChange.target == false and has(d.unavailable, "no backend attached") and not d.dispatchable, J(d))
   profile.shortcutsActive = false
   d = inst:describeRoute("THRU")
-  check("with shortcuts off only the text-route requirement remains", d.effective == "text" and #d.unavailable == 1 and has(d.unavailable, "text-route"), J(d))
+  check("with shortcuts off no mode change is needed; only the backend is missing", d.effective == "text" and d.modeChange == nil and d.shortcutsActive == false and #d.unavailable == 1 and has(d.unavailable, "no backend attached"), J(d))
   d = inst:describeRoute("STORE")
   check("type without a text mapping is unsupported, not derived from the name", not d.supported and d.code == "no-mapping", J(d))
   d = inst:describeRoute("WHATEVER")
@@ -383,7 +383,7 @@ do
   check("unreadable mode is a refusal for type", not d.supported and d.code == "unreadable", J(d))
   reset()
   local r, err = inst:enableInput(HK.fakeBackend())
-  check("a policy naming type cannot enable input on any current backend", r == nil and err.code == "policy-unavailable" and err.problems[1].method == "type" and has(err.problems[1].missing, "KB-14"), J(err))
+  check("a policy naming type cannot enable input without the mode-write dep (deps.setShortcutsActive)", r == nil and err.code == "policy-unavailable" and err.problems[1].method == "type" and has(err.problems[1].missing, "KB-14") and has(err.problems[1].missing, "setShortcutsActive"), J(err))
   local inst2 = fresh()
   r, err = inst2:configureRouting({ default = "type" })
   check("type as the default is refused while a backend is attached", r == nil and err.code == "policy-unavailable", J(err))
@@ -407,7 +407,7 @@ do
   -- active + confirmed missing row + text -> text selected, unavailable (both KB-14 requirements), nothing dispatched
   local n = #backend.events
   local x, err = inst:press("s", 3, { key = "THRU" })
-  check("active, no row, text mapping: text selected, refused as unavailable with both requirements, nothing dispatched", x == nil and err.code == "unavailable" and err.effective == "text" and has(err.unavailable, "text-route") and has(err.unavailable, "enable/disable") and #backend.events == n and err.route.textSelectedBecause:find("no row"), J(err))
+  check("active, no row, text mapping: text selected, needs a mode change this harness cannot write: unavailable, nothing dispatched", x == nil and err.code == "unavailable" and err.effective == "text" and has(err.unavailable, "enable/disable") and not has(err.unavailable, "text-route") and err.route.modeChange.target == false and #backend.events == n and err.route.textSelectedBecause:find("no row"), J(err))
   -- active + confirmed missing row + no text -> unsupported
   VK.GROUP = 58
   x, err = inst:press("s", 3, { key = "GROUP" })
@@ -425,9 +425,9 @@ do
   -- mode positively off + text -> text selected (no row needed), unavailable (text route only)
   profile.shortcutsActive = false
   x, err = inst:press("s", 6, { key = "THRU" })
-  check("mode off with a text mapping selects text without a row; only the text-route requirement is missing", x == nil and err.code == "unavailable" and err.effective == "text" and #err.unavailable == 1 and has(err.unavailable, "text-route") and #backend.events == n, J(err))
+  check("mode off with a text mapping selects text without a row and inserts it once (KB-14): no mode change, released at once, nothing held", x and x.kind == "text" and x.state == "released" and x.route.source == "text" and x.text.typed == 5 and x.text.outcome == "typed" and x.releaseOutcome == "none" and x.modeOp == nil and backend:typedText() == "Thru " and #backend.events == n + 5, J(x or err))
   x, err = inst:press("s", 6, { key = "PLUS" })
-  check("mode off: an ambiguous table is irrelevant to the text route", x == nil and err.code == "unavailable" and err.effective == "text", J(err))
+  check("mode off: an ambiguous table is irrelevant to the text route", x and x.kind == "text" and backend:typedText() == "Thru +", J(x or err))
   -- mode off + no text -> unsupported
   x, err = inst:press("s", 6, { key = "STORE" })
   check("mode off without a text mapping is unsupported", x == nil and err.code == "unsupported" and err.reason == "no-mapping", J(err))
@@ -441,7 +441,7 @@ do
   -- unknown key is always a refusal
   x, err = inst:press("s", 9, { key = "NOPE" })
   check("unknown key refused under shortcutOrType", x == nil and err.reason == "unknown-key", J(err))
-  check("describeRoute agrees with press for the text branch", inst:describeRoute("THRU").effective == "text" and inst:describeRoute("THRU").dispatchable == false)
+  check("describeRoute agrees with press for the text branch", inst:describeRoute("THRU").effective == "text" and inst:describeRoute("THRU").dispatchable == true)
   reset()
   -- Retention across a mode change: a shortcut-table hold pressed under shortcutOrType keeps the
   -- keyboard route; turning shortcuts off mid-hold does not turn it into text (the release is the

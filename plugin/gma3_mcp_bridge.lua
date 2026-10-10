@@ -55,6 +55,18 @@
 -- An existing bank of this bridge (same ranges) is verified and reused; another plugin's bank or any
 -- unowned object in the range refuses the whole setup and nothing is created. The bank record survives
 -- a bridge restart (like unresolved records) and is re-verified at the next start, never trusted blindly.
+-- Per-key routing and KB-14 (bridge 0.11.0 / hardkeys 0.9.0): a connection may replace the routing
+-- policy for the attached backend with "input.routing" ({ policy = { default, keys = { KEY = { method,
+-- quickkey, prefer, text } } } }; no policy = report only) and inspect a key with "input.route" ({ key,
+-- prefer, executor }). The methods shortcut (temporary enable of the shortcut table for a hold),
+-- shortcutOrType and type (text inserted once on press with shortcuts temporarily disabled) change the
+-- operator's keyboard-shortcut mode for a bounded operation and restore it one restore delay after the
+-- last dependent key event; status reports it (input.status: status.modeChange, ping.input.modeChange).
+-- A restoration that cannot be verified (profile switched, state unreadable, write without effect) is
+-- kept as unresolved: every new press is refused and the guarded ops report [busy] (reason
+-- "restoration") until the owner's input.recover or the operator's "input recover" re-reads and
+-- restores it on the original profile. Like unresolved records, an unresolved restoration survives a
+-- bridge restart (state.input.mode) and is adopted at the next start.
 -- Every held key belongs to a session bound to the TCP connection that opened it; a client can only
 -- act on its own session, and a disconnect, lease expiry, "input=off", stop or Cleanup attempts to
 -- release what that session still holds. A release that fails or cannot be confirmed is kept as an
@@ -107,7 +119,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.10.0"
+local VERSION      = "0.11.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -1383,7 +1395,7 @@ local MODULE_COMPONENTS = {
   { key = "feedback", component = "gma3_mcp_feedback" },
 }
 
-local enableInputOn, adoptKeptRecords, adoptKeptBank  -- defined with the input ops below; used by loadModules()
+local enableInputOn, adoptKeptRecords, adoptKeptBank, adoptKeptMode  -- defined with the input ops below; used by loadModules()
 
 -- Best-effort detail for an error message: is the component in the plugin, and did it fail to parse?
 local function componentInfo(name)
@@ -1441,6 +1453,7 @@ local function loadModules()
         -- explicit operator action ("input recover"); adopt() dispatches nothing.
         adoptKeptRecords(rec)
         adoptKeptBank(rec)
+        adoptKeptMode(rec)
         if state.input.enabled then
           local okE, err = enableInputOn(rec)
           if not okE then
@@ -1506,6 +1519,22 @@ detachHardkeys = function(rec, t, reason)
   if st.state == "ready" then
     local okD, dis = pcall(inst.disableInput, inst, t, reason)
     if okD then logReleaseResult("input: " .. tostring(reason), dis) else logerr("input: disableInput on %s failed: %s", tostring(reason), tostring(dis)) end
+    -- KB-14: a temporary shortcut mode is restored by service() one restore delay after the releases
+    -- above, never in the same call. Where this runs inside the loop's coroutine (a stop) the frames are
+    -- waited for here; from Cleanup (not yieldable) dispose() hands the pending restoration back instead.
+    local okM, stM = pcall(inst.status, inst, t)
+    if okM and type(stM) == "table" and stM.modeChange and stM.modeChange.state == "active" and coroutine.isyieldable() then
+      local deadline = now() + 1.0
+      while now() < deadline do
+        coroutine.yield()
+        t = now()
+        pcall(inst.service, inst, t)
+        local okN, stN = pcall(inst.status, inst, t)
+        if not (okN and type(stN) == "table" and stN.modeChange and stN.modeChange.state == "active") then break end
+      end
+      local okL, stL = pcall(inst.status, inst, t)
+      if okL and type(stL) == "table" and stL.lastModeChange and stL.lastModeChange.restoredAt then log("input: %s: keyboard-shortcut mode restoration %s restored before dispose", tostring(reason), tostring(stL.lastModeChange.id)) end
+    end
   end
   local ok, res = pcall(inst.dispose, inst, t)
   if ok and type(res) == "table" then
@@ -1520,6 +1549,14 @@ detachHardkeys = function(rec, t, reason)
     end
     -- The Quickey bank record (KB-12) is kept like the unresolved records; the next start re-verifies it.
     if type(res.bank) == "table" then state.input.bank = res.bank; log("input: bank record %s kept for the next start (%d codes); nothing on the console was changed", tostring(res.bank.id), #(res.bank.codes or {})) end
+    -- KB-14: a shortcut-mode restoration dispose() could not verify is kept; the next start adopts it as
+    -- unresolved and "input recover" restores it on the original profile.
+    if type(res.mode) == "table" then
+      res.mode.keptAt, res.mode.keptReason = t, reason
+      state.input.mode = res.mode
+      logerr("input: keeping the unresolved keyboard-shortcut mode restoration %s (profile '%s', shortcuts %s -> %s): %s; run  Plugin \"gma3_mcp_bridge\" \"input recover\"  on that profile once the bridge runs again",
+        tostring(res.mode.id), tostring(res.mode.profile), tostring(res.mode.original), tostring(res.mode.target), tostring(res.mode.unresolved and res.mode.unresolved.reason))
+    end
   elseif not ok then
     logerr("input: dispose failed: %s", tostring(res))
   end
@@ -1623,6 +1660,9 @@ local function inputSummary()
     interaction = st and st.activeInteraction or nil,
     sequence = st and st.sequence and st.sequence.state == "running" and st.sequence.id or nil,
     busy = st and st.busy or nil,
+    modeChange = st and st.modeChange and { id = st.modeChange.id, state = st.modeChange.state, profile = st.modeChange.profile, original = st.modeChange.original, target = st.modeChange.target, owner = st.modeChange.owner, restoreInMs = st.modeChange.restoreInMs, unresolved = st.modeChange.unresolved and st.modeChange.unresolved.reason or nil } or (type(state.input.mode) == "table" and { state = "kept", id = state.input.mode.id, profile = state.input.mode.profile } or nil),
+    retained = st and st.retained or 0,
+    quarantined = st and st.quarantined or 0,
     bank = st and st.bank and { provisioned = st.bank.provisioned, id = st.bank.id, state = st.bank.state, codes = st.bank.codeCount, qualified = st.bank.qualifiedCount, problems = st.bank.problemCount } or (type(state.input.bank) == "table" and { provisioned = false, kept = state.input.bank.id } or nil),
     note = "ownership records, not physical key state; see input.status. busy: cmd/set/setfader/lua are refused for every connection while it is set",
   }
@@ -1643,8 +1683,9 @@ end
 
 local function describeInput()
   local s = inputSummary()
-  return string.format("input=%s sessions=%d holds=%d unresolved=%d keptFromPreviousRun=%d",
-    s.enabled and (tostring(s.backend) .. " enabled") or "disabled", s.sessions, s.holds, s.unresolved, s.unresolvedFromPreviousRun)
+  return string.format("input=%s sessions=%d holds=%d unresolved=%d keptFromPreviousRun=%d%s",
+    s.enabled and (tostring(s.backend) .. " enabled") or "disabled", s.sessions, s.holds, s.unresolved, s.unresolvedFromPreviousRun,
+    s.modeChange and (" modeChange=" .. tostring(s.modeChange.id) .. ":" .. tostring(s.modeChange.state)) or "")
 end
 
 -- Hands the records kept from a previous run to the instance as unresolved holds (session
@@ -1661,6 +1702,20 @@ adoptKeptRecords = function(rec)
   end
 end
 
+-- KB-14: the restoration record kept by a previous run becomes an unresolved restoration of session
+-- "previous-run"; nothing is written until "input recover" verifies the profile and the state.
+adoptKeptMode = function(rec)
+  local record = state.input.mode
+  if type(record) ~= "table" then return end
+  if type(rec.instance.adoptMode) ~= "function" then logerr("input: a keyboard-shortcut mode restoration record is kept but the loaded module has no adoptMode() (module %s)", tostring(rec.version)); return end
+  local ok, r, err = pcall(rec.instance.adoptMode, rec.instance, record, now())
+  if not ok then logerr("input: adopting the kept mode restoration raised: %s; the record is kept", tostring(r)); return end
+  if not r then logerr("input: kept mode restoration not adopted [%s]: %s; the record is dropped", tostring(err and err.code), tostring(err and err.message)); state.input.mode = nil; return end
+  state.input.mode = nil
+  logerr("input: the keyboard-shortcut mode restoration %s from a previous run is unresolved (profile '%s', shortcuts %s -> %s); every new press is refused until  Plugin \"gma3_mcp_bridge\" \"input recover\"  restores it on that profile",
+    tostring(r.id), tostring(r.profile), tostring(r.original), tostring(r.target))
+end
+
 -- Operator-only recovery (plugin argument "input recover"): adopt any records still kept from a
 -- previous run, then re-attempt every unresolved release of every session. Nothing is retried automatically.
 local function inputRecover()
@@ -1670,6 +1725,7 @@ local function inputRecover()
     return
   end
   adoptKeptRecords(rec)
+  adoptKeptMode(rec)
   -- "input=off" keeps the attached backend, so releases still work then. An instance that never had a
   -- backend attached (the default after a restart) gets the records' OWN backend attached for cleanup
   -- only: input stays disabled, and a record is only ever released through the backend that pressed it.
@@ -1700,6 +1756,15 @@ local function inputRecover()
   local r = rec.instance:recover(nil, now())
   logReleaseResult("input recover", r)
   log("input recover: %d released, %d still unresolved", #(r.released or {}), #(r.unresolved or {}))
+  if type(r.restoration) == "table" then
+    if r.restoration.state == "restored" then
+      log("input recover: keyboard-shortcut mode restoration %s restored (profile '%s', shortcuts back to %s, by %s%s)", tostring(r.restoration.id), tostring(r.restoration.profile), tostring(r.restoration.original), tostring(r.restoration.restoredBy), r.restoration.restoreNote and ("; " .. r.restoration.restoreNote) or "")
+    elseif r.restoration.state == "active" then
+      log("input recover: keyboard-shortcut mode restoration %s re-validated; the loop restores it %d ms after the last key event (%s)", tostring(r.restoration.id), tonumber(r.restoration.restoreInMs) or 0, tostring(r.restoration.revalidated and r.restoration.revalidated.note))
+    else
+      logerr("input recover: keyboard-shortcut mode restoration %s still unresolved: %s", tostring(r.restoration.id), tostring(r.restoration.unresolved and r.restoration.unresolved.reason))
+    end
+  end
 end
 
 -- Module errors are tables { code, message, ... }; they travel to handleLine unchanged so the reply can
@@ -1771,7 +1836,8 @@ end
 
 local function pressSpec(args)
   return { key = args.key, pcKey = args.pcKey, shift = args.shift, ctrl = args.ctrl, alt = args.alt, numlock = args.numlock,
-           display = args.display, executor = args.executor, maxHoldMs = args.maxHoldMs, exclusive = args.exclusive, interaction = args.interaction }
+           display = args.display, executor = args.executor, maxHoldMs = args.maxHoldMs, exclusive = args.exclusive, interaction = args.interaction,
+           prefer = args.prefer }
 end
 
 -- Opens the connection's session on demand (the KB-05 entry points do this so one call suffices).
@@ -1910,7 +1976,35 @@ ops["input.recover"] = function(args, ctx)
   local _, sid = ownSession(ctx, true)
   local r = inputInstance().instance:recover(sid, now())
   logReleaseResult("input: recover " .. sid, r)
+  if type(r.restoration) == "table" then log("input: recover %s: keyboard-shortcut mode restoration %s %s", sid, tostring(r.restoration.id), tostring(r.restoration.state)) end
   return r
+end
+
+-- KB-11/KB-14: the routing policy of the attached backend. args.policy replaces it (validated against
+-- the backend; a refused policy changes nothing); without args.policy the current report is returned.
+-- The policy is instance-wide (every connection presses through it), so it needs this connection's
+-- session and is refused while any input ownership is active (holds keep their route anyway).
+ops["input.routing"] = function(args, ctx)
+  local _, sid = ownSession(ctx, true)
+  local rec = inputInstance()
+  if args.policy == nil then return { routing = rec.instance:routingReport(), session = sid } end
+  if type(args.policy) ~= "table" then error("[bad-argument] policy must be an object { default, keys }", 0) end
+  if type(rec.instance.configureRouting) ~= "function" then error("[unsupported] the loaded hardkeys module has no configureRouting() (module " .. tostring(rec.version) .. ")", 0) end
+  local busy = rec.instance:admission(now())
+  if busy and busy.owner ~= sid then error(string.format("[busy] the routing policy is not changed while input ownership is active elsewhere: %s", tostring(busy.description)), 0) end
+  local r, err = rec.instance:configureRouting(args.policy)
+  if not r then raise(err) end
+  log("input: routing policy replaced by %s (default %s, %d override(s))", sid, tostring(r.default), r.overrideCount or 0)
+  return { routing = r, session = sid }
+end
+
+-- Read-only: how a logical key would be dispatched now (method, effective route, mode change, requirements).
+ops["input.route"] = function(args, ctx)
+  wantClient(ctx)
+  local rec = inputInstance()
+  if type(args.key) ~= "string" or args.key == "" then error("[bad-argument] key (logical key name) is required", 0) end
+  if type(rec.instance.describeRoute) ~= "function" then error("[unsupported] the loaded hardkeys module has no describeRoute() (module " .. tostring(rec.version) .. ")", 0) end
+  return { route = rec.instance:describeRoute(args.key, { prefer = args.prefer, executor = args.executor }) }
 end
 
 -- Read-only: never releases anything (the module's status() performs no cleanup).
@@ -3095,7 +3189,7 @@ local function MainImpl(display_handle, argument)
   state.lua = { enabled = LUA_DEFAULT_ENABLED, maxMs = LUA_DEFAULT_MAX_MS, maxSteps = LUA_DEFAULT_MAX_STEPS, hookMode = LUA_DEFAULT_HOOK_MODE }
   applyLuaPolicy(opts)
   -- Input is likewise an explicit per-start decision; only the unresolved records carry over.
-  state.input = { enabled = opts.input == true, backend = opts.input == true and (opts.inputBackend or "fake") or nil, unresolved = state.input.unresolved or {}, bank = state.input.bank }
+  state.input = { enabled = opts.input == true, backend = opts.input == true and (opts.inputBackend or "fake") or nil, unresolved = state.input.unresolved or {}, bank = state.input.bank, mode = state.input.mode }
   state.running = true
   state.stopRequested = false
   state.clients = {}

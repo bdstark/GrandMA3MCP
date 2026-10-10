@@ -75,7 +75,24 @@
 --     and every unavailable requirement; status().routing summarises the policy. Callers without a
 --     policy keep the pre-0.6.0 behaviour (method "shortcut"). Quickey tuples ({ quickkey = <code> })
 --     need an adapter that advertises capabilities.quickkey (the fake does; the KB-13 backend will);
---     the text routes of shortcutOrType/type are resolved and reported but their dispatch is KB-14.
+--     the text routes of shortcutOrType/type are dispatched since 0.9.0 (KB-14, below).
+--   * scoped shortcut-mode changes and text routes (KB-14, 0.9.0): a shortcut-table route while
+--     shortcuts are off (method shortcut) and the text routes (type, the text side of shortcutOrType)
+--     are dispatched through a bounded MODE OPERATION: the active profile and the shortcut state are
+--     captured (refused if unreadable), the state is written only when it differs from what the route
+--     needs, verified by readback, kept for the whole lifecycle of every hold that depends on it and
+--     restored by service() one restore delay after the last dependent event (never in the same call as
+--     the last key event: the console consumes a modifier press on the next frame and discards it when
+--     the mode is restored in the same chunk; disabling shortcuts also drops a held MA). Before the
+--     restore the profile and the state are re-read: a changed profile or an unreadable state is
+--     INTERFERENCE and the operation becomes an unresolved RESTORATION (status().modeChange, busy
+--     reason "restoration") that blocks every new press until recover() verifies and restores it; a
+--     replacement profile is never written, and a state the operator already set back is left alone.
+--     Text routes insert the key's text once on press (chunked, the state rechecked between chunks,
+--     partial progress reported, nothing replayed) and nothing on release; the record is "retained"
+--     until the mode is restored (or "quarantined" when the restoration went unresolved) and refuses
+--     every other instance-owned record meanwhile. Abrupt termination and changes nobody can observe
+--     from Lua (another plugin writing the same property between two reads) defeat the guarantee.
 --   * Quickey bank (KB-12, 0.7.0): provisionBank(spec, now) creates one owned Quickey per command-area
 --     hardkey code in an operator-selected pool range and reserves an executor range for holds (KB-10:
 --     press/release needs the Quickey on an executor). Codes are discovered from Enums.VirtualKeyCode,
@@ -122,7 +139,7 @@
 --   * Input is disabled on a new instance. enableInput(adapter) is the operator's explicit decision.
 
 local NAME        = "gma3_mcp_hardkeys"
-local VERSION     = "0.8.0"
+local VERSION     = "0.9.0"
 local API_VERSION = 1
 
 -- Logical keys with special handling in describeKey() and press(). Since 0.5.0 every other
@@ -154,11 +171,12 @@ local KEYBOARD_LIMITATIONS = {
   "input is not display-scoped on 2.5.1: the display argument must exist but does not route input, focus or pop-up placement",
   "no per-key readback exists; Root().MASTATE is aggregate (any Shift source), so a release is reported as dispatched, never confirmed, and MASTATE is reported separately",
   "injected and physical input share one key state: a physical release ends an injected hold and vice versa; ownership records responsibility, not console state",
-  "a remapped or disabled shortcut during a hold prevents the stored-tuple release until the operator restores the route; the module never changes mappings or toggles F10",
+  "a remapped or disabled shortcut during a hold prevents the stored-tuple release until the operator restores the route; the module never changes mappings and changes the shortcut mode only for its own bounded KB-14 operations (captured, verified by readback, restored by service())",
   "invalid arguments are accepted silently by onPC; validation happens here before dispatch and a no-error return is not evidence of effect",
   "double-press is unsupported; a long-press is promised only as an exclusive hold with no other key down",
   "text goes to whatever the console has focused: a text field with shortcuts enabled, or the command line only while shortcuts are disabled; focus is not observable from Lua and only the command line can be read back",
-  "no Quickey dispatch: the routing method quickkey needs the owned-Quickey backend (quickeyBackend(), KB-13); the text routes of shortcutOrType/type and temporary shortcut-mode changes are KB-14 and are reported unavailable, never emulated",
+  "no Quickey dispatch: the routing method quickkey needs the owned-Quickey backend (quickeyBackend(), KB-13)",
+  "a temporary shortcut-mode change (KB-14) is one profile property write verified by readback; it is not a lock: physical keys, other plugins and another console user can change the mode or the profile meanwhile, which stops the operation and leaves the restoration unresolved for recover()",
 }
 
 -- What the owned-Quickey backend can and cannot promise (KB-10/KB-12/KB-13 evidence, onPC 2.5.1.0).
@@ -170,7 +188,7 @@ local QUICKEY_LIMITATIONS = {
   "a release is issued only on the recorded executor and only while it still holds the recorded Quickey; an executor emptied, reassigned or deleted during a hold leaves the key down on the console and the record unresolved until the operator restores the assignment and recovery runs; a direct Unpress Quickey is never issued (it re-activates non-latching keys)",
   "effects are synchronous in the issuing chunk, except that with the Edit Command pop-up or another text field focused digits land one frame after keywords and all text keys go to the focused field (KB-10); nothing here reads the command line",
   "OOPS on an empty command line is Undo (it reverts show data) and PLEASE executes the command line; neither is checked or prevented here",
-  "no PC-key or text dispatch (capabilities.keyboard = false, char = false): the shortcut, shortcutOrType and type methods are unavailable on this backend",
+  "no PC-key or text dispatch and no mode change (capabilities.keyboard = false, char = false, modeChange = false): the shortcut, shortcutOrType and type methods are unavailable on this backend",
 }
 
 local BACKENDS = {
@@ -179,7 +197,7 @@ local BACKENDS = {
     description = "owned-Quickey backend: Quickey tuples pressed and released through the instance's KB-12 bank on reserved executors (Assign Quickey N At Page P.E, Press / Unpress Page P.E); console keys are really pressed",
     requires = {},
     dispatches = true,
-    capabilities = { keyboard = false, quickkey = { tap = true, hold = true, chord = true }, char = false },
+    capabilities = { keyboard = false, quickkey = { tap = true, hold = true, chord = true }, char = false, modeChange = false },
     limitations = QUICKEY_LIMITATIONS,
   },
   keyboard = {
@@ -187,7 +205,7 @@ local BACKENDS = {
     description = "Keyboard(): PC-key emulation with explicit per-event modifiers, routed through the operator's UserProfile shortcut table or a verified native route; console keys are really pressed",
     requires = { "Keyboard" },
     dispatches = true,
-    capabilities = { keyboard = true, quickkey = false, char = true },
+    capabilities = { keyboard = true, quickkey = false, char = true, modeChange = true },
     limitations = KEYBOARD_LIMITATIONS,
   },
   fake = {
@@ -195,7 +213,7 @@ local BACKENDS = {
     description = "in-memory fake: records events and simulates aggregate console key state; nothing reaches the console",
     requires = {},
     dispatches = true,
-    capabilities = { keyboard = true, quickkey = { tap = true, hold = true, chord = true }, char = true },
+    capabilities = { keyboard = true, quickkey = { tap = true, hold = true, chord = true }, char = true, modeChange = true },
     limitations = { "nothing reaches a console key; lifecycle behaviour only" },
   },
 }
@@ -223,6 +241,7 @@ local DEFAULT_CONFIG = {
   -- KB-03 per-session ownership rules; interactions and sequences still work and still lock the instance.
   requireInteraction = true,
   bankCheckMs        = 2000,    -- how often service() re-reads the show identity to invalidate the Quickey bank (KB-12)
+  modeRestoreDelayMs = 60,      -- KB-14: how long after the last dependent key event service() waits before restoring the shortcut mode (the console consumes queued key events on the next frame; the KB-14 timing probe saw effects within 14-73 ms)
 }
 
 -- Text policy (KB-05). Input is UTF-8 and is iterated by code point, never by byte. Control characters
@@ -259,16 +278,16 @@ end
 --   quickkey        activate the owned Quickey carrying the key's VirtualKeyCode (KB-10 evidence). Needs
 --                   an adapter advertising capabilities.quickkey (KB-13); the fake backend simulates it.
 --   shortcut        resolve the key's shortcut-table/fixed/native route and press the PC key: the
---                   behaviour every caller had before 0.6.0 and the module default. Temporarily enabling
---                   the shortcut table when it is off is KB-14; until then a shortcut-table route with
---                   shortcuts inactive is unsupported and refused, never toggled.
+--                   behaviour every caller had before 0.6.0 and the module default. A shortcut-table
+--                   route while shortcuts are off temporarily enables them for the hold (KB-14, 0.9.0)
+--                   when the backend can change the mode; otherwise it is refused, never toggled.
 --   shortcutOrType  the shortcut route when shortcuts are positively enabled and resolution succeeds;
 --                   the key's explicit text mapping when shortcuts are positively off, or when the table
---                   was read and confirms that no row maps the key. Unreadable state, ambiguity,
---                   collisions and admission failures refuse; they never select text.
---   type            the key's explicit text mapping, inserted once on press. KB-14 implements the
---                   insertion and the bounded mode change; this version resolves, validates and reports
---                   the route as unavailable, so `type` cannot be configured against any current backend.
+--                   was read and confirms that no row maps the key (shortcuts are then temporarily
+--                   disabled for the insertion). Unreadable state, ambiguity, collisions and admission
+--                   failures refuse; they never select text.
+--   type            the key's explicit text mapping, inserted once on press, with shortcuts temporarily
+--                   disabled when they are on (KB-14, 0.9.0).
 -- The method is decided and validated before dispatch and stored on the hold: a configuration or mode
 -- change during a hold never changes the route its release uses, and an unavailable or refused route
 -- never falls back to another method or backend.
@@ -276,10 +295,10 @@ local METHODS = { quickkey = true, shortcutOrType = true, shortcut = true, type 
 local METHOD_LIST = { "quickkey", "shortcutOrType", "shortcut", "type" }
 local DEFAULT_METHOD = "shortcut"
 
--- Requirements no adapter can satisfy in this module version. They are reported by name so a consumer
--- can tell "not yet implemented" from "this backend lacks it".
-local KB14_TEXT_ROUTE = "text-route dispatch (inserting a key's text mapping on press) is not implemented in this module version (KB-14)"
-local KB14_MODE_CHANGE = "temporary keyboard-shortcut enable/disable is not implemented in this module version (KB-14); the operator sets the mode, nothing is toggled here"
+-- Requirements a route may be missing on the attached backend (KB-14). They are reported by name so a
+-- consumer can tell which capability the backend lacks; nothing is emulated.
+local NEED_CHAR = "text-route dispatch needs character events (capabilities.char); backend lacks them (KB-14)"
+local NEED_MODE = "temporary keyboard-shortcut enable/disable needs a backend that can change the mode (capabilities.modeChange: deps.setShortcutsActive); backend lacks it, nothing is toggled (KB-14)"
 
 -- Keys that never get a text mapping (KB-11): they are actions, not characters. Executor, X-key,
 -- encoder and default-executor codes are matched by pattern. Text for any other key is never derived
@@ -355,18 +374,21 @@ end
 -- a PC-key adapter (every adapter before 0.6.0). Keys:
 --   keyboard   PC-key tuples (shortcut-table, fixed, native and raw routes)
 --   quickkey   { tap, hold, chord } Quickey tuples addressed by VirtualKeyCode name (KB-13; the fake simulates it)
---   char       character events (KB-05 text steps)
--- Text-route dispatch and temporary shortcut-mode changes are KB-14: no adapter can claim them here.
+--   char       character events (KB-05 text steps, KB-14 text routes)
+--   modeChange the keyboard-shortcut mode may be changed temporarily for a route (KB-14); the write
+--              itself goes through deps.setShortcutsActive, the flag says the backend's events are the
+--              console's own keys so a mode change is meaningful (false on the owned-Quickey backend)
 local function adapterCapabilities(adapter)
   if type(adapter) ~= "table" then return nil end
   local caps = adapter.capabilities
   if type(caps) ~= "table" then
-    return { keyboard = true, quickkey = false, char = type(adapter.char) == "function" }
+    return { keyboard = true, quickkey = false, char = type(adapter.char) == "function", modeChange = false }
   end
   local q = caps.quickkey
   return { keyboard = caps.keyboard and true or false,
            quickkey = type(q) == "table" and { tap = q.tap and true or false, hold = q.hold and true or false, chord = q.chord and true or false } or false,
-           char = (caps.char or type(adapter.char) == "function") and true or false }
+           char = (caps.char or type(adapter.char) == "function") and true or false,
+           modeChange = caps.modeChange and true or false }
 end
 
 -- Pure helpers ---------------------------------------------------------------
@@ -549,11 +571,14 @@ local function tupleKey(t)
   -- Identity is the validated code VALUE when known (aliases such as OOPS/UNDO are one console key), the
   -- name only for tuples that never went through resolution (backend test controls).
   if t.quickkey then return "quickkey:" .. (t.quickkeyCode ~= nil and ("#" .. tostring(t.quickkeyCode)) or tostring(t.quickkey)) end
+  -- A text route (KB-14) owns no console key; its identity is the logical key it inserts text for.
+  if t.text ~= nil then return "text:" .. tostring(t.textKey) end
   return string.format("%s|s%dc%da%dn%d", t.pcKey, t.shift and 1 or 0, t.ctrl and 1 or 0, t.alt and 1 or 0, t.numlock and 1 or 0)
 end
 
 local function copyTuple(t)
   if t.quickkey then return { quickkey = t.quickkey, quickkeyCode = t.quickkeyCode, display = t.display } end
+  if t.text ~= nil then return { text = t.text, textKey = t.textKey, display = t.display } end
   return { pcKey = t.pcKey, shift = t.shift and true or false, ctrl = t.ctrl and true or false,
            alt = t.alt and true or false, numlock = t.numlock and true or false, display = t.display }
 end
@@ -789,6 +814,11 @@ local function consoleDeps(env)
       local v = env.CurrentProfile().KeyboardShortCuts:Get("KeyboardShortcutsActive")
       if v == "true" then return true elseif v == "false" then return false end
       return v
+    end,
+    -- KB-14: the one mode write the module makes (the KB-04 probe verified it takes effect and reads
+    -- back). The instance reads the state back after every write; a return here proves nothing.
+    setShortcutsActive = function(active)
+      env.CurrentProfile().KeyboardShortCuts:Set("KeyboardShortcutsActive", active and true or false)
     end,
     shortcutRows = function()
       local sc = env.CurrentProfile().KeyboardShortCuts
@@ -1079,7 +1109,8 @@ local function keyboardBackend(deps, opts)
   opts = opts or {}
   return setmetatable({
     name = "keyboard", dispatches = true, description = BACKENDS.keyboard.description, limitations = KEYBOARD_LIMITATIONS,
-    capabilities = shallowCopy(BACKENDS.keyboard.capabilities),
+    -- modeChange (KB-14) needs the write dep; without it the mode is read but never changed.
+    capabilities = (function() local c = shallowCopy(BACKENDS.keyboard.capabilities); c.modeChange = type(deps.setShortcutsActive) == "function"; return c end)(),
     deps = deps, defaultDisplay = tonumber(opts.defaultDisplay) or 1,
     counters = { press = 0, release = 0, char = 0, refused = 0, raised = 0, observe = 0 },
     lastEvent = nil,
@@ -1301,7 +1332,7 @@ function Instance:routingReport()
   end
   return { default = p.default, defaultSource = p.defaultExplicit and "consumer" or "module", keys = keys, overrideCount = count(keys),
            methods = methods, methodList = METHOD_LIST, backend = self._backend, capabilities = adapterCapabilities(self._adapter),
-           note = "the method is decided per press before dispatch and kept for the whole press/release cycle; text routes and temporary shortcut-mode changes are KB-14 and are reported unavailable; no method ever falls back to another" }
+           note = "the method is decided per press before dispatch and kept for the whole press/release cycle; text routes and temporary shortcut-mode changes (KB-14) need capabilities.char / capabilities.modeChange on the backend; no method ever falls back to another" }
 end
 
 -- Static availability of one method on an adapter (dynamic requirements such as the shortcut mode are
@@ -1315,8 +1346,11 @@ function Instance:_methodAvailability(method, adapter)
     if not caps.quickkey then missing[#missing + 1] = "backend '" .. tostring(adapter.name) .. "' has no Quickey dispatch (capabilities.quickkey; the owned-Quickey backend is KB-13)" end
   elseif method == "shortcut" or method == "shortcutOrType" then
     if not caps.keyboard then missing[#missing + 1] = "backend '" .. tostring(adapter.name) .. "' has no PC-key dispatch (capabilities.keyboard)" end
+    -- The text side of shortcutOrType and the mode change of shortcut are per-route requirements
+    -- (describeRoute names them when a key selects them); the PC-key side is the static one.
   elseif method == "type" then
-    missing[#missing + 1] = KB14_TEXT_ROUTE
+    if not caps.char then missing[#missing + 1] = NEED_CHAR end
+    if not (caps.modeChange and type(self._deps.setShortcutsActive) == "function") then missing[#missing + 1] = NEED_MODE end
   else
     missing[#missing + 1] = "unknown method '" .. tostring(method) .. "'"
   end
@@ -1364,7 +1398,13 @@ function Instance:_route(name, opts, routing)
   local r = { key = key, method = method, methodSource = methodSource, prefer = prefer, executor = opts.executor,
               quickkey = entry.quickkey, text = entry.text, textChars = entry.textChars, unavailable = {}, supported = false, dispatchable = false,
               capabilities = caps, backend = self._adapter and self._adapter.name or nil }
-  local function unavailable(why) r.unavailable[#r.unavailable + 1] = why end
+  local function unavailable(why)
+    for _, w in ipairs(r.unavailable) do if w == why then return end end
+    r.unavailable[#r.unavailable + 1] = why
+  end
+  -- A mode change (KB-14) needs both the backend's claim and the write dep; without the dep the mode
+  -- is read but never written (the pre-0.9.0 behaviour for every route that would need it).
+  local canChangeMode = caps and caps.modeChange and type(self._deps.setShortcutsActive) == "function" or false
   local function refuse(code, why) r.supported, r.code, r.reason = false, code, why; return r end
   local function backendNeeds(cap, what)
     if not caps then unavailable("no backend attached")
@@ -1407,9 +1447,14 @@ function Instance:_route(name, opts, routing)
     r.effective = d.source
     if d.source == "shortcut-table" then
       if d.shortcutsActive == false then
-        -- The pre-0.6.0 refusal, unchanged for existing callers; the KB-14 requirement is named for reports.
-        unavailable(KB14_MODE_CHANGE)
-        return refuse("shortcuts-inactive", "routes through the shortcut table but keyboard shortcuts are inactive; the operator must enable them (never toggled here)")
+        -- KB-14: the table is read and the row resolves, only the mode is off. A backend that can change
+        -- the mode gets a bounded temporary enable for the hold; any other keeps the pre-0.6.0 refusal.
+        if canChangeMode then
+          r.modeChange = { target = true, reason = "keyboard shortcuts are off; the shortcut-table route needs them on for the whole hold (temporarily enabled, restored afterwards)" }
+        else
+          unavailable(NEED_MODE)
+          return refuse("shortcuts-inactive", "routes through the shortcut table but keyboard shortcuts are inactive; the operator must enable them (never toggled here)")
+        end
       elseif d.shortcutsActive ~= true then
         return refuse("unreadable", "routes through the shortcut table but shortcut enablement cannot be established (" .. tostring(d.shortcutsActiveError or "unreadable") .. "); refused rather than guessed")
       end
@@ -1434,8 +1479,9 @@ function Instance:_route(name, opts, routing)
         -- A read table that confirms no row maps the key may select the explicit text mapping.
         if not entry.text then return refuse("no-mapping", "no keyboard shortcut maps to " .. key .. " and no text mapping is configured for it") end
         r.supported, r.effective, r.textSelectedBecause = true, "text", "shortcut table read: no row maps " .. key
-        unavailable(KB14_MODE_CHANGE)
-        unavailable(KB14_TEXT_ROUTE)
+        r.modeChange = { target = false, reason = "keyboard shortcuts are on; character events reach the command line only while they are off (temporarily disabled for the insertion, restored afterwards)" }
+        backendNeeds("char", "character events (capabilities.char; " .. NEED_CHAR .. ")")
+        if caps and not canChangeMode then unavailable(NEED_MODE) end
       else
         -- Ambiguity, collisions, an unknown PC key or an unreadable table are refusals, never permission to type.
         return refuse(d.code or "unsupported", tostring(d.reason) .. " (shortcuts are active; this is a refusal, not a fall-through to text)")
@@ -1443,7 +1489,8 @@ function Instance:_route(name, opts, routing)
     elseif active == false then
       if not entry.text then return refuse("no-mapping", "keyboard shortcuts are inactive and no text mapping is configured for " .. key .. " (a shortcut row is not required for the text route, but the text must be explicit)") end
       r.supported, r.effective, r.textSelectedBecause = true, "text", "keyboard shortcuts are positively off"
-      unavailable(KB14_TEXT_ROUTE)
+      r.shortcutsActive = false
+      backendNeeds("char", "character events (capabilities.char; " .. NEED_CHAR .. ")")
     else
       return refuse("unreadable", "shortcut enablement cannot be established (" .. tostring(d.shortcutsActiveError or "unreadable") .. "); refused rather than typed")
     end
@@ -1458,12 +1505,18 @@ function Instance:_route(name, opts, routing)
     r.supported, r.effective = true, "text"
     if type(self._deps.shortcutsActive) == "function" then
       local okA, active = pcall(self._deps.shortcutsActive)
-      if okA and active == true then unavailable(KB14_MODE_CHANGE)
-      elseif not (okA and active == false) then return refuse("unreadable", "shortcut enablement cannot be established (" .. tostring(okA and ("value " .. tostring(active)) or active) .. "); refused rather than typed") end
+      if okA and active == true then
+        r.modeChange = { target = false, reason = "keyboard shortcuts are on; character events reach the command line only while they are off (temporarily disabled for the insertion, restored afterwards)" }
+        if not caps then unavailable("no backend attached") elseif not canChangeMode then unavailable(NEED_MODE) end
+      elseif okA and active == false then
+        r.shortcutsActive = false
+      else
+        return refuse("unreadable", "shortcut enablement cannot be established (" .. tostring(okA and ("value " .. tostring(active)) or active) .. "); refused rather than typed")
+      end
     else
       return refuse("unreadable", "shortcut enablement cannot be established (deps.shortcutsActive missing); refused rather than typed")
     end
-    unavailable(KB14_TEXT_ROUTE)
+    backendNeeds("char", "character events (capabilities.char; " .. NEED_CHAR .. ")")
   else
     return refuse("unknown-method", "unknown dispatch method '" .. tostring(method) .. "'")
   end
@@ -2538,6 +2591,12 @@ function Instance:_admission(now)
              description = string.format("%d unresolved release record(s): %s (hold %s, session '%s') may still be down (%s); recover it (owner recover, or the operator's \"input recover\") before anything else runs",
                count, tostring(unresolved.logical or unresolved.tupleKey), unresolved.id, unresolved.session, tostring(unresolved.unresolved and unresolved.unresolved.reason)) }
   end
+  local op = self._mode
+  if op and op.state == "unresolved" then
+    return { code = "busy", reason = "restoration", owner = op.owner, mode = op.id, original = op.original, target = op.target, profile = op.profile,
+             description = string.format("the keyboard-shortcut mode restoration %s (session '%s', profile '%s', shortcuts %s -> %s) is unresolved: %s; recover it (owner recover, or the operator's \"input recover\") before anything else runs",
+               op.id, tostring(op.owner), op.profile, tostring(op.original), tostring(op.target), tostring(op.unresolved and op.unresolved.reason)) }
+  end
   return nil
 end
 
@@ -2636,6 +2695,7 @@ function Instance:tap(sessionId, now, spec, holdMs, ctx)
   if plan.duplicate then return fail("conflict", "tuple is already held by this session; a tap cannot be layered on a hold", { hold = plan.duplicate.id }) end
   local hold, derr = self:_dispatchPress(s, plan, now)
   if not hold then return nil, derr end
+  if hold.kind == "text" then return self:_holdReport(hold, now, { note = "text route: inserted on press, nothing to release at the tap deadline" }) end
   hold.kind = "tap"
   self:_setDeadline(hold, now + holdMs / 1000, "tap")
   return self:_holdReport(hold, now)
@@ -2717,6 +2777,10 @@ function Instance:release(sessionId, now, selector)
   local hold, herr = self:_findHold(sessionId, selector)
   if not hold then return nil, herr end
   if hold.state == "released" then return self:_holdReport(hold, now, { alreadyReleased = true }) end
+  if hold.state == "retained" or hold.state == "quarantined" or hold.kind == "text" then
+    -- Nothing is down: a text route inserts on press and nothing on release; a retained key is already up.
+    return self:_holdReport(hold, now, { alreadyReleased = true, note = hold.kind == "text" and "text route: nothing on release" or "already released; the record waits for the mode restoration" })
+  end
   local r = self:_attemptRelease(hold, now, "client-release")
   return self:_holdReport(hold, now, { attempt = r })
 end
@@ -2741,6 +2805,16 @@ function Instance:recover(sessionId, now)
   end
   local result = self:_releaseHolds(list, now, "recover")
   result.scope = sessionId or "all"
+  -- KB-14: an unresolved restoration of this session (or any, operator scope) is re-read and restored.
+  -- A release attempted in this call is a dependent key event for an adopted restoration (its dependency
+  -- list did not survive the previous instance), so the restore window starts now, never in this call.
+  local op = self._mode
+  if op and op.adopted and result.attempted > 0 then op.lastEventAt = now end
+  if op and op.state == "unresolved" and (sessionId == nil or op.owner == sessionId) then
+    result.restoration = self:_recoverMode(now)
+  elseif op and op.state == "unresolved" then
+    result.restoration = { id = op.id, state = "unresolved", owner = op.owner, skipped = "belongs to session '" .. tostring(op.owner) .. "'" }
+  end
   return result
 end
 
@@ -2936,6 +3010,10 @@ function Instance:_textContext(st)
   if st.acknowledgeFocus ~= true then
     return nil, { code = "focus-unverified", message = "text needs acknowledgeFocus = true: which element receives characters (the command line or a text field) cannot be observed from Lua, so the caller states it; only the command line can be read back afterwards" }
   end
+  if self._mode and self._mode.state ~= "restored" then
+    -- A KB-05 text step never types under a borrowed mode: the operator's own state is the context.
+    return nil, { code = "busy", message = "a temporary shortcut-mode change (" .. self._mode.id .. ", " .. self._mode.state .. ") is pending; text steps type only in the operator's own mode; wait for the restoration or recover", reason = "restoration", mode = self._mode.id, owner = self._mode.owner }
+  end
   local active, aerr = self:_readShortcutsActive()
   if st.context == "command-line" then
     -- Command-line text is admitted only while it can be verified: the command line must be readable
@@ -3106,6 +3184,12 @@ function Instance:_serviceSequence(job, now)
   while job.state == "running" and job.index <= #job.steps and guard <= #job.steps do
     guard = guard + 1
     local st, ev = job.steps[job.index], job.events[job.index]
+    if ev.state == "pending" and self._mode and self._mode.state == "active" and (st.kind == "text" or self:_stepWantsOtherMode(st)) then
+      -- KB-14: a step that needs the operator's own mode (a text step) or the opposite temporary mode
+      -- waits for the pending restoration instead of failing; the sequence deadline still bounds it.
+      ev.waitingFor = "restoration " .. self._mode.id
+      break
+    end
     if ev.state == "pending" then self:_startStep(job, st, ev, now) end
     if job.state ~= "running" then break end
     if ev.state == "waiting" then self:_pollStep(job, st, ev, now) end
@@ -3127,6 +3211,22 @@ function Instance:_serviceSequence(job, now)
   end
   if job.state == "running" and job.index > #job.steps then self:_completeSequence(job, now) end
   return self:_sequenceSummary(job, now)
+end
+
+-- Whether a press/tap/combo step would need the opposite shortcut mode of the active operation.
+function Instance:_stepWantsOtherMode(st)
+  local op = self._mode
+  if not op then return false end
+  local specs = st.specs or (st.spec and { st.spec }) or {}
+  for _, spec in ipairs(specs) do
+    if type(spec) == "table" and spec.key then
+      local r = self:_route(spec.key, { executor = spec.executor, prefer = spec.prefer })
+      local want
+      if r.modeChange then want = r.modeChange.target elseif r.effective == "text" then want = false end
+      if want ~= nil and want ~= op.target then return true end
+    end
+  end
+  return false
 end
 
 local function stepError(ev, err)
@@ -3158,6 +3258,20 @@ function Instance:_startStep(job, st, ev, now)
     if not h then stepError(ev, err); return end
     ev.hold, ev.pressOutcome, ev.tupleKey = h.id, h.pressOutcome, h.tupleKey
     self:_trackHold(job, h.id)
+    if h.kind == "text" then
+      -- KB-14: a text route completes within the press. Partial or uncertain delivery stops the sequence
+      -- (later steps unattempted; what went out is reported, never erased or replayed) so a following
+      -- PLEASE never commits text nobody saw.
+      ev.text = { typed = h.text and h.text.typed, chars = h.text and h.text.chars, outcome = h.text and h.text.outcome, readback = h.text and h.text.readback }
+      ev.releaseOutcome = "none"
+      if h.text and h.text.outcome ~= "typed" then
+        ev.state, ev.code = "uncertain", h.text.code or "text-partial"
+        ev.error = string.format("text route %s: %s", tostring(h.logical), tostring(h.text.error))
+      else
+        ev.state = "completed"
+      end
+      return
+    end
     if st.kind == "tap" then ev.state = "waiting" else ev.state = "completed"; ev.releaseOutcome = "pending" end
   elseif st.kind == "combo" then
     local r, err = self:combo(job.session, now, st.specs, { holdMs = st.holdMs, interaction = job.interaction, fromSequence = true })
@@ -3208,7 +3322,7 @@ function Instance:_pollStep(job, st, ev, now)
   for _, id in ipairs(ids) do
     local h = self._holds[id]
     if not h then outcomes[#outcomes + 1] = "forgotten"
-    elseif h.state == "released" then outcomes[#outcomes + 1] = h.dispatch.release and h.dispatch.release.outcome or "dispatched"
+    elseif h.state == "released" or h.state == "retained" then outcomes[#outcomes + 1] = h.dispatch.release and h.dispatch.release.outcome or "dispatched"
     elseif h.state == "unresolved" then
       ev.state, ev.error = "uncertain", "release of hold " .. id .. " unresolved: " .. tostring(h.unresolved and h.unresolved.reason)
       ev.releaseOutcome = "unresolved"
@@ -3351,7 +3465,8 @@ function Instance:_eventReport(ev, now)
               hold = ev.hold, holds = ev.holds, group = ev.group, holdMs = ev.holdMs, ms = ev.ms, context = ev.context,
               pressOutcome = ev.pressOutcome, releaseOutcome = ev.releaseOutcome, code = ev.code, error = ev.error, note = ev.note,
               chars = ev.chars, typed = ev.typed, uncertainChar = ev.uncertainChar, pressed = ev.pressed, rollback = ev.rollback,
-              readback = ev.readback, startedAt = ev.startedAt, finishedAt = ev.finishedAt }
+              readback = ev.readback, startedAt = ev.startedAt, finishedAt = ev.finishedAt,
+              text = ev.text }  -- KB-14 text-route progress (typed, chars, outcome, readback)
   if ev.chars then r.remaining = ev.chars - (ev.typed or 0) end
   if ev.state == "readback" then r.readback = { outcome = "pending", source = "CmdObj().cmdtext", expected = ev.expected } end
   -- A hold's aggregate readback (MASTATE) may conclude after the sequence finished: report the live one.
@@ -3422,9 +3537,13 @@ function Instance:service(now)
     if out.work >= budget then break end
     out.work = out.work + 1
     local r = self:_attemptRelease(h, now, h.deadlineReason or "deadline")
-    if h.state == "released" then out.released[#out.released + 1] = r else out.unresolved[#out.unresolved + 1] = r end
+    if h.state == "released" or h.state == "retained" then out.released[#out.released + 1] = r else out.unresolved[#out.unresolved + 1] = r end
   end
   out.pending = math.max(0, #due - out.work)
+  -- KB-14: text-route readbacks and the temporary shortcut mode (interference check, delayed restore).
+  self:_serviceTextReadbacks(now)
+  self:_serviceMode(now)
+  if self._mode then out.mode = { id = self._mode.id, state = self._mode.state } elseif self._lastMode and self._lastMode.restoredAt == now then out.mode = { id = self._lastMode.id, state = "restored", by = self._lastMode.restoredBy } end
   -- The running sequence advances after the deadlines, so a waiting tap sees its release first.
   if self._sequence and self._sequence.state == "running" then
     out.sequence = self:_serviceSequence(self._sequence, now)
@@ -3489,10 +3608,12 @@ function Instance:status(now)
   local sessions = {}
   for id, s in pairs(self._sessions) do sessions[id] = self:_sessionReport(s, now) end
   local holds = {}
-  local unresolved = 0
+  local unresolved, retained, quarantined = 0, 0, 0
   for _, h in ipairs(self:_orderedHolds()) do
     holds[#holds + 1] = self:_holdReport(h, now)
-    if h.state == "unresolved" then unresolved = unresolved + 1 end
+    if h.state == "unresolved" then unresolved = unresolved + 1
+    elseif h.state == "retained" then retained = retained + 1
+    elseif h.state == "quarantined" then quarantined = quarantined + 1 end
   end
   local observedDown = {}
   if self._observed and self._observed.down then
@@ -3525,6 +3646,7 @@ function Instance:status(now)
         if h.state == "unresolved" then busy = { reason = "unresolved", owner = h.session, hold = h.id }; break end
       end
     end
+    if not busy and self._mode and self._mode.state == "unresolved" then busy = { reason = "restoration", owner = self._mode.owner, mode = self._mode.id } end
   end
   return {
     module = NAME, version = VERSION, apiVersion = API_VERSION,
@@ -3540,7 +3662,8 @@ function Instance:status(now)
     capacity = { maxHolds = self._config.maxHolds, used = self:_liveCount() },
     config = shallowCopy(self._config),
     sessions = sessions, sessionCount = count(sessions),
-    holds = holds, holdCount = #holds, unresolved = unresolved,
+    holds = holds, holdCount = #holds, unresolved = unresolved, retained = retained, quarantined = quarantined,
+    modeChange = self:_modeReport(now), lastModeChange = (not self._mode and self._lastMode) and self:_modeReport(now, self._lastMode) or nil,
     exclusiveHold = ex and ex.id or nil,
     interactions = interactions, activeInteraction = active, busy = busy,
     sequence = self._sequence and self:_sequenceSummary(self._sequence, now) or nil,
@@ -3568,9 +3691,41 @@ function Instance:dispose(now)
   if self._state == "ready" and self._adapter and type(now) == "number" then
     result = self:_releaseHolds(self:_heldHolds(), now, "dispose")
   end
+  -- KB-14: the temporary mode follows the same rules as in service(): it is restored only when no
+  -- dependent record is still held/releasing/unresolved (a stuck key must keep the mode it was pressed in)
+  -- and the restore delay has elapsed since the last dependent event (the releases above may be that
+  -- event). Anything else is handed back as a record for adoptMode(): the consumer keeps it like an
+  -- unresolved key record, and recover() restores it once the keys are recovered.
+  local op = self._mode
+  if op and type(now) == "number" then
+    if op.state == "active" then
+      local live = 0
+      for _, h in ipairs(op.holds) do
+        if h.state == "held" or h.state == "releasing" or h.state == "unresolved" or h.state == "typing" then live = live + 1 end
+      end
+      local settleAt = op.lastEventAt + self._config.modeRestoreDelayMs / 1000
+      if live > 0 then
+        self:_modeUnresolved(op, now, string.format("%d dependent record(s) still held or unresolved at dispose; the mode is kept until they are recovered (restore pending)", live))
+        op.pending = "dependents"
+      elseif now < settleAt then
+        self:_modeUnresolved(op, now, string.format("disposed %d ms after the last dependent event, before the %d ms restore delay elapsed; restore pending", math.floor((now - op.lastEventAt) * 1000 + 0.5), self._config.modeRestoreDelayMs))
+        op.pending = "delay"
+      else
+        local profile = self:_readProfileName()
+        local active = self:_readShortcutsActive()
+        if profile ~= op.profile then self:_modeUnresolved(op, now, string.format("at dispose the active user profile was '%s' (operation ran in '%s'); not written", tostring(profile), op.profile))
+        elseif active == op.original then self:_modeResolved(op, now, "dispose", "the mode already read as the original state")
+        else self:_restoreMode(op, now, "dispose") end
+      end
+    end
+    if self._mode and self._mode.state == "unresolved" then
+      local m = self._mode
+      result.mode = { id = m.id, profile = m.profile, original = m.original, target = m.target, changedAt = m.changedAt, lastEventAt = m.lastEventAt, owner = m.owner, purpose = m.purpose, writes = m.writes, unresolved = m.unresolved, pending = m.pending }
+    end
+  end
   local records = {}
   for _, h in ipairs(self:_orderedHolds()) do
-    if h.state ~= "released" then
+    if h.state ~= "released" and h.state ~= "retained" and h.state ~= "quarantined" and h.kind ~= "text" then
       local rec = copyTuple(h)
       rec.logical, rec.route, rec.session, rec.pressedAt, rec.dispatch, rec.id = h.logical, h.route, h.session, h.pressedAt, h.dispatch, h.id
       rec.backend = h.backend or "unknown"
@@ -3585,6 +3740,7 @@ function Instance:dispose(now)
   -- reuse the objects after a restart; nothing on the console is touched by disposing.
   result.bank = self:_bankRecord()
   self._bank = nil
+  self._mode = nil
   self._state = "disposed"
   self._inputEnabled = false
   self._holds, self._byTuple, self._sessions = {}, {}, {}
@@ -3686,6 +3842,44 @@ function Instance:_planPress(sessionId, now, spec, ctx)
   ctx = ctx or {}
   local tuple, route, terr = self:_resolveSpec(spec, true)
   if not tuple then return nil, terr end
+  -- KB-14: an unresolved mode restoration blocks every new press, from everyone, until recover() verifies it.
+  local op = self._mode
+  if op and op.state == "unresolved" then
+    return fail("busy", "the keyboard-shortcut mode restoration is unresolved: " .. tostring(op.unresolved and op.unresolved.reason) .. "; verify the profile and mode and recover (owner recover, or the operator's \"input recover\") before new input",
+      { reason = "restoration", owner = op.owner, mode = op.id, original = op.original, target = op.target, profile = op.profile })
+  end
+  if route.modeChange or route.source == "text" then
+    if not (self._adapter and type(self._deps.setShortcutsActive) == "function") and route.modeChange then
+      return fail("unavailable", "the route needs a temporary shortcut-mode change but deps.setShortcutsActive is missing; nothing is toggled", { unavailable = { NEED_MODE } })
+    end
+    -- One mode operation at a time, in one direction: a route that needs the opposite state waits for the
+    -- restoration (it is reported, never pre-empted).
+    local want
+    if route.modeChange then want = route.modeChange.target else want = route.shortcutsActive end
+    if op and op.state == "active" and want ~= nil and op.target ~= want then
+      return fail("mode-conflict", string.format("a temporary shortcut-mode change is active (mode %s: shortcuts %s for %s, session '%s'); this route needs them %s; wait for the restoration (%d ms after its last event) or release its holds",
+        op.id, op.target and "on" or "off", tostring(op.purpose), tostring(op.owner), want and "on" or "off", self._config.modeRestoreDelayMs), { mode = op.id, owner = op.owner, target = op.target })
+    end
+  end
+  if route.source == "text" then
+    if ctx.comboIndex ~= nil then return fail("unsupported", "a text route cannot be part of a combo: text is inserted once and holds nothing, so it has no chord semantics (nothing dispatched)") end
+    if spec.exclusive then return fail("unsupported", "a text route cannot be exclusive: it inserts text once and holds nothing") end
+    -- Text refuses every instance-owned record (held, releasing, unresolved, retained, quarantined) of
+    -- any session: characters typed next to a held key or a stuck key land in an unknown context.
+    for _, h in pairs(self._holds) do
+      -- A retained text record of the same (still active) operation is not a conflict: consecutive text
+      -- routes share one mode change and one restoration.
+      local sameOpText = h.state == "retained" and h.kind == "text" and op and op.state == "active" and h.modeOp == op.id
+      if h.state ~= "released" and not sameOpText then
+        return fail("conflict", string.format("text route %s refused: %s (hold %s, session '%s') is %s; text is inserted only while this instance owns no other record (release, wait for the restoration or recover first)",
+          route.logical, tostring(h.logical or h.tupleKey), h.id, h.session, h.state), { hold = h.id, owner = h.session, state = h.state })
+      end
+    end
+    local ex = self:_exclusiveHold()
+    if ex then return fail("exclusive-hold", "an exclusive long-press is live; no text is inserted", { hold = ex.id, owner = ex.session }) end
+    local mismatchT = self:_checkRoutes()
+    if mismatchT then return fail("route-changed", "a held key's route changed; no text is inserted until it is resolved", { mismatches = mismatchT }) end
+  end
   -- A route change during an existing hold stops every new interaction event until it is resolved.
   local mismatch = self:_checkRoutes()
   if mismatch then
@@ -3746,7 +3940,8 @@ function Instance:_planPress(sessionId, now, spec, ctx)
   if busy and busy.reason == "unresolved" and busy.owner ~= sessionId and self._config.requireInteraction then
     return fail("busy", busy.description, busy)
   end
-  if ctx.kind == "hold" and not ia and self._config.requireInteraction then
+  if ctx.kind == "hold" and not ia and self._config.requireInteraction and route.source ~= "text" then
+    -- A text route holds nothing (it completes within the press), so it needs no interaction.
     return fail("interaction-required", "a standalone hold needs an explicit interaction: begin one (leased) and pass its id, or use a bounded tap, chord tap or sequence", { kind = ctx.kind })
   end
   local tk = tupleKey(tuple)
@@ -3794,11 +3989,22 @@ end
 --   raised              -> delivery unknown, the record stays as unresolved (blocks the tuple, recover() releases)
 --   ok                  -> held; confirmed is what the backend could observe (nil = not observable)
 function Instance:_dispatchPress(s, plan, now)
+  if plan.route and plan.route.source == "text" then return self:_dispatchText(s, plan, now) end
   local hold = self:_newHold(s, plan.tuple, plan.route, now, now + plan.maxHoldMs / 1000, "max-hold")
   hold.exclusive = plan.exclusive
   hold.interaction = plan.interaction
+  -- KB-14: the mode the route needs is entered (or joined) before the key goes down and kept until the
+  -- hold is released; a failed mode change dispatches nothing.
+  if plan.route and plan.route.modeChange then
+    local op, merr = self:_enterMode(plan.route.modeChange.target, now, s.id, "shortcut hold " .. tostring(hold.logical), hold)
+    if not op then self:_dropHold(hold); return nil, merr end
+  elseif self._mode and self._mode.state == "active" and plan.route and plan.route.source == "shortcut-table" and self._mode.target == true then
+    -- A shortcut-table hold that found shortcuts on because a mode operation enabled them depends on it.
+    self:_modeAttach(self._mode, hold)
+  end
   self._now = now
   local ok, aOk, confirmed, err, target = pcall(self._adapter.press, self._adapter, copyTuple(plan.tuple))
+  if hold.modeOp then self:_modeEvent(now) end
   if not ok then
     -- A backend that raises may raise { message, target } so the record keeps the target it was
     -- dispatched on (KB-13: the executor) and recovery can release through it.
@@ -3818,6 +4024,338 @@ function Instance:_dispatchPress(s, plan, now)
   self:_scheduleReadback(hold, "press", true, now)
   self._pressCount = self._pressCount + 1
   return hold
+end
+
+-- KB-14: temporary shortcut-mode operations ---------------------------------------------------
+--
+-- One operation at a time: { id, profile, original, target, changedAt, lastEventAt, owner, purpose,
+-- holds = { <hold>... }, state = "active" | "restored" | "unresolved", writes }. The write goes through
+-- deps.setShortcutsActive and is verified by reading the state back; the restore happens in service()
+-- once no dependent record is held/releasing/unresolved and modeRestoreDelayMs passed since the last
+-- dependent event. Interference (profile changed, state unreadable) stops the operation: it becomes an
+-- unresolved restoration that blocks all new input until recover() re-reads and restores it.
+
+function Instance:_readProfileName()
+  local d = self._deps
+  if type(d.profileName) ~= "function" then return nil, "deps.profileName missing" end
+  local ok, v = pcall(d.profileName)
+  if not ok then return nil, tostring(v) end
+  if v == nil then return nil, "the console returned no profile name" end
+  return tostring(v)
+end
+
+function Instance:_modeAttach(op, hold)
+  if hold.modeOp == op.id then return end
+  hold.modeOp = op.id
+  op.holds[#op.holds + 1] = hold
+end
+
+-- Every dependent key event moves the restore window, while the operation is active and while its
+-- restoration is unresolved (a dependent released during recover() is still the last key event).
+function Instance:_modeEvent(now)
+  local op = self._mode
+  if op and (op.state == "active" or op.state == "unresolved") then op.lastEventAt = now end
+end
+
+function Instance:_modeUnresolved(op, now, reason)
+  op.state = "unresolved"
+  op.unresolved = { reason = reason, since = op.unresolved and op.unresolved.since or now, lastAttempt = now }
+  for _, h in ipairs(op.holds) do
+    if h.state == "retained" then h.state = "quarantined"; h.quarantine = { reason = reason, since = now } end
+  end
+end
+
+function Instance:_modeResolved(op, now, by, note)
+  op.state = "restored"
+  op.restoredAt, op.restoredBy, op.restoreNote = now, by, note
+  op.unresolved = nil
+  for _, h in ipairs(op.holds) do
+    if h.state == "retained" or h.state == "quarantined" then
+      h.state = "released"
+      h.quarantine = nil
+      h.restoration = { by = by, at = now }
+      self._released[#self._released + 1] = h
+      while #self._released > 32 do
+        local old = table.remove(self._released, 1)
+        if self._holds[old.id] == old then self._holds[old.id] = nil end
+      end
+      self:_maybeForgetSession(h.session)
+    end
+  end
+  self._lastMode = op
+  self._mode = nil
+end
+
+-- Captures the state, writes the target when it differs and verifies it. Returns the operation (joined
+-- or created) or nil, err. A write whose effect cannot be read back leaves an unresolved restoration.
+function Instance:_enterMode(target, now, sessionId, purpose, hold)
+  local op = self._mode
+  if op and op.state == "unresolved" then
+    return fail("busy", "the keyboard-shortcut mode restoration is unresolved: " .. tostring(op.unresolved and op.unresolved.reason) .. "; recover before new input", { reason = "restoration", mode = op.id, owner = op.owner })
+  end
+  if op and op.state == "active" then
+    if op.target ~= target then return fail("mode-conflict", "a temporary shortcut-mode change in the other direction is active (mode " .. op.id .. ")", { mode = op.id, owner = op.owner, target = op.target }) end
+    if hold then self:_modeAttach(op, hold) end
+    return op
+  end
+  if type(self._deps.setShortcutsActive) ~= "function" then
+    return fail("unavailable", "the route needs a temporary shortcut-mode change but deps.setShortcutsActive is missing; nothing is toggled", { unavailable = { NEED_MODE } })
+  end
+  local active, aerr = self:_readShortcutsActive()
+  if active == nil then return fail("unreadable", "shortcut enablement cannot be established (" .. tostring(aerr) .. "); the mode is not changed and nothing is dispatched") end
+  local profile, perr = self:_readProfileName()
+  if profile == nil then return fail("unreadable", "the active user profile cannot be read (" .. tostring(perr) .. "); the mode is not changed and nothing is dispatched") end
+  if active == target then
+    -- The state changed between resolution and dispatch: the decision is stale. A new call decides again.
+    return fail("route-changed", string.format("keyboard shortcuts read %s at resolution but %s now; nothing dispatched, make a new call", tostring(not target), tostring(active)))
+  end
+  self._modeSeq = (self._modeSeq or 0) + 1
+  op = { id = string.format("m%d", self._modeSeq), profile = profile, original = active, target = target, changedAt = now, lastEventAt = now,
+         owner = sessionId, purpose = purpose, holds = {}, state = "active", writes = 1 }
+  local okW, werr = pcall(self._deps.setShortcutsActive, target)
+  if not okW then
+    self._mode = op
+    self:_modeUnresolved(op, now, "the shortcut-mode write raised: " .. tostring(werr) .. "; whether the mode changed is unknown")
+    return fail("mode-change-failed", "the shortcut-mode write raised: " .. tostring(werr) .. "; nothing dispatched and the restoration is unresolved (recover)", { mode = op.id, restoration = "unresolved" })
+  end
+  local after, aerr2 = self:_readShortcutsActive()
+  if after == target then
+    self._mode = op
+    if hold then self:_modeAttach(op, hold) end
+    return op
+  end
+  if after == active then
+    -- No effect, nothing to restore.
+    return fail("mode-change-failed", string.format("the console did not apply the shortcut-mode change (wrote %s, reads back %s); nothing dispatched", tostring(target), tostring(after)))
+  end
+  self._mode = op
+  self:_modeUnresolved(op, now, "the shortcut mode cannot be read back after the write (" .. tostring(aerr2) .. "); whether it changed is unknown")
+  return fail("mode-change-failed", "the shortcut mode cannot be read back after the write (" .. tostring(aerr2) .. "); nothing dispatched and the restoration is unresolved (recover)", { mode = op.id, restoration = "unresolved" })
+end
+
+-- Writes the original state back and verifies it. true when restored.
+function Instance:_restoreMode(op, now, by)
+  op.writes = (op.writes or 0) + 1
+  op.restoreAttempts = (op.restoreAttempts or 0) + 1
+  local okW, werr = pcall(self._deps.setShortcutsActive, op.original)
+  if not okW then self:_modeUnresolved(op, now, "the restore write raised: " .. tostring(werr) .. "; the mode may still be " .. tostring(op.target)); return false end
+  local after, aerr = self:_readShortcutsActive()
+  if after == op.original then self:_modeResolved(op, now, by); return true end
+  self:_modeUnresolved(op, now, string.format("the restore did not take effect (wrote %s, reads back %s%s)", tostring(op.original), tostring(after), after == nil and (": " .. tostring(aerr)) or ""))
+  return false
+end
+
+-- Checks interference and restores when due. Called from service().
+function Instance:_serviceMode(now)
+  local op = self._mode
+  if not op or op.state ~= "active" then return end
+  local profile, perr = self:_readProfileName()
+  if profile == nil then self:_modeUnresolved(op, now, "the active user profile cannot be read (" .. tostring(perr) .. "); the mode is not restored blindly"); return end
+  if profile ~= op.profile then
+    self:_modeUnresolved(op, now, string.format("the active user profile is now '%s' (was '%s'); the replacement profile is not written, restore the profile and recover", profile, op.profile))
+    return
+  end
+  local active, aerr = self:_readShortcutsActive()
+  if active == nil then self:_modeUnresolved(op, now, "shortcut enablement cannot be read (" .. tostring(aerr) .. "); the mode is not restored blindly"); return end
+  if active ~= op.target then
+    -- Somebody set the mode back (F10, another plugin, another user): the operator's newer state wins.
+    op.interference = { at = now, observed = active, note = "the mode was changed back by someone else while the operation was active" }
+    self:_modeResolved(op, now, "operator", "the mode already read as the original state; nothing was written")
+    return
+  end
+  for _, h in ipairs(op.holds) do
+    if h.state == "held" or h.state == "releasing" or h.state == "unresolved" or h.state == "typing" then return end
+  end
+  if now < op.lastEventAt + self._config.modeRestoreDelayMs / 1000 then return end
+  self:_restoreMode(op, now, "service")
+end
+
+-- recover(): an unresolved restoration is re-read; the original profile and a state that still reads as
+-- ours are the conditions for writing the original back. A replacement profile is never touched.
+function Instance:_recoverMode(now)
+  local op = self._mode
+  if not op or op.state ~= "unresolved" then return nil end
+  op.unresolved.lastAttempt = now
+  local profile, perr = self:_readProfileName()
+  if profile == nil then op.unresolved.reason = "the active user profile cannot be read (" .. tostring(perr) .. ")"; return self:_modeReport(now) end
+  if profile ~= op.profile then
+    op.unresolved.reason = string.format("the active user profile is '%s', the operation ran in '%s'; the replacement profile is not written (switch back and recover)", profile, op.profile)
+    return self:_modeReport(now)
+  end
+  local active, aerr = self:_readShortcutsActive()
+  if active == nil then op.unresolved.reason = "shortcut enablement cannot be read (" .. tostring(aerr) .. ")"; return self:_modeReport(now) end
+  if active == op.original then self:_modeResolved(op, now, "recover", "the mode already read as the original state; nothing was written"); return self:_modeReport(now, self._lastMode) end
+  -- An adopted restoration lost its dependency list with the previous instance: every record the
+  -- instance still owns (adopted stuck keys included) stands in for it, so a key that was pressed in the
+  -- temporary mode is recovered before the mode is written back.
+  if op.adopted and self:_liveCount() > 0 then
+    op.unresolved.reason = string.format("%d record(s) are still held or unresolved; the mode is kept until they are recovered (restore pending)", self:_liveCount())
+    op.pending = "dependents"
+    return self:_modeReport(now)
+  end
+  -- Inside the restore window after the last dependent event (a release this very call): the operation
+  -- is valid again and goes back to "active" so service() restores it once the delay elapsed; a restore
+  -- in the call that released a key is exactly what the timing probe ruled out.
+  if now < op.lastEventAt + self._config.modeRestoreDelayMs / 1000 then
+    op.state, op.unresolved, op.pending = "active", nil, "delay"
+    op.revalidated = { at = now, note = "profile and state re-read as expected; the restore waits for the delay after the last dependent event" }
+    for _, hh in ipairs(op.holds) do if hh.state == "quarantined" then hh.state = "retained"; hh.quarantine = nil end end
+    return self:_modeReport(now)
+  end
+  -- Still our temporary state on our profile. A dependent that is still held keeps the operation going
+  -- (restoring under a held key is the mode change the hold must not see); otherwise restore now.
+  for _, h in ipairs(op.holds) do
+    if h.state == "held" or h.state == "releasing" or h.state == "unresolved" or h.state == "typing" then
+      op.state, op.unresolved, op.lastEventAt = "active", nil, now
+      op.revalidated = { at = now, note = "profile and state re-read as expected; the restore waits for the dependent records" }
+      for _, hh in ipairs(op.holds) do if hh.state == "quarantined" then hh.state = "retained"; hh.quarantine = nil end end
+      return self:_modeReport(now)
+    end
+  end
+  self:_restoreMode(op, now, "recover")
+  return self:_modeReport(now, self._mode or self._lastMode)
+end
+
+function Instance:_modeReport(now, op)
+  op = op or self._mode
+  if not op then return nil end
+  local deps = {}
+  for _, h in ipairs(op.holds) do deps[#deps + 1] = { hold = h.id, state = h.state, logical = h.logical } end
+  return { id = op.id, state = op.state, profile = op.profile, original = op.original, target = op.target, owner = op.owner, purpose = op.purpose,
+           changedAt = op.changedAt, lastEventAt = op.lastEventAt, restoredAt = op.restoredAt, restoredBy = op.restoredBy, restoreNote = op.restoreNote,
+           writes = op.writes, restoreAttempts = op.restoreAttempts, unresolved = op.unresolved, interference = op.interference, adopted = op.adopted, revalidated = op.revalidated, pending = op.pending,
+           dependents = deps, restoreDelayMs = self._config.modeRestoreDelayMs,
+           restoreInMs = (op.state == "active" and now) and math.max(0, math.floor((op.lastEventAt + self._config.modeRestoreDelayMs / 1000 - now) * 1000 + 0.5)) or nil,
+           note = "a temporary keyboard-shortcut mode change (KB-14): captured profile and state, restored by service() after the last dependent event; unresolved = the operator's profile/mode changed or could not be read, recover() re-reads and restores (never a replacement profile)" }
+end
+
+-- Imports an unresolved restoration record handed out by a previous instance's dispose(). Nothing is written.
+function Instance:adoptMode(record, now)
+  checkReady(self, "adoptMode")
+  checkNow(now, "adoptMode")
+  if type(record) ~= "table" or type(record.profile) ~= "string" or type(record.original) ~= "boolean" or type(record.target) ~= "boolean" then
+    return fail("bad-record", "adoptMode needs { profile, original, target } from a previous dispose()")
+  end
+  if self._mode then return fail("mode-exists", "a mode operation already exists (" .. self._mode.id .. ")") end
+  self._modeSeq = (self._modeSeq or 0) + 1
+  self._mode = { id = string.format("m%d", self._modeSeq), profile = record.profile, original = record.original, target = record.target, changedAt = record.changedAt or now,
+                 lastEventAt = type(record.lastEventAt) == "number" and record.lastEventAt or now, owner = "previous-run", purpose = record.purpose, holds = {}, state = "unresolved", writes = record.writes or 0, adopted = true, pending = record.pending,
+                 unresolved = { reason = "adopted from a previous run: " .. tostring(record.unresolved and record.unresolved.reason), since = now } }
+  return self:_modeReport(now)
+end
+
+-- KB-14 text route: inserts the key's text once, chunked, with the mode and the profile rechecked between
+-- chunks. The record owns no key: it is "released" at once when no mode operation was needed, otherwise
+-- "retained" until service() restores the mode. Nothing is replayed; partial progress is reported.
+function Instance:_dispatchText(s, plan, now)
+  local route = plan.route
+  local hold = self:_newHold(s, plan.tuple, route, now, nil, nil)
+  hold.kind = "text"
+  hold.state = "typing"
+  hold.interaction = plan.interaction
+  hold.text = { text = route.text, chars = route.textChars, typed = 0, focus = route.focus }
+  if route.modeChange then
+    local op, merr = self:_enterMode(route.modeChange.target, now, s.id, "text route " .. tostring(hold.logical), hold)
+    if not op then self:_dropHold(hold); return nil, merr end
+  elseif self._mode and self._mode.state == "active" and self._mode.target == false then
+    self:_modeAttach(self._mode, hold)
+  end
+  if type(self._adapter.char) ~= "function" then
+    self:_dropHold(hold)
+    return fail("press-failed", "the backend has no char(): nothing inserted", { unavailable = { NEED_CHAR } })
+  end
+  local before = self:_readCommandText()
+  hold.text.before = before
+  local expectActive = route.shortcutsActive
+  local function recheck()
+    local active, aerr = self:_readShortcutsActive()
+    if active ~= expectActive then return string.format("keyboard shortcuts read %s (expected %s%s)", tostring(active), tostring(expectActive), active == nil and (": " .. tostring(aerr)) or "") end
+    if route.profile ~= nil then
+      local pn = self:_readProfileName()
+      if pn ~= route.profile then return string.format("the active user profile is now '%s' (was '%s')", tostring(pn), route.profile) end
+    end
+    if self:_exclusiveHold() then return "an exclusive long-press appeared" end
+    if self:_checkRoutes() then return "a held key's route changed" end
+    return nil
+  end
+  self._now = now
+  local outcome, code, errText
+  while hold.text.typed < hold.text.chars do
+    local why = recheck()
+    if why then
+      outcome, code = hold.text.typed > 0 and "partial" or "failed", "context-changed"
+      errText = string.format("context changed after %d of %d characters: %s; typing stopped (nothing erased or replayed)", hold.text.typed, hold.text.chars, why)
+      break
+    end
+    for _ = 1, self._config.textCharsPerService do
+      if hold.text.typed >= hold.text.chars then break end
+      local cp = route.codepoints[hold.text.typed + 1]
+      local ok, aOk, _, cerr = pcall(self._adapter.char, self._adapter, cp, hold.display)
+      if not ok then
+        outcome, code = "uncertain", "char-raised"
+        errText = string.format("character %d of %d (U+%04X) raised: %s; whether it was delivered is unknown, typing stopped", hold.text.typed + 1, hold.text.chars, cp, tostring(aOk))
+        hold.text.uncertainChar = hold.text.typed + 1
+        break
+      end
+      if aOk == false then
+        outcome, code = hold.text.typed > 0 and "partial" or "failed", "char-refused"
+        errText = string.format("character %d of %d (U+%04X) refused before dispatch: %s; typing stopped", hold.text.typed + 1, hold.text.chars, cp, tostring(cerr))
+        break
+      end
+      hold.text.typed = hold.text.typed + 1
+    end
+    if outcome then break end
+  end
+  self:_modeEvent(now)
+  if not outcome then outcome = "typed" end
+  hold.text.outcome, hold.text.code, hold.text.error = outcome, code, errText
+  if outcome == "failed" then
+    -- Nothing went out; the record is dropped (a mode operation created for it restores on its own).
+    self:_dropHold(hold)
+    return fail("press-failed", "text route " .. tostring(hold.logical) .. ": " .. tostring(errText), { reason = code, typed = 0, chars = hold.text.chars })
+  end
+  self._pressCount = self._pressCount + 1
+  hold.dispatch.press = { ok = true, at = now, outcome = outcome == "typed" and "dispatched" or outcome, typed = hold.text.typed, chars = hold.text.chars, error = errText }
+  hold.releasedAt = now
+  hold.text.typedText = (function()
+    local parts = {}
+    for i = 1, hold.text.typed do parts[#parts + 1] = utf8.char(route.codepoints[i]) end
+    return table.concat(parts)
+  end)()
+  if before ~= nil then
+    hold.text.readback = { outcome = "pending", source = "CmdObj().cmdtext", before = before, expected = before .. hold.text.typedText, since = now, until_ = now + self._config.readbackMs / 1000 }
+  else
+    hold.text.readback = { outcome = "unavailable", reason = "the command line is not readable; where the characters landed cannot be verified from Lua" }
+  end
+  if hold.modeOp then
+    hold.state = "retained"
+  else
+    hold.state = "released"
+    self._released[#self._released + 1] = hold
+    while #self._released > 32 do
+      local old = table.remove(self._released, 1)
+      if self._holds[old.id] == old then self._holds[old.id] = nil end
+    end
+  end
+  if self._byTuple[hold.tupleKey] == hold then self._byTuple[hold.tupleKey] = nil end
+  return hold
+end
+
+-- Bounded command-line readback of text routes, serviced like the MASTATE readback.
+function Instance:_serviceTextReadbacks(now)
+  for _, h in pairs(self._holds) do
+    local rb = h.text and h.text.readback
+    if rb and rb.outcome == "pending" then
+      local actual, rerr = self:_readCommandText()
+      if actual ~= nil and actual == rb.expected then
+        rb.outcome, rb.actual, rb.at = "observed", actual, now
+        rb.note = "the command line shows the inserted text; not executed"
+      elseif now >= rb.until_ then
+        rb.outcome, rb.actual, rb.at = "inconclusive", actual, now
+        rb.reason = actual == nil and ("command line not readable: " .. tostring(rerr)) or string.format("the command line did not show the expected text within %d ms (the characters may have gone to a focused text field, or the line was edited meanwhile; neither success nor failure is established)", self._config.readbackMs)
+      end
+    end
+  end
 end
 
 -- Bounded aggregate readback for routes verified through MASTATE: service() watches the backend's
@@ -3944,6 +4482,22 @@ function Instance:_resolveSpec(spec, forPress)
                          unavailable = rr.unavailable, effective = rr.effective, resolution = r, route = rr }
     end
     local snapshot = { method = rr.method, methodSource = rr.methodSource, quickkey = entryField(self._routing, rr.key, "quickkey"), prefer = rr.prefer, text = rr.text, textChars = rr.textChars }
+    if rr.effective == "text" then
+      -- KB-14 text route: no console key is owned; the record carries the text, the code points and the
+      -- mode the insertion needs (shortcuts off: already off, or temporarily disabled by a mode operation).
+      local cps, why = validateText(rr.text, self._config.maxTextChars)
+      if not cps then return nil, nil, { code = "unsupported", message = "logical key " .. rr.key .. " (" .. rr.method .. "): the text mapping is invalid: " .. tostring(why) } end
+      local profile
+      if type(self._deps.profileName) == "function" then local okP, pn = pcall(self._deps.profileName); if okP and pn ~= nil then profile = tostring(pn) end end
+      local tuple = { text = rr.text, textKey = rr.key, display = display }
+      local needActive
+      if rr.modeChange then needActive = rr.modeChange.target else needActive = rr.shortcutsActive end
+      local route = { logical = rr.key, source = "text", method = rr.method, methodSource = rr.methodSource, text = rr.text, textChars = #cps, codepoints = cps,
+                      modeChange = rr.modeChange, shortcutsActive = needActive, profile = profile,
+                      textSelectedBecause = rr.textSelectedBecause, routing = snapshot,
+                      focus = "best-effort: the characters go to whatever the console has focused (command line while shortcuts are off); focus is not observable from Lua, no Enter/Please is added" }
+      return tuple, route, nil
+    end
     if rr.effective == "quickkey" then
       if forPress and self._adapter and type(self._adapter.supportsQuickkey) == "function" then
         local ok, supported, reason = pcall(self._adapter.supportsQuickkey, self._adapter, rr.quickkey)
@@ -3963,6 +4517,12 @@ function Instance:_resolveSpec(spec, forPress)
     local route = { logical = r.key, source = r.source, shortcut = r.shortcut, rowIndex = r.rowIndex, executor = r.executor, profile = r.profile,
                     shortcutsActive = r.shortcutsActive, verify = r.verify, redirectChecked = r.redirectChecked, pcKeyValidated = r.pcKeyValidated,
                     prefer = r.prefer, method = rr.method, methodSource = rr.methodSource, routing = snapshot }
+    if rr.modeChange then
+      -- The hold is dispatched and released in the temporarily enabled mode; route checks compare against
+      -- that state (the operator disabling shortcuts mid-hold is then a route change, as before).
+      route.modeChange = rr.modeChange
+      route.shortcutsActive = rr.modeChange.target
+    end
     return tuple, route, nil
   end
   if type(spec.pcKey) ~= "string" or spec.pcKey == "" then return nil, nil, { code = "bad-argument", message = "spec needs key (logical name) or pcKey (non-empty PC key name)" } end
@@ -4004,7 +4564,7 @@ function Instance:_checkRoutes()
         h.routeRestored = { previous = h.routeMismatch.reason }
         h.routeMismatch = nil
       end
-    elseif h.state ~= "released" and h.logical and h.route and h.route.source ~= "raw" then
+    elseif h.state ~= "released" and h.logical and h.route and h.route.source ~= "raw" and h.route.source ~= "text" and h.state ~= "retained" and h.state ~= "quarantined" then
       local r = self:describeKey(h.logical, { executor = h.route.executor, prefer = h.route.prefer })
       local why
       if not r.supported then why = "no longer resolvable: " .. tostring(r.reason)
@@ -4060,6 +4620,9 @@ end
 function Instance:_dropHold(hold)
   self._holds[hold.id] = nil
   if self._byTuple[hold.tupleKey] == hold then self._byTuple[hold.tupleKey] = nil end
+  -- Terminal: a dropped record (refused press, nothing typed) may still be listed as a dependent of a
+  -- mode operation; it must never count as live there, or the mode would stay changed for ever.
+  hold.state = "dropped"
 end
 
 function Instance:_setDeadline(hold, at, reason)
@@ -4140,6 +4703,14 @@ function Instance:_attemptRelease(hold, now, reason)
     attempt.state, attempt.outcome = "unresolved", "unresolved"
   end
   hold.dispatch.release.outcome = attempt.outcome
+  if hold.modeOp then self:_modeEvent(now) end
+  if hold.state == "released" and hold.modeOp and self._mode and self._mode.id == hold.modeOp and self._mode.state == "active" then
+    -- KB-14: the key is up, but the mode it was pressed in is still temporarily changed; the record is
+    -- retained (tuple freed, nothing to release) until service() restores the mode.
+    hold.state = "retained"
+    attempt.restoration = "pending"
+    return attempt
+  end
   if hold.state == "released" then
     -- Released records are kept only until their session is reported; they free their tuple now.
     self._released[#self._released + 1] = hold
@@ -4165,16 +4736,17 @@ function Instance:_releaseHolds(list, now, reason)
     if h.state == "held" or h.state == "unresolved" or h.state == "releasing" then
       out.attempted = out.attempted + 1
       local r = self:_attemptRelease(h, now, reason)
-      if h.state == "released" then out.released[#out.released + 1] = r else out.unresolved[#out.unresolved + 1] = r end
+      if h.state == "released" or h.state == "retained" then out.released[#out.released + 1] = r else out.unresolved[#out.unresolved + 1] = r end
     end
   end
   return out
 end
 
--- Ownership records that still matter: held, releasing or unresolved (released ones are history).
+-- Ownership records that still matter: held, releasing, unresolved or typing (released ones are history;
+-- retained and quarantined ones own no key any more, they wait for the mode restoration).
 function Instance:_liveCount()
   local n = 0
-  for _, h in pairs(self._holds) do if h.state ~= "released" then n = n + 1 end end
+  for _, h in pairs(self._holds) do if h.state ~= "released" and h.state ~= "retained" and h.state ~= "quarantined" then n = n + 1 end end
   return n
 end
 
@@ -4259,6 +4831,10 @@ function Instance:_holdReport(h, now, extra)
     dispatch = h.dispatch, unresolved = h.unresolved, routeMismatch = h.routeMismatch, observed = h.observed,
     observedReleasedAt = h.observedReleasedAt, adopted = h.adopted, routeRestored = h.routeRestored,
     readback = h.readback,
+    -- KB-14: the mode operation the record depends on, its restoration, and text-route progress.
+    modeOp = h.modeOp, restoration = h.restoration, quarantine = h.quarantine,
+    text = h.text and { text = h.text.text, chars = h.text.chars, typed = h.text.typed, outcome = h.text.outcome, code = h.text.code, error = h.text.error,
+                        uncertainChar = h.text.uncertainChar, readback = h.text.readback, focus = h.text.focus } or nil,
     -- Flat copies for consumers with a bounded JSON depth (the bridge caps nesting).
     pressReadback = h.dispatch and h.dispatch.press and h.dispatch.press.readback or nil,
     releaseReadback = h.dispatch and h.dispatch.release and h.dispatch.release.readback or nil,
@@ -4266,7 +4842,10 @@ function Instance:_holdReport(h, now, extra)
   -- Result semantics spelled out: what the press did, and where the release stands.
   local dp, dr = h.dispatch and h.dispatch.press, h.dispatch and h.dispatch.release
   r.pressOutcome = dp and (dp.ok and (dp.outcome or (dp.confirmed == true and "confirmed" or "dispatched")) or "failed") or (h.adopted and "adopted" or "none")
-  if h.state == "released" then r.releaseOutcome = dr and dr.outcome or (dr and dr.confirmed == true and "confirmed" or "dispatched")
+  if h.kind == "text" then r.releaseOutcome = "none"; r.releaseNote = "text route: inserted on press, nothing on release"
+  elseif h.state == "released" then r.releaseOutcome = dr and dr.outcome or (dr and dr.confirmed == true and "confirmed" or "dispatched")
+  elseif h.state == "retained" then r.releaseOutcome = dr and dr.outcome or "dispatched"; r.restoration = r.restoration or { state = "pending", mode = h.modeOp }
+  elseif h.state == "quarantined" then r.releaseOutcome = dr and dr.outcome or (h.kind == "text" and "none" or "dispatched"); r.restoration = { state = "unresolved", mode = h.modeOp }
   elseif h.state == "unresolved" then r.releaseOutcome = "unresolved"
   elseif h.state == "releasing" then r.releaseOutcome = "in-progress"
   elseif h.deadline then r.releaseOutcome = "scheduled"
@@ -4304,6 +4883,7 @@ local function new(opts)
     _sequence = nil, _sequences = {}, _sequenceSeq = 0,
     _seq = 0, _pressCount = 0, _releaseAttempts = 0, _serviced = 0, _lastServiced = nil, _observed = nil,
     _bank = nil,
+    _mode = nil, _lastMode = nil, _modeSeq = 0,  -- KB-14 temporary shortcut-mode operation
   }, Instance)
   return self
 end
