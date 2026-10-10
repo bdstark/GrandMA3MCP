@@ -302,7 +302,6 @@ local function scanSelection(d, cfg)
     if idx == nil then ended = true end
   end
   if #scan.fixtures < count then scan.partial = true end
-  if #scan.fixtures < math.min(count, cfg.maxSelectionScan) and not failure then failure = "the walk ended early" end
   if #scan.fixtures == cfg.maxSelectionScan and count > cfg.maxSelectionScan then scan.limitations[#scan.limitations + 1] = string.format("selection scan bounded to %d of %d fixtures", cfg.maxSelectionScan, count) end
   if failure then incomplete(failure)
   elseif not ended then incomplete("the selection walk did not end")
