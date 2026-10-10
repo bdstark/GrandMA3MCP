@@ -765,7 +765,8 @@ are two targets (two owners, two gestures). The console backend still refuses ex
 the fake backend records them, which is how the live probe exercises holds.
 
 **Frozen holds.** A touch or button down stores the target it resolved (`gesture.resolved`); the release, a forced end
-(lease expiry, `maxGestureMs`, dispose, backend switch) and the unresolved record carry that record as `resolved` with
+(lease expiry, `maxGestureMs`, dispose, backend switch), the unresolved record of a release the backend raised on, its
+`recover()` re-attempt and an adopted record (review of PR #25) carry that record as `resolved` (with `targetKey`) and
 `frozen = true`, whatever the binding says by then. A surface bank change (a replaced spec: new binding revision), a
 console page change (the following item now reads another object) or a reassignment/deletion while the button is held
 therefore neither releases nor activates the newly mapped executor: the release goes to `exec.../1.201.key|Sequence 1|Go+`
@@ -781,7 +782,7 @@ lists the frozen targets. Harness: `test/lua/feedback_context_test.lua` (148 che
 page, widths and coverage across the row bound, the current-page dependency, `pageExecutors` on a page, the binding
 key and mode, a page change moving only the following binding, width/page/assignment changes, a bad `executorPage`,
 the cached path, an empty executor's page, the no-generation window of a page change), `test/lua/control_admission_test.lua`
-(213; 19 new: identity in the key and the intent, page-bound resolution and its refusals, covered and missing pages, a
+(217; 23 new: identity in the key and the intent, page-bound resolution and its refusals, covered and missing pages, a
 bad page, the frozen release through a bank + page change, the fresh down reaching the new mapping, a forced end, the
 strip gesture cancelled by a rebind), the bridge harness (495; 9 new, the binding source carrying `executorPage`) and
 `test/kb21-probe.test.ts` (4). Live: [kb-21-executors-macos-2.5.1.md](probes/kb-21-executors-macos-2.5.1.md)

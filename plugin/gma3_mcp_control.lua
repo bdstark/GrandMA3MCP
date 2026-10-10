@@ -134,6 +134,8 @@
 --     held can neither release nor activate the executor newly mapped to the control; the new mapping is
 --     reached by a fresh down only. Rebinding (a replaced spec) still drops queued motion and marks held
 --     touches rebound ("gesture-rebound" for their motion), so a surface's pickup/takeover starts over.
+--     Review (PR #25): the gesture-bound (maxGestureMs) force-end, the unresolved record of a release the
+--     backend raised on, recover() and an adopted record carry the same frozen record (resolved, targetKey).
 --
 -- Rules every consumer must keep (as for the other modules):
 --   * One instance per consumer; the module table is read-only; nothing is published through
@@ -1003,14 +1005,17 @@ end
 function Instance:_applyNow(s, intent, now)
   local adapter = self._adapter
   if adapter == nil then
-    local rec = { kind = intent.kind, session = s.id, device = intent.device, control = intent.control, target = intent.target, error = "no backend", at = now }
+    local rec = { kind = intent.kind, session = s.id, device = intent.device, control = intent.control, target = intent.target, targetKey = intent.targetKey, resolved = intent.resolved, frozen = intent.resolved ~= nil or nil, error = "no backend", at = now }
     self._unresolved[#self._unresolved + 1] = rec
     return { outcome = "unresolved", unresolved = rec }
   end
   local ok, res, err = pcall(adapter.apply, adapter, intent, now)
   if not ok then
     self._counters.unresolved = self._counters.unresolved + 1
-    local rec = { kind = intent.kind, session = s.id, device = intent.device, control = intent.control, target = intent.target, generation = intent.generation,
+    -- KB-21 (review): the record keeps the FROZEN target the hold resolved, so a later recover() or an adopting
+    -- instance releases that executor, whatever the binding maps the control to by then.
+    local rec = { kind = intent.kind, session = s.id, device = intent.device, control = intent.control, target = intent.target, targetKey = intent.targetKey,
+                  resolved = intent.resolved, frozen = intent.resolved ~= nil or nil, generation = intent.generation,
                   down = intent.down, error = tostring(res), at = now, backend = adapter.name }
     if (intent.kind == "touch" or intent.kind == "button") and not intent.recovering then self._unresolved[#self._unresolved + 1] = rec end
     self._lastApplied = { outcome = "unresolved", kind = intent.kind, at = now, error = tostring(res) }
@@ -1051,7 +1056,7 @@ function Instance:service(now)
     if s then
       for key, g in pairs(s.gestures) do
         if (g.kind == "touch" or g.kind == "button") and now - g.since > self._config.maxGestureMs / 1000 then
-          local r = self:_applyNow(s, { kind = g.kind, down = false, target = g.target, targetKey = g.targetKey, generation = g.generation, device = g.device, control = g.control,
+          local r = self:_applyNow(s, { kind = g.kind, down = false, target = g.target, targetKey = g.targetKey, resolved = g.resolved, frozen = true, generation = g.generation, device = g.device, control = g.control,
                                         gesture = g.gesture, forced = true, reason = "max-gesture", session = id, at = now }, now)
           if r.unresolved then out.unresolved[#out.unresolved + 1] = r.unresolved end
           out.ended[#out.ended + 1] = { kind = g.kind, device = g.device, control = g.control, target = g.target, reason = "max-gesture", outcome = r.outcome }
@@ -1115,7 +1120,7 @@ function Instance:recover(now)
   local keep = {}
   for _, rec in ipairs(batch) do
     local s = { id = rec.session, counters = { applied = 0 } }
-    local r = self:_applyNow(s, { kind = rec.kind, down = false, target = rec.target, generation = rec.generation, device = rec.device, control = rec.control, forced = true, reason = "recover", recovering = true, session = rec.session, at = now }, now)
+    local r = self:_applyNow(s, { kind = rec.kind, down = false, target = rec.target, targetKey = rec.targetKey, resolved = rec.resolved, frozen = rec.resolved ~= nil or nil, generation = rec.generation, device = rec.device, control = rec.control, forced = true, reason = "recover", recovering = true, session = rec.session, at = now }, now)
     if r.outcome == "applied" then out.resolved[#out.resolved + 1] = rec
     else rec.attempts = (rec.attempts or 1) + 1; rec.error = r.unresolved and r.unresolved.error or (r.error and r.error.message) or rec.error; keep[#keep + 1] = rec; out.unresolved[#out.unresolved + 1] = rec end
   end

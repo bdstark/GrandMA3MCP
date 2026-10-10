@@ -920,6 +920,39 @@ do
   check("kb21: rebinding (a bank change) cancels the strip gesture: motion inside the held touch is gesture-rebound", e7 and e7.code == "gesture-rebound", J(e7))
   check("kb21: the lift is admitted and a new touch starts over", i4:submit("s", 3.03, touch(3, 201, false)).accepted and i4:submit("s", 3.04, touch(4, 201, true)).accepted)
   binding.bindingKey = nil
+  -- Review (PR #25): the frozen record survives the gesture-bound force-end, a release the backend raised on, recover() and adoption.
+  local saved2 = binding.executors[1].value
+  local function remap() binding.executors[1].value = { executor = 201, page = { no = 4, name = "Page 4" }, pool = { name = "Default", no = 1 }, mode = "current", empty = false, playbackTarget = true, assigned = { addr = "Sequence 77", class = "Sequence" }, functions = { keyPress = "Go+", fader = "Master" }, level = { token = "FaderMaster", value = 0 } } end
+  local i5, b5 = fresh({ maxGestureMs = 100 })
+  i5:openSession({ id = "s" }, 4)
+  i5:submit("s", 4, { type = "button", device = "mtouch", control = "PFA1", seq = 1, generation = 1, target = { executor = 201, element = "key" }, down = true }); i5:service(4.01)
+  remap(); binding.generation = 9
+  local out5 = i5:service(4.2)
+  check("review: the gesture-bound force-end releases the frozen target (page 1, Sequence 1), not the remapped Sequence 77", out5.ended[1] and out5.ended[1].reason == "max-gesture" and b5:last().down == false and b5:last().frozen == true and b5:last().resolved.assigned == "Sequence 1" and b5:last().resolved.pageNo == 1, J(b5:last()))
+  binding.executors[1].value = saved2; binding.generation = 1
+  local i6, b6 = fresh()
+  i6:openSession({ id = "s" }, 5)
+  i6:submit("s", 5, { type = "button", device = "mtouch", control = "PFA1", seq = 1, generation = 1, target = { executor = 201, element = "key" }, down = true }); i6:service(5.01)
+  remap(); binding.generation = 9
+  b6:raiseNext("button", "host blocked")
+  i6:submit("s", 5.1, { type = "button", device = "mtouch", control = "PFA1", seq = 2, target = { executor = 201, element = "key" }, down = false })
+  local out6 = i6:service(5.11)
+  local rec6 = i6:status(5.12).unresolved[1]
+  check("review: a release the backend raised on keeps the frozen record (resolved, targetKey) in the unresolved record", out6.unresolved and #out6.unresolved == 1 and rec6 and rec6.frozen == true and rec6.resolved.assigned == "Sequence 1" and rec6.resolved.pageNo == 1 and rec6.targetKey:find("^execDefault#1/1%.201%.key|Sequence 1"), J(rec6))
+  local rc6 = i6:recover(5.2)
+  check("review: recover() re-attempts the release against the frozen record, not the current mapping", #rc6.resolved == 1 and b6:last().down == false and b6:last().reason == "recover" and b6:last().frozen == true and b6:last().resolved.assigned == "Sequence 1", J(b6:last()))
+  -- Adoption: the record handed back by dispose() carries the frozen identity into the next instance.
+  local i7, b7 = fresh()
+  i7:openSession({ id = "s" }, 6)
+  i7:submit("s", 6, { type = "button", device = "mtouch", control = "PFA2", seq = 1, generation = 9, target = { executor = 201, element = "key" }, down = true }); i7:service(6.01)
+  b7:raiseNext("button", "host blocked")
+  i7:submit("s", 6.1, { type = "button", device = "mtouch", control = "PFA2", seq = 2, target = { executor = 201, element = "key" }, down = false }); i7:service(6.11)
+  local handed = i7:dispose(6.2)
+  local i8, b8 = fresh()
+  local ad = i8:adopt(handed.records, 7)
+  binding.executors[1].value = saved2; binding.generation = 1
+  local rc8 = i8:recover(7.1)
+  check("review: an adopted record releases the executor it was pressed on (Sequence 77 on page 4) although the binding now maps 201 to Sequence 1 on page 1", ad.adopted == 1 and #rc8.resolved == 1 and b8:last().resolved.assigned == "Sequence 77" and b8:last().resolved.pageNo == 4 and b8:last().frozen == true, J(b8:last()))
 end
 
 print(string.format("%d passed, %d failed", passes, failures))

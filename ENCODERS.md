@@ -455,7 +455,7 @@ page display, follow/independent as an operator choice, status and indicators) a
 - **Strip gestures on rebinding:** a replaced binding marks held touches rebound (their motion is `gesture-rebound`
   until lift and re-touch), so the surface's pickup/takeover starts over.
 - **Quickey exclusion:** unchanged (a Quickey object or a bank-reserved executor is never a target).
-- **Harness:** `test/lua/feedback_context_test.lua` (148; 28 new), `test/lua/control_admission_test.lua` (213; 19
+- **Harness:** `test/lua/feedback_context_test.lua` (148; 28 new), `test/lua/control_admission_test.lua` (217; 23
   new), the bridge harness (495; 9 new), `test/kb21-probe.test.ts` (4).
 
 **Limitations:** executor **operations** (press/release/fader through the console) are KB-22: the console backend still
