@@ -26,6 +26,12 @@
 --                                               are really pressed through Keyboard() (KB-04)
 --   Plugin "gma3_mcp_bridge" "input=fake"       admit input.* ops on the FAKE backend (records events,
 --                                               touches no key; lifecycle testing only)
+--   Plugin "gma3_mcp_bridge" "input=quickey"    admit input.* ops on the owned-QUICKEY backend (KB-13,
+--                                               bridge 0.10.0 / hardkeys 0.8.0): logical keys are routed
+--                                               with the quickkey method through the KB-12 bank (bank=...
+--                                               first or in the same argument); each tap, hold and chord
+--                                               is an executor press of the code's owned Quickey. Only
+--                                               the KB-10 qualified codes dispatch; no PC keys, no text.
 --   Plugin "gma3_mcp_bridge" "input=off"        stop admitting input; attempt to release every held key
 --   Plugin "gma3_mcp_bridge" "input status"     print sessions, holds and unresolved releases
 --   Plugin "gma3_mcp_bridge" "input recover"    operator recovery: re-attempt every unresolved release,
@@ -101,7 +107,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.9.0"
+local VERSION      = "0.10.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -1577,14 +1583,28 @@ local function adapterFor(rec, backend)
     if type(mod.keyboardBackend) ~= "function" then return nil, "the loaded hardkeys module has no keyboardBackend() (module " .. tostring(rec.version) .. "; KB-04 needs 0.3.0 or newer)" end
     if not rec.keyboardAdapter then rec.keyboardAdapter = mod.keyboardBackend(mod.consoleDeps(_G)) end
     return rec.keyboardAdapter
+  elseif backend == "quickey" then
+    -- Bound to the bridge's own instance: the bank it provisioned/adopted is the only source of
+    -- Quickeys and executors (KB-12); without a bank every press is refused as unavailable.
+    if type(mod.quickeyBackend) ~= "function" then return nil, "the loaded hardkeys module has no quickeyBackend() (module " .. tostring(rec.version) .. "; KB-13 needs 0.8.0 or newer)" end
+    if not rec.quickeyAdapter then rec.quickeyAdapter = mod.quickeyBackend(rec.instance) end
+    return rec.quickeyAdapter
   end
   return nil, "unknown input backend '" .. tostring(backend) .. "'"
+end
+
+-- The routing policy goes with the backend (KB-11/KB-13): the Quickey backend serves only the quickkey
+-- method, the PC-key backends only the shortcut routes, so the policy is applied in the same step as
+-- the adapter (hardkeys 0.8.0 validates it against the new adapter; older modules ignore the argument).
+local function routingFor(backend)
+  if backend == "quickey" then return { default = "quickkey" } end
+  return { default = "shortcut" }
 end
 
 enableInputOn = function(rec)
   local adapter, aerr = adapterFor(rec, state.input.backend)
   if not adapter then return false, aerr end
-  local ok, err = rec.instance:enableInput(adapter)
+  local ok, err = rec.instance:enableInput(adapter, { routing = routingFor(state.input.backend) })
   if not ok then return false, err and err.message or "enableInput failed" end
   return true
 end
@@ -1704,8 +1724,8 @@ end
 
 local function requireInputEnabled()
   if not state.input.enabled then
-    error('[input-disabled] input is disabled on the console. The console operator can enable it with:  Plugin "gma3_mcp_bridge" "input=keyboard"  (real console keys) ' ..
-          'or  "input=fake"  (lifecycle only), or start the bridge with that argument. input.status, input.sequence.status, input.release, input.releaseAll, input.recover, input.end and input.close remain available.', 0)
+    error('[input-disabled] input is disabled on the console. The console operator can enable it with:  Plugin "gma3_mcp_bridge" "input=keyboard"  (real console keys through Keyboard()), ' ..
+          '"input=quickey"  (real console keys through the owned Quickey bank, KB-13) or  "input=fake"  (lifecycle only), or start the bridge with that argument. input.status, input.sequence.status, input.release, input.releaseAll, input.recover, input.end and input.close remain available.', 0)
   end
   if state.stopRequested then error("[stopping] the bridge is stopping; new input is refused while it releases held keys", 0) end
 end
@@ -2793,7 +2813,7 @@ end
 --   luatime=<ms>  luasteps=<n>   Lua execution budget (0 = unlimited)
 --   luahook=preserve|replace  keep the console's own hook on the plugin thread (default; no hard
 --                             quota while it is present) or replace it with the budget hook
---   input=keyboard | input=fake | input=off | noinput
+--   input=keyboard | input=fake | input=quickey | input=off | noinput
 --                            owned input sessions on the console keyboard backend (KB-04), on the
 --                            fake backend (KB-03 lifecycle only) or disabled
 --   input status | input recover       print input state / operator recovery of unresolved releases
@@ -2831,8 +2851,9 @@ local function parseArgument(argument)
     elseif key == "input" then
       if val == "fake" then opts.input, opts.inputBackend = true, "fake"
       elseif val == "keyboard" or val == "kb" then opts.input, opts.inputBackend = true, "keyboard"
+      elseif val == "quickey" or val == "quickkey" or val == "qk" then opts.input, opts.inputBackend = true, "quickey"
       elseif val == "off" or val == "0" or val == "no" or val == "false" or val == "none" then opts.input = false
-      else return nil, string.format("\"%s\": expected input=keyboard, input=fake or input=off", tok) end
+      else return nil, string.format("\"%s\": expected input=keyboard, input=fake, input=quickey or input=off", tok) end
     elseif l == "lua" then
       opts.lua = true
     elseif l == "nolua" then
@@ -2858,12 +2879,12 @@ local function parseArgument(argument)
       if not port or port < 1 or port > 65535 then return nil, string.format("\"%s\" is not a valid port number (expected 1-65535)", tok) end
       opts.port = port
     else
-      return nil, string.format("\"%s\" is not a recognised argument (expected a port number, \"stop\", \"status\", \"lua\", \"lua on|off\", \"luatime=<ms>\", \"luasteps=<n>\", \"luahook=preserve|replace\", \"input=keyboard|fake|off\", \"input status\", \"input recover\", \"bank=<quickey>/<page>.<first>-<last>\", \"bankcodes=hardkeys|qualified\", \"bank status\", \"bank verify\" or \"bank teardown\")", tok)
+      return nil, string.format("\"%s\" is not a recognised argument (expected a port number, \"stop\", \"status\", \"lua\", \"lua on|off\", \"luatime=<ms>\", \"luasteps=<n>\", \"luahook=preserve|replace\", \"input=keyboard|fake|quickey|off\", \"input status\", \"input recover\", \"bank=<quickey>/<page>.<first>-<last>\", \"bankcodes=hardkeys|qualified\", \"bank status\", \"bank verify\" or \"bank teardown\")", tok)
     end
     prev = l
   end
   if opts.inputToken and opts.command == nil and opts.input == nil then
-    return nil, "\"input\": expected input=keyboard, input=fake, input=off, \"input status\" or \"input recover\" (there is no default input backend)"
+    return nil, "\"input\": expected input=keyboard, input=fake, input=quickey, input=off, \"input status\" or \"input recover\" (there is no default input backend)"
   end
   if opts.bankToken and not (opts.command and opts.command:match("^bank%-")) and opts.bank == nil then
     return nil, "\"bank\": expected bank=<quickey>/<page>.<first>[-<last>], \"bank status\", \"bank verify\" or \"bank teardown\" (there is no default range)"
@@ -2897,7 +2918,9 @@ local function applyInputPolicy(opts)
       end
     end
     state.input.enabled = true
-    log("input now enabled on the %s backend (%s)", state.input.backend, state.input.backend == "fake" and "nothing reaches the console" or "console keys are really pressed through Keyboard()")
+    log("input now enabled on the %s backend (%s)", state.input.backend, state.input.backend == "fake" and "nothing reaches the console"
+      or (state.input.backend == "quickey" and "console keys are really pressed through the owned Quickey bank on its reserved executors; logical keys use the quickkey method"
+      or "console keys are really pressed through Keyboard()"))
   else
     state.input.enabled = false
     if rec then

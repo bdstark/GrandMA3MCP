@@ -54,8 +54,9 @@ The [MCP server](src/index.ts) translates tool calls into bridge requests. Both 
 show inspection and workflow tools. The plugin also carries two instance-based
 [console interaction modules](docs/modules.md) (owned input sessions, read-only feedback) as extra
 components of the same XML. Input is off by default; the operator enables it per start on the console
-keyboard backend (`input=keyboard`, real key presses through `Keyboard()`) or the fake backend (`input=fake`,
-events recorded only). The [structured input tools](docs/tools/input.md) (`gma3_hardkey`, `gma3_keyboard`,
+keyboard backend (`input=keyboard`, real key presses through `Keyboard()`), the owned-Quickey backend
+(`input=quickey`, real key presses through a provisioned Quickey bank on reserved executors) or the fake backend
+(`input=fake`, events recorded only). The [structured input tools](docs/tools/input.md) (`gma3_hardkey`, `gma3_keyboard`,
 `gma3_type`, `gma3_input_sequence`, `gma3_input_interaction`, status and release) expose it; while input is
 owned by any client, the bridge refuses commands, property changes, playback, faders and Lua from every client
 with an explicit `[busy]` error instead of running them into a changed console state. The read-only

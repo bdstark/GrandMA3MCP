@@ -37,7 +37,7 @@ end
 
 local HK = loadModule("gma3_mcp_hardkeys.lua")
 local FB = loadModule("gma3_mcp_feedback.lua")
-check("hardkeys loads without console API", type(HK) == "table" and HK.API_VERSION == 1 and HK.VERSION == "0.7.0" and type(HK.new) == "function")
+check("hardkeys loads without console API", type(HK) == "table" and HK.API_VERSION == 1 and HK.VERSION == "0.8.0" and type(HK.new) == "function")
 check("feedback loads without console API", type(FB) == "table" and FB.API_VERSION == 1 and FB.VERSION == "0.2.0" and type(FB.new) == "function")
 check("module tables are read-only", not pcall(function() HK.state = {} end) and not pcall(function() FB.cache = {} end) and HK.state == nil)
 check("modules publish nothing globally", package.loaded["gma3_mcp_hardkeys"] == nil and _G.gma3_mcp_hardkeys == nil and _G.gma3_mcp_feedback == nil)

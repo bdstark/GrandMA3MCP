@@ -1011,7 +1011,7 @@ do
   start("")  -- bind fails in this harness, so serverMain returns and the instances are disposed again
   local hk, fb = state.modules.hardkeys, state.modules.feedback
   check("modules found through the plugin signal table", hk and hk.loaded and fb and fb.loaded, json.encode({ hk = hk and hk.error, fb = fb and fb.error }))
-  check("module versions recorded", hk.version == "0.7.0" and hk.apiVersion == 1 and fb.version == "0.2.0", json.encode({ hk.version, fb.version }))
+  check("module versions recorded", hk.version == "0.8.0" and hk.apiVersion == 1 and fb.version == "0.2.0", json.encode({ hk.version, fb.version }))
   check("modules start log line", lastLog():find("stopped") or true)
   local disposed = hk.instance and hk.instance:status().state == "disposed" and fb.instance:status().state == "disposed"
   check("instances disposed when the loop ends", disposed, hk.instance and hk.instance:status().state)
@@ -1118,7 +1118,7 @@ do
   Main(nil, "input=keyboard"); Cleanup()
   check("input=keyboard while fake records exist is refused and leaves the fake policy intact", lastLog():find("cannot switch the backend") and lastLog():find("fake enabled") and state.input.backend == "fake" and state.input.enabled == true and state.running == true, lastLog())
   Main(nil, "input=maybe"); Cleanup()
-  check("input=maybe refused", lastLog():find("expected input=keyboard, input=fake or input=off"), lastLog())
+  check("input=maybe refused", lastLog():find("expected input=keyboard, input=fake, input=quickey or input=off"), lastLog())
   -- Fake controls and owner-scoped recovery.
   r = request("input.fake", { action = "failRelease", pcKey = "Enter", sticky = true, error = "host blocked" }, nil, A)
   check("fake controls reachable", r.ok and r.result.backend == "fake" and r.result.down[1] == "Enter|s0c0a0n0", J(r))
@@ -1519,7 +1519,7 @@ do
   r = request("feedback.read", {}, nil, C)
   check("feedback.read without items is refused with a code", r.ok == false and r.code == "no-items", r.error)
   r = request("feedback.read", { readers = { "commandText", "lastCommand", "blind", "solo", "page", "freeze", "selectedSequence", "previewBar", "sequenceActive" }, displays = { 1, 2, 9 }, executors = { 201, 202 }, sequences = { 5, 6 } }, nil, C)
-  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.9.0" and r.result.module.version == "0.2.0" and r.result.identity.showFile == "mcp-test-disposable", J(r))
+  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.10.0" and r.result.module.version == "0.2.0" and r.result.identity.showFile == "mcp-test-disposable", J(r))
   local by = {}
   if r.ok then for _, it in ipairs(r.result.items) do by[it.key] = it end end
   check("feedback.read: command text and last command are raw observations", by.commandText and by.commandText.value == "Store " and by.lastCommand.value == "Go+ Sequence 5 : OK" and by.lastCommand.note:find("not confirmation"), J(by.lastCommand))
@@ -1645,6 +1645,33 @@ do
   before = #logs
   Main(nil, "bank=900/1.190-197"); Cleanup()
   check("re-provisioning while a bank exists is refused as bank-exists", logFound("bank provision refused %[bank%-exists%]", before), lastLog())
+  -- KB-13: the owned-Quickey backend through the bridge argument "input=quickey".
+  before = #logs
+  Main(nil, "input=quickey"); Cleanup()
+  check("'input=quickey' switches the backend and the routing default together", state.input.backend == "quickey" and state.input.enabled == true and hk.instance:status().backend.name == "quickey" and hk.instance:routingReport().default == "quickkey" and logFound("input now enabled on the quickey backend", before), lastLog())
+  r = request("ping", {})
+  check("ping reports the quickey backend", r.ok and r.result.input.backend == "quickey" and r.result.input.bank.provisioned == true, J(r.result.input))
+  r = request("input.open", {}, nil, A)
+  local ncmd = #cmds
+  r = request("input.tap", { key = "NUM5", holdMs = 20 }, nil, A)
+  check("a tap through the bridge assigns the code's Quickey to the first reserved executor and presses it in the paged form", r.ok and r.result.hold.backend == "quickey" and r.result.hold.target.executor == 190 and r.result.hold.target.quickeyIndex == 902 and cmds[ncmd + 1] == "Assign Quickey 902 At Page 1.190" and cmds[ncmd + 2] == "Press Page 1.190" and #cmds == ncmd + 2, J({ r.result.hold.target, cmds[ncmd + 1], cmds[ncmd + 2] }))
+  check("the executor now holds the code's Quickey", execs[190].object == 902)
+  local savedOffset = _G.FAKE_CLOCK_OFFSET or 0
+  _G.FAKE_CLOCK_OFFSET = savedOffset + 1
+  local sv = hk.instance:service(require("socket").gettime())
+  _G.FAKE_CLOCK_OFFSET = savedOffset
+  check("the loop's service releases the tap on the recorded executor", cmds[#cmds] == "Unpress Page 1.190" and hk.instance:status().capacity.used == 0, J({ cmds[#cmds], sv, hk.instance:status().holds }))
+  r = request("input.press", { key = "MA1" }, nil, A)
+  check("a standalone hold still needs an interaction on this backend", r.ok == false and r.code == "interaction-required", J(r))
+  r = request("input.tap", { key = "X1" }, nil, A)
+  check("a code outside the bank is refused through the bridge, nothing issued", r.ok == false and r.code == "unavailable" and r.error:find("not in bank") and cmds[#cmds] == "Unpress Page 1.190", J(r))
+  r = request("input.tap", { key = "MA" }, nil, A)
+  check("the keyboard-only logical key MA is not a Quickey code", r.ok == false and r.code == "unsupported" and r.error:find("VirtualKeyCode"), J(r))
+  r = request("input.status", {}, nil, A)
+  check("input.status reports the backend's limitations and capabilities", r.ok and r.result.status.backend.name == "quickey" and r.result.status.backend.capabilities.keyboard == false and #r.result.status.backend.limitations >= 6 and r.result.status.routing.default == "quickkey", J(r.result.status.backend.capabilities))
+  before = #logs
+  Main(nil, "input=fake"); Cleanup()
+  check("switching back to the fake backend restores the shortcut default", state.input.backend == "fake" and hk.instance:routingReport().default == "shortcut", lastLog())
   -- Teardown is refused while a Quickey record is live, then removes only verified objects.
   hk.instance:configureRouting({ default = "quickkey" })
   r = request("input.open", {}, nil, A)

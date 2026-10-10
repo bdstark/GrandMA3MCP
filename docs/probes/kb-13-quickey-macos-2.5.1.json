@@ -1,0 +1,540 @@
+{
+  "probe": "kb-13-run",
+  "date": "2026-10-10T03:17:58.466Z",
+  "bridge": {
+    "version": "0.10.0",
+    "host": "127.0.0.1",
+    "port": 9800,
+    "build": {
+      "version": "2.5.1.0",
+      "codeType": "Release",
+      "hostType": "onPC"
+    },
+    "hostname": "bdsmbpm401",
+    "showfile": "mcp-test-disposable",
+    "input": {
+      "unresolvedFromPreviousRun": 0,
+      "holds": 0,
+      "enabled": true,
+      "sessions": 0,
+      "bank": {
+        "problems": 0,
+        "state": "ready",
+        "provisioned": true,
+        "codes": 94,
+        "qualified": 9,
+        "id": "gma3_mcp_bridge@q900.e1.180-187"
+      },
+      "note": "ownership records, not physical key state; see input.status. busy: cmd/set/setfader/lua are refused for every connection while it is set",
+      "unresolved": 0,
+      "backend": "quickey",
+      "moduleInputEnabled": true
+    }
+  },
+  "passed": 47,
+  "failed": 0,
+  "steps": [
+    {
+      "name": "deferred macro",
+      "pass": null,
+      "detail": "Macro 116 created as \"MCP kb13 deferred\" with 0 line(s); verified by contents before every rewrite and deleted at the end of the run"
+    },
+    {
+      "name": "restart macro",
+      "pass": null,
+      "detail": "Macro 115 \"MCP bridge restart quickey\""
+    },
+    {
+      "name": "teardown macro",
+      "pass": null,
+      "detail": "Macro 113 \"MCP bank teardown\""
+    },
+    {
+      "name": "bank",
+      "pass": null,
+      "detail": {
+        "id": "gma3_mcp_bridge@q900.e1.180-187",
+        "state": "ready",
+        "codes": 94,
+        "qualified": 9,
+        "executors": {
+          "page": 1,
+          "first": 180,
+          "count": 8
+        },
+        "MA1": 900,
+        "NUM5": 949,
+        "THRU": 955
+      }
+    },
+    {
+      "name": "status reports the quickey backend with its limitations and the quickkey routing default",
+      "pass": true,
+      "detail": {
+        "keyboard": false,
+        "char": false,
+        "quickkey": {
+          "tap": true,
+          "hold": true,
+          "chord": true
+        }
+      }
+    },
+    {
+      "name": "session opened",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "NUM5 tap dispatched through the bank: target is the first reserved executor",
+      "pass": true,
+      "detail": {
+        "code": "NUM5",
+        "page": 1,
+        "executor": 180,
+        "bank": "gma3_mcp_bridge@q900.e1.180-187",
+        "quickeyIndex": 949,
+        "value": 72
+      }
+    },
+    {
+      "name": "the loop released the tap (dispatched)",
+      "pass": true,
+      "detail": {
+        "unresolvedFromPreviousRun": 0,
+        "holds": 0,
+        "enabled": true,
+        "sessions": 1,
+        "bank": {
+          "problems": 0,
+          "state": "ready",
+          "provisioned": true,
+          "codes": 94,
+          "qualified": 9,
+          "id": "gma3_mcp_bridge@q900.e1.180-187"
+        },
+        "note": "ownership records, not physical key state; see input.status. busy: cmd/set/setfader/lua are refused for every connection while it is set",
+        "unresolved": 0,
+        "backend": "quickey",
+        "moduleInputEnabled": true
+      }
+    },
+    {
+      "name": "console shows 5 on the command line",
+      "pass": true,
+      "detail": "cmdtext=\"5\" after 12 ms"
+    },
+    {
+      "name": "executor 180 now holds the NUM5 Quickey (assignment stays after the release)",
+      "pass": true,
+      "detail": "MCP NUM5"
+    },
+    {
+      "name": "UNDO tap routes to the OOPS Quickey (alias folded; executor tap of OOPS)",
+      "pass": true,
+      "detail": {
+        "code": "OOPS",
+        "page": 1,
+        "executor": 180,
+        "bank": "gma3_mcp_bridge@q900.e1.180-187",
+        "quickeyIndex": 963,
+        "value": 86
+      }
+    },
+    {
+      "name": "OOPS removed the 5 (executor tap of OOPS works like the direct tap)",
+      "pass": true,
+      "detail": "\"\""
+    },
+    {
+      "name": "interaction acquired",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "MA1 hold dispatched on an executor",
+      "pass": true,
+      "detail": {
+        "code": "MA1",
+        "page": 1,
+        "executor": 180,
+        "bank": "gma3_mcp_bridge@q900.e1.180-187",
+        "quickeyIndex": 900,
+        "value": 1
+      }
+    },
+    {
+      "name": "MASTATE true while MA1 is held (feedback.read during the interaction)",
+      "pass": true,
+      "detail": "maState=true after 31 ms"
+    },
+    {
+      "name": "a repeated down report of MA1 is the same record (duplicate), nothing re-dispatched",
+      "pass": true,
+      "detail": "h3"
+    },
+    {
+      "name": "THRU next to the held MA1 is refused (chord not qualified for THRU), nothing issued",
+      "pass": true,
+      "detail": "[unsupported] Quickey THRU: the backend does not advertise chord for Quickeys (capabilities.quickkey = { tap = true, hold = true, chord = false }); the hold is refused before dispatch, nothing is substituted"
+    },
+    {
+      "name": "MA1 release dispatched on the recorded executor",
+      "pass": true,
+      "detail": {
+        "state": "released",
+        "reason": "client-release",
+        "at": 1791602241.7682,
+        "hold": "h3",
+        "outcome": "dispatched",
+        "logical": "MA1",
+        "session": "conn-333",
+        "verified": false,
+        "ok": true,
+        "tupleKey": "quickkey:#1"
+      }
+    },
+    {
+      "name": "MASTATE false after the release",
+      "pass": true,
+      "detail": "maState=false"
+    },
+    {
+      "name": "interaction ended",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "MA1+STORE chord accepted on two executors",
+      "pass": true,
+      "detail": [
+        {
+          "code": "MA1",
+          "page": 1,
+          "executor": 180,
+          "bank": "gma3_mcp_bridge@q900.e1.180-187",
+          "quickeyIndex": 900,
+          "value": 1
+        },
+        {
+          "code": "STORE",
+          "page": 1,
+          "executor": 181,
+          "bank": "gma3_mcp_bridge@q900.e1.180-187",
+          "quickeyIndex": 943,
+          "value": 66
+        }
+      ]
+    },
+    {
+      "name": "console shows Record (MA1 + STORE through the bank)",
+      "pass": true,
+      "detail": "cmdtext=\"Record \" after 33 ms"
+    },
+    {
+      "name": "MASTATE false after the chord",
+      "pass": true,
+      "detail": false
+    },
+    {
+      "name": "Fixture 1 Thru 5 Please sequence accepted",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the sequence completed with every tap released",
+      "pass": true,
+      "detail": {
+        "completed": 5,
+        "uncertain": 0,
+        "failed": 0,
+        "unattempted": 0,
+        "aborted": 0,
+        "inProgress": 0
+      }
+    },
+    {
+      "name": "5 fixtures selected, command line empty",
+      "pass": true,
+      "detail": {
+        "selection": 5,
+        "before": 0
+      }
+    },
+    {
+      "name": "CLEAR tap cleared the selection",
+      "pass": true,
+      "detail": 0
+    },
+    {
+      "name": "ESC (discovered only) is refused as unavailable",
+      "pass": true,
+      "detail": "[unavailable] logical key ESC (quickkey) selects the quickkey route, which cannot be dispatched: Quickey code ESC is discovered only (no KB-10 evidence); this backend dispatches only qualified codes (nothing dispatched; no other method is selected)"
+    },
+    {
+      "name": "GO (discovered only) is refused as unavailable",
+      "pass": true,
+      "detail": "[unavailable] logical key GO (quickkey) selects the quickkey route, which cannot be dispatched: Quickey code GO is discovered only (no KB-10 evidence); this backend dispatches only qualified codes (nothing dispatched; no other method is selected)"
+    },
+    {
+      "name": "a raw PC key is refused by the Quickey backend",
+      "pass": true,
+      "detail": "[unsupported] the owned-Quickey backend dispatches no PC keys (capabilities.keyboard = false); route the key with the quickkey method"
+    },
+    {
+      "name": "MA (a Keyboard() logical key, not a Quickey code) is refused",
+      "pass": true,
+      "detail": "[unsupported] logical key MA (quickkey) is unsupported: Quickey code MA is not an Enums.VirtualKeyCode name on this console (nothing is guessed from the key name MA)"
+    },
+    {
+      "name": "a chord whose first key lacks the chord flag is refused, nothing issued",
+      "pass": true,
+      "detail": "[unsupported] key 1 of the combo: Quickey NUM1: the backend does not advertise chord for Quickeys (capabilities.quickkey = { tap = true, hold = true, chord = false }); the combo is refused before dispatch, nothing is substituted (nothing was dispatched)"
+    },
+    {
+      "name": "deferred macro 116 fired",
+      "pass": null,
+      "detail": [
+        "Echo kb13 deferred start | 3.0",
+        "Assign Quickey 955 At Page 1.180 | 7.0",
+        "Assign Quickey 900 At Page 1.180 | Follow"
+      ]
+    },
+    {
+      "name": "MA1 held for the interruption test",
+      "pass": true,
+      "detail": {
+        "code": "MA1",
+        "page": 1,
+        "executor": 180,
+        "bank": "gma3_mcp_bridge@q900.e1.180-187",
+        "quickeyIndex": 900,
+        "value": 1
+      }
+    },
+    {
+      "name": "executor reassigned mid-hold: the release is refused, nothing issued, the record is unresolved",
+      "pass": true,
+      "detail": {
+        "since": 1791602246.4567,
+        "reason": "release refused by the backend: Page 1.180 holds the bank's THRU, not the recorded Quickey 900 (MA1); the key may still be down on the console: restore the assignment and recover (no direct Unpress Quickey is issued)",
+        "lastAttempt": 1791602246.4567
+      }
+    },
+    {
+      "name": "the console key is still down (MASTATE true) and nothing pretended otherwise",
+      "pass": true,
+      "detail": true
+    },
+    {
+      "name": "recover with the executor still reassigned: still unresolved, nothing issued",
+      "pass": true,
+      "detail": "release refused by the backend: Page 1.180 holds the bank's THRU, not the recorded Quickey 900 (MA1); the key may still be down on the console: restore the assignment and recover (no direct Unpress Quickey is issued)"
+    },
+    {
+      "name": "a new press avoids the unresolved record's executor",
+      "pass": true,
+      "detail": {
+        "code": "NUM5",
+        "page": 1,
+        "executor": 181,
+        "bank": "gma3_mcp_bridge@q900.e1.180-187",
+        "quickeyIndex": 949,
+        "value": 72
+      }
+    },
+    {
+      "name": "operator restored the assignment: recover releases through the recorded executor",
+      "pass": true,
+      "detail": {
+        "state": "released",
+        "reason": "recover",
+        "at": 1791602254.2135,
+        "hold": "h13",
+        "outcome": "dispatched",
+        "logical": "MA1",
+        "session": "conn-333",
+        "verified": false,
+        "ok": true,
+        "tupleKey": "quickkey:#1"
+      }
+    },
+    {
+      "name": "MASTATE false after the recovery",
+      "pass": true,
+      "detail": false
+    },
+    {
+      "name": "deferred macro 116 fired",
+      "pass": null,
+      "detail": [
+        "Echo kb13 Restart chain | 3.0",
+        "Assign Quickey 955 At Page 1.180 | 1.0",
+        "Go+ Macro 115 | 14.0",
+        "Assign Quickey 900 At Page 1.180 | 1.0",
+        "Plugin \"gma3_mcp_bridge\" \"input recover\" | Follow"
+      ]
+    },
+    {
+      "name": "MA1 held before the restart",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the bridge is back on the quickey backend",
+      "pass": true,
+      "detail": {
+        "unresolvedFromPreviousRun": 0,
+        "holds": 1,
+        "enabled": true,
+        "sessions": 1,
+        "bank": {
+          "problems": 0,
+          "state": "ready",
+          "provisioned": true,
+          "codes": 94,
+          "qualified": 9,
+          "id": "gma3_mcp_bridge@q900.e1.180-187"
+        },
+        "note": "ownership records, not physical key state; see input.status. busy: cmd/set/setfader/lua are refused for every connection while it is set",
+        "unresolved": 1,
+        "backend": "quickey",
+        "busy": {
+          "hold": "h1",
+          "reason": "unresolved",
+          "owner": "previous-run"
+        },
+        "moduleInputEnabled": true
+      }
+    },
+    {
+      "name": "the stuck MA1 record was adopted with its executor target, unresolved, backend quickey",
+      "pass": true,
+      "detail": {
+        "id": "h1",
+        "target": {
+          "code": "MA1",
+          "page": 1,
+          "executor": 180,
+          "bank": "gma3_mcp_bridge@q900.e1.180-187",
+          "value": 1,
+          "quickeyIndex": 900
+        },
+        "reason": "release refused by the backend: Page 1.180 holds the bank's THRU, not the recorded Quickey 900 (MA1); the key may still be down on the console: restore the assignment and recover (no direct Unpress Quickey is issued)"
+      }
+    },
+    {
+      "name": "the bank was adopted and is ready",
+      "pass": true,
+      "detail": "ready"
+    },
+    {
+      "name": "MASTATE still true across the restart (the console key stayed down)",
+      "pass": true
+    },
+    {
+      "name": "new input after the restart is [busy] until the adopted record is recovered (conflicting input blocked)",
+      "pass": true,
+      "detail": "[busy] 1 unresolved release record(s): MA1 (hold h1, session 'previous-run') may still be down (release refused by the backend: Page 1.180 holds the bank's THRU, not the recorded Quickey 900 (MA1); the key may still be down on the console: restore the assignment and recover (no direct Unpress Quickey is issued)); recover it (owner recover, or the operator's \"input recover\") before anything else runs"
+    },
+    {
+      "name": "operator \"input recover\" (deferred macro line) released the adopted record through its recorded executor",
+      "pass": true,
+      "detail": {
+        "unresolvedFromPreviousRun": 0,
+        "holds": 0,
+        "enabled": true,
+        "sessions": 1,
+        "bank": {
+          "problems": 0,
+          "state": "ready",
+          "provisioned": true,
+          "codes": 94,
+          "qualified": 9,
+          "id": "gma3_mcp_bridge@q900.e1.180-187"
+        },
+        "note": "ownership records, not physical key state; see input.status. busy: cmd/set/setfader/lua are refused for every connection while it is set",
+        "unresolved": 0,
+        "backend": "quickey",
+        "moduleInputEnabled": true
+      }
+    },
+    {
+      "name": "MASTATE false after the operator recovery",
+      "pass": true,
+      "detail": false
+    },
+    {
+      "name": "deferred macro 116 fired",
+      "pass": null,
+      "detail": [
+        "Echo kb13 teardown attempt | 3.0",
+        "Go+ Macro 113 | Follow",
+        "Echo kb13 noop | Follow",
+        "Echo kb13 noop | Follow",
+        "Echo kb13 noop | Follow"
+      ]
+    },
+    {
+      "name": "\"bank teardown\" (Macro 113) while MA1 is held left the bank in place (refused as bank-in-use; see the bridge log)",
+      "pass": true,
+      "detail": "ready"
+    },
+    {
+      "name": "interaction ended, MA1 released",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "console and bridge left clean: no holds, nothing unresolved, bank ready, empty command line, MASTATE false",
+      "pass": true,
+      "detail": {
+        "input": {
+          "unresolvedFromPreviousRun": 0,
+          "holds": 0,
+          "enabled": true,
+          "sessions": 0,
+          "bank": {
+            "problems": 0,
+            "state": "ready",
+            "provisioned": true,
+            "codes": 94,
+            "qualified": 9,
+            "id": "gma3_mcp_bridge@q900.e1.180-187"
+          },
+          "note": "ownership records, not physical key state; see input.status. busy: cmd/set/setfader/lua are refused for every connection while it is set",
+          "unresolved": 0,
+          "backend": "quickey",
+          "moduleInputEnabled": true
+        },
+        "cmd": "",
+        "ma": false
+      }
+    },
+    {
+      "name": "the deferred macro this run created is verified by contents and removed (an edited one would be preserved)",
+      "pass": true,
+      "detail": {
+        "deleted": true
+      }
+    }
+  ],
+  "finalInput": {
+    "unresolvedFromPreviousRun": 0,
+    "holds": 0,
+    "enabled": true,
+    "sessions": 0,
+    "bank": {
+      "problems": 0,
+      "state": "ready",
+      "provisioned": true,
+      "codes": 94,
+      "qualified": 9,
+      "id": "gma3_mcp_bridge@q900.e1.180-187"
+    },
+    "note": "ownership records, not physical key state; see input.status. busy: cmd/set/setfader/lua are refused for every connection while it is set",
+    "unresolved": 0,
+    "backend": "quickey",
+    "moduleInputEnabled": true
+  }
+}
