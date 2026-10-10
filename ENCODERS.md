@@ -146,8 +146,10 @@ reports delivered at open, clean unplug detection and replug). Windows/Linux hos
   unavailable`); one target per executor with assigned-object identity, key/fader/encoder functions, the configured
   fader function's level, activity, appearance colour and `playbackTarget` (Quickey objects and the bridge's reserved
   bank executors never are). Every unavailable, stale, mixed or unsupported part is an explicit field with a reason.
-- **Generation:** moves on identity, epoch, bank/page/context, slot object/resolution/readout/channel function/layer/
-  availability, executor page, assignment, functions and target status, or on any of these becoming unreadable;
+- **Generation:** moves on identity, epoch, bank/page/context, the selection's fixtures (all of them, walked apart from
+  the bounded attribute scan; no generation is claimed while that identity is incomplete), slot object/resolution/
+  readout/channel function/layer/availability, executor page, assignment, every configured function and target status,
+  or on any of these becoming unreadable;
   stays on values, levels, activity and labels (verified live: selection, bank, page and executor page moved it,
   `Attribute … At` did not).
 - **Authoritative display:** configured (`config.encoderDisplay`, 1) or requested per call; a display without an

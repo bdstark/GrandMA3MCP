@@ -25,9 +25,10 @@
 -- Control context (KB-17, 0.3.0): the readers dataPool, encoderBank, encoderSlots, executorTarget and
 -- pageExecutors describe what a surface control would operate (the KB-16 read paths), and
 -- contextSnapshot(spec, now, opts) assembles them into one bounded snapshot with a binding
--- `generation` that changes whenever an input's meaning changed (bank/page/context, slot objects,
--- resolution/readout/channel function/availability, executor assignment/functions, identity, epoch) and
--- never for a value or level alone. The encoder bar of config.encoderDisplay (or params.display) is the
+-- `generation` that changes whenever an input's meaning changed (bank/page/context, the selection's
+-- fixtures, slot objects, resolution/readout/channel function/availability, executor assignment and
+-- functions, identity, epoch) and never for a value or level alone; no generation is claimed while the
+-- selection identity or a watched part is unknown. The encoder bar of config.encoderDisplay (or params.display) is the
 -- authoritative one: a display without an encoder bar is reported unavailable, another display is
 -- never substituted. The context readers are not part of readAll()/`all` (they cost more than one
 -- property read); watch() them for service() polling and build the snapshot from the cache with
@@ -55,6 +56,7 @@ local DEFAULTS = {
   encoderBar         = 1,     -- the EncoderBar of CurrentProfile().EncoderBarPool whose banks/pages are read
   maxSlots           = 5,     -- encoder slots read per page (the pool page has five; onPC renders four)
   maxSelectionScan   = 8,     -- selected (sub)fixtures scanned for availability and value state per read
+  maxSelectionIdentity = 512, -- selected fixture ids walked for the selection identity (no channel reads)
   maxUIChannels      = 64,    -- UI channels mapped per scanned fixture
   maxGenerations     = 8,     -- binding-generation records kept (one per distinct snapshot spec)
 }
@@ -295,6 +297,35 @@ local function scanSelection(d, cfg)
     idx = nxt
   end
   if idx ~= nil and n >= cfg.maxSelectionScan and n < count then scan.partial = true; scan.limitations[#scan.limitations + 1] = string.format("selection scan bounded to %d of %d fixtures", n, count) end
+  -- Selection identity (KB-17 review): every selected fixture id, walked without channel reads beyond the
+  -- scan, bounded by config.maxSelectionIdentity. The attribute scan above stays bounded; the identity says
+  -- which fixtures an encoder would operate, so a snapshot cannot claim a generation without all of it.
+  local ids = {}
+  for i, f in ipairs(scan.fixtures) do ids[i] = f.fixture end
+  scan.identityComplete = true
+  if idx ~= nil then
+    if type(d.selectionNext) ~= "function" then
+      scan.identityComplete = false
+      scan.identityLimitation = "deps.selectionNext missing: the selection identity beyond the scanned fixtures is unknown"
+    else
+      local walked = n
+      while idx ~= nil do
+        if #ids >= cfg.maxSelectionIdentity then scan.identityComplete = false; scan.identityLimitation = string.format("selection identity bounded to %d of %d fixtures", #ids, count); break end
+        ids[#ids + 1] = idx
+        walked = walked + 1
+        local okN, nxt = pcall(d.selectionNext, idx)
+        if not okN then scan.identityComplete = false; scan.identityLimitation = "SelectionNext() failed while walking the selection identity: " .. tostring(nxt); break end
+        if nxt == idx then break end
+        idx = nxt
+      end
+    end
+  elseif n < count and scan.partial then
+    -- The scan stopped early (SelectionFirst/SelectionNext problems) and nothing more could be walked.
+    scan.identityComplete = false
+    scan.identityLimitation = scan.limitations[#scan.limitations]
+  end
+  scan.ids = ids
+  if not scan.identityComplete then scan.limitations[#scan.limitations + 1] = scan.identityLimitation end
   return scan
 end
 
@@ -549,10 +580,8 @@ local READERS = {
         end
         slots[s] = slot
       end
-      local scannedIds = {}
-      for i, f in ipairs(scan.fixtures) do scannedIds[i] = f.fixture end
       return { display = n, bar = cfg.encoderBar, bank = { index = bank0 + 1, name = pp.bankName }, page = { index = page0 + 1, name = pp.pageName }, context = context, attributeEditing = (context == "Default") and true or (context ~= nil and false or nil),
-               layer = layer, selection = { count = scan.count, scanned = #scan.fixtures, fixtures = scannedIds, partial = scan.partial, limitations = scan.limitations },
+               layer = layer, selection = { count = scan.count, scanned = #scan.fixtures, fixtures = scan.ids, identityComplete = scan.identityComplete, partial = scan.partial, limitations = scan.limitations },
                slots = slots, slotCount = pp.slotCount, truncated = pp.slotCount > count }
     end,
     identify = encoderIdent },
@@ -1064,7 +1093,7 @@ local function bindingDigest(snap)
     local sel = s.value.selection or {}
     local ids = {}
     for i, id in ipairs(sel.fixtures or {}) do ids[i] = tostring(id) end
-    parts[#parts + 1] = string.format("selection=%s:%s%s", tostring(sel.count), table.concat(ids, ","), sel.partial and ":partial" or "")
+    parts[#parts + 1] = string.format("selection=%s:%s%s", tostring(sel.count), table.concat(ids, ","), sel.identityComplete == false and ":incomplete" or "")
     for _, sl in ipairs(s.value.slots) do
       parts[#parts + 1] = string.format("slot%d=%s|%s|%s|%s|%s|%s|%s|%s", sl.slot, tostring(sl.kind), tostring(sl.ref), tostring(sl.resolution), tostring(sl.readout),
         tostring(sl.channelFunction), tostring(sl.layer), tostring(sl.availability), tostring(sl.outerRef))
@@ -1183,6 +1212,16 @@ function Instance:contextSnapshot(spec, now, opts)
   local gkey = generationKey(spec, display)
   local g = self._generations[gkey]
   snap.bindingKey = gkey
+  local selIncomplete = snap.slots and snap.slots.available and snap.slots.value.selection and snap.slots.value.selection.identityComplete == false
+  if selIncomplete then
+    -- The scanned attributes are bounded, the identity walk is bounded too: beyond its bound what an encoder
+    -- would operate is not fully known, so no generation is recorded or advanced.
+    snap.generation = nil
+    snap.generationUnknown = true
+    snap.lastGeneration = g and g.generation or nil
+    snap.generationNote = "no generation: the selection identity is incomplete (" .. tostring(snap.slots.value.selection.limitations[#snap.slots.value.selection.limitations]) .. ")"
+    return snap
+  end
   if cached and notObserved > 0 then
     -- Not every part has been observed in this epoch: the meaning is unknown, so no generation is
     -- recorded or advanced. The last recorded one (if any) is reported as such, never as current.

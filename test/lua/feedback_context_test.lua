@@ -317,44 +317,65 @@ check("switching to a fixture with identical availability and value states still
 selection.list = { 63, 64 }
 snap = f:contextSnapshot(spec, 16.7)
 check("back to the two-fixture selection: moved again", snap.generation == 8)
+-- Review: the identity covers the whole selection, not only the scanned fixtures.
+local big = {}
+for i = 1, 9 do big[i] = 100 + i end
+selection.list = big
+local s9 = f:contextSnapshot(spec, 16.8)
+check("nine fixtures with maxSelectionScan 8: the scan is partial but the identity is complete and the generation moves", s9.slots.value.selection.scanned == 8 and s9.slots.value.selection.partial == true and s9.slots.value.selection.identityComplete == true and #s9.slots.value.selection.fixtures == 9 and s9.slots.value.selection.fixtures[9] == 109 and s9.generation == 9 and s9.generationUnknown == nil, json.encode(s9.slots.value.selection))
+big[9] = 999
+local s9b = f:contextSnapshot(spec, 16.9)
+check("replacing only the ninth fixture (same count, same first eight) moves the generation (review)", s9b.generation == 10 and s9b.generationChanged == true and s9b.slots.value.selection.fixtures[9] == 999, json.encode({ s9b.generation, s9b.slots.value.selection.fixtures }))
+local fBig = FB.new({ owner = "kb17big", deps = deps(), config = { maxSelectionScan = 2, maxSelectionIdentity = 5 } }):init()
+local sb = fBig:contextSnapshot(spec, 17)
+check("beyond maxSelectionIdentity the identity is incomplete and no generation is claimed", sb.generation == nil and sb.generationUnknown == true and sb.slots.value.selection.identityComplete == false and #sb.slots.value.selection.fixtures == 5 and sb.generationNote:find("selection identity is incomplete") and sb.slots.value.selection.limitations[#sb.slots.value.selection.limitations]:find("bounded to 5 of 9"), tostring(sb.generation) .. " " .. tostring(sb.generationNote))
+selection.list = { 101, 102, 103 }
+sb = fBig:contextSnapshot(spec, 17.1)
+check("a selection within the identity bound gets a generation again (first for this spec)", sb.generation == 1 and sb.generationUnknown == nil and sb.slots.value.selection.identityComplete == true)
+local fNoNext = FB.new({ owner = "kb17nn", deps = deps({ selectionNext = false }) }):init()
+sb = fNoNext:contextSnapshot(spec, 17.2)
+check("without SelectionNext a multi-fixture selection's identity is incomplete: no generation", sb.generation == nil and sb.generationUnknown == true and sb.slots.value.selection.identityComplete == false, json.encode(sb.generationNote))
+selection.list = { 63, 64 }
+snap = f:contextSnapshot(spec, 17.3)
+check("back to the two-fixture selection (f): moved again", snap.generation == 11)
 band1.Text = "Red"
 snap = f:contextSnapshot(spec, 17)
-check("a label-only change does not move the generation", snap.generation == 8 and snap.generationChanged == false and snap.slots.value.slots[1].label == "Red")
+check("a label-only change does not move the generation", snap.generation == 11 and snap.generationChanged == false and snap.slots.value.slots[1].label == "Red")
 cf1.Text = "Rotate"
 snap = f:contextSnapshot(spec, 18)
-check("a channel-function change moves the generation", snap.generation == 9 and snap.generationChanged == true)
+check("a channel-function change moves the generation", snap.generation == 12 and snap.generationChanged == true)
 execs[201].Object = nil
 snap = f:contextSnapshot(spec, 19)
-check("a deleted assignment moves the generation and is reported empty", snap.generation == 10 and snap.executors[1].value.empty == true and snap.executors[1].value.playbackTarget == false and snap.executors[1].value.reason == "no assigned object")
+check("a deleted assignment moves the generation and is reported empty", snap.generation == 13 and snap.executors[1].value.empty == true and snap.executors[1].value.playbackTarget == false and snap.executors[1].value.reason == "no assigned object")
 execs[201].Object = seqMain
 snap = f:contextSnapshot(spec, 20)
 execs[201] = ex(201, seqMain, { keyPress = "Flash", fader = "Master" })
 snap = f:contextSnapshot(spec, 21)
-check("a changed key function moves the generation", snap.generation == 12 and snap.executors[1].value.functions.keyPress == "Flash")
+check("a changed key function moves the generation", snap.generation == 15 and snap.executors[1].value.functions.keyPress == "Flash")
 execs[201] = ex(201, seqMain, { keyPress = "Flash", fader = "Master", encoderLeft = "Rate" })
 snap = f:contextSnapshot(spec, 21.2)
-check("a changed EncoderLeft function moves the generation (review 1)", snap.generation == 13 and snap.generationChanged == true and snap.executors[1].value.functions.encoderLeft == "Rate")
+check("a changed EncoderLeft function moves the generation (review 1)", snap.generation == 16 and snap.generationChanged == true and snap.executors[1].value.functions.encoderLeft == "Rate")
 execs[201] = ex(201, seqMain, { keyPress = "Flash", fader = "Master", encoderLeft = "Rate", encoderRight = "Speed" })
 snap = f:contextSnapshot(spec, 21.4)
-check("a changed EncoderRight function moves the generation", snap.generation == 14 and snap.generationChanged == true)
+check("a changed EncoderRight function moves the generation", snap.generation == 17 and snap.generationChanged == true)
 execs[201] = ex(201, seqMain, { keyPress = "Flash", fader = "Master", encoderLeft = "Rate", encoderRight = "Speed", keyUnpressCombined = "<Go+>" })
 snap = f:contextSnapshot(spec, 21.6)
-check("a changed KeyUnpressCombined function moves the generation", snap.generation == 15 and snap.generationChanged == true)
+check("a changed KeyUnpressCombined function moves the generation", snap.generation == 18 and snap.generationChanged == true)
 displays[1] = nil
 snap = f:contextSnapshot(spec, 22)
-check("losing the encoder bar is a change of meaning: encoder/slots unavailable with reasons", snap.generation == 16 and snap.encoder.available == false and snap.encoder.reason:find("does not exist") and snap.slots.available == false)
+check("losing the encoder bar is a change of meaning: encoder/slots unavailable with reasons", snap.generation == 19 and snap.encoder.available == false and snap.encoder.reason:find("does not exist") and snap.slots.available == false)
 displays[1] = display1
 snap = f:contextSnapshot(spec, 23)
 f:invalidate("test", 24)
 snap = f:contextSnapshot(spec, 24)
-check("a new epoch moves the generation", snap.epoch == 2 and snap.generation == 18 and snap.generationChanged == true)
+check("a new epoch moves the generation", snap.epoch == 2 and snap.generation == 21 and snap.generationChanged == true)
 console.showFile = "show-b"
 snap = f:contextSnapshot(spec, 30)
-check("a show change is detected by the snapshot and moves the generation", snap.invalidated == "show-changed" and snap.epoch == 3 and snap.identity.showFile == "show-b" and snap.generation == 19)
+check("a show change is detected by the snapshot and moves the generation", snap.invalidated == "show-changed" and snap.epoch == 3 and snap.identity.showFile == "show-b" and snap.generation == 22)
 local other = f:contextSnapshot({ executors = { 205 }, display = 1 }, 31)
 check("another spec has its own generation record and the requested rule", other.generation == 1 and other.bindingKey == "display=1;executors=205" and other.authoritativeDisplay.rule == "requested" and #other.executors == 1)
 snap = f:contextSnapshot(spec, 32)
-check("the first spec's record is untouched by the other", snap.generation == 19 and snap.generationChanged == false)
+check("the first spec's record is untouched by the other", snap.generation == 22 and snap.generationChanged == false)
 snap = f:contextSnapshot({ executors = { 201 }, allExecutors = true }, 33)
 local idx = {}
 for _, x in ipairs(snap.executors) do idx[#idx + 1] = x.value and x.value.executor or x.params.executor end
