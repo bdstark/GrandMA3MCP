@@ -287,8 +287,9 @@ the service) is the mtpnxk half.
 - **Calibration coverage (review):** a physical range is reported only when it is complete and verified: every
   scanned fixture with the channel contributed the range of the channel function that names the attribute (no
   fallback to another function), the bounded scan covered the whole selection and every scanned fixture's channels
-  were enumerated and mapped (review round 2: a raising `GetUIChannels`, `GetAttributeByUIChannel` or subfixture
-  discovery marks the scan partial and the slot `discoveryIncomplete`; that fixture is not a confirmed "lacks the
+  were enumerated and mapped (review rounds 2 and 3: a raising `GetUIChannels` or subfixture discovery, and an
+  enumerated channel that cannot be mapped to a readable attribute name, whether `GetAttributeByUIChannel` raises,
+  returns nil or the name is unreadable, mark the scan partial and the slot `discoveryIncomplete`; that fixture is not a confirmed "lacks the
   attribute"); otherwise `physicalUnavailable` carries the reason and the Physical readout is refused. The range, its
   availability and the discovery state are part of the binding digest, so a range or coverage change moves the
   generation and queued motion calibrated against the old range is dropped.
@@ -314,7 +315,7 @@ the service) is the mtpnxk half.
   range-change drop: calibration per readout/resolution/layer/
   channel function/range, admission refusals for presses, touches, positions, executor elements and unqualified slots,
   the command text, coalesced and negative deltas, fine, Physical steps, feedback verdicts, a raising `Cmd`, a hold
-  ended as a noop, backend switching, amount formatting), `test/lua/feedback_context_test.lua` (114; physical ranges:
+  ended as a noop, backend switching, amount formatting), `test/lua/feedback_context_test.lua` (116; physical ranges:
   smallest over the selection, mixed ranges, the function that names the attribute, a raising `GetUIChannel`, a function
   that does not name the attribute, a bounded scan, channel-discovery failures and a range change each refusing or moving the generation), the bridge harness block (`control=console`, the commands through
   `Cmd()`, status, switching) and `test/kb19-probe.test.ts` (4).

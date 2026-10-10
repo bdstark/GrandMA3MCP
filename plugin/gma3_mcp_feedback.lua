@@ -313,13 +313,17 @@ local function scanSelection(d, cfg)
       local channels, truncated = {}, false
       for i = 1, #ui do
         if i > cfg.maxUIChannels then truncated = true; break end
+        -- Review round 3: an enumerated channel that cannot be mapped to a readable attribute name (a nil
+        -- lookup, a raise, or a handle whose name is unreadable) is incomplete discovery, not a confirmed absence.
         local okA, a = pcall(d.attributeByUIChannel, ui[i])
+        local nm = (okA and a ~= nil) and str(field(a, "name")) or nil
         if not okA then
           if not failed then discoveryFailed(idx, "GetAttributeByUIChannel(" .. tostring(ui[i]) .. ") raised: " .. tostring(a)); failed = true end
-        elseif a ~= nil then
-          local nm = str(field(a, "name"))
-          if nm ~= nil and channels[nm] == nil then channels[nm] = ui[i] end
-        end
+        elseif a == nil then
+          if not failed then discoveryFailed(idx, "GetAttributeByUIChannel(" .. tostring(ui[i]) .. ") gave nothing for an enumerated channel"); failed = true end
+        elseif nm == nil or nm == "" then
+          if not failed then discoveryFailed(idx, "the attribute of UI channel " .. tostring(ui[i]) .. " has no readable name"); failed = true end
+        elseif channels[nm] == nil then channels[nm] = ui[i] end
       end
       scan.fixtures[#scan.fixtures + 1] = { fixture = idx, target = target, channels = channels, channelCount = #ui, discoveryFailed = failed or nil }
       if truncated then scan.partial = true; scan.limitations[#scan.limitations + 1] = string.format("fixture %s: only the first %d of %d UI channels were mapped", tostring(idx), cfg.maxUIChannels, #ui) end
