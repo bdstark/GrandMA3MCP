@@ -1017,7 +1017,7 @@ a surface-specific allocator. MCP/TypeScript changes are not required unless pro
 ### Module change for KB-12 (hardkeys 0.7.0, bridge 0.9.0, 2026-10-09)
 
 Implemented in `plugin/gma3_mcp_hardkeys.lua` 0.7.0 with the regression harness `test/lua/hardkeys_bank_test.lua`
-(104 checks against a fake Quickey pool and executor page) and the bridge section of `test/lua/bridge_plugin_test.lua`
+(110 checks against a fake Quickey pool and executor page) and the bridge section of `test/lua/bridge_plugin_test.lua`
 (15 checks). No MCP tool or TypeScript contract changed; provisioning is reachable only through the plugin argument.
 
 - **Authorization and ranges.** `provisionBank({ authorized = true, quickeys = { first }, executors = { page, first,
@@ -1066,7 +1066,9 @@ Implemented in `plugin/gma3_mcp_hardkeys.lua` 0.7.0 with the regression harness 
   records and `adoptBank(record, now)` re-verifies every object at the next start (nothing created; a lost marker makes
   the entry `replaced` and refuses dispatch). The same spec on a fresh instance also finds and reuses the bank through
   the markers. `status().bank` / `bankStatus()` report everything, including the record; `ping.input.bank` and
-  `input.status` carry the summary. A record without the placeholder entry (an older format) is refused. `adopt()` now
+  `input.status` carry the summary. A complete record without the placeholder entry (an older format) is refused; the
+  record of a partially torn-down bank (`partial = true`, its placeholder already deleted) is adopted for cleanup only:
+  dispatch refuses `bank-partial` and teardown completes once the skipped objects are restored or removed. `adopt()` now
   accepts unresolved Quickey hold records (they have no `pcKey`).
 - **Bridge.** `bank=<quickey>/<page>.<first>[-<last>]`, `bankcodes=hardkeys|qualified`, `bank status`, `bank verify`,
   `bank teardown`. The console deps address objects in command syntax (`ObjectList("Quickey N")`,

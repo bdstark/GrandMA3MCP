@@ -1659,6 +1659,11 @@ do
   before = #logs
   Main(nil, "bank teardown"); Cleanup()
   check("'bank teardown' removes verified Quickeys, clears our reserved executors, skips the edited object and the look-alike", logFound("bank teardown: 7 Quickey%(s%) removed, 7 executor%(s%) cleared, 2 object%(s%) skipped; the bank is PARTIAL", before) and countPool() == 1 and pool[906] ~= nil and execs[190].object ~= nil and execs[191].object == nil and state.input.bank ~= nil, lastLog())
+  -- A restart in between: the partial record is adopted for cleanup, not dropped.
+  before = #logs
+  state._loadModules(); state.running = true; state.stopRequested = false; state.ignoreNextCleanup = false
+  hk = state.modules.hardkeys
+  check("a partial bank record is adopted at the next load for cleanup", logFound("bank adopt: bank gma3_mcp_bridge@q900.e1.190%-197 state=partial codes=1", before) and state.input.bank ~= nil and hk.instance:bankStatus().partial == true, lastLog())
   pool[906].name = "MCP CLEAR"
   before = #logs
   Main(nil, "bank teardown"); Cleanup()

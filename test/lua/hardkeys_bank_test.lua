@@ -552,6 +552,27 @@ do
   local inst6 = newInst()
   a, err = inst6:adoptBank(old, 8)
   check("a record without the reservation placeholder is refused", a == nil and err.code == "bad-argument" and err.message:find("placeholder"), J(err))
+  -- Partial teardown -> restart -> adoption for cleanup -> cleanup once the operator restores the object.
+  newConsole(); pageWithExecutors(1, 190, 8)
+  local p1 = newInst()
+  p1:provisionBank(spec(), 10)
+  console.quickeys[900].name = "Operator renamed"
+  local td = p1:teardownBank(11, { authorized = true })
+  check("partial teardown keeps the edited object and removes the placeholder", td and td.complete == false and #td.skipped == 1 and countQuickeys() == 1 and console.quickeys[900 + NCODES] == nil and p1:bankStatus().partial == true, J(td and td.skipped))
+  local rec = p1:dispose(12).bank
+  check("the record of a partial bank says so and lists the remaining object", rec and rec.partial == true and #rec.codes == 1 and rec.codes[1].index == 900, J(rec))
+  local p2 = newInst()
+  local ad, aerr = p2:adoptBank(rec, 13)
+  check("a partial record is adopted for cleanup despite the missing placeholder", ad and ad.adopted and ad.state == "partial" and ad.partial == true and ad.codeCount == 1 and ad.codes[1].state == "changed", J(aerr or ad.problems))
+  local tt, terr = p2:bankTarget("MA1", 13)
+  local xx, xerr = p2:bankExecutor(190, 13)
+  check("an adopted partial bank dispatches nothing", tt == nil and terr.code == "bank-partial" and xx == nil and xerr.code == "bank-partial", J({ terr, xerr }))
+  td = p2:teardownBank(14, { authorized = true })
+  check("teardown still skips the edited object and the bank stays partial", td and td.complete == false and #td.skipped == 1 and countQuickeys() == 1 and p2:bankStatus().state == "partial", J(td and td.skipped))
+  console.quickeys[900].name = "MCP MA1"
+  td = p2:teardownBank(15, { authorized = true })
+  check("once the operator restores the object the cleanup completes", td and td.complete and countQuickeys() == 0 and p2:bankStatus().provisioned == false and p2:dispose(16).bank == nil, J(td))
+  newConsole(); pageWithExecutors(1, 190, 8)
   -- adopt() of hold records: Quickey records are accepted since 0.7.0 (they have no pcKey).
   local inst7 = newInst()
   local ad = inst7:adopt({ { quickkey = "NUM5", quickkeyCode = 72, tupleKey = "quickkey:#72", backend = "fake", logical = "NUM5", unresolved = { reason = "test" } } }, 9)

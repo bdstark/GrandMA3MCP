@@ -1459,10 +1459,14 @@ end
 
 -- Fresh show-identity gate before any target access, executor access or teardown. A mismatch or an
 -- unreadable identity marks the bank stale (cached reads dropped) and returns the refusal.
+-- The state a bank returns to once its show is back or its objects verify: a partially torn-down bank
+-- (cleanup only, dispatch refused) stays "partial" until its last object is gone.
+local function bankBaseState(bank) return bank.partial and "partial" or "degraded" end
+
 function Instance:_bankShowGate(bank)
   local show, serr = self:_readShowIdentity()
   if show and show == bank.show then
-    if bank.state == "stale" then bank.state, bank.staleReason = "degraded", nil end  -- back on the right show: still needs verifyBank()
+    if bank.state == "stale" then bank.state, bank.staleReason = bankBaseState(bank), nil end  -- back on the right show: still needs verifyBank()
     return true
   end
   self:_markBankStale(bank, show and ("show/data pool is '" .. show .. "', the bank belongs to '" .. bank.show .. "'") or ("show identity unreadable: " .. tostring(serr)))
@@ -1764,7 +1768,7 @@ function Instance:verifyBank(now)
     if x.problem then problems[#problems + 1] = { kind = "executor", executor = string.format("%d.%d", x.page, x.index), state = x.state, detail = x.problem } end
   end
   bank.verifiedAt, bank.problems = now, problems
-  bank.state = #problems == 0 and "ready" or "degraded"
+  bank.state = bank.partial and "partial" or (#problems == 0 and "ready" or "degraded")
   bank.staleReason = nil
   return self:_bankSummary(now, { problems = problems })
 end
@@ -1794,6 +1798,7 @@ function Instance:bankTarget(codeName, now)
   local key = type(codeName) == "string" and codeName:upper() or tostring(codeName)
   local canonical = BANK_ALIASES[key] or key
   local e = bank.byName[canonical]
+  if bank.partial then return fail("bank-partial", "the bank was partially torn down (" .. #bank.codes .. " object(s) left that did not verify as ours); it exists for cleanup only and dispatches nothing; restore or remove the objects and tear it down", { bank = bank.id }) end
   if not e or e.placeholder then return fail("code-not-in-bank", "code " .. key .. " is not in bank " .. bank.id .. (bank.spec.codes == "qualified" and " (codes = \"qualified\")" or ""), { bank = bank.id }) end
   local d, err = self:_bankDeps()
   if not d then return nil, err end
@@ -1828,6 +1833,7 @@ function Instance:bankExecutor(index, now)
   local x
   for _, cand in ipairs(bank.executors) do if cand.index == index then x = cand; break end end
   if not x then return fail("executor-not-in-bank", string.format("Page %d.%d is not one of the bank's reserved executors", bank.spec.executors.page, tonumber(index) or -1)) end
+  if bank.partial then return fail("bank-partial", "the bank was partially torn down; it exists for cleanup only and its executors are not used", { bank = bank.id }) end
   local d, err = self:_bankDeps()
   if not d then return nil, err end
   local okShow, serr2 = self:_bankShowGate(bank)
@@ -1903,7 +1909,7 @@ function Instance:teardownBank(now, opts)
     bank.codes = remaining
     bank.byName, bank.byIndex = {}, {}
     for _, e in ipairs(remaining) do bank.byName[e.name], bank.byIndex[e.index] = e, e end
-    bank.state = "partial"
+    bank.state, bank.partial = "partial", true
     summary = self:_bankSummary(now)
   end
   summary.removed, summary.skipped, summary.cleared = removed, skipped, cleared
@@ -1924,7 +1930,8 @@ function Instance:adoptBank(record, now)
   local s, err = validateBankSpec({ authorized = true, quickeys = record.spec.quickeys, executors = record.spec.executors, codes = record.spec.codes, label = record.spec.label }, self._config)
   if not s then return nil, err end
   if bankId(self._owner, s) ~= record.id then return fail("bank-mismatch", "the record's id does not match its spec") end
-  local bank = { id = record.id, owner = self._owner, label = s.label, spec = s, state = "degraded", show = record.show or "", createdAt = record.createdAt, adoptedAt = now, verifiedAt = nil, checkedAt = now,
+  local partial = record.partial == true
+  local bank = { id = record.id, owner = self._owner, label = s.label, spec = s, state = partial and "partial" or "degraded", partial = partial or nil, show = record.show or "", createdAt = record.createdAt, adoptedAt = now, verifiedAt = nil, checkedAt = now,
                  codes = {}, byName = {}, byIndex = {}, executors = {}, exclusions = record.exclusions or {}, aliases = record.aliases or {}, unresolvedAliases = record.unresolvedAliases or {},
                  enumEntries = record.enumEntries, counters = { created = 0, reused = 0, verifications = 0, targetChecks = 0, refusedTargets = 0 } }
   local hasPlaceholder = false
@@ -1936,7 +1943,9 @@ function Instance:adoptBank(record, now)
     end
   end
   if #bank.codes == 0 then return fail("bad-argument", "the record lists no codes") end
-  if not hasPlaceholder then return fail("bad-argument", "the record has no reservation placeholder entry; it predates the executor reservation and cannot be adopted (tear down from its own version, or delete the objects by hand)") end
+  -- A partially torn-down bank legitimately lacks the placeholder (deleted with the rest): it is adopted for
+  -- cleanup only. A complete record without it predates the executor reservation and is refused.
+  if not hasPlaceholder and not partial then return fail("bad-argument", "the record has no reservation placeholder entry; it predates the executor reservation and cannot be adopted (tear down from its own version, or delete the objects by hand)") end
   for i = 0, s.executors.count - 1 do bank.executors[#bank.executors + 1] = { page = s.executors.page, index = s.executors.first + i, state = "unverified" } end
   if not record.show or record.show == "" then return fail("bad-argument", "the record carries no show identity") end
   self._bank = bank
@@ -1953,7 +1962,7 @@ function Instance:_bankRecord()
   local codes = {}
   for _, e in ipairs(bank.codes) do codes[#codes + 1] = { name = e.name, value = e.value, index = e.index, qualified = e.qualified, note = e.note, placeholder = e.placeholder } end
   return { id = bank.id, owner = bank.owner, spec = { quickeys = bank.spec.quickeys, executors = bank.spec.executors, codes = bank.spec.codes, label = bank.spec.label },
-           show = bank.show, createdAt = bank.createdAt, codes = codes, exclusions = bank.exclusions, aliases = bank.aliases, unresolvedAliases = bank.unresolvedAliases, enumEntries = bank.enumEntries }
+           show = bank.show, createdAt = bank.createdAt, partial = bank.partial or nil, codes = codes, exclusions = bank.exclusions, aliases = bank.aliases, unresolvedAliases = bank.unresolvedAliases, enumEntries = bank.enumEntries }
 end
 
 -- Bounded freshness check from service(): the show identity is re-read every config.bankCheckMs; a
@@ -1992,7 +2001,7 @@ function Instance:_bankSummary(now, extra)
   end
   local executors = {}
   for _, x in ipairs(bank.executors) do executors[#executors + 1] = { page = x.page, index = x.index, state = x.state, assigned = x.assigned, problem = x.problem, reservedNow = x.reservedNow } end
-  local out = { provisioned = true, id = bank.id, owner = bank.owner, label = bank.label, state = bank.state, staleReason = bank.staleReason, show = bank.show,
+  local out = { provisioned = true, id = bank.id, owner = bank.owner, label = bank.label, state = bank.state, partial = bank.partial or nil, staleReason = bank.staleReason, show = bank.show,
                 spec = { quickeys = bank.spec.quickeys, executors = bank.spec.executors, codes = bank.spec.codes },
                 codeCount = #codes, qualifiedCount = qualified, discoveredCount = discovered, problemCount = problems,
                 codes = codes, placeholder = placeholder, executors = executors, exclusions = bank.exclusions, aliases = bank.aliases, unresolvedAliases = bank.unresolvedAliases, enumEntries = bank.enumEntries,
