@@ -640,7 +640,7 @@ another owner (bridge 0.14.0, [reference](reference.md#continuous-control-plugin
 
 ## Vendoring into another plugin (mtpnxk)
 
-Use the immutable upstream revision **`2516167fc029085be6c8b1c82cfce0a2b49c298b`** (KB-18, hardkeys 0.10.0 / feedback 0.3.0 /
+Use the immutable upstream revision **`9f08f871f864084afcd670008310b285e8b31bfc`** (KB-18, hardkeys 0.10.0 / feedback 0.3.0 /
 control 0.1.0) for the current module set; the earlier pins were `c8dbb3aa6edf352fc977d5196399bb6daf222d2b` (KB-17,
 hardkeys 0.10.0 / feedback 0.3.0), `3960334f295aaa2dcd98beb62beeccfcccbef46e` (KB-15, hardkeys 0.10.0 / feedback 0.2.0), `6e0d9c1918dd22e4703a9a36cf0440b20b4014ee`
 (`main` after PR #12, hardkeys 0.5.0, the pair mtpnxk qualified in KB-08) and `9da14544155f921c5dd4fd1cbb9a1ea4bd6f6e78`
@@ -652,7 +652,7 @@ manifest, not an automatic updater or a runtime dependency on GitHub.
 | --- | --- | --- | --- |
 | `plugin/gma3_mcp_hardkeys.lua` | 0.10.0 | 1 | `a57ebd29af3b2c7e9e06ef3dcd8b7059c775db83b0dc61760f49e75973cc7dc3` |
 | `plugin/gma3_mcp_feedback.lua` | 0.3.0 | 1 | `7949a11282b97cdbf71cf596957f13231807b217c40c315e10623856053938c0` |
-| `plugin/gma3_mcp_control.lua` | 0.1.0 | 1 | `c5a3dccdbdc64297e5a30f974a1a8358bb20966cd6ab61ae90091b8f29ecaee9` |
+| `plugin/gma3_mcp_control.lua` | 0.1.0 | 1 | `dbeeb8b765c7cbd883532dd03d84e514b90a27358bde13a513af853036bde573` |
 
 1. Obtain the Lua files from that exact revision of `bdstark/GrandMA3MCP`, rather than a moving branch.
    Copy them unchanged with [LICENSE](../LICENSE) and the manifest into the surface package. The manifest's
