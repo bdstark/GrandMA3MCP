@@ -735,9 +735,10 @@ hundred block: 201 can cover 202, never 301). For a number `n` the reader scans 
 coveredWidth = w, playbackTarget = false`: adjacent numbers are never assumed to be separate playbacks. A wider span
 than the bound is not resolved (the bound is a config key). `expanded = true` marks the wide executor itself (it is a
 target). Live evidence: the KB-21 probe's `run` tries `Set Page P.E Property "Width" "2"` on a free executor and
-records what the console answers for the covered number (`pageMissing`, `coveredBy`, the raw `GetExecutor` /
-`ObjectList` result); until a console accepts that form, width > 1 is harness evidence only (every executor KB-16 and
-KB-17 read live had width 1).
+records what the console answers for the covered number. Live (2026-10-10): both `Set` forms answered OK and changed
+nothing; the property write `ObjectList("Page 1.180")[1]:Set("Width", 2)` took, 181 was reported `coveredBy 180`, and the
+console answers a handle of class `Proxy` (no `Width`, no `Object`) for the covered number, which the reader treats as an
+empty slot of its own.
 
 **Spec and digest.** `contextSnapshot({ executors, executorPage? })` / `watchContext` / `contextItems` bind every
 listed executor to `executorPage` when given (items `executorTarget[executor=n,page=P]`, binding key `...;page=P`,
@@ -745,9 +746,12 @@ snapshot `executorMode = "page"`, `executorSpecPage`); without it the executors 
 "current"`, the old keys). `allExecutors` lists the explicit page when one is given. The digest now carries, per
 executor, its page number and mode, `width`, `coveredBy`, `pageMissing` and the pool; the user's **current page** is
 part of the digest only while some bound executor follows it (no executors bound, or any current-mode executor), so
-an **independent-page binding does not move when the console changes pages** (verified in the harness: `Page 2` moved
-a following binding by one generation and left the independent one alone; a width change, a deleted page, a deleted
-or replaced assignment each move it).
+an **independent-page binding does not move when the console changes pages** (verified in the harness and live: `Page 2`
+moved a following binding by one generation and left the independent one alone; a width change, a deleted page, a deleted
+or replaced assignment each move it). A **cached** snapshot of a following binding claims no generation while any
+executor was last observed on another page than the page item names (`generationUnknown`, `pageChangePending`): live, a
+page change had moved the generation four times as the twenty bound executors were re-read a few per tick; now it moves
+once, after the re-read.
 
 **Resolution (control 0.4.0).** An event target is `{ executor = n, element, page? }`. `resolveTarget` matches the
 binding item by **(page, executor)**: a target without `page` names a current-mode item, a target with `page` a
@@ -773,14 +777,15 @@ surface's pickup/takeover starts over on a bank change.
 
 **Bridge 0.17.0.** `feedback.context` and `control.bind` take `executorPage` (`[bad-args]` unless a positive integer;
 `[no-feedback]` on a feedback module without explicit pages); `control.bind` returns `executorMode`; `control.status`
-lists the frozen targets. Harness: `test/lua/feedback_context_test.lua` (142 checks; 22 new: paged reads, a missing
+lists the frozen targets. Harness: `test/lua/feedback_context_test.lua` (148 checks; 28 new: paged reads, a missing
 page, widths and coverage across the row bound, the current-page dependency, `pageExecutors` on a page, the binding
 key and mode, a page change moving only the following binding, width/page/assignment changes, a bad `executorPage`,
-the cached path), `test/lua/control_admission_test.lua` (213; 19 new: identity in the key and the intent, page-bound
-resolution and its refusals, covered and missing pages, a bad page, the frozen release through a bank + page change,
-the fresh down reaching the new mapping, a forced end, the strip gesture cancelled by a rebind), the bridge harness
-(494; 8 new) and `test/kb21-probe.test.ts` (4). Live: [kb-21-executors-macos-2.5.1.md](probes/kb-21-executors-macos-2.5.1.md)
-(`node scripts/kb21-probe.mjs run`, see the record for what ran).
+the cached path, an empty executor's page, the no-generation window of a page change), `test/lua/control_admission_test.lua`
+(213; 19 new: identity in the key and the intent, page-bound resolution and its refusals, covered and missing pages, a
+bad page, the frozen release through a bank + page change, the fresh down reaching the new mapping, a forced end, the
+strip gesture cancelled by a rebind), the bridge harness (495; 9 new, the binding source carrying `executorPage`) and
+`test/kb21-probe.test.ts` (4). Live: [kb-21-executors-macos-2.5.1.md](probes/kb-21-executors-macos-2.5.1.md)
+(`node scripts/kb21-probe.mjs run`, 28/28 on 2026-10-10).
 
 ## Vendoring into another plugin (mtpnxk)
 

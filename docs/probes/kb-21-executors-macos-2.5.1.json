@@ -2,7 +2,7 @@
   "mode": "run",
   "host": "127.0.0.1",
   "port": 9800,
-  "startedAt": "2026-10-10T22:32:05.294Z",
+  "startedAt": "2026-10-10T22:41:04.129Z",
   "ping": {
     "bridgeVersion": "0.17.0",
     "build": {
@@ -319,7 +319,7 @@
       "name": "verify: nothing queued, no gesture, not busy",
       "pass": true,
       "detail": {
-        "conn-35": {
+        "conn-81": {
           "devices": {
             "probe-mtouch": {
               "late": 0,
@@ -330,12 +330,12 @@
               "rateDropped": 0
             }
           },
-          "openedAt": 1791671525.9149,
+          "openedAt": 1791672064.7474,
           "gestures": 0,
-          "remainingMs": 14966,
-          "expiresAt": 1791671540.9149,
+          "remainingMs": 14984,
+          "expiresAt": 1791672079.7474,
           "state": "active",
-          "id": "conn-35",
+          "id": "conn-81",
           "leaseMs": 15000,
           "counters": {
             "evicted": 0,
@@ -346,7 +346,7 @@
             "lost": 0,
             "applied": 0
           },
-          "binding": "client 35",
+          "binding": "client 81",
           "renewals": 0,
           "queued": 0,
           "gestureList": []
@@ -595,7 +595,7 @@
           "kind": "button",
           "device": "probe-mtouch",
           "targetKey": "execDefault#1/1.180.key|14.14.1.7.5527|Go+",
-          "since": 1791671526.8183
+          "since": 1791672065.6851
         }
       }
     },
@@ -606,14 +606,14 @@
         "ok": false,
         "id": "a34",
         "code": "busy",
-        "error": "[busy] a command is refused while input ownership is active: button is down on probe-mtouch/PFA180 of session conn-35. Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first",
+        "error": "[busy] a command is refused while input ownership is active: button is down on probe-mtouch/PFA180 of session conn-81. Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first",
         "detail": {
-          "owner": "conn-35",
+          "owner": "conn-81",
           "control": "PFA180",
           "code": "busy",
           "device": "probe-mtouch",
           "module": "control",
-          "message": "a command is refused while input ownership is active: button is down on probe-mtouch/PFA180 of session conn-35. Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first",
+          "message": "a command is refused while input ownership is active: button is down on probe-mtouch/PFA180 of session conn-81. Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first",
           "reason": "button-down"
         }
       }
@@ -659,7 +659,7 @@
           "kind": "button",
           "device": "probe-mtouch",
           "targetKey": "execDefault#1/1.180.key|14.14.1.7.5527|Go+",
-          "since": 1791671526.8183
+          "since": 1791672065.6851
         }
       ]
     },
@@ -682,7 +682,7 @@
           },
           "down": false,
           "outcome": "applied",
-          "at": 1791671529.4752,
+          "at": 1791672068.336,
           "kind": "button"
         }
       }
@@ -787,7 +787,7 @@
             "kind": "button",
             "device": "probe-mtouch",
             "targetKey": "execDefault#1/1.182.key|14.14.1.7.5527|Go+",
-            "since": 1791671531.8147
+            "since": 1791672070.5886
           }
         ]
       }
@@ -828,7 +828,7 @@
           },
           "down": false,
           "outcome": "applied",
-          "at": 1791671535.5566,
+          "at": 1791672074.3474,
           "kind": "button"
         }
       }
@@ -873,7 +873,7 @@
           },
           "down": false,
           "outcome": "applied",
-          "at": 1791671538.7854,
+          "at": 1791672077.5653,
           "kind": "button"
         }
       }
@@ -1030,7 +1030,7 @@
             "result": {
               "dropped": 0,
               "unresolved": [],
-              "session": "conn-36",
+              "session": "conn-82",
               "ended": []
             }
           }
@@ -1044,7 +1044,7 @@
             "result": {
               "dropped": 0,
               "unresolved": [],
-              "session": "conn-35",
+              "session": "conn-81",
               "ended": []
             }
           }
@@ -1120,7 +1120,7 @@
       }
     }
   ],
-  "finishedAt": "2026-10-10T22:32:23.044Z",
+  "finishedAt": "2026-10-10T22:41:21.776Z",
   "passed": 28,
   "failed": 0
 }
