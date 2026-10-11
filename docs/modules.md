@@ -884,7 +884,7 @@ is ever inferred from a translated display label alone:
 | --- | --- | --- |
 | slot `featureGroup`, `featureName` | the names inside the attribute definition's `Feature` display path ("FeatureGroup 4 'Color'.Feature 1 'RGB'" -> `Color`, `RGB`) | the category scheme (Dimmer, Position, Gobo, Color, Beam, Focus, Control, Shapers, Video) and the colour group test |
 | slot `activationGroup` | the name inside the definition's `ActivationGroup` path ("ActivationGroup 3 'ColorRGB'" -> `ColorRGB`) | the components that activate together (KB-17 live: a write to one colour component activates the group) |
-| slot `colorR/G/B/A`, `colorFormat`, `colorDefined` | the definition's `Color` parsed to 0..1 (floats as 2.5.1 prints them; hex and byte lists accepted); `colorDefined` is false when R, G and B are all 0 | the component's identity colour **when the show defines one**; black (Dimmer, Gobo live) is "no colour defined", a surface falls back to its scheme and never shows black as a colour |
+| slot `colorR/G/B/A`, `colorFormat`, `colorDefined`, `colorClamped?` | the definition's `Color` parsed to 0..1 (floats as 2.5.1 prints them; hex and byte lists accepted; a component outside 0..1, live UV's negative green, is clamped and `colorClamped` set); `colorDefined` is false when R, G and B are all 0 | the component's identity colour **when the show defines one**; black (Dimmer, Gobo live) is "no colour defined", a surface falls back to its scheme and never shows black as a colour |
 | slot `colorUnavailable` | no `Color` text or text that is neither floats nor hex | explicit; nothing is guessed |
 | executor `appearance.r/g/b/a`, `appearance.format` | the assigned object's `Appearance.BackRGBA` parsed (hex "RRGGBBAA" live, KB-16; float lists accepted) | the assignment colour; distinct from running, pressed, pickup and stale, which are the surface's own indications |
 | executor `appearance.rgbaUnavailable` | BackRGBA text that does not parse | explicit |
@@ -898,10 +898,11 @@ activity are what they were (KB-17/KB-21: `valueState` distinguishes `mixed` fro
 `activeUnavailable`, `level` from `level.unavailable`), the inputs for the surface's value indicators.
 
 **Bridge 0.18.0 (unchanged).** `feedback.context` carries the new fields; no new op. Harness:
-`test/lua/feedback_context_test.lua` (153; 5 new: the path names and the activation group, the float colour as 2.5.1
-prints it, a definition without a colour, Dimmer's black colour as "none defined", the float and hex appearance
-forms) and `test/kb23-probe.test.ts` (4). Live: `node scripts/kb23-probe.mjs verify|run` (the run records which colour
-components the show's definitions actually colour); the record is pending (see ENCODERS.md "KB-23 results").
+`test/lua/feedback_context_test.lua` (154; 6 new: the path names and the activation group, the float colour as 2.5.1
+prints it, a definition without a colour, Dimmer's black colour as "none defined", UV's out-of-gamut colour clamped and
+flagged, the float and hex appearance forms) and `test/kb23-probe.test.ts` (4). Live:
+[kb-23-colours-macos-2.5.1.md](probes/kb-23-colours-macos-2.5.1.md) (`node scripts/kb23-probe.mjs run`, 10/10 on
+2026-10-10: the RGB components' definition colours, UV out of gamut, hex appearances).
 
 ## Vendoring into another plugin (mtpnxk)
 

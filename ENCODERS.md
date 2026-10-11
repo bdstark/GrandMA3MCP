@@ -578,15 +578,16 @@ limiting, the textual status and the per-device colour qualification are the sur
 - **Colours move no binding:** colour and appearance stay out of the binding digest; a surface renders mapping and
   colour from one snapshot (its half of "update bindings and their colors together").
 - **Harness:** `test/lua/feedback_context_test.lua` (153; 5 new), `test/kb23-probe.test.ts` (4).
-- **Live:** not yet run. `node scripts/kb23-probe.mjs verify` is read-only; `run` (disposable show, Lua on) selects
-  the RGB fixture and the colour bank's pages and records which components the show's definitions colour (the
-  evidence for the surface's R/G/B/Amber/W/UV scheme) and the definitions through Lua. Record to be
-  `docs/probes/kb-23-colours-macos-2.5.1.md` / `.json`.
+- **Live:** [kb-23-colours-macos-2.5.1.md](docs/probes/kb-23-colours-macos-2.5.1.md) with the
+  [script report](docs/probes/kb-23-colours-macos-2.5.1.json) (`node scripts/kb23-probe.mjs run`, **10/10** on
+  2026-10-10): the show's definitions colour R `1,0,0`, G, B, RY/"Amber" `1,0.5,0`, W `1,1,1`; Dimmer, Pan and Gobo1 are
+  black (no colour defined); **UV's colour is out of gamut** (`0.1744,-0.1443,1,1`), which the first module refused and
+  0.6.0 now clamps and flags (`colorClamped`); appearances are hex `FF7F00FF` ("Orange") where set, otherwise
+  `appearanceUnavailable`; every activation group is the path name (`ColorRGB`, `PanTilt`, `Gobo1`; Dimmer has none).
 
-**Limitations:** the attribute `Color` of the colour components has not been read live yet (only Dimmer's and Gobo's,
-both black, were recorded before KB-23), so whether the show's definitions colour R/G/B/RY/W/UV is the first thing the
-live run establishes; no fixture-type (GDTF emitter) colour is read; the executor's own Appearance is not read (the
-assigned object's is, as KB-16 qualified).
+**Limitations:** no fixture-type (GDTF emitter) colour is read; the executor's own Appearance is not read (the assigned
+object's is, as KB-16 qualified); a definition colour outside 0..1 is clamped, not interpreted (UV's negative green is
+the console's own out-of-gamut representation).
 
 ## KB-24 — Device profiles and end-to-end qualification
 

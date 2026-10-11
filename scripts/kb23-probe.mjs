@@ -36,7 +36,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export function slotColour(s) {
   if (!s || s.kind !== "attribute") return { slot: s?.slot, kind: s?.kind };
   const out = { slot: s.slot, name: s.name, label: s.label, featureGroup: s.featureGroup, featureName: s.featureName, activationGroup: s.activationGroup };
-  if (typeof s.colorR === "number") out.rgba = [s.colorR, s.colorG, s.colorB, s.colorA], out.defined = s.colorDefined === true, out.format = s.colorFormat;
+  if (typeof s.colorR === "number") { out.rgba = [s.colorR, s.colorG, s.colorB, s.colorA], out.defined = s.colorDefined === true, out.format = s.colorFormat; if (s.colorClamped) out.clamped = true; }
   else out.unavailable = s.colorUnavailable ?? s.attributeUnavailable ?? "no colour fields";
   return out;
 }

@@ -2,7 +2,7 @@
   "mode": "run",
   "host": "127.0.0.1",
   "port": 9800,
-  "startedAt": "2026-10-11T02:36:49.704Z",
+  "startedAt": "2026-10-11T02:38:44.266Z",
   "ping": {
     "bridgeVersion": "0.18.0",
     "build": {
@@ -72,7 +72,7 @@
           "component": "gma3_mcp_feedback",
           "version": "0.6.0"
         },
-        "generation": 3
+        "generation": 5
       }
     },
     {
@@ -86,7 +86,6 @@
             "label": "Dim",
             "featureGroup": "Dimmer",
             "featureName": "Dimmer",
-            "activationGroup": "",
             "rgba": [
               0,
               0,
@@ -136,7 +135,6 @@
             "label": "Dim",
             "featureGroup": "Dimmer",
             "featureName": "Dimmer",
-            "activationGroup": "",
             "rgba": [
               0,
               0,
@@ -812,8 +810,8 @@
       "pass": true,
       "detail": {
         "generation": [
-          3,
-          3
+          5,
+          5
         ]
       }
     },
@@ -918,7 +916,15 @@
           "featureGroup": "Color",
           "featureName": "RGB",
           "activationGroup": "ColorRGB",
-          "unavailable": "colour component out of range in 0.1744260043,-0.1443289965,1.0000000000,1.0000000000"
+          "rgba": [
+            0.1744260043,
+            0,
+            1,
+            1
+          ],
+          "defined": true,
+          "format": "floats",
+          "clamped": true
         },
         {
           "slot": 3,
@@ -1008,6 +1014,16 @@
             [
               1,
               1,
+              1,
+              1
+            ]
+          ],
+          [
+            "ColorRGB_UV",
+            "UV",
+            [
+              0.1744260043,
+              0,
               1,
               1
             ]
@@ -1199,7 +1215,7 @@
       }
     }
   ],
-  "finishedAt": "2026-10-11T02:36:51.090Z",
+  "finishedAt": "2026-10-11T02:38:45.639Z",
   "failed": 0,
   "passed": 10
 }
