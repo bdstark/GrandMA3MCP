@@ -203,6 +203,65 @@ do
   check("a different fine flag is its own intent", r5.accepted and r5.coalesced == nil and r5.queued == 3, J(r5))
   inst:service(1.1)
   check("applied in order: slot1 +2 (merged), slot1 +1 (gesture 7), slot1 +1 fine", b.intents[1].delta == 2 and b.intents[1].events == 2 and b.intents[2].delta == 1 and b.intents[3].fine == true, J(b.intents))
+  -- Review (PR #28, P1): the admission guards stay ahead of the optimisation.
+  local inst2, b2 = fresh({ requireBindingRevision = true })
+  inst2:openSession({ id = "s" }, 1)
+  local rev = inst2:bindingInfo(1).revision
+  local q1 = inst2:submit("s", 1, rel(1, 1, 1, { binding = rev }))
+  local _, eb = inst2:submit("s", 1.001, rel(2, 1, 1))
+  check("review P1: a mergeable delta without the required binding revision is refused binding-required", q1.accepted and eb and eb.code == "binding-required", J(eb))
+  local _, es = inst2:submit("s", 1.002, rel(3, 1, 1, { binding = rev + 7 }))
+  check("review P1: a mergeable delta with a stale binding revision is refused stale-binding", es and es.code == "stale-binding", J(es))
+  local inst3, b3 = fresh()
+  local busyOwner = nil
+  inst3._deps.busy = function() return busyOwner end
+  inst3:openSession({ id = "s" }, 1)
+  local q3 = inst3:submit("s", 1, rel(1, 1, 1))
+  busyOwner = { owner = "bridge", reason = "test", description = "another injector" }
+  local _, ebz = inst3:submit("s", 1.001, rel(2, 1, 1))
+  busyOwner = nil
+  check("review P1: a mergeable delta while another input owner is busy is refused busy, nothing merged", q3.accepted and ebz and ebz.code == "busy" and inst3:status().sessions.s.queued == 1, J(ebz))
+  inst3:service(1.1)
+  check("review P1: only the first delta was applied", #b3.intents == 1 and b3.intents[1].delta == 1, J(b3.intents))
+end
+
+-------------------------------------------------------------------------------
+-- Review (PR #28, P2): two controls on one target keep their order in both merge paths
+-------------------------------------------------------------------------------
+do
+  local inst, b = fresh()
+  inst:openSession({ id = "s" }, 1)
+  local a1 = inst:submit("s", 1, rel(1, 1, 100))
+  local b1 = inst:submit("s", 1.001, rel(2, 1, -100, { control = "Strip1", device = "mtouch" }))
+  local a2 = inst:submit("s", 1.002, rel(3, 1, 100))
+  check("review P2: A +100, B -100, A +100 on one slot stays three intents (no early merge across B)", a1.queued == 1 and b1.queued == 2 and a2.queued == 3 and a2.coalesced == nil and a2.early == nil, J({ a1, b1, a2 }))
+  inst:service(1.1)
+  check("review P2: applied as +100, -100, +100 in order", #b.intents == 3 and b.intents[1].delta == 100 and b.intents[2].delta == -100 and b.intents[3].delta == 100, J(b.intents))
+  -- The resolved-queue path too: past earlyMergeMs the regular merge must also stop at B.
+  inst:submit("s", 2, rel(4, 1, 100)); inst:submit("s", 2.001, rel(5, 1, -100, { control = "Strip1", device = "mtouch" }))
+  local a3 = inst:submit("s", 2.2, rel(6, 1, 100))
+  check("review P2: the regular merge (past earlyMergeMs) stops at the other control's motion on the same target", a3.queued == 3 and a3.coalesced == nil, J(a3))
+  -- Positions of another control on the same target are not superseded across either.
+  local p1 = inst:submit("s", 3, abs(7, 201, 0.2))
+  local p2 = inst:submit("s", 3.001, abs(8, 201, 0.4, { control = "Strip201b" }))
+  local p3 = inst:submit("s", 3.002, abs(9, 201, 0.6))
+  check("review P2: a position does not supersede past another control's position on the same target", p1.accepted and p2.accepted and p3.accepted and p3.superseded == nil, J(p3))
+end
+
+-------------------------------------------------------------------------------
+-- Review (PR #28, P2): the refused-sequence set is bounded
+-------------------------------------------------------------------------------
+do
+  local inst = fresh({ maxEventsPerSecond = 100000 })  -- the device rate limit would otherwise drop (and commit) the burst
+  inst:openSession({ id = "s" }, 1)
+  inst:submit("s", 1, rel(1, 1, 1))
+  for i = 2, 1001 do local _, e = inst:submit("s", 1 + i * 0.0001, rel(i, 9, 1)); if e and e.code ~= "target-unavailable" then print("DEBUG refusal " .. i .. ": " .. tostring(e.code)); break end end  -- slot 9 is off the page: refused
+  local d = inst:status(1.2).sessions.s.devices.nxk
+  local n = 0
+  for _ in pairs(inst._sessions.s.devices.nxk.refused) do n = n + 1 end
+  check("review P2: 1000 refusals keep at most seqWindow refused numbers", n <= 64 and (inst._sessions.s.devices.nxk.refusedCount or 0) == n, J({ n = n, count = inst._sessions.s.devices.nxk.refusedCount }))
+  local r = inst:submit("s", 1.3, rel(1002, 1, 1))
+  check("review P2: the next admitted event reports the gap beyond the window as loss, the window's refusals not", r.accepted and r.lost == 1000 - 64, J(r))
 end
 
 -------------------------------------------------------------------------------
