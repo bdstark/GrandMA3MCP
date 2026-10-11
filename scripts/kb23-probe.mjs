@@ -165,7 +165,7 @@ async function main() {
     let mutationError = null;
     try {
       const sel0 = c0?.slots?.value?.selection?.count;
-      if (sel0 !== 0) record("run: preflight: the selection must be empty", false, sel0);
+      if (sel0 !== 0) record("run: preflight: the selection must be empty", false, { count: sel0, slots: c0?.slots?.available ? "available" : (c0?.slots?.reason ?? c0?.slots?.error ?? "not in the snapshot"), stale: c0?.stale, generationNote: c0?.generationNote });
       else {
         const bank0 = c0.encoder.value.bank.index, page0 = c0.encoder.value.page.index;
         cleanup.add("ClearSelection", () => A.request("cmd", { command: "ClearSelection" }));

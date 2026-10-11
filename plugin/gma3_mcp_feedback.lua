@@ -295,8 +295,13 @@ local function parseColor(s)
     local scale = 1
     for _, x in ipairs(n) do if x > 1 then scale = 255 end end
     local c = { r = n[1] / scale, g = n[2] / scale, b = n[3] / scale, a = (n[4] or scale) / scale }
-    for _, k in ipairs({ "r", "g", "b", "a" }) do if c[k] < 0 or c[k] > 1 then return nil, "colour component out of range in " .. tostring(s) end end
-    return c, scale == 255 and "bytes" or "floats"
+    -- KB-23 live: ColorRGB_UV's definition colour on 2.5.1 is "0.1744,-0.1443,1.0,1.0" (an out-of-gamut
+    -- representation of UV); components are clamped into 0..1 and the clamping is reported, never refused.
+    local clamped = false
+    for _, k in ipairs({ "r", "g", "b", "a" }) do
+      if c[k] < 0 then c[k] = 0; clamped = true elseif c[k] > 1 then c[k] = 1; clamped = true end
+    end
+    return c, scale == 255 and "bytes" or "floats", clamped
   end
   return nil, "unrecognised colour text " .. tostring(s)
 end
@@ -712,16 +717,18 @@ local READERS = {
             -- category scheme; the label stays what the band shows and is never the source of a colour.
             local names = pathNames(meta.feature)
             if names then slot.featureGroup, slot.featureName = names.FeatureGroup, names.Feature end
-            if meta.activationGroup ~= nil then
+            if meta.activationGroup ~= nil and meta.activationGroup ~= "" then
+              -- (Dimmer's is "" live: no activation group, so no field)
               local ag = pathNames(meta.activationGroup)
               slot.activationGroup = (ag and ag.ActivationGroup) or meta.activationGroup
             end
             if meta.color ~= nil then
-              local c, how = parseColor(meta.color)
+              local c, how, clamped = parseColor(meta.color)
               if c then
                 -- flat (slots are flat records within the bridge's depth bound)
                 slot.colorR, slot.colorG, slot.colorB, slot.colorA, slot.colorFormat = c.r, c.g, c.b, c.a, how
                 slot.colorDefined = (c.r > 0 or c.g > 0 or c.b > 0)
+                if clamped then slot.colorClamped = true end
               else
                 slot.colorUnavailable = how
               end
@@ -847,8 +854,11 @@ local READERS = {
         out.appearance = { name = str(field(app, "name")), backRGBA = dget(d, app, "BackRGBA"), color = dget(d, app, "Color") }
         -- KB-23: the background as 0..1 components (hex "RRGGBBAA" live on 2.5.1; float lists accepted) for a
         -- surface's assignment colour; unparseable text is explicit, never a guessed colour.
-        local c, how = parseColor(out.appearance.backRGBA)
-        if c then out.appearance.r, out.appearance.g, out.appearance.b, out.appearance.a, out.appearance.format = c.r, c.g, c.b, c.a, how else out.appearance.rgbaUnavailable = how end
+        local c, how, clamped = parseColor(out.appearance.backRGBA)
+        if c then
+          out.appearance.r, out.appearance.g, out.appearance.b, out.appearance.a, out.appearance.format = c.r, c.g, c.b, c.a, how
+          if clamped then out.appearance.clamped = true end
+        else out.appearance.rgbaUnavailable = how end
       else
         out.appearanceUnavailable = "the object has no Appearance"
       end

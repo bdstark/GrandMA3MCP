@@ -77,7 +77,9 @@ local defs = {
   ColorRGB_R = attrDef("FeatureGroup 4 'Color'.Feature 1 'RGB'", "None", "Percent", "Coarse", "1.0000000000,0.0000000000,0.0000000000,1.0000000000", "1", "ActivationGroup 3 'ColorRGB'"),
   ColorRGB_G = attrDef("FeatureGroup 4 'Color'.Feature 1 'RGB'", "None", "Percent", "Coarse", nil, "1"),
   ColorRGB_B = attrDef("FeatureGroup 4 'Color'.Feature 1 'RGB'", "None", "Percent", "Coarse", "0,0,1,1", "1"),
-  Dimmer = attrDef("FeatureGroup 1 'Dimmer'.Feature 1 'Dimmer'", "LuminousIntensity", "Percent", "Coarse", "0,0,0,1", "9"),
+  Dimmer = attrDef("FeatureGroup 1 'Dimmer'.Feature 1 'Dimmer'", "LuminousIntensity", "Percent", "Coarse", "0,0,0,1", "9", ""),
+  -- KB-23 live: UV's colour is out of gamut on 2.5.1 (a negative component); it is clamped and flagged
+  ColorRGB_UV = attrDef("FeatureGroup 4 'Color'.Feature 1 'RGB'", "None", "Percent", "Coarse", "0.1744260043,-0.1443289965,1.0000000000,1.0000000000", "1", "ActivationGroup 5 'ColorRGB'"),
 }
 local attrIndex = { ColorRGB_R = 107, ColorRGB_G = 108, ColorRGB_B = 109, Dimmer = 1 }
 
@@ -235,6 +237,12 @@ check("kb23: slot 1 carries the feature group and feature from the definition's 
   and s[1].colorR == 1 and s[1].colorG == 0 and s[1].colorB == 0 and s[1].colorA == 1 and s[1].color:find("^1%.0"), json.encode(s[1]))
 check("kb23: a definition without a Color is explicit, never a guessed colour; the feature names still parse", s[2].name == "ColorRGB_G" and s[2].colorR == nil and s[2].colorDefined == nil
   and s[2].colorUnavailable:find("no readable Color") and s[2].featureGroup == "Color" and s[2].activationGroup == nil, json.encode(s[2]))
+do
+  console.page = 1
+  local uv = f:read("encoderSlots", nil, 1).value.slots[2]
+  check("kb23 live: an out-of-gamut definition colour (UV: negative green) is clamped into 0..1, flagged colorClamped and still defined", uv.name == "ColorRGB_UV" and uv.colorClamped == true and uv.colorG == 0 and uv.colorB == 1 and math.abs(uv.colorR - 0.1744260043) < 1e-9 and uv.colorDefined == true and uv.activationGroup == "ColorRGB", json.encode(uv))
+  console.page = 0
+end
 check("slot 1: a different outer-ring object is reported and unsupported", s[1].outerRef == "Attribute 1 'Dimmer'" and s[1].outerName == "Dimmer" and s[1].outerUnsupported:find("outer ring"), json.encode(s[1]))
 check("slot 2: fixtures disagree -> mixed value with the first fixture's", s[2].name == "ColorRGB_G" and s[2].availability == "available" and s[2].valueState == "mixed" and s[2].absolute == 50 and s[2].valueNote:find("disagree") and s[2].label == "G" and s[2].outerRef == nil and s[2].resolution == "Coarse" and s[2].resolutionSource == "attribute-definition", json.encode(s[2]))
 check("slot 3: only one fixture has it -> mixed availability; nil from GetProgPhaser (nothing in the programmer, KB-17 live) -> empty value", s[3].name == "ColorRGB_B" and s[3].availability == "mixed" and s[3].with == 1 and s[3].valueState == "empty" and s[3].absolute == nil and s[3].valueNote:find("holds no value") and s[3].label == nil, json.encode(s[3]))

@@ -1,0 +1,1205 @@
+{
+  "mode": "run",
+  "host": "127.0.0.1",
+  "port": 9800,
+  "startedAt": "2026-10-11T02:36:49.704Z",
+  "ping": {
+    "bridgeVersion": "0.18.0",
+    "build": {
+      "version": "2.5.1.0",
+      "hostType": "onPC",
+      "codeType": "Release"
+    },
+    "hostname": "bdsmbpm401",
+    "showfile": "mcp-test-disposable",
+    "user": "Admin",
+    "modules": {
+      "hardkeys": {
+        "loaded": true,
+        "version": "0.10.0"
+      },
+      "feedback": {
+        "loaded": true,
+        "version": "0.6.0"
+      },
+      "control": {
+        "loaded": true,
+        "version": "0.5.0"
+      }
+    },
+    "lua": {
+      "enabled": true
+    }
+  },
+  "steps": [
+    {
+      "name": "console",
+      "note": true,
+      "detail": {
+        "bridgeVersion": "0.18.0",
+        "build": {
+          "version": "2.5.1.0",
+          "hostType": "onPC",
+          "codeType": "Release"
+        },
+        "hostname": "bdsmbpm401",
+        "showfile": "mcp-test-disposable",
+        "user": "Admin",
+        "modules": {
+          "hardkeys": {
+            "loaded": true,
+            "version": "0.10.0"
+          },
+          "feedback": {
+            "loaded": true,
+            "version": "0.6.0"
+          },
+          "control": {
+            "loaded": true,
+            "version": "0.5.0"
+          }
+        },
+        "lua": {
+          "enabled": true
+        }
+      }
+    },
+    {
+      "name": "feedback.context answers with feedback 0.6.0 or newer",
+      "pass": true,
+      "detail": {
+        "module": {
+          "component": "gma3_mcp_feedback",
+          "version": "0.6.0"
+        },
+        "generation": 3
+      }
+    },
+    {
+      "name": "every attribute slot carries the feature group / feature names from the definition's path and a parsed Color or an explicit reason",
+      "pass": true,
+      "detail": {
+        "slots": [
+          {
+            "slot": 1,
+            "name": "Dimmer",
+            "label": "Dim",
+            "featureGroup": "Dimmer",
+            "featureName": "Dimmer",
+            "activationGroup": "",
+            "rgba": [
+              0,
+              0,
+              0,
+              1
+            ],
+            "defined": false,
+            "format": "floats"
+          },
+          {
+            "slot": 2,
+            "kind": "empty"
+          },
+          {
+            "slot": 3,
+            "kind": "empty"
+          },
+          {
+            "slot": 4,
+            "kind": "empty"
+          },
+          {
+            "slot": 5,
+            "kind": "empty"
+          }
+        ]
+      }
+    },
+    {
+      "name": "slot colour evidence (the current encoder page)",
+      "note": true,
+      "detail": {
+        "bank": {
+          "index": 1,
+          "pages": 1,
+          "name": "Dimmer"
+        },
+        "page": {
+          "slots": 5,
+          "index": 1,
+          "name": "Dimmer"
+        },
+        "slots": [
+          {
+            "slot": 1,
+            "name": "Dimmer",
+            "label": "Dim",
+            "featureGroup": "Dimmer",
+            "featureName": "Dimmer",
+            "activationGroup": "",
+            "rgba": [
+              0,
+              0,
+              0,
+              1
+            ],
+            "defined": false,
+            "format": "floats"
+          },
+          {
+            "slot": 2,
+            "kind": "empty"
+          },
+          {
+            "slot": 3,
+            "kind": "empty"
+          },
+          {
+            "slot": 4,
+            "kind": "empty"
+          },
+          {
+            "slot": 5,
+            "kind": "empty"
+          }
+        ]
+      }
+    },
+    {
+      "name": "no colour-group slot on the current page; `run` selects the colour bank",
+      "note": true
+    },
+    {
+      "name": "every assigned executor carries a parsed appearance background (0..1 components) or says why not",
+      "pass": true,
+      "detail": [
+        {
+          "executor": 191,
+          "page": 1,
+          "assigned": "LOS2 All DelayA",
+          "class": "Sequence",
+          "active": false,
+          "level": 100,
+          "appearance": "Orange",
+          "rgba": [
+            1,
+            0.49803921568627,
+            0,
+            1
+          ],
+          "format": "hex",
+          "backRGBA": "FF7F00FF"
+        },
+        {
+          "executor": 192,
+          "page": 1,
+          "assigned": "LOS2 All DelayB",
+          "class": "Sequence",
+          "active": false,
+          "level": 100,
+          "appearance": "Orange",
+          "rgba": [
+            1,
+            0.49803921568627,
+            0,
+            1
+          ],
+          "format": "hex",
+          "backRGBA": "FF7F00FF"
+        },
+        {
+          "executor": 193,
+          "page": 1,
+          "assigned": "LOS2 Odd",
+          "class": "Sequence",
+          "active": false,
+          "level": 100,
+          "appearanceUnavailable": "the object has no Appearance"
+        },
+        {
+          "executor": 194,
+          "page": 1,
+          "assigned": "LOS2 Even",
+          "class": "Sequence",
+          "active": false,
+          "level": 100,
+          "appearanceUnavailable": "the object has no Appearance"
+        },
+        {
+          "executor": 195,
+          "page": 1,
+          "assigned": "LOS2 Chase",
+          "class": "Sequence",
+          "active": false,
+          "level": 100,
+          "appearanceUnavailable": "the object has no Appearance"
+        },
+        {
+          "executor": 196,
+          "page": 1,
+          "assigned": "LOS2 1/3",
+          "class": "Sequence",
+          "active": false,
+          "level": 100,
+          "appearanceUnavailable": "the object has no Appearance"
+        },
+        {
+          "executor": 197,
+          "page": 1,
+          "assigned": "LOS2 2/3",
+          "class": "Sequence",
+          "active": false,
+          "level": 100,
+          "appearanceUnavailable": "the object has no Appearance"
+        },
+        {
+          "executor": 198,
+          "page": 1,
+          "assigned": "LOS2 3/3",
+          "class": "Sequence",
+          "active": false,
+          "level": 100,
+          "appearanceUnavailable": "the object has no Appearance"
+        },
+        {
+          "executor": 201,
+          "page": 1,
+          "assigned": "StartShow 1",
+          "class": "Sequence",
+          "active": false,
+          "level": 0,
+          "appearanceUnavailable": "the object has no Appearance"
+        },
+        {
+          "executor": 202,
+          "page": 1,
+          "assigned": "StartShow 2",
+          "class": "Sequence",
+          "active": false,
+          "level": 0,
+          "appearanceUnavailable": "the object has no Appearance"
+        },
+        {
+          "executor": 203,
+          "page": 1,
+          "assigned": "StartShow 3",
+          "class": "Sequence",
+          "active": false,
+          "level": 0,
+          "appearanceUnavailable": "the object has no Appearance"
+        },
+        {
+          "executor": 204,
+          "page": 1,
+          "assigned": "StartShow 4",
+          "class": "Sequence",
+          "active": false,
+          "level": 0,
+          "appearanceUnavailable": "the object has no Appearance"
+        },
+        {
+          "executor": 205,
+          "page": 1,
+          "assigned": "StartShow 5",
+          "class": "Sequence",
+          "active": false,
+          "level": 0,
+          "appearanceUnavailable": "the object has no Appearance"
+        },
+        {
+          "executor": 206,
+          "page": 1,
+          "assigned": "StartShow 6",
+          "class": "Sequence",
+          "active": false,
+          "level": 0,
+          "appearanceUnavailable": "the object has no Appearance"
+        },
+        {
+          "executor": 207,
+          "page": 1,
+          "assigned": "StartShow 7",
+          "class": "Sequence",
+          "active": false,
+          "level": 0,
+          "appearanceUnavailable": "the object has no Appearance"
+        },
+        {
+          "executor": 208,
+          "page": 1,
+          "assigned": "StartShow 8",
+          "class": "Sequence",
+          "active": false,
+          "level": 0,
+          "appearanceUnavailable": "the object has no Appearance"
+        },
+        {
+          "executor": 210,
+          "page": 1,
+          "assigned": "Rotate",
+          "class": "Sequence",
+          "active": false,
+          "level": 0,
+          "appearanceUnavailable": "the object has no Appearance"
+        },
+        {
+          "executor": 291,
+          "page": 1,
+          "assigned": "LOS1 All DelayA",
+          "class": "Sequence",
+          "active": true,
+          "level": 100,
+          "appearance": "Orange",
+          "rgba": [
+            1,
+            0.49803921568627,
+            0,
+            1
+          ],
+          "format": "hex",
+          "backRGBA": "FF7F00FF"
+        },
+        {
+          "executor": 292,
+          "page": 1,
+          "assigned": "LOS1 All DelayB",
+          "class": "Sequence",
+          "active": false,
+          "level": 100,
+          "appearance": "Orange",
+          "rgba": [
+            1,
+            0.49803921568627,
+            0,
+            1
+          ],
+          "format": "hex",
+          "backRGBA": "FF7F00FF"
+        },
+        {
+          "executor": 293,
+          "page": 1,
+          "assigned": "LOS1 Odd",
+          "class": "Sequence",
+          "active": false,
+          "level": 100,
+          "appearanceUnavailable": "the object has no Appearance"
+        },
+        {
+          "executor": 294,
+          "page": 1,
+          "assigned": "LOS1 Even",
+          "class": "Sequence",
+          "active": false,
+          "level": 100,
+          "appearanceUnavailable": "the object has no Appearance"
+        },
+        {
+          "executor": 295,
+          "page": 1,
+          "assigned": "LOS1 Chase",
+          "class": "Sequence",
+          "active": false,
+          "level": 100,
+          "appearanceUnavailable": "the object has no Appearance"
+        },
+        {
+          "executor": 296,
+          "page": 1,
+          "assigned": "LOS1 1/3",
+          "class": "Sequence",
+          "active": false,
+          "level": 100,
+          "appearanceUnavailable": "the object has no Appearance"
+        },
+        {
+          "executor": 297,
+          "page": 1,
+          "assigned": "LOS1 2/3",
+          "class": "Sequence",
+          "active": false,
+          "level": 100,
+          "appearanceUnavailable": "the object has no Appearance"
+        },
+        {
+          "executor": 298,
+          "page": 1,
+          "assigned": "LOS1 3/3",
+          "class": "Sequence",
+          "active": false,
+          "level": 100,
+          "appearanceUnavailable": "the object has no Appearance"
+        },
+        {
+          "executor": 401,
+          "page": 1,
+          "assigned": "Beat",
+          "class": "MasterSpeed",
+          "level": 49.802583456039,
+          "appearanceUnavailable": "the object has no Appearance"
+        },
+        {
+          "executor": 402,
+          "page": 1,
+          "assigned": "Position Speed",
+          "class": "MasterSpeed",
+          "level": 50,
+          "appearanceUnavailable": "the object has no Appearance"
+        }
+      ]
+    },
+    {
+      "name": "parsed appearances are 0..1 components (hex BackRGBA live on 2.5.1)",
+      "pass": true,
+      "detail": [
+        {
+          "executor": 191,
+          "page": 1,
+          "assigned": "LOS2 All DelayA",
+          "class": "Sequence",
+          "active": false,
+          "level": 100,
+          "appearance": "Orange",
+          "rgba": [
+            1,
+            0.49803921568627,
+            0,
+            1
+          ],
+          "format": "hex",
+          "backRGBA": "FF7F00FF"
+        },
+        {
+          "executor": 192,
+          "page": 1,
+          "assigned": "LOS2 All DelayB",
+          "class": "Sequence",
+          "active": false,
+          "level": 100,
+          "appearance": "Orange",
+          "rgba": [
+            1,
+            0.49803921568627,
+            0,
+            1
+          ],
+          "format": "hex",
+          "backRGBA": "FF7F00FF"
+        },
+        {
+          "executor": 291,
+          "page": 1,
+          "assigned": "LOS1 All DelayA",
+          "class": "Sequence",
+          "active": true,
+          "level": 100,
+          "appearance": "Orange",
+          "rgba": [
+            1,
+            0.49803921568627,
+            0,
+            1
+          ],
+          "format": "hex",
+          "backRGBA": "FF7F00FF"
+        },
+        {
+          "executor": 292,
+          "page": 1,
+          "assigned": "LOS1 All DelayB",
+          "class": "Sequence",
+          "active": false,
+          "level": 100,
+          "appearance": "Orange",
+          "rgba": [
+            1,
+            0.49803921568627,
+            0,
+            1
+          ],
+          "format": "hex",
+          "backRGBA": "FF7F00FF"
+        }
+      ]
+    },
+    {
+      "name": "executor appearance evidence (the user's page)",
+      "note": true,
+      "detail": {
+        "page": 1,
+        "executors": [
+          {
+            "executor": 191,
+            "page": 1,
+            "assigned": "LOS2 All DelayA",
+            "class": "Sequence",
+            "active": false,
+            "level": 100,
+            "appearance": "Orange",
+            "rgba": [
+              1,
+              0.49803921568627,
+              0,
+              1
+            ],
+            "format": "hex",
+            "backRGBA": "FF7F00FF"
+          },
+          {
+            "executor": 192,
+            "page": 1,
+            "assigned": "LOS2 All DelayB",
+            "class": "Sequence",
+            "active": false,
+            "level": 100,
+            "appearance": "Orange",
+            "rgba": [
+              1,
+              0.49803921568627,
+              0,
+              1
+            ],
+            "format": "hex",
+            "backRGBA": "FF7F00FF"
+          },
+          {
+            "executor": 193,
+            "page": 1,
+            "assigned": "LOS2 Odd",
+            "class": "Sequence",
+            "active": false,
+            "level": 100,
+            "appearanceUnavailable": "the object has no Appearance"
+          },
+          {
+            "executor": 194,
+            "page": 1,
+            "assigned": "LOS2 Even",
+            "class": "Sequence",
+            "active": false,
+            "level": 100,
+            "appearanceUnavailable": "the object has no Appearance"
+          },
+          {
+            "executor": 195,
+            "page": 1,
+            "assigned": "LOS2 Chase",
+            "class": "Sequence",
+            "active": false,
+            "level": 100,
+            "appearanceUnavailable": "the object has no Appearance"
+          },
+          {
+            "executor": 196,
+            "page": 1,
+            "assigned": "LOS2 1/3",
+            "class": "Sequence",
+            "active": false,
+            "level": 100,
+            "appearanceUnavailable": "the object has no Appearance"
+          },
+          {
+            "executor": 197,
+            "page": 1,
+            "assigned": "LOS2 2/3",
+            "class": "Sequence",
+            "active": false,
+            "level": 100,
+            "appearanceUnavailable": "the object has no Appearance"
+          },
+          {
+            "executor": 198,
+            "page": 1,
+            "assigned": "LOS2 3/3",
+            "class": "Sequence",
+            "active": false,
+            "level": 100,
+            "appearanceUnavailable": "the object has no Appearance"
+          },
+          {
+            "executor": 201,
+            "page": 1,
+            "assigned": "StartShow 1",
+            "class": "Sequence",
+            "active": false,
+            "level": 0,
+            "appearanceUnavailable": "the object has no Appearance"
+          },
+          {
+            "executor": 202,
+            "page": 1,
+            "assigned": "StartShow 2",
+            "class": "Sequence",
+            "active": false,
+            "level": 0,
+            "appearanceUnavailable": "the object has no Appearance"
+          },
+          {
+            "executor": 203,
+            "page": 1,
+            "assigned": "StartShow 3",
+            "class": "Sequence",
+            "active": false,
+            "level": 0,
+            "appearanceUnavailable": "the object has no Appearance"
+          },
+          {
+            "executor": 204,
+            "page": 1,
+            "assigned": "StartShow 4",
+            "class": "Sequence",
+            "active": false,
+            "level": 0,
+            "appearanceUnavailable": "the object has no Appearance"
+          },
+          {
+            "executor": 205,
+            "page": 1,
+            "assigned": "StartShow 5",
+            "class": "Sequence",
+            "active": false,
+            "level": 0,
+            "appearanceUnavailable": "the object has no Appearance"
+          },
+          {
+            "executor": 206,
+            "page": 1,
+            "assigned": "StartShow 6",
+            "class": "Sequence",
+            "active": false,
+            "level": 0,
+            "appearanceUnavailable": "the object has no Appearance"
+          },
+          {
+            "executor": 207,
+            "page": 1,
+            "assigned": "StartShow 7",
+            "class": "Sequence",
+            "active": false,
+            "level": 0,
+            "appearanceUnavailable": "the object has no Appearance"
+          },
+          {
+            "executor": 208,
+            "page": 1,
+            "assigned": "StartShow 8",
+            "class": "Sequence",
+            "active": false,
+            "level": 0,
+            "appearanceUnavailable": "the object has no Appearance"
+          },
+          {
+            "executor": 210,
+            "page": 1,
+            "assigned": "Rotate",
+            "class": "Sequence",
+            "active": false,
+            "level": 0,
+            "appearanceUnavailable": "the object has no Appearance"
+          },
+          {
+            "executor": 291,
+            "page": 1,
+            "assigned": "LOS1 All DelayA",
+            "class": "Sequence",
+            "active": true,
+            "level": 100,
+            "appearance": "Orange",
+            "rgba": [
+              1,
+              0.49803921568627,
+              0,
+              1
+            ],
+            "format": "hex",
+            "backRGBA": "FF7F00FF"
+          },
+          {
+            "executor": 292,
+            "page": 1,
+            "assigned": "LOS1 All DelayB",
+            "class": "Sequence",
+            "active": false,
+            "level": 100,
+            "appearance": "Orange",
+            "rgba": [
+              1,
+              0.49803921568627,
+              0,
+              1
+            ],
+            "format": "hex",
+            "backRGBA": "FF7F00FF"
+          },
+          {
+            "executor": 293,
+            "page": 1,
+            "assigned": "LOS1 Odd",
+            "class": "Sequence",
+            "active": false,
+            "level": 100,
+            "appearanceUnavailable": "the object has no Appearance"
+          },
+          {
+            "executor": 294,
+            "page": 1,
+            "assigned": "LOS1 Even",
+            "class": "Sequence",
+            "active": false,
+            "level": 100,
+            "appearanceUnavailable": "the object has no Appearance"
+          },
+          {
+            "executor": 295,
+            "page": 1,
+            "assigned": "LOS1 Chase",
+            "class": "Sequence",
+            "active": false,
+            "level": 100,
+            "appearanceUnavailable": "the object has no Appearance"
+          },
+          {
+            "executor": 296,
+            "page": 1,
+            "assigned": "LOS1 1/3",
+            "class": "Sequence",
+            "active": false,
+            "level": 100,
+            "appearanceUnavailable": "the object has no Appearance"
+          },
+          {
+            "executor": 297,
+            "page": 1,
+            "assigned": "LOS1 2/3",
+            "class": "Sequence",
+            "active": false,
+            "level": 100,
+            "appearanceUnavailable": "the object has no Appearance"
+          },
+          {
+            "executor": 298,
+            "page": 1,
+            "assigned": "LOS1 3/3",
+            "class": "Sequence",
+            "active": false,
+            "level": 100,
+            "appearanceUnavailable": "the object has no Appearance"
+          },
+          {
+            "executor": 401,
+            "page": 1,
+            "assigned": "Beat",
+            "class": "MasterSpeed",
+            "level": 49.802583456039,
+            "appearanceUnavailable": "the object has no Appearance"
+          },
+          {
+            "executor": 402,
+            "page": 1,
+            "assigned": "Position Speed",
+            "class": "MasterSpeed",
+            "level": 50,
+            "appearanceUnavailable": "the object has no Appearance"
+          }
+        ],
+        "formats": [
+          "hex"
+        ]
+      }
+    },
+    {
+      "name": "reading the colour metadata moved nothing (generation unchanged)",
+      "pass": true,
+      "detail": {
+        "generation": [
+          3,
+          3
+        ]
+      }
+    },
+    {
+      "name": "run: colour bank page 1 ('RGB'): every attribute slot is in feature group Color with parsed metadata",
+      "pass": true,
+      "detail": [
+        {
+          "slot": 1,
+          "name": "ColorRGB_R",
+          "label": "R",
+          "featureGroup": "Color",
+          "featureName": "RGB",
+          "activationGroup": "ColorRGB",
+          "rgba": [
+            1,
+            0,
+            0,
+            1
+          ],
+          "defined": true,
+          "format": "floats"
+        },
+        {
+          "slot": 2,
+          "name": "ColorRGB_G",
+          "label": "G",
+          "featureGroup": "Color",
+          "featureName": "RGB",
+          "activationGroup": "ColorRGB",
+          "rgba": [
+            0,
+            1,
+            0,
+            1
+          ],
+          "defined": true,
+          "format": "floats"
+        },
+        {
+          "slot": 3,
+          "name": "ColorRGB_B",
+          "label": "B",
+          "featureGroup": "Color",
+          "featureName": "RGB",
+          "activationGroup": "ColorRGB",
+          "rgba": [
+            0,
+            0,
+            1,
+            1
+          ],
+          "defined": true,
+          "format": "floats"
+        },
+        {
+          "slot": 4,
+          "name": "ColorRGB_RY",
+          "label": "Amber",
+          "featureGroup": "Color",
+          "featureName": "RGB",
+          "activationGroup": "ColorRGB",
+          "rgba": [
+            1,
+            0.5,
+            0,
+            1
+          ],
+          "defined": true,
+          "format": "floats"
+        },
+        {
+          "slot": 5,
+          "kind": "empty"
+        }
+      ]
+    },
+    {
+      "name": "run: colour bank page 2 ('RGB'): every attribute slot is in feature group Color with parsed metadata",
+      "pass": true,
+      "detail": [
+        {
+          "slot": 1,
+          "name": "ColorRGB_W",
+          "label": "W",
+          "featureGroup": "Color",
+          "featureName": "RGB",
+          "activationGroup": "ColorRGB",
+          "rgba": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "defined": true,
+          "format": "floats"
+        },
+        {
+          "slot": 2,
+          "name": "ColorRGB_UV",
+          "label": "UV",
+          "featureGroup": "Color",
+          "featureName": "RGB",
+          "activationGroup": "ColorRGB",
+          "unavailable": "colour component out of range in 0.1744260043,-0.1443289965,1.0000000000,1.0000000000"
+        },
+        {
+          "slot": 3,
+          "kind": "empty"
+        },
+        {
+          "slot": 4,
+          "kind": "empty"
+        },
+        {
+          "slot": 5,
+          "kind": "empty"
+        }
+      ]
+    },
+    {
+      "name": "run: colour bank page 3 not selectable (the selection lacks its attributes, or no such page)",
+      "note": true,
+      "detail": {
+        "encoder": {
+          "bank": {
+            "index": 4,
+            "pages": 3,
+            "name": "Color"
+          },
+          "display": 1,
+          "banks": 10,
+          "bar": 1,
+          "attributeEditing": true,
+          "page": {
+            "slots": 5,
+            "index": 1,
+            "name": "RGB"
+          },
+          "context": "Default"
+        }
+      }
+    },
+    {
+      "name": "run: which colour components the show's definitions colour (defined) and which are black (undefined: the surface falls back to its scheme)",
+      "note": true,
+      "detail": {
+        "defined": [
+          [
+            "ColorRGB_R",
+            "R",
+            [
+              1,
+              0,
+              0,
+              1
+            ]
+          ],
+          [
+            "ColorRGB_G",
+            "G",
+            [
+              0,
+              1,
+              0,
+              1
+            ]
+          ],
+          [
+            "ColorRGB_B",
+            "B",
+            [
+              0,
+              0,
+              1,
+              1
+            ]
+          ],
+          [
+            "ColorRGB_RY",
+            "Amber",
+            [
+              1,
+              0.5,
+              0,
+              1
+            ]
+          ],
+          [
+            "ColorRGB_W",
+            "W",
+            [
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "black": []
+      }
+    },
+    {
+      "name": "run: the attribute definitions of the colour components (and Dimmer/Pan/Gobo1 for the category scheme) read through Lua",
+      "pass": true,
+      "detail": {
+        "ColorRGB_RY": {
+          "activationGroup": "ActivationGroup 5 'ColorRGB'",
+          "feature": "FeatureGroup 4 'Color'.Feature 1 'RGB'",
+          "special": "ColorRGB",
+          "color": "1.0000000000,0.5000000000,0.0000000000,1.0000000000"
+        },
+        "ColorRGB_G": {
+          "activationGroup": "ActivationGroup 5 'ColorRGB'",
+          "feature": "FeatureGroup 4 'Color'.Feature 1 'RGB'",
+          "special": "ColorRGB",
+          "color": "0.0000000000,1.0000000000,0.0000000000,1.0000000000"
+        },
+        "ColorRGB_UV": {
+          "activationGroup": "ActivationGroup 5 'ColorRGB'",
+          "feature": "FeatureGroup 4 'Color'.Feature 1 'RGB'",
+          "special": "ColorRGB",
+          "color": "0.1744260043,-0.1443289965,1.0000000000,1.0000000000"
+        },
+        "Dimmer": {
+          "activationGroup": "",
+          "feature": "FeatureGroup 1 'Dimmer'.Feature 1 'Dimmer'",
+          "special": "Dimmer",
+          "color": "0.0000000000,0.0000000000,0.0000000000,1.0000000000"
+        },
+        "ColorRGB_B": {
+          "activationGroup": "ActivationGroup 5 'ColorRGB'",
+          "feature": "FeatureGroup 4 'Color'.Feature 1 'RGB'",
+          "special": "ColorRGB",
+          "color": "0.0000000000,0.0000000000,1.0000000000,1.0000000000"
+        },
+        "ColorRGB_R": {
+          "activationGroup": "ActivationGroup 5 'ColorRGB'",
+          "feature": "FeatureGroup 4 'Color'.Feature 1 'RGB'",
+          "special": "ColorRGB",
+          "color": "1.0000000000,0.0000000000,0.0000000000,1.0000000000"
+        },
+        "Gobo1": {
+          "activationGroup": "ActivationGroup 8 'Gobo1'",
+          "feature": "FeatureGroup 3 'Gobo'.Feature 1 'Gobo'",
+          "special": "Gobo",
+          "color": "0.0000000000,0.0000000000,0.0000000000,1.0000000000"
+        },
+        "Pan": {
+          "activationGroup": "ActivationGroup 1 'PanTilt'",
+          "feature": "FeatureGroup 2 'Position'.Feature 1 'PanTilt'",
+          "special": "PanTilt",
+          "color": "0.0000000000,0.0000000000,0.0000000000,1.0000000000"
+        },
+        "ColorRGB_W": {
+          "activationGroup": "ActivationGroup 5 'ColorRGB'",
+          "feature": "FeatureGroup 4 'Color'.Feature 1 'RGB'",
+          "special": "ColorRGB",
+          "color": "1.0000000000,1.0000000000,1.0000000000,1.0000000000"
+        }
+      }
+    },
+    {
+      "name": "run: attribute definitions (Color, Feature, ActivationGroup, Special) as the console prints them",
+      "note": true,
+      "detail": {
+        "ColorRGB_RY": {
+          "activationGroup": "ActivationGroup 5 'ColorRGB'",
+          "feature": "FeatureGroup 4 'Color'.Feature 1 'RGB'",
+          "special": "ColorRGB",
+          "color": "1.0000000000,0.5000000000,0.0000000000,1.0000000000"
+        },
+        "ColorRGB_G": {
+          "activationGroup": "ActivationGroup 5 'ColorRGB'",
+          "feature": "FeatureGroup 4 'Color'.Feature 1 'RGB'",
+          "special": "ColorRGB",
+          "color": "0.0000000000,1.0000000000,0.0000000000,1.0000000000"
+        },
+        "ColorRGB_UV": {
+          "activationGroup": "ActivationGroup 5 'ColorRGB'",
+          "feature": "FeatureGroup 4 'Color'.Feature 1 'RGB'",
+          "special": "ColorRGB",
+          "color": "0.1744260043,-0.1443289965,1.0000000000,1.0000000000"
+        },
+        "Dimmer": {
+          "activationGroup": "",
+          "feature": "FeatureGroup 1 'Dimmer'.Feature 1 'Dimmer'",
+          "special": "Dimmer",
+          "color": "0.0000000000,0.0000000000,0.0000000000,1.0000000000"
+        },
+        "ColorRGB_B": {
+          "activationGroup": "ActivationGroup 5 'ColorRGB'",
+          "feature": "FeatureGroup 4 'Color'.Feature 1 'RGB'",
+          "special": "ColorRGB",
+          "color": "0.0000000000,0.0000000000,1.0000000000,1.0000000000"
+        },
+        "ColorRGB_R": {
+          "activationGroup": "ActivationGroup 5 'ColorRGB'",
+          "feature": "FeatureGroup 4 'Color'.Feature 1 'RGB'",
+          "special": "ColorRGB",
+          "color": "1.0000000000,0.0000000000,0.0000000000,1.0000000000"
+        },
+        "Gobo1": {
+          "activationGroup": "ActivationGroup 8 'Gobo1'",
+          "feature": "FeatureGroup 3 'Gobo'.Feature 1 'Gobo'",
+          "special": "Gobo",
+          "color": "0.0000000000,0.0000000000,0.0000000000,1.0000000000"
+        },
+        "Pan": {
+          "activationGroup": "ActivationGroup 1 'PanTilt'",
+          "feature": "FeatureGroup 2 'Position'.Feature 1 'PanTilt'",
+          "special": "PanTilt",
+          "color": "0.0000000000,0.0000000000,0.0000000000,1.0000000000"
+        },
+        "ColorRGB_W": {
+          "activationGroup": "ActivationGroup 5 'ColorRGB'",
+          "feature": "FeatureGroup 4 'Color'.Feature 1 'RGB'",
+          "special": "ColorRGB",
+          "color": "1.0000000000,1.0000000000,1.0000000000,1.0000000000"
+        }
+      }
+    },
+    {
+      "name": "run: every registered undo ran",
+      "pass": true,
+      "detail": [
+        {
+          "label": "Select EncoderBank 1.1",
+          "ok": true,
+          "detail": {
+            "ok": true,
+            "id": "a12",
+            "result": {
+              "command": "Select EncoderBank 1.1",
+              "feedback": "OK"
+            }
+          }
+        },
+        {
+          "label": "ClearSelection",
+          "ok": true,
+          "detail": {
+            "ok": true,
+            "id": "a13",
+            "result": {
+              "command": "ClearSelection",
+              "feedback": "OK"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "run: the selection is empty and the encoder bank is back",
+      "pass": true,
+      "detail": {
+        "selection": {
+          "identityComplete": true,
+          "fixtures": [],
+          "partial": false,
+          "count": 0,
+          "scanned": 0,
+          "limitations": [],
+          "discoveryFailures": 0
+        },
+        "encoder": {
+          "bank": {
+            "index": 1,
+            "pages": 1,
+            "name": "Dimmer"
+          },
+          "display": 1,
+          "banks": 10,
+          "bar": 1,
+          "attributeEditing": true,
+          "page": {
+            "slots": 5,
+            "index": 1,
+            "name": "Dimmer"
+          },
+          "context": "Default"
+        }
+      }
+    }
+  ],
+  "finishedAt": "2026-10-11T02:36:51.090Z",
+  "failed": 0,
+  "passed": 10
+}
