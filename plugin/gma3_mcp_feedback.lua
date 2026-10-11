@@ -82,8 +82,8 @@ local DEFAULTS = {
   maxExecutors       = 32,    -- executors expanded by itemsFor() per request
   maxReadsPerService = 8,     -- watched items read per service() call (bounded per-frame work)
   priorityStateReads = 0,     -- KB-24 (0.7.0): read due non-executor items (state readers, pool, page, encoder bank, slots)
-                              -- before the executor targets inside the same budget; a consumer sizes the budget above
-                              -- its non-executor item count. 0 (off): one round robin over every item (the KB-17 behaviour); 1: on
+                              -- before the executor targets inside the same budget (at most half of it, rounded up, so
+                              -- executors never starve). 0 (off): one round robin over every item (KB-17); 1: on
   pollIntervalMs     = 100,   -- a watched item is not re-read before this much time passed
   staleMs            = 2000,  -- a cached observation older than this is reported stale
   identityCheckMs    = 1000,  -- show file / user / profile identity re-read at most this often
@@ -1268,8 +1268,11 @@ function Instance:service(now)
     -- value waited behind ~100 executor items and took 200-600 ms to read back on onPC 2.5.1.
     local priority = (self._config.priorityStateReads or 0) > 0
     if priority then
+      -- At most half the budget (rounded up) goes to the first class, so the executor targets never starve when a
+      -- consumer watches more non-executor items than its budget (a bridge with execs= readers).
+      local firstCap = math.ceil(self._config.maxReadsPerService / 2)
       for _, w in ipairs(self._watch) do
-        if reads >= self._config.maxReadsPerService then break end
+        if reads >= firstCap then break end
         if w.name ~= "executorTarget" and isDue(w) then
           self._cache[w.key] = self:read(w.name, w.params, now)
           reads = reads + 1

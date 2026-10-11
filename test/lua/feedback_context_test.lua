@@ -538,9 +538,9 @@ do
   local fp = FB.new({ owner = "kb24p", deps = deps(), config = { maxReadsPerService = 5, pollIntervalMs = 100, priorityStateReads = 1 } }):init()
   fp:watchContext({ executors = { 201, 205 } }, 100)
   local sv1 = fp:service(100.0)
-  check("kb24 priority: the first call reads the four non-executor items and one executor", sv1.reads == 5 and sv1.due == 1, json.encode(sv1))
+  check("kb24 priority: the first call reads three non-executor items (half the budget of 5, rounded up) and two executors", sv1.reads == 5 and sv1.due == 1, json.encode(sv1))
   local sv2 = fp:service(100.01)
-  check("kb24 priority: the second call reads the remaining executor", sv2.reads == 1 and sv2.due == 0, json.encode(sv2))
+  check("kb24 priority: the second call reads the remaining non-executor item", sv2.reads == 1 and sv2.due == 0, json.encode(sv2))
   local snap2 = fp:contextSnapshot({ executors = { 201, 205 } }, 100.02, { cached = true })
   check("kb24 priority: everything observed after two calls", snap2.notObserved == 0 and snap2.generation == 1, tostring(snap2.notObserved))
   -- With everything due again, the state items are read first even when the budget is smaller than their count.
@@ -550,10 +550,10 @@ do
   local before = fq:status().reads
   local sv3 = fq:service(100.2)
   local sq = fq:contextSnapshot({ executors = { 201, 205 } }, 100.21, { cached = true })
-  check("kb24 priority: after the interval the two reads went to non-executor items (the pool and the page), not to the executors", sv3.reads == 2 and sq.executors[1].ageMs > 150 and sq.executors[2].ageMs > 150 and sq.encoder.ageMs > 150, json.encode({ reads = sv3.reads, enc = sq.encoder.ageMs, ex = sq.executors[1].ageMs }))
-  local sv4 = fq:service(100.21)
-  local sq4 = fq:contextSnapshot({ executors = { 201, 205 } }, 100.22, { cached = true })
-  check("kb24 priority: the next call takes the encoder bank and slots; the executors wait for the budget", sv4.reads == 2 and sq4.encoder.ageMs < 50 and sq4.executors[1].ageMs > 150, json.encode({ enc = sq4.encoder.ageMs, ex = sq4.executors[1].ageMs }))
+  check("kb24 priority: after the interval a budget of 2 is split one non-executor item (the pool first), one executor; the encoder bank waits", sv3.reads == 2 and sq.encoder.ageMs > 150 and ((sq.executors[1].ageMs > 150) ~= (sq.executors[2].ageMs > 150)), json.encode({ reads = sv3.reads, enc = sq.encoder.ageMs, ex1 = sq.executors[1].ageMs, ex2 = sq.executors[2].ageMs }))
+  fq:service(100.21); fq:service(100.22)
+  local sq4 = fq:contextSnapshot({ executors = { 201, 205 } }, 100.23, { cached = true })
+  check("kb24 priority: two calls later every non-executor item is fresh again", sq4.encoder.ageMs < 50 and sq4.notObserved == 0, json.encode({ enc = sq4.encoder.ageMs, notObserved = sq4.notObserved }))
 end
 
 local fc = FB.new({ owner = "kb17w", deps = deps(), config = { maxReadsPerService = 2, pollIntervalMs = 100, staleMs = 1000 } }):init()
