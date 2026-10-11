@@ -2,7 +2,7 @@
   "mode": "run",
   "host": "127.0.0.1",
   "port": 9800,
-  "startedAt": "2026-10-11T01:05:15.844Z",
+  "startedAt": "2026-10-11T01:21:10.717Z",
   "ping": {
     "bridgeVersion": "0.18.0",
     "build": {
@@ -232,7 +232,7 @@
         "limitations": [
           "the console backend serves attribute slots only: relative motion (KB-19) as the selection-scoped Attribute \"<name>\" At +/- <amount> adjustment (an explicitly limited mode, not native encoder equivalence), calibrated for the Percent/PercentFine readouts (1 per Coarse detent) and the Physical readout (the attribute's range / 120 per Coarse detent, in physical units) with Fine at a tenth, on the Absolute layer; a strip touch (KB-20) as a hold that reserves the slot and moves nothing; an absolute position (KB-20) as Attribute \"<name>\" At <value> over the verified travel only (Percent/PercentFine 0..100, Physical PhysicalFrom..PhysicalTo of the binding, never a mixed physical range), refused mixed-values while the selection's values disagree and values-incomplete while they were not completely read, unless the event says takeover; other readouts, Increment/Native, other layers, named channel functions and encoder presses are refused unsupported",
           "an executor target is explicit (pool, page, executor, element; KB-21): a number the binding reports covered by a wider neighbour, on a page that does not exist, reserved or holding a Quickey is refused target-unavailable; a hold's release goes to the target its down resolved (frozen), never to what a bank or page change mapped to the control since",
-          "executor operations on the console backend (KB-22): a key is Press/Unpress Page <p>.<e>, the console's dispatch of the CONFIGURED button function, served only for the qualified key functions (Temp, Flash, Toggle, Top, Go+); a fader is Fader<Function> Page <p>.<e> At <level> for the configured fader function, qualified separately per function (Master, Temp; Rate, Speed, X/XA/XB, CrossFade and Time are refused until qualified); a fader touch is a hold that moves nothing; relative motion on a fader and executor encoders are refused unsupported; commands address Page <p>.<e> in the CURRENT data pool, so a frozen key release is applied only on a LIVE observation of its executor (the consumer's deps.observe, read at release time; never the cached binding) showing the same pool and the same object, else kept unresolved (unverified / pool-changed / assignment-changed) for recover(); a hold stays tracked until its release is applied, a refused release is kept unresolved too, an unresolved release reserves its target against new presses until recover() applies it, and a hold whose down never applied is discarded at a session's end without a release; a held target is exclusive against every other control",
+          "executor operations on the console backend (KB-22): a key is Press/Unpress Page <p>.<e>, the console's dispatch of the CONFIGURED button function, served only for the qualified key functions (Temp, Flash, Toggle, Top, Go+); a fader is Fader<Function> Page <p>.<e> At <level> for the configured fader function, qualified separately per function (Master, Temp; Rate, Speed, X/XA/XB, CrossFade and Time are refused until qualified); a fader touch is a hold that moves nothing; relative motion on a fader and executor encoders are refused unsupported; commands address Page <p>.<e> in the CURRENT data pool, reservations (holds and unresolved releases) compare the executor's stable address (pool, page, number, element), never the assigned object or the configured function; a gesture that outlived maxGestureMs has its queued intents cancelled before the queue is serviced; so a frozen key release is applied only on a LIVE observation of its executor (the consumer's deps.observe, read at release time; never the cached binding) showing the same pool and the same object, else kept unresolved (unverified / pool-changed / assignment-changed) for recover(); a hold stays tracked until its release is applied, a refused release is kept unresolved too, an unresolved release reserves its target against new presses until recover() applies it, and a hold whose down never applied is discarded at a session's end without a release; a held target is exclusive against every other control",
           "generations are those of the consumer's binding source (one gma3_mcp_feedback instance and spec); events from a surface bound to another instance are refused as stale",
           "packet loss is reported, never repaired: a lost relative delta is gone, a lost absolute position is superseded by the next one"
         ]
@@ -808,7 +808,7 @@
       "name": "verify: nothing queued, no gesture, not busy",
       "pass": true,
       "detail": {
-        "conn-139": {
+        "conn-148": {
           "devices": {
             "probe-mtouch": {
               "late": 0,
@@ -819,12 +819,12 @@
               "rateDropped": 0
             }
           },
-          "openedAt": 1791680716.4091,
+          "openedAt": 1791681671.3035,
           "gestures": 0,
-          "remainingMs": 14967,
-          "expiresAt": 1791680731.4091,
+          "remainingMs": 14984,
+          "expiresAt": 1791681686.3035,
           "state": "active",
-          "id": "conn-139",
+          "id": "conn-148",
           "leaseMs": 15000,
           "counters": {
             "evicted": 0,
@@ -835,7 +835,7 @@
             "lost": 0,
             "applied": 0
           },
-          "binding": "client 139",
+          "binding": "client 148",
           "renewals": 0,
           "queued": 0,
           "gestureList": []
@@ -968,7 +968,7 @@
           },
           "down": true,
           "outcome": "applied",
-          "at": 1791680717.1238,
+          "at": 1791681672.0004,
           "kind": "button"
         },
         "active": true
@@ -981,14 +981,14 @@
         "ok": false,
         "id": "a22",
         "code": "busy",
-        "error": "[busy] a command is refused while input ownership is active: button is down on probe-mtouch/PFA180 of session conn-139. Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first",
+        "error": "[busy] a command is refused while input ownership is active: button is down on probe-mtouch/PFA180 of session conn-148. Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first",
         "detail": {
-          "owner": "conn-139",
+          "owner": "conn-148",
           "control": "PFA180",
           "code": "busy",
           "device": "probe-mtouch",
           "module": "control",
-          "message": "a command is refused while input ownership is active: button is down on probe-mtouch/PFA180 of session conn-139. Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first",
+          "message": "a command is refused while input ownership is active: button is down on probe-mtouch/PFA180 of session conn-148. Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first",
           "reason": "button-down"
         }
       }
@@ -1022,7 +1022,7 @@
           },
           "down": false,
           "outcome": "applied",
-          "at": 1791680717.5591,
+          "at": 1791681672.4496,
           "kind": "button"
         }
       }
@@ -1082,7 +1082,7 @@
             "faderFunction": "Master"
           },
           "outcome": "applied",
-          "at": 1791680719.6075,
+          "at": 1791681674.4765,
           "value": 0.25,
           "kind": "absolute"
         },
@@ -1304,7 +1304,7 @@
           "reassigned": true,
           "down": false,
           "kind": "button",
-          "at": 1791680734.7564,
+          "at": 1791681689.6187,
           "error": "assignment-changed: executor 1.181 was reassigned from 14.14.1.7.5528 to 14.14.1.7.5527 while it was held; the release was not issued on the replacement (recover() applies it once the original object is back on that executor; end the original playback by hand otherwise)",
           "outcome": "unresolved"
         },
@@ -1316,6 +1316,7 @@
               "executor": 181
             },
             "resolved": {
+              "address": "execDefault#1/1.181.key",
               "mode": "page",
               "page": {
                 "class": "Page",
@@ -1323,29 +1324,29 @@
                 "addr": "14.14.1.13.1",
                 "name": "Page 1"
               },
-              "level": 100,
+              "executor": 181,
               "assigned": "14.14.1.7.5528",
               "width": 1,
               "pool": "Default#1",
               "function": "Go+",
               "pageNo": 1,
-              "supersedes": true,
               "element": "key",
+              "supersedes": true,
+              "level": 100,
               "key": "execDefault#1/1.181.key|14.14.1.7.5528|Go+",
-              "keyUnpress": "",
               "token": "go+",
               "active": false,
-              "executor": 181,
+              "keyUnpress": "",
               "assignedClass": "Sequence",
               "kind": "executor"
             },
             "nowAssigned": "14.14.1.7.5527",
             "kind": "button",
-            "at": 1791680734.7564,
+            "at": 1791681689.6187,
             "error": "assignment-changed: executor 1.181 was reassigned from 14.14.1.7.5528 to 14.14.1.7.5527 while it was held; the release was not issued on the replacement (recover() applies it once the original object is back on that executor; end the original playback by hand otherwise)",
             "reassigned": true,
             "generation": 3,
-            "session": "conn-139",
+            "session": "conn-148",
             "control": "PFA181",
             "frozen": true,
             "down": false,
@@ -1373,6 +1374,7 @@
               },
               "targetKey": "execDefault#1/1.181.key|14.14.1.7.5528|Go+",
               "resolved": {
+                "address": "execDefault#1/1.181.key",
                 "mode": "page",
                 "page": {
                   "class": "Page",
@@ -1380,28 +1382,28 @@
                   "addr": "14.14.1.13.1",
                   "name": "Page 1"
                 },
-                "level": 100,
+                "executor": 181,
                 "assigned": "14.14.1.7.5528",
                 "width": 1,
                 "pool": "Default#1",
                 "function": "Go+",
                 "pageNo": 1,
-                "supersedes": true,
                 "element": "key",
+                "supersedes": true,
+                "level": 100,
                 "key": "execDefault#1/1.181.key|14.14.1.7.5528|Go+",
-                "keyUnpress": "",
                 "token": "go+",
                 "active": false,
-                "executor": 181,
+                "keyUnpress": "",
                 "assignedClass": "Sequence",
                 "kind": "executor"
               },
               "device": "probe-mtouch",
-              "at": 1791680734.7564,
+              "at": 1791681689.6187,
               "error": "assignment-changed: executor 1.181 was reassigned from 14.14.1.7.5528 to 14.14.1.7.5527 while it was held; the release was not issued on the replacement (recover() applies it once the original object is back on that executor; end the original playback by hand otherwise)",
               "down": false,
               "generation": 3,
-              "session": "conn-139",
+              "session": "conn-148",
               "attempts": 2,
               "frozen": true,
               "control": "PFA181",
@@ -1435,6 +1437,7 @@
                 },
                 "targetKey": "execDefault#1/1.181.key|14.14.1.7.5528|Go+",
                 "resolved": {
+                  "address": "execDefault#1/1.181.key",
                   "mode": "page",
                   "page": {
                     "class": "Page",
@@ -1442,28 +1445,28 @@
                     "addr": "14.14.1.13.1",
                     "name": "Page 1"
                   },
-                  "level": 100,
+                  "executor": 181,
                   "assigned": "14.14.1.7.5528",
                   "width": 1,
                   "pool": "Default#1",
                   "function": "Go+",
                   "pageNo": 1,
-                  "supersedes": true,
                   "element": "key",
+                  "supersedes": true,
+                  "level": 100,
                   "key": "execDefault#1/1.181.key|14.14.1.7.5528|Go+",
-                  "keyUnpress": "",
                   "token": "go+",
                   "active": false,
-                  "executor": 181,
+                  "keyUnpress": "",
                   "assignedClass": "Sequence",
                   "kind": "executor"
                 },
                 "device": "probe-mtouch",
-                "at": 1791680734.7564,
+                "at": 1791681689.6187,
                 "error": "assignment-changed: executor 1.181 was reassigned from 14.14.1.7.5528 to 14.14.1.7.5527 while it was held; the release was not issued on the replacement (recover() applies it once the original object is back on that executor; end the original playback by hand otherwise)",
                 "down": false,
                 "generation": 3,
-                "session": "conn-139",
+                "session": "conn-148",
                 "attempts": 2,
                 "frozen": true,
                 "control": "PFA181",
@@ -1480,11 +1483,11 @@
           "momentary": false,
           "pool": "Default#1",
           "outcome": "applied",
-          "at": 1791680735.8762,
+          "at": 1791681690.7417,
           "page": 1,
           "executor": 181,
           "assigned": "14.14.1.7.5528",
-          "session": "conn-139",
+          "session": "conn-148",
           "forced": true,
           "down": false,
           "frozen": true,
@@ -1592,7 +1595,7 @@
             "result": {
               "dropped": 0,
               "unresolved": [],
-              "session": "conn-139",
+              "session": "conn-148",
               "ended": []
             }
           }
@@ -1653,7 +1656,7 @@
       }
     }
   ],
-  "finishedAt": "2026-10-11T01:05:47.296Z",
+  "finishedAt": "2026-10-11T01:21:42.150Z",
   "passed": 30,
   "failed": 0
 }

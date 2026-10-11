@@ -86,6 +86,11 @@ down never applied is discarded at the session's end; an unresolved release rese
 way: `node scripts/kb22-probe.mjs run` **30/30** again (the reassignment step's record now comes from the live read of
 page 1's executor 181; `control.recover` re-judged it and issued the Unpress once Sequence 5528 was back).
 
+## Re-run after review round 3 (2026-10-10)
+
+The set at `d77888d` (the gesture bound cancels an expired gesture's queued intents; reservations by the executor's
+stable address) reinstalled the same way: `node scripts/kb22-probe.mjs run` **30/30** again.
+
 ## Not verified here
 
 Rate, Speed, X/XA/XB, CrossFade and Time as fader functions (unqualified, refused); executor encoders (refused); the
