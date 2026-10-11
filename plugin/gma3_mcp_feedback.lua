@@ -1271,8 +1271,12 @@ function Instance:service(now)
       -- At most half the budget (rounded up) goes to the first class, so the executor targets never starve when a
       -- consumer watches more non-executor items than its budget (a bridge with execs= readers).
       local firstCap = math.ceil(self._config.maxReadsPerService / 2)
-      for _, w in ipairs(self._watch) do
+      -- Its own round robin: with more due non-executor items than the cap, the pass must not restart at the first
+      -- item every call (the last items would never be read).
+      for _ = 1, n do
         if reads >= firstCap then break end
+        self._cursor1 = ((self._cursor1 or 0) % n) + 1
+        local w = self._watch[self._cursor1]
         if w.name ~= "executorTarget" and isDue(w) then
           self._cache[w.key] = self:read(w.name, w.params, now)
           reads = reads + 1

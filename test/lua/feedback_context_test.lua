@@ -551,8 +551,8 @@ do
   local sv3 = fq:service(100.2)
   local sq = fq:contextSnapshot({ executors = { 201, 205 } }, 100.21, { cached = true })
   check("kb24 priority: after the interval a budget of 2 is split one non-executor item (the pool first), one executor; the encoder bank waits", sv3.reads == 2 and sq.encoder.ageMs > 150 and ((sq.executors[1].ageMs > 150) ~= (sq.executors[2].ageMs > 150)), json.encode({ reads = sv3.reads, enc = sq.encoder.ageMs, ex1 = sq.executors[1].ageMs, ex2 = sq.executors[2].ageMs }))
-  fq:service(100.21); fq:service(100.22)
-  local sq4 = fq:contextSnapshot({ executors = { 201, 205 } }, 100.23, { cached = true })
+  fq:service(100.21); fq:service(100.22); fq:service(100.23)
+  local sq4 = fq:contextSnapshot({ executors = { 201, 205 } }, 100.24, { cached = true })
   check("kb24 priority: two calls later every non-executor item is fresh again", sq4.encoder.ageMs < 50 and sq4.notObserved == 0, json.encode({ enc = sq4.encoder.ageMs, notObserved = sq4.notObserved }))
 end
 
