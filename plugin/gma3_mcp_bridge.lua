@@ -49,7 +49,9 @@
 --                                               for cleanup only; input stays disabled.
 -- Continuous control (KB-18, bridge 0.14.0 / gma3_mcp_control 0.1.0; KB-19, bridge 0.15.0 / control
 -- 0.2.0; KB-20, bridge 0.16.0 / control 0.3.0; KB-21, bridge 0.17.0 / control 0.4.0 / feedback 0.5.0: explicit executor
--- targets with `executorPage` on feedback.context / control.bind and frozen holds) is OFF by default and enabled per start, or toggled while running. It admits the control.* ops:
+-- targets with `executorPage` on feedback.context / control.bind and frozen holds; KB-22, bridge 0.18.0 / control 0.5.0: executor
+-- keys as Press/Unpress Page <p>.<e> and executor faders as Fader<Function> Page <p>.<e> At on the console backend, for the
+-- qualified functions only) is OFF by default and enabled per start, or toggled while running. It admits the control.* ops:
 -- encoder motion, strip positions, touches and encoder buttons from a surface, each stamped with the
 -- feedback module's binding generation and admitted, ordered, coalesced and bounded by the control
 -- module before a backend applies them:
@@ -63,7 +65,11 @@
 --                                               (KB-20) is a hold that reserves the slot and moves
 --                                               nothing; a strip position is  Attribute "<name>" At <value>
 --                                               over the verified travel (mixed values need takeover);
---                                               presses and executors are refused unsupported
+--                                               an executor key (KB-22) is  Press / Unpress Page <p>.<e>
+--                                               (the configured button function, qualified functions
+--                                               only), an executor fader is  Fader<Function> Page <p>.<e>
+--                                               At <level>  for the qualified fader functions; encoder
+--                                               presses and executor encoders are refused unsupported
 --   Plugin "gma3_mcp_bridge" "control=off"      stop admitting; end every gesture, drop queued motion
 --   Plugin "gma3_mcp_bridge" "control status"   print sessions, gestures, queues and unresolved releases
 --   Plugin "gma3_mcp_bridge" "control recover"  re-attempt the unresolved touch/button releases
@@ -148,7 +154,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.17.0"
+local VERSION      = "0.18.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -2359,7 +2365,7 @@ controlSummary = function()
     moduleInputEnabled = st and st.inputEnabled or false, sessions = sessions, gestures = gestures, queued = queued,
     unresolved = st and #st.unresolved or 0, unresolvedFromPreviousRun = #state.control.unresolved,
     spec = state.control.spec, counters = st and st.counters or nil,
-    note = state.control.backend == "console" and "KB-19: relative motion on attribute slots is applied as Attribute \"<name>\" At +/- <amount> for the selection; KB-20: a strip touch holds the slot and moves nothing, a position is Attribute \"<name>\" At <value> over the verified travel (mixed values need takeover); presses and executors are refused unsupported" or "KB-18: admission, ordering, coalescing and bounds; the fake backend records intents and moves nothing on the console (control=console applies attribute adjustments, KB-19)",
+    note = state.control.backend == "console" and "KB-19: relative motion on attribute slots is applied as Attribute \"<name>\" At +/- <amount> for the selection; KB-20: a strip touch holds the slot and moves nothing, a position is Attribute \"<name>\" At <value> over the verified travel (mixed values need takeover); KB-22: an executor key is Press/Unpress Page <p>.<e> (the configured button function, qualified functions only), an executor fader is Fader<Function> Page <p>.<e> At <level> for the qualified fader functions (Master, Temp), a fader touch holds; encoder presses and executor encoders are refused unsupported" or "KB-18: admission, ordering, coalescing and bounds; the fake backend records intents and moves nothing on the console (control=console applies attribute adjustments, KB-19)",
     backendStatus = st and st.backendStatus or nil,
   }
 end
@@ -3448,7 +3454,7 @@ local function applyControlPolicy(opts)
     end
     state.control.enabled, state.control.backend = true, backend
     if backend == "console" then
-      log("control now enabled on the console backend: relative motion on attribute slots is applied as Attribute \"<name>\" At +/- <amount> for the selection (KB-19); strip touches hold the slot and positions are Attribute \"<name>\" At <value> (KB-20); presses and executors are refused unsupported")
+      log("control now enabled on the console backend: relative motion on attribute slots is applied as Attribute \"<name>\" At +/- <amount> for the selection (KB-19); strip touches hold the slot and positions are Attribute \"<name>\" At <value> (KB-20); executor keys are Press/Unpress Page <p>.<e> and executor faders Fader<Function> Page <p>.<e> At <level> for the qualified functions (KB-22); encoder presses and executor encoders are refused unsupported")
     else
       log("control now enabled on the fake backend (intents are recorded; nothing moves on the console)")
     end
