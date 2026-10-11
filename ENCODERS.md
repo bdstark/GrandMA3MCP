@@ -638,6 +638,17 @@ thresholds moved to the console's measured cadence (80 ms p95, 300 ms worst, plu
 zero-loss check unchanged). `test/lua/control_admission_test.lua` 279 (two new sections), `modules_test` 156; the set
 is pinned at `e4aa80a4a85ea61bd187979f0ceebdfb8cb2189a` (control sha256 `56131672…`).
 
+**Round 4 (2026-10-11, later):** control 0.7.0 merges a relative delta into a queued intent of its control before
+the binding lookup and target resolution (same target, generation, revision, gesture and fine flag; no boundary or
+other intent of the control queued after it; the intent younger than `earlyMergeMs` = 100 ms, so a resolution is
+reused only briefly; `early = 1` in the result, counted as coalesced and `mergedEarly`). Feedback 0.7.0 adds
+`config.priorityStateReads` (0 off: the KB-17 round robin; 1: due non-executor items first, inside at most half of
+`maxReadsPerService`, with their own round robin so neither class starves); the surface plugin turns it on, the
+bridge keeps the default. Set pinned at `3dd82b2` (hashes in `plugin/modules.lock.json`). Live
+on the surface: a command-line keyword reads back in 55 ms median / 165 ms p95 (was 200 / 509), and at 100 detents/s
+plus a strip plus keys the plugin never hits its datagram budget. `control_admission_test` 286, `feedback_context_test`
+161, `modules_test` 156.
+
 **Pending (surface repository, operator at the surfaces):** the onPC run of the harness (press-to-effect, feedback
 latency and the plugin loop's load against the real console; agreed thresholds), the physical NX-K rotaries and the
 M-Touch / M-Play through `run`, two connected surfaces, USB removal, plugin restart, context changes and stale
