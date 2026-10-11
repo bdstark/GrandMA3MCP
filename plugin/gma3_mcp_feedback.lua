@@ -60,13 +60,21 @@
 -- page is part of it only while some bound executor follows it, so an independent-page binding does
 -- not move when the console's page changes. contextSnapshot({ executors, executorPage? }) binds every
 -- listed executor to that page.
--- MODULE API 1, module version 0.5.0. Lifecycle: new() -> init() -> read()/readMany()/watch()/service()
+-- KB-23 (0.6.0): the metadata a surface needs to light a control without guessing from its translated
+-- label: per attribute slot the feature group and feature parsed from the definition's own path text
+-- (featureGroup/featureName), the activation group, and the definition's Color parsed to numbers
+-- (colorR/G/B/A, colorDefined: a black colour such as Dimmer's is "no colour defined", never a colour to show);
+-- per executor the assigned object's Appearance BackRGBA parsed to 0..1 components (appearance.r/g/b/a, hex
+-- "RRGGBBAA" live on 2.5.1, float lists accepted). Colour and appearance are not part of the binding
+-- digest: an appearance edit never rebinds a hold; a surface takes colours from the same snapshot as the
+-- mapping they belong to.
+-- MODULE API 1, module version 0.6.0. Lifecycle: new() -> init() -> read()/readMany()/watch()/service()
 -- ... -> dispose(). Consumers pass dependencies via opts.deps (consoleDeps(_G) builds lazy closures)
 -- and keep one instance each; the module table is read-only and nothing here uses globals or
 -- package.loaded.
 
 local NAME        = "gma3_mcp_feedback"
-local VERSION     = "0.5.0"
+local VERSION     = "0.6.0"
 local API_VERSION = 1
 
 local DEFAULTS = {
@@ -250,7 +258,48 @@ local function poolPage(d, barIndex, bankNo, pageNo)
   return { bar = bar, bank = bank, page = page, bankName = str(field(bank, "name")), pageName = str(field(page, "name")), bankCount = countOf(bar), pageCount = countOf(bank), slotCount = countOf(page) }
 end
 
-local ATTR_FIELDS = { feature = "Feature", unit = "PhysicalUnit", readout = "NaturalReadout", resolution = "EncoderResolution", color = "Color", channelFunctions = "ChannelFunctions", special = "Special" }
+local ATTR_FIELDS = { feature = "Feature", unit = "PhysicalUnit", readout = "NaturalReadout", resolution = "EncoderResolution", color = "Color", channelFunctions = "ChannelFunctions", special = "Special", activationGroup = "ActivationGroup" }
+
+-- KB-23: the names inside a display-role path such as "FeatureGroup 4 'Color'.Feature 1 'RGB'" or
+-- "ActivationGroup 3 'ColorRGB'", keyed by class. Nothing is guessed from a translated label.
+local function pathNames(s)
+  if type(s) ~= "string" then return nil end
+  local out, any = {}, false
+  for class, name in s:gmatch("(%a+)%s+%d+%s+'([^']*)'") do out[class] = name; any = true end
+  if not any then return nil end
+  return out
+end
+
+-- KB-23: a colour as the console prints it ("1.0000,0.0000,0.0000,1.0000" floats 0..1, or "FF7F00FF" /
+-- "FF7F00" hex) to { r, g, b, a } in 0..1 and the format recognised. nil, reason when it is neither.
+local function parseColor(s)
+  if s == nil then return nil, "no colour text" end
+  s = tostring(s):gsub("^%s+", ""):gsub("%s+$", "")
+  if s:match("^#?%x%x%x%x%x%x%x?%x?$") then
+    local h = s:gsub("^#", "")
+    if #h == 6 or #h == 8 then
+      local c = {}
+      for i = 1, #h / 2 do c[i] = tonumber(h:sub(i * 2 - 1, i * 2), 16) / 255 end
+      if #h == 6 then c[4] = 1 end
+      -- a 6/8-digit run of digits only ("10000000") is ambiguous; floats need a comma, so hex wins only with a letter or 8 digits
+      if h:match("%a") or #h == 8 then return { r = c[1], g = c[2], b = c[3], a = c[4] }, "hex" end
+    end
+  end
+  local n = {}
+  for v in s:gmatch("[^,]+") do
+    local x = tonumber((v:gsub("%s", "")))
+    if x == nil then return nil, "unrecognised colour text " .. tostring(s) end
+    n[#n + 1] = x
+  end
+  if #n == 3 or #n == 4 then
+    local scale = 1
+    for _, x in ipairs(n) do if x > 1 then scale = 255 end end
+    local c = { r = n[1] / scale, g = n[2] / scale, b = n[3] / scale, a = (n[4] or scale) / scale }
+    for _, k in ipairs({ "r", "g", "b", "a" }) do if c[k] < 0 or c[k] > 1 then return nil, "colour component out of range in " .. tostring(s) end end
+    return c, scale == 255 and "bytes" or "floats"
+  end
+  return nil, "unrecognised colour text " .. tostring(s)
+end
 local function attributeMeta(d, name)
   if type(d.attributeDefinitions) ~= "function" then return nil, "deps.attributeDefinitions missing" end
   local okD, defs = pcall(d.attributeDefinitions)
@@ -657,6 +706,28 @@ local READERS = {
           if meta then
             slot.attributeIndex = slot.index or meta.index
             slot.feature, slot.unit, slot.color, slot.channelFunctions, slot.special = meta.feature, meta.unit, meta.color, meta.channelFunctions, meta.special
+            -- KB-23: verified metadata for a surface's colour scheme: the feature group / feature names from the
+            -- definition's path text, the activation group, the definition's Color as numbers. A colour that is
+            -- black (Dimmer, Gobo on 2.5.1) defines no colour: colorDefined false and a surface falls back to its
+            -- category scheme; the label stays what the band shows and is never the source of a colour.
+            local names = pathNames(meta.feature)
+            if names then slot.featureGroup, slot.featureName = names.FeatureGroup, names.Feature end
+            if meta.activationGroup ~= nil then
+              local ag = pathNames(meta.activationGroup)
+              slot.activationGroup = (ag and ag.ActivationGroup) or meta.activationGroup
+            end
+            if meta.color ~= nil then
+              local c, how = parseColor(meta.color)
+              if c then
+                -- flat (slots are flat records within the bridge's depth bound)
+                slot.colorR, slot.colorG, slot.colorB, slot.colorA, slot.colorFormat = c.r, c.g, c.b, c.a, how
+                slot.colorDefined = (c.r > 0 or c.g > 0 or c.b > 0)
+              else
+                slot.colorUnavailable = how
+              end
+            else
+              slot.colorUnavailable = "the attribute definition has no readable Color"
+            end
           else
             slot.attributeIndex = slot.index
             slot.attributeUnavailable = mreason
@@ -774,6 +845,10 @@ local READERS = {
       local app = field(obj, "Appearance")
       if app ~= nil and (type(app) == "userdata" or type(app) == "table") then
         out.appearance = { name = str(field(app, "name")), backRGBA = dget(d, app, "BackRGBA"), color = dget(d, app, "Color") }
+        -- KB-23: the background as 0..1 components (hex "RRGGBBAA" live on 2.5.1; float lists accepted) for a
+        -- surface's assignment colour; unparseable text is explicit, never a guessed colour.
+        local c, how = parseColor(out.appearance.backRGBA)
+        if c then out.appearance.r, out.appearance.g, out.appearance.b, out.appearance.a, out.appearance.format = c.r, c.g, c.b, c.a, how else out.appearance.rgbaUnavailable = how end
       else
         out.appearanceUnavailable = "the object has no Appearance"
       end

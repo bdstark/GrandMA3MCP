@@ -21,7 +21,7 @@ local function loadModule(file)
   return chunk("test_plugin", (file:gsub("%.lua$", "")), {}, nil)
 end
 local FB = loadModule("gma3_mcp_feedback.lua")
-check("feedback 0.5.0 loads", FB.VERSION == "0.5.0" and FB.API_VERSION == 1)
+check("feedback 0.6.0 loads", FB.VERSION == "0.6.0" and FB.API_VERSION == 1)
 
 -------------------------------------------------------------------------------
 -- Fake console
@@ -69,12 +69,13 @@ local banks = {
 local pool = H({}, { H({ name = "EncoderBar 1" }, banks) })
 local prefs = { ColorRGB_R = H({ NaturalReadout = "<Percent>", EncoderResolution = "Fine", EncoderPressFactor = "Mul5" }) }
 local profile = { name = console.profile, EncoderBarPool = pool, UserAttributePreferences = prefs, Get = function(_, k) if k == "Layer" then return console.layer end end }
-local function attrDef(feature, unit, readout, res, color, cfs)
-  return H({ Feature = feature, PhysicalUnit = unit, NaturalReadout = readout, EncoderResolution = res, Color = color, ChannelFunctions = cfs, Special = "None" })
+local function attrDef(feature, unit, readout, res, color, cfs, ag)
+  return H({ Feature = feature, PhysicalUnit = unit, NaturalReadout = readout, EncoderResolution = res, Color = color, ChannelFunctions = cfs, Special = "None", ActivationGroup = ag })
 end
 local defs = {
-  ColorRGB_R = attrDef("FeatureGroup 4 'Color'.Feature 1 'RGB'", "None", "Percent", "Coarse", "1,0,0,1", "1"),
-  ColorRGB_G = attrDef("FeatureGroup 4 'Color'.Feature 1 'RGB'", "None", "Percent", "Coarse", "0,1,0,1", "1"),
+  -- KB-23: R carries the live text forms (floats as 2.5.1 prints them, an activation group path); G a bare path with no colour
+  ColorRGB_R = attrDef("FeatureGroup 4 'Color'.Feature 1 'RGB'", "None", "Percent", "Coarse", "1.0000000000,0.0000000000,0.0000000000,1.0000000000", "1", "ActivationGroup 3 'ColorRGB'"),
+  ColorRGB_G = attrDef("FeatureGroup 4 'Color'.Feature 1 'RGB'", "None", "Percent", "Coarse", nil, "1"),
   ColorRGB_B = attrDef("FeatureGroup 4 'Color'.Feature 1 'RGB'", "None", "Percent", "Coarse", "0,0,1,1", "1"),
   Dimmer = attrDef("FeatureGroup 1 'Dimmer'.Feature 1 'Dimmer'", "LuminousIntensity", "Percent", "Coarse", "0,0,0,1", "9"),
 }
@@ -106,7 +107,7 @@ local function obj(name, class, no, extra)
   o.HasActivePlayback = function() return extra and extra.active or false end
   o.GetFader = function(_, t) local v = extra and extra.faders and extra.faders[t.token]; if v == nil then error("no token " .. tostring(t.token)) end; return v end
   o.GetFaderText = function(_, t) return tostring(extra and extra.faders and extra.faders[t.token]) .. "%" end
-  if extra and extra.appearance then o.Appearance = H({ name = extra.appearance, BackRGBA = "0.5,0.1,0.1,1", Color = "1,1,1,1" }) end
+  if extra and extra.appearance then o.Appearance = H({ name = extra.appearance, BackRGBA = extra.backRGBA or "0.5,0.1,0.1,1", Color = "1,1,1,1" }) end
   return o
 end
 local seqMain = obj("Main", "Sequence", 10, { faders = { FaderMaster = 100, FaderTemp = 0 }, appearance = "Red" })
@@ -130,7 +131,7 @@ local pageH = H({ name = "Page 1", No = "1" }, { execs[201], execs[202], execs[2
 local reserved = { page = 1, first = 203, count = 2 }
 -- KB-21: a second page read through ObjectList("Page 2.E"), with an expanded (width 2) assignment on 211
 -- covering 212, and an assigned 213 right after it. Page 2 executors never go through GetExecutor.
-local seqTwo = obj("Two", "Sequence", 20, { faders = { FaderMaster = 30 } })
+local seqTwo = obj("Two", "Sequence", 20, { faders = { FaderMaster = 30 }, appearance = "Orange", backRGBA = "FF7F00FF" })
 local function wide(index, object, width, fns) local e = ex(index, object, fns); e.Width = tostring(width); e.Get = function(_, k) if k == "Width" then return tostring(width) end; return ({ index = index, KeyPress = fns.keyPress, KeyUnpress = "", KeyUnpressCombined = fns.keyUnpressCombined, Fader = fns.fader, Encoder = "Master", EncoderLeft = "", EncoderRight = "", ExecutorConfiguration = "Configuration 2 'Wide'", IsXKey = "No" })[k] end; return e end
 local execs2 = {
   [201] = ex(201, seqTwo, { keyPress = "Go+", fader = "Master" }),
@@ -226,9 +227,14 @@ check("encoderBank: config.encoderDisplay chooses the authoritative display", r.
 r = f:read("encoderSlots", nil, 1)
 check("encoderSlots: available with bank/page/context/layer/selection summary", r.available and r.value.bank.name == "Color" and r.value.page.index == 1 and r.value.context == "Default" and r.value.layer == "Absolute" and r.value.selection.count == 2 and r.value.selection.scanned == 2 and r.value.selection.partial == false and #r.value.slots == 5 and r.value.slotCount == 5 and r.value.truncated == false, json.encode(r))
 local s = r.value.slots
-check("slot 1: attribute identity, label from the band, definition metadata", s[1].slot == 1 and s[1].kind == "attribute" and s[1].name == "ColorRGB_R" and s[1].ref == "Attribute 107 'ColorRGB_R'" and s[1].attributeIndex == 107 and s[1].label == "R" and s[1].feature:find("RGB") and s[1].unit == "None" and s[1].color == "1,0,0,1" and s[1].channelFunctions == 1 and s[1].channelFunction == "RGB" and s[1].channelFunctionIndex == 0 and s[1].layer == "Absolute", json.encode(s[1]))
+check("slot 1: attribute identity, label from the band, definition metadata", s[1].slot == 1 and s[1].kind == "attribute" and s[1].name == "ColorRGB_R" and s[1].ref == "Attribute 107 'ColorRGB_R'" and s[1].attributeIndex == 107 and s[1].label == "R" and s[1].feature:find("RGB") and s[1].unit == "None" and s[1].color:find("^1%.0") and s[1].channelFunctions == 1 and s[1].channelFunction == "RGB" and s[1].channelFunctionIndex == 0 and s[1].layer == "Absolute", json.encode(s[1]))
 check("slot 1: user preference overrides resolution, inherited readout comes from the definition", s[1].resolution == "Fine" and s[1].resolutionSource == "user-preference" and s[1].readout == "Percent" and s[1].readoutSource == "attribute-definition" and s[1].pressFactor == "Mul5", json.encode(s[1]))
 check("slot 1: available on every scanned fixture, agreeing value, complete", s[1].availability == "available" and s[1].fixtures == 2 and s[1].with == 2 and s[1].valueState == "value" and s[1].absolute == 50 and s[1].raw == 8388608 and s[1].valueChannelFunction == 0 and s[1].valueFixture == 63 and s[1].uiChannel == 320 and s[1].valueComplete == true and s[1].valueIncomplete == nil, json.encode(s[1]))
+check("kb23: slot 1 carries the feature group and feature from the definition's path, the activation group name and the Color as numbers",
+  s[1].featureGroup == "Color" and s[1].featureName == "RGB" and s[1].activationGroup == "ColorRGB" and s[1].colorFormat == "floats" and s[1].colorDefined == true
+  and s[1].colorR == 1 and s[1].colorG == 0 and s[1].colorB == 0 and s[1].colorA == 1 and s[1].color:find("^1%.0"), json.encode(s[1]))
+check("kb23: a definition without a Color is explicit, never a guessed colour; the feature names still parse", s[2].name == "ColorRGB_G" and s[2].colorR == nil and s[2].colorDefined == nil
+  and s[2].colorUnavailable:find("no readable Color") and s[2].featureGroup == "Color" and s[2].activationGroup == nil, json.encode(s[2]))
 check("slot 1: a different outer-ring object is reported and unsupported", s[1].outerRef == "Attribute 1 'Dimmer'" and s[1].outerName == "Dimmer" and s[1].outerUnsupported:find("outer ring"), json.encode(s[1]))
 check("slot 2: fixtures disagree -> mixed value with the first fixture's", s[2].name == "ColorRGB_G" and s[2].availability == "available" and s[2].valueState == "mixed" and s[2].absolute == 50 and s[2].valueNote:find("disagree") and s[2].label == "G" and s[2].outerRef == nil and s[2].resolution == "Coarse" and s[2].resolutionSource == "attribute-definition", json.encode(s[2]))
 check("slot 3: only one fixture has it -> mixed availability; nil from GetProgPhaser (nothing in the programmer, KB-17 live) -> empty value", s[3].name == "ColorRGB_B" and s[3].availability == "mixed" and s[3].with == 1 and s[3].valueState == "empty" and s[3].absolute == nil and s[3].valueNote:find("holds no value") and s[3].label == nil, json.encode(s[3]))
@@ -290,7 +296,15 @@ check("a grouping fixture is read through its first subfixture", r.available and
 -------------------------------------------------------------------------------
 r = f:read("executorTarget", { executor = 201 }, 1)
 local v = r.value
+do
+  console.bank, console.page = 0, 0
+  local rd = f:read("encoderSlots", nil, 1).value.slots[1]
+  check("kb23: Dimmer's black Color (as 2.5.1 reports it) is parsed but defines no colour; feature group Dimmer", rd.name == "Dimmer" and rd.colorDefined == false and rd.colorR == 0 and rd.colorA == 1
+    and rd.featureGroup == "Dimmer" and rd.featureName == "Dimmer" and rd.activationGroup == nil, json.encode(rd))
+  console.bank, console.page = 3, 0
+end
 check("executorTarget: assignment, functions, configured-function level, activity, appearance", r.available and v.executor == 201 and v.page.no == 1 and v.empty == false and v.assigned.name == "Main" and v.assigned.class == "Sequence" and v.assigned.no == 10 and v.functions.keyPress == "Temp" and v.functions.keyUnpress == "" and v.functions.keyUnpressCombined == "<Temp>" and v.functions.fader == "Master" and v.functions.encoder == "Master" and v.configuration:find("Default") and v.level.token == "FaderMaster" and v.level.value == 100 and v.level.text == "100%" and v.active == false and v.appearance.backRGBA == "0.5,0.1,0.1,1" and v.appearance.name == "Red" and v.playbackTarget == true and v.reserved == nil and r.key == "executorTarget[executor=201]", json.encode(r))
+check("kb23: the appearance's float BackRGBA is parsed to components", v.appearance.r == 0.5 and v.appearance.g == 0.1 and v.appearance.b == 0.1 and v.appearance.a == 1 and v.appearance.format == "floats", json.encode(v.appearance))
 r = f:read("executorTarget", { executor = 202 }, 1)
 check("executorTarget: a Quickey object is never a playback target", r.available and r.value.assigned.class == "Quickey" and r.value.playbackTarget == false and r.value.reason:find("Quickey") and r.value.level.value == 100, json.encode(r))
 r = f:read("executorTarget", { executor = 203 }, 1)
@@ -545,6 +559,8 @@ do
   check("kb21: a current-page target carries pool, page, mode=current and width", r.available and r.value.mode == "current" and r.value.pool.name == "Default" and r.value.pool.no == 1 and r.value.page.no == 1 and r.value.width == 1 and r.value.expanded == nil and r.value.coveredBy == nil and r.value.playbackTarget == true and r.key == "executorTarget[executor=201]", json.encode(r))
   r = fk:read("executorTarget", { executor = 201, page = 2 }, 1)
   check("kb21: an explicit page is read through ObjectList, not GetExecutor; key and identity say so", r.available and r.value.mode == "page" and r.value.page.no == 2 and r.value.page.name == "Page 2" and r.value.assigned.name == "Two" and r.value.level.value == 30 and r.value.playbackTarget == true and r.key == "executorTarget[executor=201,page=2]", json.encode(r))
+  check("kb23: a hex BackRGBA (the live 2.5.1 form) is parsed to 0..1 components", r.available and r.value.appearance.name == "Orange" and r.value.appearance.format == "hex"
+    and r.value.appearance.r == 1 and math.abs(r.value.appearance.g - 127 / 255) < 1e-9 and r.value.appearance.b == 0 and r.value.appearance.a == 1, json.encode(r.value.appearance))
   local fe = FB.new({ owner = "kb21e", deps = deps({ executor = function(n) if execs[n] then return execs[n], pageH end return nil end }) }):init()
   r = fe:read("executorTarget", { executor = 209 }, 1)
   check("kb21 live: an empty executor on the current page (GetExecutor returns no page handle) still carries the user's page", r.available and r.value.empty == true and r.value.page and r.value.page.no == 1 and r.value.mode == "current", json.encode(r.value))

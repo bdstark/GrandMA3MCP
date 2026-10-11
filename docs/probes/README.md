@@ -155,6 +155,19 @@ move the generation, and `Page <other>`; each undo is registered before its chan
 (`scripts/lib/kb16-steps.mjs`). `node scripts/kb17-probe.mjs watch [--seconds N]` prints every snapshot whose generation
 moved while the operator works in onPC. Record: [kb-17-context-macos-2.5.1.md](kb-17-context-macos-2.5.1.md).
 
+## Running the KB-23 colour-metadata probe
+
+`node scripts/kb23-probe.mjs verify [--out ...]` is **read-only** (feedback.context only) and needs feedback 0.6.0 or
+newer: every attribute slot of the current encoder page carries the feature group / feature names from the
+definition's path, the activation group and a parsed `Color` (or an explicit reason); every assigned executor of the
+user's page carries a parsed appearance background (0..1 components) or says why not; reading moves no generation.
+`node scripts/kb23-probe.mjs run [--out docs/probes/kb-23-colours-<os>-<version>.json]` adds, on a show whose name
+matches `disposable`, `mcp-test` or `scratch` with Lua enabled and an empty selection: `Fixture 401`
+(`KB23_RGB_FIXTURE`), the colour bank's pages 1-3 (`KB23_COLOR_BANK`, 4) each checked to be feature group Color with
+parsed metadata, a note of which components the definitions colour (defined) and which are black, and the definitions
+of `KB23_COMPONENTS` read through Lua; the undos (ClearSelection, the original bank.page) are registered first and run
+at the end.
+
 ## Running the KB-18 continuous-control admission probe
 
 `node scripts/kb18-probe.mjs verify [--out ...]` needs a bridge 0.14.0 or newer with the control module loaded and

@@ -302,6 +302,10 @@ Since v0.17.0 (KB-21, feedback 0.5.0) `executorPage` binds the listed executors 
 not exist is `pageMissing` and nothing creates it) and every target carries `pool`, `page`, `mode`, `width`,
 `expanded`/`coveredBy` (an expanded assignment covers the following numbers of its row: not separate playbacks); without
 `executorPage` the executors follow the user's page as before. `[no-feedback]` on a module without explicit pages.
+With feedback 0.6.0 (KB-23) every attribute slot also carries `featureGroup`, `featureName`, `activationGroup` (names
+from the definition's own path text) and the definition's `Color` as `colorR/G/B/A` with `colorDefined` (or
+`colorUnavailable`), and every assigned executor's `appearance` carries `r, g, b, a, format` (or `rgbaUnavailable`):
+the verified metadata a surface lights its controls from ([modules](modules.md#parameter-colours-and-playback-feedback-gma3_mcp_feedback-060-kb-23)). Neither is part of the generation.
 
 ### Continuous control (plugin v0.14.0, KB-18)
 

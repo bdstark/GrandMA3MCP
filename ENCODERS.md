@@ -560,6 +560,34 @@ recovery or by hand; executor encoders are not served; no pool is addressed in c
 - Expose textual labels, values, and state in the service UI/status so color is not the sole cue.
 - Qualify actual color capabilities per device; document approximations for limited palettes.
 
+### KB-23 results (console half, 2026-10-10; surface half in mtpnxk)
+
+`gma3_mcp_feedback` 0.6.0 ([modules](docs/modules.md#parameter-colours-and-playback-feedback-gma3_mcp_feedback-060-kb-23),
+[reference](docs/reference.md#control-context-plugin-v0130-kb-17)); the bridge (0.18.0) and the control module (0.5.0)
+are unchanged. No TypeScript changed. LED translation, the value and playback indications, the stale state, the rate
+limiting, the textual status and the per-device colour qualification are the surface service's half (mtpnxk
+`KEYBOARD.md` "KB-23"); what the console half serves:
+
+- **Verified metadata, not labels:** every attribute slot carries `featureGroup` and `featureName` parsed from the
+  definition's own `Feature` path text, the `activationGroup` name, and the definition's `Color` as `colorR/G/B/A`
+  with `colorDefined` (a black colour, which Dimmer and Gobo have live, defines none) or `colorUnavailable`. The band
+  label stays the textual identity and is never a colour source.
+- **Playback appearance:** every assigned executor's `appearance` carries `r, g, b, a` (0..1) parsed from
+  `BackRGBA` (hex "RRGGBBAA" live on 2.5.1; float and byte lists accepted) or `rgbaUnavailable`; the activity, the
+  configured fader function's level and `valueState` are the KB-17/KB-21 fields the surface's indicators rest on.
+- **Colours move no binding:** colour and appearance stay out of the binding digest; a surface renders mapping and
+  colour from one snapshot (its half of "update bindings and their colors together").
+- **Harness:** `test/lua/feedback_context_test.lua` (153; 5 new), `test/kb23-probe.test.ts` (4).
+- **Live:** not yet run. `node scripts/kb23-probe.mjs verify` is read-only; `run` (disposable show, Lua on) selects
+  the RGB fixture and the colour bank's pages and records which components the show's definitions colour (the
+  evidence for the surface's R/G/B/Amber/W/UV scheme) and the definitions through Lua. Record to be
+  `docs/probes/kb-23-colours-macos-2.5.1.md` / `.json`.
+
+**Limitations:** the attribute `Color` of the colour components has not been read live yet (only Dimmer's and Gobo's,
+both black, were recorded before KB-23), so whether the show's definitions colour R/G/B/RY/W/UV is the first thing the
+live run establishes; no fixture-type (GDTF emitter) colour is read; the executor's own Appearance is not read (the
+assigned object's is, as KB-16 qualified).
+
 ## KB-24 — Device profiles and end-to-end qualification
 
 **Request:** Deliver usable default layouts for NX-K, M-Touch, and M-Play.
