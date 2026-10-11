@@ -655,6 +655,12 @@ target-owner guards: it now runs after them and skips only the target resolution
 -100, A +100` stays three intents). (P2) The refused-sequence set is bounded to `seqWindow` entries. Set pinned at
 `e4741b90a1daeba7accf99f4a2d3b5a0d73d76a6`.
 
+**Review of PR #28 (round 2):** bounding the refused set by numbers turned forgotten received events into "lost"
+(70 refusals at 10/s then valid motion reported 6 lost). Received refusals are now kept as merged ranges bounded by
+their count; dropped history keeps its count and highest number, so a later event subtracts it exactly, and an event
+inside the forgotten region reports an upper bound with `lostUncertain = true` (the device stays uncertain until the
+order passed the region). The regression test now expects 0 lost after 1000 refusals. Set pinned at `9cf16598b75fd65d10695ef651e9465876c7edbf`.
+
 **Pending (surface repository, operator at the surfaces):** the onPC run of the harness (press-to-effect, feedback
 latency and the plugin loop's load against the real console; agreed thresholds), the physical NX-K rotaries and the
 M-Touch / M-Play through `run`, two connected surfaces, USB removal, plugin restart, context changes and stale
