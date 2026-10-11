@@ -2,7 +2,7 @@
 
 Run on 2026-10-10 (local time; the report's timestamps are UTC, 2026-10-11T02:38) against show `mcp-test-disposable` on
 onPC 2.5.1.0 (`hostType onPC`, user Admin), bridge **0.18.0** with `gma3_mcp_feedback` **0.6.0** (the set pinned at
-`730395f`), `gma3_mcp_control` 0.5.0 and `gma3_mcp_hardkeys` 0.10.0, started `lua input=keyboard control=console`.
+`45945bf`), `gma3_mcp_control` 0.5.0 and `gma3_mcp_hardkeys` 0.10.0, started `lua input=keyboard control=console`.
 Script report: [kb-23-colours-macos-2.5.1.json](kb-23-colours-macos-2.5.1.json) (`node scripts/kb23-probe.mjs run`,
 **10/10**). Every observation came through the bridge (`feedback.context`, `cmd`, `lua`); nothing was typed on the
 console. The plugins were reloaded through a macro written over the bridge's `lua` op (Macro 117, deleted afterwards).
@@ -44,7 +44,7 @@ clamps and flags it; the report file is the re-run on the fixed set.
    `ActivationGroup` is `""` (no field); Pan's is `PanTilt`, Gobo1's `Gobo1`, every RGB component's `ColorRGB`.
 3. **UV's definition colour is out of gamut:** `0.1744260043,-0.1443289965,1.0000000000,1.0000000000` (a negative green
    component: the console's representation of UV beyond RGB). The first module refused it ("component out of range");
-   0.6.0 at `730395f` clamps it to `0.1744,0,1,1`, keeps `colorDefined = true` and sets `colorClamped`. The surface
+   0.6.0 at `45945bf` clamps it to `0.1744,0,1,1`, keeps `colorDefined = true` and sets `colorClamped`. The surface
    shows UV as the documented violet stand-in (magenta on a 3-bit bar) by name regardless.
 4. **Appearances live are hex `RRGGBBAA`** (`FF7F00FF` -> `1, 0.498, 0, 1`, "Orange" on 191, 192, 291, 292); the other
    sequences have no Appearance (`appearanceUnavailable: "the object has no Appearance"`), the MasterSpeed objects on

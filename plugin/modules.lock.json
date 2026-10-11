@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "repository": "https://github.com/bdstark/GrandMA3MCP",
-  "revision": "730395f2eca2227e073c9d4dbb5495ea53b22b93",
+  "revision": "45945bfb4cdf8520f233a6885374a455a5e3e22d",
   "license": "MIT",
   "modules": [
     {
