@@ -286,6 +286,28 @@ do
   inst:submit("s", 1.9, rel(base + 500, 9, 1))
   local r6 = inst:submit("s", 1.95, rel(base + 501, 1, 1))
   check("review round 2: past the forgotten region the figures are certain again", r6.accepted and r6.lostUncertain == nil and r6.lost == 500 - 401 - 1, J({ lost = r6.lost, uncertain = r6.lostUncertain }))
+  -- Review round 3, case 1: a retry of an already-forgotten refusal must not be counted twice. 200 scattered refusals
+  -- (odd offsets) drop the oldest 136 ranges; the retry of the first one (base + 2) lands inside the forgotten history.
+  local b3 = base + 501
+  for i = 1, 200 do inst:submit("s", 2.0, rel(b3 + 2 * i, 9, 1)) end
+  local rangesBefore = #dev.refused
+  inst:submit("s", 2.05, rel(b3 + 2, 9, 1))  -- retry of a forgotten refusal (it is below d.last? no: d.last is b3)
+  check("review round 3: the retry inside the forgotten history is not added again and makes the count unknown", #dev.refused == rangesBefore and dev.refusedForgottenUnknown == true, J({ ranges = #dev.refused, unknown = dev.refusedForgottenUnknown, upTo = dev.refusedForgottenUpTo }))
+  local r7 = inst:submit("s", 2.1, rel(b3 + 401, 1, 1))
+  check("review round 3: the figure beyond the region is then an uncertain upper bound, not an exact count (199 would be the double count)", r7.accepted and r7.lostUncertain == true and r7.lost >= 200, J({ lost = r7.lost, uncertain = r7.lostUncertain }))
+  check("review round 3: the unknown state clears once the order passed the region", dev.refusedForgottenUnknown == nil and dev.refusedForgottenUpTo == nil, J({ unknown = dev.refusedForgottenUnknown, upTo = dev.refusedForgottenUpTo }))
+  -- Case 2: an eviction after the order entered the forgotten region (count unknown) must not rebuild an "exact" count.
+  local b4 = b3 + 401
+  for i = 1, 200 do inst:submit("s", 2.2, rel(b4 + 2 * i, 9, 1)) end
+  inst:submit("s", 2.25, rel(b4 + 150, 1, 1))  -- inside the forgotten region: the count becomes unknown
+  check("review round 3: the order entered the forgotten region: unknown", dev.refusedForgottenUnknown == true and dev.refusedForgotten == nil, J({ unknown = dev.refusedForgottenUnknown, forgotten = dev.refusedForgotten }))
+  for i = 1, 100 do inst:submit("s", 2.3, rel(b4 + 400 + 2 * i, 9, 1)) end  -- more scattered refusals: further evictions
+  check("review round 3: evictions after the split keep the count unknown (never a partial 'exact' figure)", dev.refusedForgottenUnknown == true and dev.refusedForgotten == nil, J({ unknown = dev.refusedForgottenUnknown, forgotten = dev.refusedForgotten }))
+  local r8 = inst:submit("s", 2.4, rel(b4 + 601, 1, 1))
+  check("review round 3: the admitted event beyond is reported uncertain, with the known ranges subtracted only", r8.accepted and r8.lostUncertain == true, J({ lost = r8.lost, uncertain = r8.lostUncertain }))
+  inst:submit("s", 2.5, rel(b4 + 700, 9, 1))
+  local r9 = inst:submit("s", 2.55, rel(b4 + 701, 1, 1))
+  check("review round 3: certain again past the region", r9.accepted and r9.lostUncertain == nil and r9.lost == 700 - 601 - 1, J({ lost = r9.lost, uncertain = r9.lostUncertain }))
 end
 
 -------------------------------------------------------------------------------

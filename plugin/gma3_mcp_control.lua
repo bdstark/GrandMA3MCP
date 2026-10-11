@@ -973,8 +973,11 @@ local function orderEvent(self, s, ev, release)
     -- Forgotten ranges: their numbers all lie above d.last (ranges behind the order are pruned). When the event is
     -- beyond the last forgotten number, every forgotten refusal is inside this gap and the count is exact; when it
     -- is not, the split is unknown and the figure is an upper bound, reported uncertain.
+    -- Review (PR #28, round 3): the count is usable only while it is EXACT (d.refusedForgottenUnknown not set); a
+    -- retry inside the forgotten history or an eviction after the order entered it makes it unknown for good, until
+    -- the order passed the region.
     if d.refusedForgottenUpTo and d.refusedForgottenUpTo > d.last then
-      if ev.seq > d.refusedForgottenUpTo and d.refusedForgotten ~= nil then lost = lost - d.refusedForgotten else d.lostUncertain = true end
+      if ev.seq > d.refusedForgottenUpTo and not d.refusedForgottenUnknown then lost = lost - (d.refusedForgotten or 0) else d.lostUncertain = true end
     end
     if lost < 0 then lost = 0 end
   end
@@ -983,6 +986,9 @@ end
 
 -- A received-but-refused sequence number joins the device's refused ranges (sorted, merged when adjacent).
 local function noteRefused(self, d, seq)
+  -- A refusal inside the forgotten history (a retry of a dropped number, or a new number there: indistinguishable) must
+  -- not be counted again; the forgotten count becomes unknown instead (review round 3).
+  if d.refusedForgottenUpTo and seq <= d.refusedForgottenUpTo then d.refusedForgottenUnknown = true; return end
   local rs = d.refused
   local i = #rs
   while i >= 1 and rs[i][1] > seq do i = i - 1 end  -- rs[i] is the last range starting at or below seq
@@ -998,7 +1004,8 @@ local function noteRefused(self, d, seq)
   while #rs > self._config.seqWindow do
     local dropped = table.remove(rs, 1)
     d.refusedForgottenUpTo = math.max(d.refusedForgottenUpTo or 0, dropped[2])
-    d.refusedForgotten = (d.refusedForgotten or 0) + (dropped[2] - dropped[1] + 1)
+    -- Once unknown, stays unknown (an eviction after the split cannot rebuild an exact count).
+    if not d.refusedForgottenUnknown then d.refusedForgotten = (d.refusedForgotten or 0) + (dropped[2] - dropped[1] + 1) end
   end
 end
 
@@ -1017,8 +1024,8 @@ local function commitOrder(self, d, ev, lost, late)
   while rs[1] and rs[1][2] <= ev.seq do table.remove(rs, 1) end
   if rs[1] and rs[1][1] <= ev.seq then rs[1][1] = ev.seq + 1 end
   if d.refusedForgottenUpTo then
-    if d.refusedForgottenUpTo <= ev.seq then d.refusedForgottenUpTo, d.refusedForgotten = nil, nil
-    else d.refusedForgotten = nil end  -- the order passed INTO the forgotten region: how many forgotten numbers remain above is unknown
+    if d.refusedForgottenUpTo <= ev.seq then d.refusedForgottenUpTo, d.refusedForgotten, d.refusedForgottenUnknown = nil, nil, nil
+    else d.refusedForgotten, d.refusedForgottenUnknown = nil, true end  -- the order passed INTO the forgotten region: how many forgotten numbers remain above is unknown
   end
   d.lost = d.lost + lost
   if d.lostUncertain and lost > 0 then d.lostUncertainCount = (d.lostUncertainCount or 0) + 1 end
