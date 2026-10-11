@@ -908,8 +908,8 @@ to the surface's neutral colour; every six- or eight-digit hex run is hex now (t
 
 ## Vendoring into another plugin (mtpnxk)
 
-Use the immutable upstream revision **`45945bfb4cdf8520f233a6885374a455a5e3e22d`** (KB-23 after the live run, hardkeys 0.10.0 / feedback 0.6.0 /
-control 0.5.0) for the current module set; the earlier pins were `ba186a628f9193b0e0c44fd9b7abb240a7ed7608` (KB-23 before the live run), `d77888d1010d405ab97e8a3debb2be3cd6764839` (KB-22 after the PR #26 review round 3, feedback 0.5.0 / control 0.5.0), `ce91371314e467cfd1afb072e9772381787e6767` (KB-22 after review round 2), `3e0e7c4f7035e58de18acbad38ba96ed382ea7d7` (KB-22 after review round 1), `04daff7ef7ba12d0a13f08d703caf8cf8c708a04` (KB-22 after the live run), `0315e181bb6b0ff4e22976797a616c8db8720585` (KB-22 before the live run), `d60bb06e080ce2fef2b593b96f0de119462a0767` (KB-21 after the PR #25 review round 1, hardkeys 0.10.0 /
+Use the immutable upstream revision **`9535ded7935a93a6b51038c92681b0377b3567e3`** (KB-23 after the PR #27 review round 1, hardkeys 0.10.0 / feedback 0.6.0 /
+control 0.5.0) for the current module set; the earlier pins were `45945bfb4cdf8520f233a6885374a455a5e3e22d` (KB-23 after the live run), `ba186a628f9193b0e0c44fd9b7abb240a7ed7608` (KB-23 before the live run), `d77888d1010d405ab97e8a3debb2be3cd6764839` (KB-22 after the PR #26 review round 3, feedback 0.5.0 / control 0.5.0), `ce91371314e467cfd1afb072e9772381787e6767` (KB-22 after review round 2), `3e0e7c4f7035e58de18acbad38ba96ed382ea7d7` (KB-22 after review round 1), `04daff7ef7ba12d0a13f08d703caf8cf8c708a04` (KB-22 after the live run), `0315e181bb6b0ff4e22976797a616c8db8720585` (KB-22 before the live run), `d60bb06e080ce2fef2b593b96f0de119462a0767` (KB-21 after the PR #25 review round 1, hardkeys 0.10.0 /
 feedback 0.5.0 / control 0.4.0), `597ba47f7e28c0c50673e8c405b555b942c9b984` (KB-20 after the PR #24 review, hardkeys 0.10.0 / feedback 0.4.0 / control 0.3.0), `01e1561490fc39ce4e2d510e2d170c9c09e4bc53`
 (KB-20 before the review), `107f54804a9f7183e8bbedee2ebbac70e38e06fd` (KB-19, hardkeys
 0.10.0 / feedback 0.4.0 / control 0.2.0), `9f08f871f864084afcd670008310b285e8b31bfc` (KB-18, hardkeys
@@ -923,7 +923,7 @@ manifest, not an automatic updater or a runtime dependency on GitHub.
 | File | Module version | API version | SHA-256 |
 | --- | --- | --- | --- |
 | `plugin/gma3_mcp_hardkeys.lua` | 0.10.0 | 1 | `a57ebd29af3b2c7e9e06ef3dcd8b7059c775db83b0dc61760f49e75973cc7dc3` |
-| `plugin/gma3_mcp_feedback.lua` | 0.6.0 | 1 | `1126d6f3ebc82fc86f8ebc5c435ecefc4b60110c4385c7d29316f2ffabd155c6` |
+| `plugin/gma3_mcp_feedback.lua` | 0.6.0 | 1 | `2a42c1ae01973643e99cd328309e8dc5f3c2a59527accd6c132eba3679842f8a` |
 | `plugin/gma3_mcp_control.lua` | 0.5.0 | 1 | `2c5b9949b626a61d662970dd353a87ab264d0d9a1c39c3b27c3d8a85e263f50b` |
 
 1. Obtain the Lua files from that exact revision of `bdstark/GrandMA3MCP`, rather than a moving branch.
