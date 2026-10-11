@@ -2,7 +2,7 @@
   "mode": "run",
   "host": "127.0.0.1",
   "port": 9800,
-  "startedAt": "2026-10-11T02:38:44.266Z",
+  "startedAt": "2026-10-11T03:02:53.994Z",
   "ping": {
     "bridgeVersion": "0.18.0",
     "build": {
@@ -72,7 +72,7 @@
           "component": "gma3_mcp_feedback",
           "version": "0.6.0"
         },
-        "generation": 5
+        "generation": 1
       }
     },
     {
@@ -810,8 +810,8 @@
       "pass": true,
       "detail": {
         "generation": [
-          5,
-          5
+          1,
+          1
         ]
       }
     },
@@ -1215,7 +1215,7 @@
       }
     }
   ],
-  "finishedAt": "2026-10-11T02:38:45.639Z",
+  "finishedAt": "2026-10-11T03:02:55.383Z",
   "failed": 0,
   "passed": 10
 }

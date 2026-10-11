@@ -51,3 +51,10 @@ clamps and flags it; the report file is the re-run on the fixed set.
    401/402 neither. Executor 291 was running during the run (`active: true`, level 100), left alone.
 5. The colour bank's page 3 was not selectable with fixture 401 selected (the selection lacks its attributes; the
    console keeps page 1), as KB-16 recorded for other pages; the probe notes it and moves on.
+
+## Re-run after the PR #27 review round 1 (2026-10-10)
+
+The module set at `9535ded` (feedback 0.6.0 parsing numeric-only six- and eight-digit hex as hex) was reinstalled the
+same way and `node scripts/kb23-probe.mjs run` scored **10/10** again (the same steps and evidence; the appearances on
+this show are letter-bearing hex, so the fix is exercised by the harness, not by this show). The report file was replaced
+by this run.
