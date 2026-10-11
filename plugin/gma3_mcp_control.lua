@@ -941,6 +941,10 @@ end
 local function orderEvent(self, s, ev, release)
   local d = s.devices[ev.device]
   if not d then d = { last = 0, seen = {}, times = {}, refused = {}, lost = 0, duplicates = 0, reordered = 0, late = 0 }; s.devices[ev.device] = d end
+  -- KB-24 (review of PR #28, round 2): received-but-refused numbers are kept as sorted, merged ranges {from, to}
+  -- (d.refused), bounded by their COUNT of ranges, not of numbers: a contiguous run of refusals is one entry however
+  -- long. When ranges are dropped (d.refusedForgottenUpTo), the loss arithmetic touching that history is reported
+  -- uncertain instead of calling known received events lost.
   if ev.seq <= d.last then
     if d.seen[ev.seq] then d.duplicates = d.duplicates + 1; return fail("duplicate", string.format("event %d of device %s was already admitted", ev.seq, ev.device), { seq = ev.seq, last = d.last }) end
     -- A delayed release is validated against the hold it ends, not the motion history: the hold still
@@ -959,14 +963,43 @@ local function orderEvent(self, s, ev, release)
   end
   local lost = ev.seq - d.last - 1
   if d.last == 0 then lost = 0 end  -- a device's first event sets the origin
-  -- KB-24: sequence numbers inside the gap that were refused (seen, answered, never admitted) were not lost.
+  -- KB-24: sequence numbers inside the gap that were received and refused (answered, never admitted) were not lost.
+  d.lostUncertain = nil
   if lost > 0 then
-    for q in pairs(d.refused) do
-      if q > d.last and q < ev.seq then lost = lost - 1 end
+    for _, r in ipairs(d.refused) do
+      local lo, hi = math.max(r[1], d.last + 1), math.min(r[2], ev.seq - 1)
+      if hi >= lo then lost = lost - (hi - lo + 1) end
+    end
+    -- Forgotten ranges: their numbers all lie above d.last (ranges behind the order are pruned). When the event is
+    -- beyond the last forgotten number, every forgotten refusal is inside this gap and the count is exact; when it
+    -- is not, the split is unknown and the figure is an upper bound, reported uncertain.
+    if d.refusedForgottenUpTo and d.refusedForgottenUpTo > d.last then
+      if ev.seq > d.refusedForgottenUpTo and d.refusedForgotten ~= nil then lost = lost - d.refusedForgotten else d.lostUncertain = true end
     end
     if lost < 0 then lost = 0 end
   end
   return lost, d
+end
+
+-- A received-but-refused sequence number joins the device's refused ranges (sorted, merged when adjacent).
+local function noteRefused(self, d, seq)
+  local rs = d.refused
+  local i = #rs
+  while i >= 1 and rs[i][1] > seq do i = i - 1 end  -- rs[i] is the last range starting at or below seq
+  if i >= 1 and seq <= rs[i][2] then return end  -- already in a range
+  if i >= 1 and seq == rs[i][2] + 1 then
+    rs[i][2] = seq
+    if rs[i + 1] and rs[i + 1][1] == seq + 1 then rs[i][2] = rs[i + 1][2]; table.remove(rs, i + 1) end
+  elseif rs[i + 1] and rs[i + 1][1] == seq + 1 then
+    rs[i + 1][1] = seq
+  else
+    table.insert(rs, i + 1, { seq, seq })
+  end
+  while #rs > self._config.seqWindow do
+    local dropped = table.remove(rs, 1)
+    d.refusedForgottenUpTo = math.max(d.refusedForgottenUpTo or 0, dropped[2])
+    d.refusedForgotten = (d.refusedForgotten or 0) + (dropped[2] - dropped[1] + 1)
+  end
 end
 
 local function commitOrder(self, d, ev, lost, late)
@@ -979,10 +1012,16 @@ local function commitOrder(self, d, ev, lost, late)
   d.last = ev.seq
   d.seen[ev.seq] = true
   d.seen[ev.seq - self._config.seqWindow] = nil
-  for q in pairs(d.refused) do
-    if q <= ev.seq then d.refused[q] = nil; d.refusedCount = (d.refusedCount or 1) - 1 end
+  -- Ranges the order passed are forgotten; a range straddling the new position is trimmed.
+  local rs = d.refused
+  while rs[1] and rs[1][2] <= ev.seq do table.remove(rs, 1) end
+  if rs[1] and rs[1][1] <= ev.seq then rs[1][1] = ev.seq + 1 end
+  if d.refusedForgottenUpTo then
+    if d.refusedForgottenUpTo <= ev.seq then d.refusedForgottenUpTo, d.refusedForgotten = nil, nil
+    else d.refusedForgotten = nil end  -- the order passed INTO the forgotten region: how many forgotten numbers remain above is unknown
   end
   d.lost = d.lost + lost
+  if d.lostUncertain and lost > 0 then d.lostUncertainCount = (d.lostUncertainCount or 0) + 1 end
 end
 
 local function rateExceeded(self, d, now)
@@ -1058,18 +1097,7 @@ function Instance:submit(sessionId, now, ev)
   -- next admitted event does not report it as loss; it is not committed to the order, so the same number may be
   -- sent again (a retransmitted release after a queue-full refusal, a retried event).
   local function refuse(e)
-    if ev.seq > d.last and not d.refused[ev.seq] then
-      -- Review (PR #28): bounded to seqWindow entries (the oldest go first); a gap wider than the window is counted
-      -- as loss anyway, so nothing exact is lost by forgetting numbers that far behind the newest refusal.
-      d.refused[ev.seq] = true
-      d.refusedCount = (d.refusedCount or 0) + 1
-      while d.refusedCount > self._config.seqWindow do
-        local oldest
-        for q in pairs(d.refused) do if oldest == nil or q < oldest then oldest = q end end
-        d.refused[oldest] = nil
-        d.refusedCount = d.refusedCount - 1
-      end
-    end
+    if ev.seq > d.last then noteRefused(self, d, ev.seq) end
     s.counters.refused = s.counters.refused + 1; self._counters.refused = self._counters.refused + 1
     logEvent(self, { at = now, session = sessionId, type = ev.type, device = ev.device, control = ev.control, seq = ev.seq, refused = e.code })
     return nil, e
@@ -1091,7 +1119,7 @@ function Instance:submit(sessionId, now, ev)
       commitOrder(self, d, ev, lost, late)
       s.counters.admitted = s.counters.admitted + 1
       logEvent(self, { at = now, session = sessionId, type = ev.type, device = ev.device, control = ev.control, seq = ev.seq, noop = true })
-      return { accepted = true, noop = true, lost = lost, note = existing and existing.releasing and ("the release of " .. ev.type .. " on that control is already queued") or ("no " .. ev.type .. " of that control is down for this session") }
+      return { accepted = true, noop = true, lost = lost, lostUncertain = d.lostUncertain, note = existing and existing.releasing and ("the release of " .. ev.type .. " on that control is already queued") or ("no " .. ev.type .. " of that control is down for this session") }
     end
     -- KB-21: the release ends the hold on the target the down RESOLVED (frozen), whatever the binding
     -- maps the control to by now; a bank/page change never redirects a release.
@@ -1105,7 +1133,7 @@ function Instance:submit(sessionId, now, ev)
     existing.releasing, existing.releaseId = true, intent.id
     s.counters.admitted = s.counters.admitted + 1; s.counters.lost = s.counters.lost + lost; self._counters.admitted = self._counters.admitted + 1; self._counters.lost = self._counters.lost + lost
     logEvent(self, { at = now, session = sessionId, type = ev.type, device = ev.device, control = ev.control, seq = ev.seq, admitted = true })
-    return { accepted = true, queued = queued.position, evicted = queued.evicted, lost = lost, late = late or nil, boundary = true }
+    return { accepted = true, queued = queued.position, evicted = queued.evicted, lost = lost, lostUncertain = d.lostUncertain, late = late or nil, boundary = true }
   end
   -- Everything else needs the binding and a resolvable target.
   local snap, berr = self:_binding(now)
@@ -1157,7 +1185,7 @@ function Instance:submit(sessionId, now, ev)
       s.counters.coalesced = s.counters.coalesced + 1; self._counters.coalesced = self._counters.coalesced + 1
       self._counters.mergedEarly = (self._counters.mergedEarly or 0) + 1
       logEvent(self, { at = now, session = sessionId, type = ev.type, device = ev.device, control = ev.control, seq = ev.seq, admitted = true, coalesced = true, early = true, target = early.targetKey })
-      return { accepted = true, queued = pos, coalesced = true, lost = lost, target = early.targetKey, generation = early.generation, early = true }
+      return { accepted = true, queued = pos, coalesced = true, lost = lost, lostUncertain = d.lostUncertain, target = early.targetKey, generation = early.generation, early = true }
     end
   end
   local target, terr = resolveTarget(snap, ev.target)
@@ -1243,7 +1271,7 @@ function Instance:submit(sessionId, now, ev)
   self._counters.admitted = self._counters.admitted + 1; self._counters.lost = self._counters.lost + lost
   if queued.coalesced then s.counters.coalesced = s.counters.coalesced + 1; self._counters.coalesced = self._counters.coalesced + 1 end
   logEvent(self, { at = now, session = sessionId, type = ev.type, device = ev.device, control = ev.control, seq = ev.seq, admitted = true, coalesced = queued.coalesced or nil, target = target.key })
-  return { accepted = true, queued = queued.position, coalesced = queued.coalesced or nil, superseded = queued.superseded or nil, lost = lost, target = target.key,
+  return { accepted = true, queued = queued.position, coalesced = queued.coalesced or nil, superseded = queued.superseded or nil, lost = lost, lostUncertain = d.lostUncertain, target = target.key,
            generation = snap.generation, mixed = target.mixed, stateful = target.stateful }
 end
 

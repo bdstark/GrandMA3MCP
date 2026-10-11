@@ -255,13 +255,37 @@ do
   local inst = fresh({ maxEventsPerSecond = 100000 })  -- the device rate limit would otherwise drop (and commit) the burst
   inst:openSession({ id = "s" }, 1)
   inst:submit("s", 1, rel(1, 1, 1))
-  for i = 2, 1001 do local _, e = inst:submit("s", 1 + i * 0.0001, rel(i, 9, 1)); if e and e.code ~= "target-unavailable" then print("DEBUG refusal " .. i .. ": " .. tostring(e.code)); break end end  -- slot 9 is off the page: refused
-  local d = inst:status(1.2).sessions.s.devices.nxk
-  local n = 0
-  for _ in pairs(inst._sessions.s.devices.nxk.refused) do n = n + 1 end
-  check("review P2: 1000 refusals keep at most seqWindow refused numbers", n <= 64 and (inst._sessions.s.devices.nxk.refusedCount or 0) == n, J({ n = n, count = inst._sessions.s.devices.nxk.refusedCount }))
+  for i = 2, 1001 do inst:submit("s", 1 + i * 0.0001, rel(i, 9, 1)) end  -- slot 9 is off the page: refused, received
+  local dev = inst._sessions.s.devices.nxk
+  check("review round 2: 1000 contiguous refusals are ONE range, nothing forgotten", #dev.refused == 1 and dev.refused[1][1] == 2 and dev.refused[1][2] == 1001 and dev.refusedForgottenUpTo == nil, J(dev.refused))
   local r = inst:submit("s", 1.3, rel(1002, 1, 1))
-  check("review P2: the next admitted event reports the gap beyond the window as loss, the window's refusals not", r.accepted and r.lost == 1000 - 64, J(r))
+  check("review round 2: received refusals are never loss: the next admitted event reports 0, certain", r.accepted and r.lost == 0 and r.lostUncertain == nil, J(r))
+  check("review round 2: the passed ranges are forgotten", #dev.refused == 0, J(dev.refused))
+  -- A real gap among refusals still counts, exactly: 1003 lost, 1004-1010 refused, 1011 admitted.
+  for i = 1004, 1010 do inst:submit("s", 1.4, rel(i, 9, 1)) end
+  local r2 = inst:submit("s", 1.5, rel(1011, 1, 1))
+  check("review round 2: one genuinely missing number among refusals is reported as exactly one, certain", r2.lost == 1 and r2.lostUncertain == nil, J(r2))
+  -- Scattered refusals (every other number) exceed the range bound: the oldest ranges are dropped and the next loss
+  -- figure says it is uncertain instead of counting the forgotten received events as lost.
+  for i = 1, 200 do inst:submit("s", 1.6, rel(1011 + 2 * i, 9, 1)) end
+  check("review round 2: the range count is bounded (seqWindow 64)", #dev.refused <= 64 and dev.refusedForgottenUpTo ~= nil and dev.refusedForgotten > 0, J({ ranges = #dev.refused, upTo = dev.refusedForgottenUpTo, forgotten = dev.refusedForgotten }))
+  -- Beyond the last forgotten number every forgotten refusal lies inside the gap: the count is exact and certain
+  -- (the 200 even numbers are the real gaps, the 200 odd ones were received and refused, 136 of them forgotten).
+  local r3 = inst:submit("s", 1.7, rel(1011 + 2 * 200 + 1, 1, 1))
+  check("review round 2: beyond the forgotten history the loss is exact and certain: the 200 real gaps, not the forgotten refusals", r3.accepted and r3.lostUncertain == nil and r3.lost == 200, J({ lost = r3.lost, uncertain = r3.lostUncertain }))
+  check("review round 2: the forgotten counters are cleared once the order passed them", dev.refusedForgottenUpTo == nil and dev.refusedForgotten == nil, J({ upTo = dev.refusedForgottenUpTo, forgotten = dev.refusedForgotten }))
+  -- An admitted event INSIDE the forgotten history: the split of the forgotten refusals is unknown, so the figure (the
+  -- gap minus the known ranges) is an upper bound and says so, and stays uncertain until the order passed the region.
+  local base = 1412
+  for i = 1, 200 do inst:submit("s", 1.75, rel(base + 2 * i, 9, 1)) end
+  local upTo = dev.refusedForgottenUpTo
+  local rU = inst:submit("s", 1.8, rel(base + 150, 1, 1))
+  check("review round 2: an admitted event inside the forgotten history reports an uncertain upper bound (the gap minus the known ranges), never a certain loss", rU.accepted and rU.lostUncertain == true and rU.lost == 149 and upTo > base + 150, J({ lost = rU.lost, uncertain = rU.lostUncertain, upTo = upTo }))
+  local r5 = inst:submit("s", 1.85, rel(base + 401, 1, 1))
+  check("review round 2: after that the count of forgotten numbers still above is unknown: uncertain until the order passed the region", r5.accepted and r5.lostUncertain == true, J({ lost = r5.lost, uncertain = r5.lostUncertain }))
+  inst:submit("s", 1.9, rel(base + 500, 9, 1))
+  local r6 = inst:submit("s", 1.95, rel(base + 501, 1, 1))
+  check("review round 2: past the forgotten region the figures are certain again", r6.accepted and r6.lostUncertain == nil and r6.lost == 500 - 401 - 1, J({ lost = r6.lost, uncertain = r6.lostUncertain }))
 end
 
 -------------------------------------------------------------------------------
