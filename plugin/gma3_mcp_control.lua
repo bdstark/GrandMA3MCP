@@ -178,6 +178,26 @@
 --   * capabilities on the console backend become { relative, absolute, touch, button = true, targets =
 --     { slot, executor = true } } with executorElements { fader, key } and the qualification tables.
 --
+-- Review of PR #26 (KB-22, round 1):
+--   * a HOLD stays tracked until its release has been APPLIED: the release is queued and the gesture marked
+--     releasing; a session that closes, expires or is disabled before the queue was serviced ends the hold
+--     through the backend (the queued release is dropped, the gesture is not); a release the backend REFUSED
+--     becomes an unresolved record (recover() re-attempts it) instead of vanishing; a retransmitted release
+--     while one is queued is a noop.
+--   * a queued DOWN is revalidated against the binding when it is applied, like motion: a down whose
+--     generation or binding revision moved while it was queued is dropped (stale), its gesture removed and
+--     any release already queued behind it dropped too, so nothing is pressed on the replacement and nothing
+--     is released that was never pressed; a down the backend refused is treated the same way.
+--   * a frozen executor-key release is applied only on a CURRENT OBSERVATION of its (page, executor): the
+--     binding item of the record's mode, or deps.observe(pageNo, executor) (the consumer's live read of that
+--     executor on that page) when the binding no longer carries it; without either it is kept unresolved
+--     ("unverified"). The observation must show the same DATA POOL (the record's pool, "<name>#<no>") and the
+--     same assigned object, else the record is kept ("pool-changed" / "assignment-changed"); commands address
+--     Page <p>.<e> in the current pool only.
+--   * a target held by one control is held against EVERY other control, this session's included: a second
+--     down or touch on it from another control is refused "conflict" naming the holder (two surface buttons
+--     mapped to one executor, or a dedicated-key alias, never press twice and release once).
+--
 -- Rules every consumer must keep (as for the other modules):
 --   * One instance per consumer; the module table is read-only; nothing is published through
 --     package.loaded or globals. Dependencies come through opts.deps: deps.binding(now) returns the
@@ -936,14 +956,16 @@ end
 
 local function gestureKey(ev) return ev.device .. "/" .. ev.control end
 
--- Who owns a target right now (a touch/button down, or a relative gesture within gestureIdleMs).
-function Instance:_targetOwner(targetKey, now, exceptSession)
+-- Who owns a target right now: a touch/button down of ANY session's other control (review of PR #26: a hold is
+-- exclusive against every other control, this session's included), or another session's relative gesture
+-- within gestureIdleMs. `gkey` is the asking control (its own hold never conflicts with itself).
+function Instance:_targetOwner(targetKey, now, session, gkey, _asking)
   for id, s in pairs(self._sessions) do
-    if s.state == "active" and id ~= exceptSession then
-      for _, g in pairs(s.gestures) do
-        if g.targetKey == targetKey then
+    if s.state == "active" then
+      for key, g in pairs(s.gestures) do
+        if g.targetKey == targetKey and not (id == session and key == gkey) then
           if g.kind == "touch" or g.kind == "button" then return id, g end
-          if g.lastAt + self._config.gestureIdleMs / 1000 > now then return id, g end
+          if id ~= session and g.lastAt + self._config.gestureIdleMs / 1000 > now then return id, g end
         end
       end
     end
@@ -994,11 +1016,11 @@ function Instance:submit(sessionId, now, ev)
     -- never rate-limited, and the queue keeps room for it (maxQueue + maxHolds, evicting the session's
     -- oldest motion first): releases stay responsive during a flood. The hold stays owned until the
     -- release is queued, so a refused release leaves the target reserved for its retransmission.
-    if not existing or existing.kind ~= ev.type then
+    if not existing or existing.kind ~= ev.type or existing.releasing then
       commitOrder(self, d, ev, lost, late)
       s.counters.admitted = s.counters.admitted + 1
       logEvent(self, { at = now, session = sessionId, type = ev.type, device = ev.device, control = ev.control, seq = ev.seq, noop = true })
-      return { accepted = true, noop = true, lost = lost, note = "no " .. ev.type .. " of that control is down for this session" }
+      return { accepted = true, noop = true, lost = lost, note = existing and existing.releasing and ("the release of " .. ev.type .. " on that control is already queued") or ("no " .. ev.type .. " of that control is down for this session") }
     end
     -- KB-21: the release ends the hold on the target the down RESOLVED (frozen), whatever the binding
     -- maps the control to by now; a bank/page change never redirects a release.
@@ -1007,7 +1029,9 @@ function Instance:submit(sessionId, now, ev)
     local queued, qerr = self:_enqueue(s, intent, true)
     if not queued then return refuse(qerr) end
     commitOrder(self, d, ev, lost, late)
-    s.gestures[gkey] = nil
+    -- Review (PR #26): the hold stays tracked until the release is applied; a session ending first ends it
+    -- through the backend instead of dropping the queued release.
+    existing.releasing, existing.releaseId = true, intent.id
     s.counters.admitted = s.counters.admitted + 1; s.counters.lost = s.counters.lost + lost; self._counters.admitted = self._counters.admitted + 1; self._counters.lost = self._counters.lost + lost
     logEvent(self, { at = now, session = sessionId, type = ev.type, device = ev.device, control = ev.control, seq = ev.seq, admitted = true })
     return { accepted = true, queued = queued.position, evicted = queued.evicted, lost = lost, late = late or nil, boundary = true }
@@ -1062,9 +1086,9 @@ function Instance:submit(sessionId, now, ev)
       return refuse(errOf("busy", "another input owner is active: " .. tostring(busy.description or busy.reason), { reason = busy.reason, owner = busy.owner }))
     end
   end
-  local owner, og = self:_targetOwner(target.key, now, sessionId)
+  local owner, og = self:_targetOwner(target.key, now, sessionId, gkey, ev.type == "touch" or ev.type == "button")
   if owner then
-    return refuse(errOf("conflict", string.format("%s is being operated by session %s (%s on %s/%s)", target.key, owner, og.kind, og.device, og.control), { owner = owner, target = ev.target }))
+    return refuse(errOf("conflict", string.format("%s is being operated by %s (%s on %s/%s)", target.key, owner == sessionId and "this session" or ("session " .. owner), og.kind, og.device, og.control), { owner = owner, target = ev.target, holder = og.device .. "/" .. og.control }))
   end
   local intent = { kind = ev.type, target = ev.target, targetKey = target.key, resolved = target, generation = snap.generation, binding = snap.bindingRevision, device = ev.device, control = ev.control,
                    gesture = ev.gesture, seq = ev.seq, session = sessionId, at = now, firstAt = now, fine = ev.fine or nil }
@@ -1098,6 +1122,7 @@ function Instance:submit(sessionId, now, ev)
     if ev.type == "touch" or ev.type == "button" then s.gestures[gkey] = nil end
     return refuse(qerr)
   end
+  if ev.type == "touch" or ev.type == "button" then s.gestures[gkey].intentId = intent.id end
   s.counters.admitted = s.counters.admitted + 1; s.counters.lost = s.counters.lost + lost
   self._counters.admitted = self._counters.admitted + 1; self._counters.lost = self._counters.lost + lost
   if queued.coalesced then s.counters.coalesced = s.counters.coalesced + 1; self._counters.coalesced = self._counters.coalesced + 1 end
@@ -1154,31 +1179,68 @@ end
 -------------------------------------------------------------------------------
 -- Applying
 -------------------------------------------------------------------------------
--- KB-22: what the binding currently shows on the (page, executor) of a frozen executor record, or nil when it
--- cannot say. Read without the generation/rebind side effects of _binding(): a page-change window or a stale
--- snapshot still names the assignments it last read.
-function Instance:_assignmentNow(resolved)
+local function poolKey(pool)
+  if type(pool) ~= "table" then return nil end
+  if pool.name == nil and pool.no == nil then return nil end
+  return tostring(pool.name) .. "#" .. tostring(pool.no)
+end
+
+-- KB-22 (review): a CURRENT observation of the (page, executor) of a frozen executor record, or nil when none is
+-- available: the binding's item of the record's mode (read without the generation/rebind side effects of
+-- _binding()), else the consumer's live read deps.observe(pageNo, executor) (an executorTarget value). The
+-- observation carries the executor's data pool when the source names it.
+function Instance:_observeFrozen(resolved)
   local b = self._deps.binding
-  if type(b) ~= "function" then return nil end
-  local ok, snap = pcall(b, self._lastServiced or 0)
-  if not ok or type(snap) ~= "table" then return nil end
-  for _, o in ipairs(snap.executors or {}) do
-    local v = o.available and o.value or nil
-    local n = v and v.executor or (o.params and o.params.executor)
-    if v and n == resolved.executor then
-      local pg = (type(v.page) == "table" and v.page.no) or (type(v.page) == "number" and v.page) or (o.params and o.params.page)
-      -- The item of the record's own mode: a page-bound record against the item bound to its page, a following
-      -- record against the following item while it still reads that page (another page: it cannot say).
-      local pageBound = o.params ~= nil and o.params.page ~= nil
-      local sameMode = (resolved.mode == "page") == pageBound
-      if sameMode and pg == resolved.pageNo then
-        if v.pageMissing then return nil end
-        local addr = v.assigned and (v.assigned.addr or v.assigned.name) or nil
-        return { empty = v.empty == true or addr == nil, assigned = addr }
+  local snap
+  if type(b) == "function" then
+    local ok, sn = pcall(b, self._lastServiced or 0)
+    if ok and type(sn) == "table" then snap = sn end
+  end
+  local function fromValue(v, pool)
+    if v.pageMissing then return { empty = true, pageMissing = true, pool = pool } end
+    local addr = v.assigned and (v.assigned.addr or v.assigned.name) or nil
+    return { empty = v.empty == true or addr == nil, assigned = addr, pool = poolKey(v.pool) or pool }
+  end
+  if snap then
+    local snapPool = snap.identity and poolKey(snap.identity.dataPool) or nil
+    for _, o in ipairs(snap.executors or {}) do
+      local v = o.available and o.value or nil
+      local n = v and v.executor or (o.params and o.params.executor)
+      if v and n == resolved.executor then
+        local pg = (type(v.page) == "table" and v.page.no) or (type(v.page) == "number" and v.page) or (o.params and o.params.page)
+        -- The item of the record's own mode: a page-bound record against the item bound to its page, a following
+        -- record against the following item while it still reads that page (another page: no observation here).
+        local pageBound = o.params ~= nil and o.params.page ~= nil
+        local sameMode = (resolved.mode == "page") == pageBound
+        if sameMode and pg == resolved.pageNo then
+          local obs = fromValue(v, snapPool)
+          obs.source = "binding"
+          return obs
+        end
       end
     end
   end
+  local observe = self._deps.observe
+  if type(observe) == "function" and isInt(resolved.pageNo) then
+    local ok, v = pcall(observe, resolved.pageNo, resolved.executor)
+    if ok and type(v) == "table" then
+      local obs = fromValue(v, nil)
+      obs.source = "observe"
+      return obs
+    end
+  end
   return nil
+end
+
+-- KB-22 (review): the hold's release and the record it leaves when it cannot be applied safely.
+local function unresolvedRelease(self, s, intent, adapter, why, extra)
+  self._counters.unresolved = self._counters.unresolved + 1
+  local rec = { kind = intent.kind, session = s.id, device = intent.device, control = intent.control, target = intent.target, targetKey = intent.targetKey,
+                resolved = intent.resolved, frozen = true, generation = intent.generation, down = false, error = why, at = intent.at or self._lastServiced or 0, backend = adapter and adapter.name or nil }
+  for k, v in pairs(extra or {}) do rec[k] = v end
+  if not intent.recovering then self._unresolved[#self._unresolved + 1] = rec end
+  self._lastApplied = { outcome = "unresolved", kind = intent.kind, at = rec.at, target = intent.targetKey, down = false, error = why, reassigned = rec.reassigned, unverified = rec.unverified, poolChanged = rec.poolChanged }
+  return { outcome = "unresolved", unresolved = rec }
 end
 
 -- Applies one intent through the backend. Returns { outcome = applied | refused | unresolved, ... }.
@@ -1186,17 +1248,18 @@ function Instance:_applyNow(s, intent, now)
   local adapter = self._adapter
   local rt = intent.resolved
   if intent.frozen and intent.kind == "button" and type(rt) == "table" and rt.kind == "executor" and rt.element == "key" and rt.assigned ~= nil then
-    local nowA = self:_assignmentNow(rt)
-    if nowA ~= nil and (nowA.empty or nowA.assigned ~= rt.assigned) then
-      local why = nowA.empty and string.format("executor %s.%d was emptied while it was held", tostring(rt.pageNo), rt.executor)
-                  or string.format("executor %s.%d was reassigned from %s to %s while it was held", tostring(rt.pageNo), rt.executor, tostring(rt.assigned), tostring(nowA.assigned))
-      self._counters.unresolved = self._counters.unresolved + 1
-      local rec = { kind = intent.kind, session = s.id, device = intent.device, control = intent.control, target = intent.target, targetKey = intent.targetKey,
-                    resolved = rt, frozen = true, generation = intent.generation, down = false, reassigned = true, nowAssigned = nowA.assigned, nowEmpty = nowA.empty or nil,
-                    error = "assignment-changed: " .. why .. "; the release was not issued on the replacement (recover() applies it once the original object is back on that executor; end the original playback by hand otherwise)", at = now, backend = adapter and adapter.name or nil }
-      if not intent.recovering then self._unresolved[#self._unresolved + 1] = rec end
-      self._lastApplied = { outcome = "unresolved", kind = intent.kind, at = now, target = intent.targetKey, down = false, error = rec.error, reassigned = true }
-      return { outcome = "unresolved", unresolved = rec }
+    local obs = self:_observeFrozen(rt)
+    local where = string.format("executor %s.%d", tostring(rt.pageNo), rt.executor)
+    if obs == nil then
+      return unresolvedRelease(self, s, intent, adapter, "unverified: " .. where .. " is not observed by the binding and no observation source answered (deps.observe); the release was not issued blind (recover() re-attempts it with a current observation; end the playback by hand otherwise)", { unverified = true })
+    end
+    if rt.pool ~= nil and obs.pool ~= nil and obs.pool ~= rt.pool then
+      return unresolvedRelease(self, s, intent, adapter, string.format("pool-changed: %s was pressed in data pool %s and the console is in %s; Page <p>.<e> addresses the current pool, so the release was not issued (recover() applies it once pool %s is current again)", where, tostring(rt.pool), tostring(obs.pool), tostring(rt.pool)), { poolChanged = true, nowPool = obs.pool })
+    end
+    if obs.empty or obs.assigned ~= rt.assigned then
+      local why = obs.empty and string.format("%s was emptied while it was held", where)
+                  or string.format("%s was reassigned from %s to %s while it was held", where, tostring(rt.assigned), tostring(obs.assigned))
+      return unresolvedRelease(self, s, intent, adapter, "assignment-changed: " .. why .. "; the release was not issued on the replacement (recover() applies it once the original object is back on that executor; end the original playback by hand otherwise)", { reassigned = true, nowAssigned = obs.assigned, nowEmpty = obs.empty or nil })
     end
   end
   if adapter == nil then
@@ -1218,6 +1281,10 @@ function Instance:_applyNow(s, intent, now)
   end
   if not res then
     self._counters.backendRefused = self._counters.backendRefused + 1
+    if (intent.kind == "touch" or intent.kind == "button") and intent.down == false then
+      -- Review (PR #26): a refused release never vanishes; the hold is kept as a record for recover().
+      return unresolvedRelease(self, s, intent, adapter, "the backend refused the release: " .. tostring(err and err.message or err), { refused = true, backendError = err })
+    end
     self._lastApplied = { outcome = "refused", kind = intent.kind, at = now, error = err }
     return { outcome = "refused", error = err }
   end
@@ -1290,13 +1357,31 @@ function Instance:service(now)
           elseif r.unresolved then out.unresolved[#out.unresolved + 1] = r.unresolved end
         end
       else
-        local r = self:_applyNow(s, intent, now)
-        if r.outcome == "applied" then out.applied = out.applied + 1
-        elseif r.outcome == "refused" then out.dropped.refused = out.dropped.refused + 1
-        elseif r.unresolved then out.unresolved[#out.unresolved + 1] = r.unresolved end
-        if intent.down and snap ~= nil and snap and snap.generation ~= intent.generation then
-          local g = s.gestures[intent.device .. "/" .. intent.control]
-          if g then g.rebound = true end
+        local gkey = intent.device .. "/" .. intent.control
+        if intent.down then
+          -- Review (PR #26): a queued down is revalidated like motion. Stale: nothing is pressed, the gesture goes
+          -- and so does any release already queued behind it (it would release what was never pressed).
+          if snap == nil then snap = self:_binding(now) or false end
+          if not snap or snap.generation ~= intent.generation or snap.bindingRevision ~= intent.binding then
+            out.dropped.staleGeneration = out.dropped.staleGeneration + 1; s.counters.dropped = s.counters.dropped + 1; self._counters.dropped = self._counters.dropped + 1
+            self._counters.staleDropped = self._counters.staleDropped + 1
+            self:_dropDown(s, intent, out, "stale")
+          else
+            local r = self:_applyNow(s, intent, now)
+            if r.outcome == "applied" then out.applied = out.applied + 1
+            elseif r.outcome == "refused" then
+              out.dropped.refused = out.dropped.refused + 1
+              self:_dropDown(s, intent, out, "refused")
+            elseif r.unresolved then out.unresolved[#out.unresolved + 1] = r.unresolved end
+          end
+        else
+          local r = self:_applyNow(s, intent, now)
+          if r.outcome == "applied" then out.applied = out.applied + 1
+          elseif r.outcome == "refused" then out.dropped.refused = out.dropped.refused + 1
+          elseif r.unresolved then out.unresolved[#out.unresolved + 1] = r.unresolved end
+          -- The hold is over (applied, or kept as an unresolved record): the releasing gesture goes.
+          local g = s.gestures[gkey]
+          if g and g.releasing and g.releaseId == intent.id then s.gestures[gkey] = nil end
         end
       end
     end
@@ -1305,7 +1390,26 @@ function Instance:service(now)
   return out
 end
 
--- Re-attempts unresolved releases (a touch end or button release the backend raised on).
+-- Review (PR #26): a down that was dropped (stale) or refused pressed nothing: its gesture record is removed and
+-- every release queued for that hold is dropped (counted), so nothing is released that was never pressed.
+function Instance:_dropDown(s, intent, out, why)
+  local gkey = intent.device .. "/" .. intent.control
+  local g = s.gestures[gkey]
+  if g and g.intentId == intent.id then s.gestures[gkey] = nil end
+  local keep, n = {}, 0
+  for _, it in ipairs(s.queue) do
+    if (it.kind == "touch" or it.kind == "button") and it.down == false and it.device == intent.device and it.control == intent.control and it.targetKey == intent.targetKey then n = n + 1 else keep[#keep + 1] = it end
+  end
+  if n > 0 then
+    s.queue = keep
+    s.counters.dropped = s.counters.dropped + n; self._counters.dropped = self._counters.dropped + n
+  end
+  local _ = out
+  logEvent(self, { at = self._lastServiced or 0, session = s.id, type = intent.kind, device = intent.device, control = intent.control, dropped = why, releasesDropped = n > 0 and n or nil })
+end
+
+-- Re-attempts unresolved releases (a touch end or button release the backend raised on, or one kept because its
+-- executor could not be verified, changed its assignment or its pool, or was refused).
 function Instance:recover(now)
   checkReady(self); checkNow(now)
   local out = { resolved = {}, unresolved = {} }
@@ -1317,7 +1421,13 @@ function Instance:recover(now)
     local s = { id = rec.session, counters = { applied = 0 } }
     local r = self:_applyNow(s, { kind = rec.kind, down = false, target = rec.target, targetKey = rec.targetKey, resolved = rec.resolved, frozen = rec.resolved ~= nil or nil, generation = rec.generation, device = rec.device, control = rec.control, forced = true, reason = "recover", recovering = true, session = rec.session, at = now }, now)
     if r.outcome == "applied" then out.resolved[#out.resolved + 1] = rec
-    else rec.attempts = (rec.attempts or 1) + 1; rec.error = r.unresolved and r.unresolved.error or (r.error and r.error.message) or rec.error; keep[#keep + 1] = rec; out.unresolved[#out.unresolved + 1] = rec end
+    else
+      rec.attempts = (rec.attempts or 1) + 1
+      rec.error = r.unresolved and r.unresolved.error or (r.error and r.error.message) or rec.error
+      -- Review (PR #26): the record carries the verdict of this attempt (unverified / pool-changed / assignment-changed / refused).
+      for _, k in ipairs({ "unverified", "poolChanged", "nowPool", "reassigned", "nowAssigned", "nowEmpty", "refused", "backendError" }) do rec[k] = r.unresolved and r.unresolved[k] or nil end
+      keep[#keep + 1] = rec; out.unresolved[#out.unresolved + 1] = rec
+    end
   end
   for _, rec in ipairs(self._unresolved) do keep[#keep + 1] = rec end  -- anything added meanwhile (none expected)
   self._unresolved = keep
@@ -1380,7 +1490,7 @@ function Instance:status(now)
     v.gestureList = {}
     for _, g in pairs(s.gestures) do
       local rt = g.resolved
-      v.gestureList[#v.gestureList + 1] = { kind = g.kind, device = g.device, control = g.control, target = g.target, targetKey = g.targetKey, generation = g.generation, gesture = g.gesture, since = g.since, rebound = g.rebound,
+      v.gestureList[#v.gestureList + 1] = { kind = g.kind, device = g.device, control = g.control, target = g.target, targetKey = g.targetKey, generation = g.generation, gesture = g.gesture, since = g.since, rebound = g.rebound, releasing = g.releasing,
                                             -- KB-21: what the hold is frozen to (a release goes there, whatever the binding says now)
                                             frozen = rt and { kind = rt.kind, executor = rt.executor, element = rt.element, page = rt.pageNo, pool = rt.pool, assigned = rt.assigned, slot = rt.slot, name = rt.name } or nil }
     end
@@ -1470,7 +1580,7 @@ local M = {
   LIMITATIONS = {
     "the console backend serves attribute slots only: relative motion (KB-19) as the selection-scoped Attribute \"<name>\" At +/- <amount> adjustment (an explicitly limited mode, not native encoder equivalence), calibrated for the Percent/PercentFine readouts (1 per Coarse detent) and the Physical readout (the attribute's range / 120 per Coarse detent, in physical units) with Fine at a tenth, on the Absolute layer; a strip touch (KB-20) as a hold that reserves the slot and moves nothing; an absolute position (KB-20) as Attribute \"<name>\" At <value> over the verified travel only (Percent/PercentFine 0..100, Physical PhysicalFrom..PhysicalTo of the binding, never a mixed physical range), refused mixed-values while the selection's values disagree and values-incomplete while they were not completely read, unless the event says takeover; other readouts, Increment/Native, other layers, named channel functions and encoder presses are refused unsupported",
     "an executor target is explicit (pool, page, executor, element; KB-21): a number the binding reports covered by a wider neighbour, on a page that does not exist, reserved or holding a Quickey is refused target-unavailable; a hold's release goes to the target its down resolved (frozen), never to what a bank or page change mapped to the control since",
-    "executor operations on the console backend (KB-22): a key is Press/Unpress Page <p>.<e>, the console's dispatch of the CONFIGURED button function, served only for the qualified key functions (Temp, Flash, Toggle, Top, Go+); a fader is Fader<Function> Page <p>.<e> At <level> for the configured fader function, qualified separately per function (Master, Temp; Rate, Speed, X/XA/XB, CrossFade and Time are refused until qualified); a fader touch is a hold that moves nothing; relative motion on a fader and executor encoders are refused unsupported; no pool is addressed in commands (the current data pool, KB-21)",
+    "executor operations on the console backend (KB-22): a key is Press/Unpress Page <p>.<e>, the console's dispatch of the CONFIGURED button function, served only for the qualified key functions (Temp, Flash, Toggle, Top, Go+); a fader is Fader<Function> Page <p>.<e> At <level> for the configured fader function, qualified separately per function (Master, Temp; Rate, Speed, X/XA/XB, CrossFade and Time are refused until qualified); a fader touch is a hold that moves nothing; relative motion on a fader and executor encoders are refused unsupported; commands address Page <p>.<e> in the CURRENT data pool, so a frozen key release is applied only on a current observation of its executor (the binding or deps.observe) showing the same pool and the same object, else kept unresolved (unverified / pool-changed / assignment-changed) for recover(); a hold stays tracked until its release is applied and a refused release is kept unresolved too; a held target is exclusive against every other control",
     "generations are those of the consumer's binding source (one gma3_mcp_feedback instance and spec); events from a surface bound to another instance are refused as stale",
     "packet loss is reported, never repaired: a lost relative delta is gone, a lost absolute position is superseded by the next one",
   },

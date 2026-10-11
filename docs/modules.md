@@ -828,6 +828,23 @@ again (`attempts` counts the tries); the operator ends the original playback by 
 binding that cannot say (no snapshot, the item not in the binding, a following item that now reads another page after
 a console page change) does not block the release: a disconnect while Temp is held issues its Unpress.
 
+**Review of PR #26 (round 1).** Five admission rules changed for every backend: (1) a hold stays tracked until its
+release is **applied**: the release is queued and the gesture marked `releasing` (still busy, still the holder of its
+target, a retransmitted release is a noop); a session that closes, expires or is disabled before the queue was serviced
+ends the hold through the backend; a release the backend **refused** becomes an unresolved record (`refused`) that
+`recover()` re-attempts; (2) a queued **down** is revalidated against the binding when it is applied, like motion: a
+stale one is dropped, its gesture removed and any release queued behind it dropped, so nothing is pressed on a
+replacement and nothing is released that was never pressed (a down the backend refused is treated the same way:
+its release is a noop); (3, 4) a frozen executor-key release is applied only on a **current observation** of its
+(page, executor): the binding item of the record's mode, else the consumer's `deps.observe(pageNo, executor)` (the
+bridge and the surface plugin answer with a live `executorTarget` read of that page through `ObjectList("Page P.E")`),
+and the observation must show the record's **data pool** (`<name>#<no>`; commands address `Page <p>.<e>` in the
+current pool only) and the same object: otherwise the record is kept `unverified`, `poolChanged` or `reassigned`
+(`control.status` `unresolved[]` carries the flag and `nowPool` / `nowAssigned`), re-judged on every `recover()`;
+(5) a held target is exclusive against every other control, this session's included: a second down or touch on it is
+refused `conflict` naming the `holder` (`device/control`), so two surface buttons mapped to one executor, or a
+dedicated-key alias, never press twice and release once. Harness: `control_admission_test` 259 (16 new).
+
 **Bridge 0.18.0.** No new op: `control=console` serves executors through the 0.5.0 backend; `control.status` shows the
 qualified functions under `backendStatus.executorFunctions` and the assignment-changed records under `unresolved`;
 `control recover` re-attempts them. Harness: `test/lua/control_admission_test.lua` (243; 26 new: the operation plans

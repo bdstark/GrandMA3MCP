@@ -1509,6 +1509,16 @@ local function loadModules()
             -- snapshot spec from a following one; the watched items and the binding must be the same spec).
             return finst:contextSnapshot({ display = spec.display, executors = spec.executors, executorPage = spec.executorPage }, t, { cached = true })
           end
+          -- Review of PR #26 (KB-22): a frozen executor-key release is applied only on a current observation of its
+          -- (page, executor); when the binding no longer carries it, the module asks for a live read of that executor
+          -- on that page (the feedback's executorTarget through ObjectList("Page P.E"), pool included).
+          deps.observe = function(pageNo, executor)
+            local fb = state.modules.feedback
+            local finst = fb and fb.instance
+            if not finst or type(finst.read) ~= "function" then return nil end
+            local r = finst:read("executorTarget", { executor = executor, page = pageNo }, now())
+            return (type(r) == "table" and r.available) and r.value or nil
+          end
           deps.busy = function(_, t)
             local hk = state.modules.hardkeys
             local hinst = hk and hk.instance
