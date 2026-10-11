@@ -74,7 +74,7 @@
 -- package.loaded.
 
 local NAME        = "gma3_mcp_feedback"
-local VERSION     = "0.7.1"
+local VERSION     = "0.8.0"
 local API_VERSION = 1
 
 local DEFAULTS = {
@@ -1245,6 +1245,27 @@ function Instance:watch(items, now)
   for key in pairs(self._cache) do if not keep[key] then self._cache[key] = nil end end
   self._watch, self._cursor = watch, 0
   return { watched = #watch, truncated = truncated }
+end
+
+-- KB-24 hardware pass (0.8.0): read ONE watched item now, outside the round robin, and update its cached observation.
+-- A consumer calls it right after it changed something the item reflects (a playback key pressed on an executor), so
+-- the change is observed on the next frame instead of on the item's turn (with ~30 executors watched the turn could
+-- be a whole poll interval away: the surface's press-to-light delay had a 350-450 ms tail). Only watched items are
+-- refreshed: anything else answers { refreshed = false } and reads nothing. Counts as one read.
+function Instance:refresh(name, params, now)
+  requireReady(self, "refresh")
+  if type(now) ~= "number" then error(NAME .. ": refresh(name, params, now) needs the clock in seconds", 2) end
+  local alias = ALIASES[name]
+  local r = READERS[alias and alias.of or name]
+  local _, key = identifyItem(r, name, params, self._config)
+  for _, w in ipairs(self._watch) do
+    if w.key == key then
+      local obs = self:read(w.name, w.params, now)
+      self._cache[w.key] = obs
+      return { refreshed = true, key = key, observation = obs }
+    end
+  end
+  return { refreshed = false, key = key, reason = "not watched" }
 end
 
 function Instance:unwatch()

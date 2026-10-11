@@ -21,7 +21,7 @@ local function loadModule(file)
   return chunk("test_plugin", (file:gsub("%.lua$", "")), {}, nil)
 end
 local FB = loadModule("gma3_mcp_feedback.lua")
-check("feedback 0.6.0 loads", FB.VERSION == "0.7.1" and FB.API_VERSION == 1)
+check("feedback 0.8.0 loads", FB.VERSION == "0.8.0" and FB.API_VERSION == 1)
 
 -------------------------------------------------------------------------------
 -- Fake console
@@ -548,6 +548,21 @@ check("missing dependencies: every part unavailable with a reason or error, the 
 -------------------------------------------------------------------------------
 -- Cached snapshots through watchContext()/service()
 -------------------------------------------------------------------------------
+-- KB-24 hardware pass (0.8.0): refresh() reads one watched item now, outside the round robin.
+do
+  local fr = FB.new({ owner = "kb24r", deps = deps(), config = { maxReadsPerService = 2, pollIntervalMs = 10000 } }):init()
+  fr:watchContext({ executors = { 201, 205 } }, 100)
+  for i = 1, 4 do fr:service(100 + i * 0.01) end
+  local before = fr:contextSnapshot({ executors = { 201, 205 } }, 100.1, { cached = true })
+  local readsBefore = fr:status().reads
+  local r = fr:refresh("executorTarget", { executor = 205 }, 100.5)
+  local after = fr:contextSnapshot({ executors = { 201, 205 } }, 100.6, { cached = true })
+  check("kb24 refresh: a watched executor is read now (one read), its observation is fresh, the other is not", r.refreshed == true and fr:status().reads == readsBefore + 1 and after.executors[2].ageMs <= 100 and after.executors[1].ageMs >= 450, json.encode({ r = r.refreshed, reads = fr:status().reads - readsBefore, a1 = after.executors[1].ageMs, a2 = after.executors[2].ageMs }))
+  local n = fr:refresh("executorTarget", { executor = 999 }, 100.7)
+  check("kb24 refresh: an item that is not watched reads nothing", n.refreshed == false and n.reason == "not watched" and fr:status().reads == readsBefore + 1, json.encode(n))
+  check("kb24 refresh: needs the clock", not pcall(fr.refresh, fr, "executorTarget", { executor = 205 }))
+end
+
 -- KB-24 (0.7.0): priorityStateReads reads the due non-executor items before the executor targets, inside the budget.
 do
   local fp = FB.new({ owner = "kb24p", deps = deps(), config = { maxReadsPerService = 5, pollIntervalMs = 100, priorityStateReads = 1 } }):init()
