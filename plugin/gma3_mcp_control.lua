@@ -227,7 +227,7 @@
 --   * Input is disabled on a new instance. enableInput(adapter) is the operator's explicit decision.
 
 local NAME        = "gma3_mcp_control"
-local VERSION     = "0.5.0"
+local VERSION     = "0.6.0"
 local API_VERSION = 1
 
 local EVENT_TYPES = { relative = true, absolute = true, touch = true, button = true }
@@ -938,7 +938,7 @@ end
 -- (it ends an existing hold, never a newer one); it does not move the device's newest sequence.
 local function orderEvent(self, s, ev, release)
   local d = s.devices[ev.device]
-  if not d then d = { last = 0, seen = {}, times = {}, lost = 0, duplicates = 0, reordered = 0, late = 0 }; s.devices[ev.device] = d end
+  if not d then d = { last = 0, seen = {}, times = {}, refused = {}, lost = 0, duplicates = 0, reordered = 0, late = 0 }; s.devices[ev.device] = d end
   if ev.seq <= d.last then
     if d.seen[ev.seq] then d.duplicates = d.duplicates + 1; return fail("duplicate", string.format("event %d of device %s was already admitted", ev.seq, ev.device), { seq = ev.seq, last = d.last }) end
     -- A delayed release is validated against the hold it ends, not the motion history: the hold still
@@ -957,6 +957,13 @@ local function orderEvent(self, s, ev, release)
   end
   local lost = ev.seq - d.last - 1
   if d.last == 0 then lost = 0 end  -- a device's first event sets the origin
+  -- KB-24: sequence numbers inside the gap that were refused (seen, answered, never admitted) were not lost.
+  if lost > 0 then
+    for q in pairs(d.refused) do
+      if q > d.last and q < ev.seq then lost = lost - 1 end
+    end
+    if lost < 0 then lost = 0 end
+  end
   return lost, d
 end
 
@@ -970,6 +977,9 @@ local function commitOrder(self, d, ev, lost, late)
   d.last = ev.seq
   d.seen[ev.seq] = true
   d.seen[ev.seq - self._config.seqWindow] = nil
+  for q in pairs(d.refused) do
+    if q <= ev.seq then d.refused[q] = nil end
+  end
   d.lost = d.lost + lost
 end
 
@@ -1042,7 +1052,11 @@ function Instance:submit(sessionId, now, ev)
     return nil, d
   end
   local motion = ev.type == "relative" or ev.type == "absolute"
+  -- KB-24: a refused event was still SEEN on the wire. Its sequence number is remembered (d.refused) so that the
+  -- next admitted event does not report it as loss; it is not committed to the order, so the same number may be
+  -- sent again (a retransmitted release after a queue-full refusal, a retried event).
   local function refuse(e)
+    if ev.seq > d.last then d.refused[ev.seq] = true end
     s.counters.refused = s.counters.refused + 1; self._counters.refused = self._counters.refused + 1
     logEvent(self, { at = now, session = sessionId, type = ev.type, device = ev.device, control = ev.control, seq = ev.seq, refused = e.code })
     return nil, e
@@ -1178,21 +1192,29 @@ function Instance:submit(sessionId, now, ev)
            generation = snap.generation, mixed = target.mixed, stateful = target.stateful }
 end
 
--- Queue discipline. Relative deltas merge into the queue's tail when nothing but motion of the same
--- key was queued since; absolute positions replace a queued position of the same key when the target
--- permits; boundaries always get in (evicting the oldest motion of the session when full).
+-- Queue discipline. Relative deltas merge into the most recent queued relative intent of the same key (same
+-- target, generation, resolution, fine and gesture) as long as no boundary (touch/button) and no other intent of
+-- that control were queued after it: motion of other controls in between does not stop the merge (KB-24: with
+-- several controls moving at once the tail alternated and single detents filled the queue). Absolute positions
+-- replace a queued position of the same key when the target permits; boundaries always get in (evicting the
+-- oldest motion of the session when full).
 function Instance:_enqueue(s, intent, boundary)
   local q = s.queue
   if intent.kind == "relative" then
-    local tail = q[#q]
-    if tail and tail.kind == "relative" and tail.session == intent.session and tail.device == intent.device and tail.control == intent.control
-       and tail.targetKey == intent.targetKey and tail.generation == intent.generation
-       and tail.resolution == intent.resolution and tail.fine == intent.fine and tail.gesture == intent.gesture then
-      tail.delta = tail.delta + intent.delta
-      tail.events = tail.events + 1
-      tail.lost = tail.lost + intent.lost
-      tail.at, tail.seq = intent.at, intent.seq
-      return { position = #q, coalesced = true }
+    for i = #q, 1, -1 do
+      local e = q[i]
+      if e.kind == "touch" or e.kind == "button" then break end  -- never across a boundary
+      if e.device == intent.device and e.control == intent.control then
+        if e.kind == "relative" and e.session == intent.session and e.targetKey == intent.targetKey and e.generation == intent.generation
+           and e.resolution == intent.resolution and e.fine == intent.fine and e.gesture == intent.gesture then
+          e.delta = e.delta + intent.delta
+          e.events = e.events + 1
+          e.lost = e.lost + intent.lost
+          e.at, e.seq = intent.at, intent.seq
+          return { position = i, coalesced = true }
+        end
+        break  -- another intent of this control (a position, a different gesture or target) sits between: keep order
+      end
     end
   elseif intent.kind == "absolute" and intent.supersedes then
     for i = #q, 1, -1 do

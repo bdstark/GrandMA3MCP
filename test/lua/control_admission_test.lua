@@ -27,7 +27,7 @@ local CTL = assert(load(src, "=gma3_mcp_control.lua", "t", env))("test_plugin", 
 -------------------------------------------------------------------------------
 -- Loading contract
 -------------------------------------------------------------------------------
-check("module loads without console API", type(CTL) == "table" and CTL.VERSION == "0.5.0" and CTL.API_VERSION == 1 and type(CTL.new) == "function")
+check("module loads without console API", type(CTL) == "table" and CTL.VERSION == "0.6.0" and CTL.API_VERSION == 1 and type(CTL.new) == "function")
 check("module table is read-only", not pcall(function() CTL.x = 1 end) and CTL.x == nil)
 check("module registers in the signal table", signals.__gma3_mcp_modules.gma3_mcp_control == CTL)
 check("publishes nothing globally", package.loaded.gma3_mcp_control == nil and _G.gma3_mcp_control == nil)
@@ -166,6 +166,39 @@ do
   -- Touch/button releases also obey the order: a stale press after its release is dropped.
   check("release then stale press: press is out-of-order", inst:submit("s", 2, touch(20, 201, false)).noop and code(inst:submit("s", 2, touch(19, 201, true))) == "out-of-order")
   check("sessions keep their own device order", (function() inst:openSession({ id = "t" }, 2); return inst:submit("t", 2, rel(1, 1, 1)).lost == 0 end)())
+  -- KB-24: a refused event was seen: it moves the device's order, so the next admitted event reports no loss for it
+  -- (the surface's qualification against onPC saw every refusal counted again as "lost").
+  check("kb24: events refused for their target are not loss: the next admitted event reports none", (function()
+    local _, e1 = inst:submit("t", 2.01, rel(2, 5, 1)); local _, e2 = inst:submit("t", 2.02, rel(3, 9, 1))
+    local r = inst:submit("t", 2.03, rel(4, 1, 1))
+    return e1 and e1.code == "target-unavailable" and e2 and e2.code == "target-unavailable" and r.accepted and r.lost == 0 and inst:status(2.04).sessions.t.devices.nxk.lost == 0 end)(), J(inst:status(2.04).sessions.t.devices))
+  check("kb24: a refused number is forgotten once the order passed it (an older number is then out-of-order), and a real gap after a refusal still counts", (function()
+    local _, e = inst:submit("t", 2.05, rel(3, 1, 1))
+    local _, e9 = inst:submit("t", 2.06, rel(9, 5, 1))
+    local r = inst:submit("t", 2.07, rel(12, 1, 1))
+    return e and e.code == "out-of-order" and e9 and e9.code == "target-unavailable" and r.accepted and r.lost == 6 end)(), J(inst:status(2.08).sessions.t.devices))
+end
+
+-------------------------------------------------------------------------------
+-- KB-24: queue merging across other controls' motion
+-------------------------------------------------------------------------------
+do
+  local inst, b = fresh()
+  inst:openSession({ id = "s" }, 1)
+  local r1 = inst:submit("s", 1, rel(1, 1, 1))
+  local r2 = inst:submit("s", 1.001, rel(2, 2, -1, { control = "Rotary2" }))
+  local r3 = inst:submit("s", 1.002, rel(3, 1, 1))
+  local r4 = inst:submit("s", 1.003, rel(4, 2, -1, { control = "Rotary2" }))
+  check("interleaved detents of two controls merge into one intent per control", r1.queued == 1 and r2.queued == 2 and r3.coalesced == true and r3.queued == 1 and r4.coalesced == true and r4.queued == 2 and inst:status().sessions.s.queued == 2, J({ r1, r2, r3, r4 }))
+  -- A boundary stops the merge; so does another intent of the same control (a different gesture).
+  inst:submit("s", 1.004, touch(5, 201, true))
+  local r6 = inst:submit("s", 1.005, rel(6, 1, 1))
+  check("no merge across a boundary", r6.coalesced == nil and inst:status().sessions.s.queued == 4, J(r6))
+  local r7 = inst:submit("s", 1.006, rel(7, 1, 1, { gesture = 99 }))
+  local r8 = inst:submit("s", 1.007, rel(8, 1, 1))
+  check("a different gesture of the same control is its own intent; later detents never merge past it", r7.coalesced == nil and r7.queued == 5 and r8.coalesced == nil and r8.queued == 6 and inst:status().sessions.s.queued == 6, J({ r7, r8 }))
+  inst:service(1.1)
+  check("applied: slot1 +2 then slot2 -2 in queue order, the post-boundary detents after the touch", b.intents[1].delta == 2 and b.intents[1].events == 2 and b.intents[2].delta == -2 and b.intents[3].kind == "touch", J(b.intents))
 end
 
 -------------------------------------------------------------------------------
