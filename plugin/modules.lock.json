@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "repository": "https://github.com/bdstark/GrandMA3MCP",
-  "revision": "0315e181bb6b0ff4e22976797a616c8db8720585",
+  "revision": "04daff7ef7ba12d0a13f08d703caf8cf8c708a04",
   "license": "MIT",
   "modules": [
     {
@@ -23,7 +23,7 @@
       "path": "plugin/gma3_mcp_control.lua",
       "version": "0.5.0",
       "apiVersion": 1,
-      "sha256": "c0716917d457a88fbe74a6a38f80c16794950f2088ed097be5dfc7b0af048968"
+      "sha256": "2fac57fb5a8429e0e2474e6a6509fbecd3148253fd2c4b63dc4765f122c5a0a4"
     }
   ]
 }
