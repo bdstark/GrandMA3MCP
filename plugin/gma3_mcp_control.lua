@@ -227,7 +227,7 @@
 --   * Input is disabled on a new instance. enableInput(adapter) is the operator's explicit decision.
 
 local NAME        = "gma3_mcp_control"
-local VERSION     = "0.5.0"
+local VERSION     = "0.7.0"
 local API_VERSION = 1
 
 local EVENT_TYPES = { relative = true, absolute = true, touch = true, button = true }
@@ -278,6 +278,8 @@ local DEFAULT_CONFIG = {
   defaultLeaseMs     = 15000,
   maxLeaseMs         = 120000,
   maxQueue           = 64,     -- queued intents per session
+  earlyMergeMs       = 100,    -- KB-24 (0.7.0): a delta merges into a queued intent of its control without resolving its
+                               -- target again only while that intent is younger than this (its resolution is reused)
   maxEventAgeMs      = 250,    -- motion older than this when applied is dropped
   maxEventsPerSecond = 400,    -- per device; motion and position only
   maxWorkPerService  = 4,      -- intents applied per service()
@@ -938,7 +940,11 @@ end
 -- (it ends an existing hold, never a newer one); it does not move the device's newest sequence.
 local function orderEvent(self, s, ev, release)
   local d = s.devices[ev.device]
-  if not d then d = { last = 0, seen = {}, times = {}, lost = 0, duplicates = 0, reordered = 0, late = 0 }; s.devices[ev.device] = d end
+  if not d then d = { last = 0, seen = {}, times = {}, refused = {}, lost = 0, duplicates = 0, reordered = 0, late = 0 }; s.devices[ev.device] = d end
+  -- KB-24 (review of PR #28, round 2): received-but-refused numbers are kept as sorted, merged ranges {from, to}
+  -- (d.refused), bounded by their COUNT of ranges, not of numbers: a contiguous run of refusals is one entry however
+  -- long. When ranges are dropped (d.refusedForgottenUpTo), the loss arithmetic touching that history is reported
+  -- uncertain instead of calling known received events lost.
   if ev.seq <= d.last then
     if d.seen[ev.seq] then d.duplicates = d.duplicates + 1; return fail("duplicate", string.format("event %d of device %s was already admitted", ev.seq, ev.device), { seq = ev.seq, last = d.last }) end
     -- A delayed release is validated against the hold it ends, not the motion history: the hold still
@@ -957,7 +963,50 @@ local function orderEvent(self, s, ev, release)
   end
   local lost = ev.seq - d.last - 1
   if d.last == 0 then lost = 0 end  -- a device's first event sets the origin
+  -- KB-24: sequence numbers inside the gap that were received and refused (answered, never admitted) were not lost.
+  d.lostUncertain = nil
+  if lost > 0 then
+    for _, r in ipairs(d.refused) do
+      local lo, hi = math.max(r[1], d.last + 1), math.min(r[2], ev.seq - 1)
+      if hi >= lo then lost = lost - (hi - lo + 1) end
+    end
+    -- Forgotten ranges: their numbers all lie above d.last (ranges behind the order are pruned). When the event is
+    -- beyond the last forgotten number, every forgotten refusal is inside this gap and the count is exact; when it
+    -- is not, the split is unknown and the figure is an upper bound, reported uncertain.
+    -- Review (PR #28, round 3): the count is usable only while it is EXACT (d.refusedForgottenUnknown not set); a
+    -- retry inside the forgotten history or an eviction after the order entered it makes it unknown for good, until
+    -- the order passed the region.
+    if d.refusedForgottenUpTo and d.refusedForgottenUpTo > d.last then
+      if ev.seq > d.refusedForgottenUpTo and not d.refusedForgottenUnknown then lost = lost - (d.refusedForgotten or 0) else d.lostUncertain = true end
+    end
+    if lost < 0 then lost = 0 end
+  end
   return lost, d
+end
+
+-- A received-but-refused sequence number joins the device's refused ranges (sorted, merged when adjacent).
+local function noteRefused(self, d, seq)
+  -- A refusal inside the forgotten history (a retry of a dropped number, or a new number there: indistinguishable) must
+  -- not be counted again; the forgotten count becomes unknown instead (review round 3).
+  if d.refusedForgottenUpTo and seq <= d.refusedForgottenUpTo then d.refusedForgottenUnknown = true; return end
+  local rs = d.refused
+  local i = #rs
+  while i >= 1 and rs[i][1] > seq do i = i - 1 end  -- rs[i] is the last range starting at or below seq
+  if i >= 1 and seq <= rs[i][2] then return end  -- already in a range
+  if i >= 1 and seq == rs[i][2] + 1 then
+    rs[i][2] = seq
+    if rs[i + 1] and rs[i + 1][1] == seq + 1 then rs[i][2] = rs[i + 1][2]; table.remove(rs, i + 1) end
+  elseif rs[i + 1] and rs[i + 1][1] == seq + 1 then
+    rs[i + 1][1] = seq
+  else
+    table.insert(rs, i + 1, { seq, seq })
+  end
+  while #rs > self._config.seqWindow do
+    local dropped = table.remove(rs, 1)
+    d.refusedForgottenUpTo = math.max(d.refusedForgottenUpTo or 0, dropped[2])
+    -- Once unknown, stays unknown (an eviction after the split cannot rebuild an exact count).
+    if not d.refusedForgottenUnknown then d.refusedForgotten = (d.refusedForgotten or 0) + (dropped[2] - dropped[1] + 1) end
+  end
 end
 
 local function commitOrder(self, d, ev, lost, late)
@@ -970,7 +1019,16 @@ local function commitOrder(self, d, ev, lost, late)
   d.last = ev.seq
   d.seen[ev.seq] = true
   d.seen[ev.seq - self._config.seqWindow] = nil
+  -- Ranges the order passed are forgotten; a range straddling the new position is trimmed.
+  local rs = d.refused
+  while rs[1] and rs[1][2] <= ev.seq do table.remove(rs, 1) end
+  if rs[1] and rs[1][1] <= ev.seq then rs[1][1] = ev.seq + 1 end
+  if d.refusedForgottenUpTo then
+    if d.refusedForgottenUpTo <= ev.seq then d.refusedForgottenUpTo, d.refusedForgotten, d.refusedForgottenUnknown = nil, nil, nil
+    else d.refusedForgotten, d.refusedForgottenUnknown = nil, true end  -- the order passed INTO the forgotten region: how many forgotten numbers remain above is unknown
+  end
   d.lost = d.lost + lost
+  if d.lostUncertain and lost > 0 then d.lostUncertainCount = (d.lostUncertainCount or 0) + 1 end
 end
 
 local function rateExceeded(self, d, now)
@@ -1042,7 +1100,11 @@ function Instance:submit(sessionId, now, ev)
     return nil, d
   end
   local motion = ev.type == "relative" or ev.type == "absolute"
+  -- KB-24: a refused event was still SEEN on the wire. Its sequence number is remembered (d.refused) so that the
+  -- next admitted event does not report it as loss; it is not committed to the order, so the same number may be
+  -- sent again (a retransmitted release after a queue-full refusal, a retried event).
   local function refuse(e)
+    if ev.seq > d.last then noteRefused(self, d, ev.seq) end
     s.counters.refused = s.counters.refused + 1; self._counters.refused = self._counters.refused + 1
     logEvent(self, { at = now, session = sessionId, type = ev.type, device = ev.device, control = ev.control, seq = ev.seq, refused = e.code })
     return nil, e
@@ -1064,7 +1126,7 @@ function Instance:submit(sessionId, now, ev)
       commitOrder(self, d, ev, lost, late)
       s.counters.admitted = s.counters.admitted + 1
       logEvent(self, { at = now, session = sessionId, type = ev.type, device = ev.device, control = ev.control, seq = ev.seq, noop = true })
-      return { accepted = true, noop = true, lost = lost, note = existing and existing.releasing and ("the release of " .. ev.type .. " on that control is already queued") or ("no " .. ev.type .. " of that control is down for this session") }
+      return { accepted = true, noop = true, lost = lost, lostUncertain = d.lostUncertain, note = existing and existing.releasing and ("the release of " .. ev.type .. " on that control is already queued") or ("no " .. ev.type .. " of that control is down for this session") }
     end
     -- KB-21: the release ends the hold on the target the down RESOLVED (frozen), whatever the binding
     -- maps the control to by now; a bank/page change never redirects a release.
@@ -1078,7 +1140,7 @@ function Instance:submit(sessionId, now, ev)
     existing.releasing, existing.releaseId = true, intent.id
     s.counters.admitted = s.counters.admitted + 1; s.counters.lost = s.counters.lost + lost; self._counters.admitted = self._counters.admitted + 1; self._counters.lost = self._counters.lost + lost
     logEvent(self, { at = now, session = sessionId, type = ev.type, device = ev.device, control = ev.control, seq = ev.seq, admitted = true })
-    return { accepted = true, queued = queued.position, evicted = queued.evicted, lost = lost, late = late or nil, boundary = true }
+    return { accepted = true, queued = queued.position, evicted = queued.evicted, lost = lost, lostUncertain = d.lostUncertain, late = late or nil, boundary = true }
   end
   -- Everything else needs the binding and a resolvable target.
   local snap, berr = self:_binding(now)
@@ -1090,6 +1152,48 @@ function Instance:submit(sessionId, now, ev)
   if ev.generation ~= snap.generation then
     return refuse(errOf("stale-generation", string.format("event generation %s is not the binding's current generation %d; rebind before sending more", tostring(ev.generation), snap.generation),
                                  { generation = snap.generation, eventGeneration = ev.generation }))
+  end
+  -- KB-24 (0.7.0, review of PR #28): a relative delta that can merge into a queued intent of its control skips the
+  -- target resolution and the target-dependent checks (the queued intent passed them for the same target, generation,
+  -- binding revision, gesture and fine flag), never the admission guards: the binding lookup and the stale checks
+  -- above, and below the binding-required rule, the rebound rule, the busy owner and the target's owner (checked
+  -- against the queued intent's resolved target). Ordering and the rate limit saw the event too.
+  if ev.type == "relative" then
+    local early, pos = self:_findEarly(s, ev, now)
+    if early then
+      if ev.binding == nil and self._config.requireBindingRevision then
+        return refuse(errOf("binding-required", string.format("the event carries no binding revision; this consumer's binding can be replaced, so motion and downs must carry binding = %d (bindingInfo())", snap.bindingRevision),
+                            { binding = snap.bindingRevision, generation = snap.generation }))
+      end
+      if existing and existing.kind == "touch" and (existing.rebound or existing.generation ~= snap.generation) then
+        existing.rebound = true
+        return refuse(errOf("gesture-rebound", "the binding changed while this touch was down; release and touch again to control the new target", { target = ev.target, heldGeneration = existing.generation, generation = snap.generation }))
+      end
+      local busyDep = self._deps.busy
+      if type(busyDep) == "function" then
+        local okB, busy = pcall(busyDep, sessionId, now)
+        if okB and type(busy) == "table" and busy.owner ~= sessionId then
+          return refuse(errOf("busy", "another input owner is active: " .. tostring(busy.description or busy.reason), { reason = busy.reason, owner = busy.owner }))
+        end
+      end
+      local owner, og = self:_targetOwner(early.resolved, now, sessionId, gkey, false)
+      if owner then
+        return refuse(errOf("conflict", string.format("%s is being operated by %s (%s on %s/%s)", early.targetKey, owner == sessionId and "this session" or ("session " .. owner), og.kind, og.device, og.control), { owner = owner, target = ev.target, holder = og.device .. "/" .. og.control }))
+      end
+      early.delta = early.delta + ev.delta
+      early.events = early.events + 1
+      early.lost = early.lost + lost
+      early.seq = ev.seq
+      commitOrder(self, d, ev, lost, late)
+      local g = s.gestures[gkey]
+      if g then g.lastAt = now end
+      s.counters.admitted = s.counters.admitted + 1; s.counters.lost = s.counters.lost + lost
+      self._counters.admitted = self._counters.admitted + 1; self._counters.lost = self._counters.lost + lost
+      s.counters.coalesced = s.counters.coalesced + 1; self._counters.coalesced = self._counters.coalesced + 1
+      self._counters.mergedEarly = (self._counters.mergedEarly or 0) + 1
+      logEvent(self, { at = now, session = sessionId, type = ev.type, device = ev.device, control = ev.control, seq = ev.seq, admitted = true, coalesced = true, early = true, target = early.targetKey })
+      return { accepted = true, queued = pos, coalesced = true, lost = lost, lostUncertain = d.lostUncertain, target = early.targetKey, generation = early.generation, early = true }
+    end
   end
   local target, terr = resolveTarget(snap, ev.target)
   if not target then return refuse(terr) end
@@ -1174,25 +1278,60 @@ function Instance:submit(sessionId, now, ev)
   self._counters.admitted = self._counters.admitted + 1; self._counters.lost = self._counters.lost + lost
   if queued.coalesced then s.counters.coalesced = s.counters.coalesced + 1; self._counters.coalesced = self._counters.coalesced + 1 end
   logEvent(self, { at = now, session = sessionId, type = ev.type, device = ev.device, control = ev.control, seq = ev.seq, admitted = true, coalesced = queued.coalesced or nil, target = target.key })
-  return { accepted = true, queued = queued.position, coalesced = queued.coalesced or nil, superseded = queued.superseded or nil, lost = lost, target = target.key,
+  return { accepted = true, queued = queued.position, coalesced = queued.coalesced or nil, superseded = queued.superseded or nil, lost = lost, lostUncertain = d.lostUncertain, target = target.key,
            generation = snap.generation, mixed = target.mixed, stateful = target.stateful }
 end
 
--- Queue discipline. Relative deltas merge into the queue's tail when nothing but motion of the same
--- key was queued since; absolute positions replace a queued position of the same key when the target
--- permits; boundaries always get in (evicting the oldest motion of the session when full).
+-- KB-24 (0.7.0): the queued relative intent of this control a new delta may merge into without resolving its
+-- target again: same device/control, target, generation, binding revision, gesture and fine flag, with no boundary
+-- and no other intent of the control queued after it. Returns the intent (merged) or nil.
+local function sameTarget(a, b)
+  if type(a) ~= "table" or type(b) ~= "table" then return a == b end
+  return a.slot == b.slot and a.executor == b.executor and a.element == b.element and a.page == b.page
+end
+function Instance:_findEarly(s, ev, now)
+  local q = s.queue
+  for i = #q, 1, -1 do
+    local e = q[i]
+    if e.kind == "touch" or e.kind == "button" then return nil end
+    if e.device == ev.device and e.control == ev.control then
+      if e.kind == "relative" and e.generation == ev.generation and (ev.binding == nil or e.binding == ev.binding) and e.gesture == ev.gesture
+         and e.fine == (ev.fine or nil) and sameTarget(e.target, ev.target) and (now - (e.firstAt or e.at)) * 1000 <= self._config.earlyMergeMs then
+        return e, i
+      end
+      return nil
+    end
+    -- Review (PR #28): motion of ANOTHER control on the same target in between keeps its order (+100, -100, +100
+    -- with clamping is not +200, -100).
+    if sameTarget(e.target, ev.target) then return nil end
+  end
+  return nil
+end
+
+-- Queue discipline. Relative deltas merge into the most recent queued relative intent of the same key (same
+-- target, generation, resolution, fine and gesture) as long as no boundary (touch/button) and no other intent of
+-- that control were queued after it: motion of other controls in between does not stop the merge (KB-24: with
+-- several controls moving at once the tail alternated and single detents filled the queue). Absolute positions
+-- replace a queued position of the same key when the target permits; boundaries always get in (evicting the
+-- oldest motion of the session when full).
 function Instance:_enqueue(s, intent, boundary)
   local q = s.queue
   if intent.kind == "relative" then
-    local tail = q[#q]
-    if tail and tail.kind == "relative" and tail.session == intent.session and tail.device == intent.device and tail.control == intent.control
-       and tail.targetKey == intent.targetKey and tail.generation == intent.generation
-       and tail.resolution == intent.resolution and tail.fine == intent.fine and tail.gesture == intent.gesture then
-      tail.delta = tail.delta + intent.delta
-      tail.events = tail.events + 1
-      tail.lost = tail.lost + intent.lost
-      tail.at, tail.seq = intent.at, intent.seq
-      return { position = #q, coalesced = true }
+    for i = #q, 1, -1 do
+      local e = q[i]
+      if e.kind == "touch" or e.kind == "button" then break end  -- never across a boundary
+      if e.device == intent.device and e.control == intent.control then
+        if e.kind == "relative" and e.session == intent.session and e.targetKey == intent.targetKey and e.generation == intent.generation
+           and e.resolution == intent.resolution and e.fine == intent.fine and e.gesture == intent.gesture then
+          e.delta = e.delta + intent.delta
+          e.events = e.events + 1
+          e.lost = e.lost + intent.lost
+          e.at, e.seq = intent.at, intent.seq
+          return { position = i, coalesced = true }
+        end
+        break  -- another intent of this control (a position, a different gesture or target) sits between: keep order
+      end
+      if e.targetKey == intent.targetKey then break end  -- review (PR #28): another control's motion on the same target keeps its order
     end
   elseif intent.kind == "absolute" and intent.supersedes then
     for i = #q, 1, -1 do
@@ -1203,6 +1342,7 @@ function Instance:_enqueue(s, intent, boundary)
         return { position = i, superseded = e.superseded }
       end
       if e.kind == "touch" or e.kind == "button" then break end  -- never across a boundary
+      if e.targetKey == intent.targetKey then break end  -- review (PR #28): another control's motion on the same target keeps its order
     end
   end
   local evicted = 0

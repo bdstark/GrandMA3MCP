@@ -27,7 +27,7 @@ local CTL = assert(load(src, "=gma3_mcp_control.lua", "t", env))("test_plugin", 
 -------------------------------------------------------------------------------
 -- Loading contract
 -------------------------------------------------------------------------------
-check("module loads without console API", type(CTL) == "table" and CTL.VERSION == "0.5.0" and CTL.API_VERSION == 1 and type(CTL.new) == "function")
+check("module loads without console API", type(CTL) == "table" and CTL.VERSION == "0.7.0" and CTL.API_VERSION == 1 and type(CTL.new) == "function")
 check("module table is read-only", not pcall(function() CTL.x = 1 end) and CTL.x == nil)
 check("module registers in the signal table", signals.__gma3_mcp_modules.gma3_mcp_control == CTL)
 check("publishes nothing globally", package.loaded.gma3_mcp_control == nil and _G.gma3_mcp_control == nil)
@@ -166,6 +166,170 @@ do
   -- Touch/button releases also obey the order: a stale press after its release is dropped.
   check("release then stale press: press is out-of-order", inst:submit("s", 2, touch(20, 201, false)).noop and code(inst:submit("s", 2, touch(19, 201, true))) == "out-of-order")
   check("sessions keep their own device order", (function() inst:openSession({ id = "t" }, 2); return inst:submit("t", 2, rel(1, 1, 1)).lost == 0 end)())
+  -- KB-24: a refused event was seen: it moves the device's order, so the next admitted event reports no loss for it
+  -- (the surface's qualification against onPC saw every refusal counted again as "lost").
+  check("kb24: events refused for their target are not loss: the next admitted event reports none", (function()
+    local _, e1 = inst:submit("t", 2.01, rel(2, 5, 1)); local _, e2 = inst:submit("t", 2.02, rel(3, 9, 1))
+    local r = inst:submit("t", 2.03, rel(4, 1, 1))
+    return e1 and e1.code == "target-unavailable" and e2 and e2.code == "target-unavailable" and r.accepted and r.lost == 0 and inst:status(2.04).sessions.t.devices.nxk.lost == 0 end)(), J(inst:status(2.04).sessions.t.devices))
+  check("kb24: a refused number is forgotten once the order passed it (an older number is then out-of-order), and a real gap after a refusal still counts", (function()
+    local _, e = inst:submit("t", 2.05, rel(3, 1, 1))
+    local _, e9 = inst:submit("t", 2.06, rel(9, 5, 1))
+    local r = inst:submit("t", 2.07, rel(12, 1, 1))
+    return e and e.code == "out-of-order" and e9 and e9.code == "target-unavailable" and r.accepted and r.lost == 6 end)(), J(inst:status(2.08).sessions.t.devices))
+end
+
+-------------------------------------------------------------------------------
+-- KB-24 (0.7.0): a delta that merges into a queued intent skips the binding lookup and target resolution
+-------------------------------------------------------------------------------
+do
+  local inst, b = fresh()
+  inst:openSession({ id = "s" }, 1)
+  local r1 = inst:submit("s", 1, rel(1, 1, 1))
+  check("the first delta resolves and queues", r1.accepted and r1.queued == 1 and r1.early == nil)
+  -- The binding's slots become unavailable: a delta on another slot is refused, but a delta that merges into the
+  -- queued slot-1 intent is admitted without resolving (the queued intent already passed resolution).
+  local slots = binding.slots; binding.slots = { available = false, reason = "encoder bar gone" }
+  local r2, e2 = inst:submit("s", 1.001, rel(2, 1, 1))
+  local _, e3 = inst:submit("s", 1.002, rel(3, 2, 1, { control = "Rotary2" }))
+  binding.slots = slots
+  check("merged early: accepted, coalesced, no resolution", r2.accepted and r2.coalesced == true and r2.early == true and r2.queued == 1 and r2.target == r1.target, J(r2))
+  check("a delta that cannot merge still resolves (and is refused here)", e3 and e3.code == "target-unavailable", J(e3))
+  check("counters: merged early counted as coalesced", inst:status().counters.coalesced == 1 and inst:status().counters.mergedEarly == 1, J(inst:status().counters))
+  -- A different gesture, generation or fine flag does not merge early.
+  local r4 = inst:submit("s", 1.003, rel(4, 1, 1, { gesture = 7 }))
+  check("a different gesture is its own intent", r4.accepted and r4.coalesced == nil and r4.queued == 2, J(r4))
+  local r5 = inst:submit("s", 1.004, rel(5, 1, 1, { gesture = 7, fine = true }))
+  check("a different fine flag is its own intent", r5.accepted and r5.coalesced == nil and r5.queued == 3, J(r5))
+  inst:service(1.1)
+  check("applied in order: slot1 +2 (merged), slot1 +1 (gesture 7), slot1 +1 fine", b.intents[1].delta == 2 and b.intents[1].events == 2 and b.intents[2].delta == 1 and b.intents[3].fine == true, J(b.intents))
+  -- Review (PR #28, P1): the admission guards stay ahead of the optimisation.
+  local inst2, b2 = fresh({ requireBindingRevision = true })
+  inst2:openSession({ id = "s" }, 1)
+  local rev = inst2:bindingInfo(1).revision
+  local q1 = inst2:submit("s", 1, rel(1, 1, 1, { binding = rev }))
+  local _, eb = inst2:submit("s", 1.001, rel(2, 1, 1))
+  check("review P1: a mergeable delta without the required binding revision is refused binding-required", q1.accepted and eb and eb.code == "binding-required", J(eb))
+  local _, es = inst2:submit("s", 1.002, rel(3, 1, 1, { binding = rev + 7 }))
+  check("review P1: a mergeable delta with a stale binding revision is refused stale-binding", es and es.code == "stale-binding", J(es))
+  local inst3, b3 = fresh()
+  local busyOwner = nil
+  inst3._deps.busy = function() return busyOwner end
+  inst3:openSession({ id = "s" }, 1)
+  local q3 = inst3:submit("s", 1, rel(1, 1, 1))
+  busyOwner = { owner = "bridge", reason = "test", description = "another injector" }
+  local _, ebz = inst3:submit("s", 1.001, rel(2, 1, 1))
+  busyOwner = nil
+  check("review P1: a mergeable delta while another input owner is busy is refused busy, nothing merged", q3.accepted and ebz and ebz.code == "busy" and inst3:status().sessions.s.queued == 1, J(ebz))
+  inst3:service(1.1)
+  check("review P1: only the first delta was applied", #b3.intents == 1 and b3.intents[1].delta == 1, J(b3.intents))
+end
+
+-------------------------------------------------------------------------------
+-- Review (PR #28, P2): two controls on one target keep their order in both merge paths
+-------------------------------------------------------------------------------
+do
+  local inst, b = fresh()
+  inst:openSession({ id = "s" }, 1)
+  local a1 = inst:submit("s", 1, rel(1, 1, 100))
+  local b1 = inst:submit("s", 1.001, rel(2, 1, -100, { control = "Strip1", device = "mtouch" }))
+  local a2 = inst:submit("s", 1.002, rel(3, 1, 100))
+  check("review P2: A +100, B -100, A +100 on one slot stays three intents (no early merge across B)", a1.queued == 1 and b1.queued == 2 and a2.queued == 3 and a2.coalesced == nil and a2.early == nil, J({ a1, b1, a2 }))
+  inst:service(1.1)
+  check("review P2: applied as +100, -100, +100 in order", #b.intents == 3 and b.intents[1].delta == 100 and b.intents[2].delta == -100 and b.intents[3].delta == 100, J(b.intents))
+  -- The resolved-queue path too: past earlyMergeMs the regular merge must also stop at B.
+  inst:submit("s", 2, rel(4, 1, 100)); inst:submit("s", 2.001, rel(5, 1, -100, { control = "Strip1", device = "mtouch" }))
+  local a3 = inst:submit("s", 2.2, rel(6, 1, 100))
+  check("review P2: the regular merge (past earlyMergeMs) stops at the other control's motion on the same target", a3.queued == 3 and a3.coalesced == nil, J(a3))
+  -- Positions of another control on the same target are not superseded across either.
+  local p1 = inst:submit("s", 3, abs(7, 201, 0.2))
+  local p2 = inst:submit("s", 3.001, abs(8, 201, 0.4, { control = "Strip201b" }))
+  local p3 = inst:submit("s", 3.002, abs(9, 201, 0.6))
+  check("review P2: a position does not supersede past another control's position on the same target", p1.accepted and p2.accepted and p3.accepted and p3.superseded == nil, J(p3))
+end
+
+-------------------------------------------------------------------------------
+-- Review (PR #28, P2): the refused-sequence set is bounded
+-------------------------------------------------------------------------------
+do
+  local inst = fresh({ maxEventsPerSecond = 100000 })  -- the device rate limit would otherwise drop (and commit) the burst
+  inst:openSession({ id = "s" }, 1)
+  inst:submit("s", 1, rel(1, 1, 1))
+  for i = 2, 1001 do inst:submit("s", 1 + i * 0.0001, rel(i, 9, 1)) end  -- slot 9 is off the page: refused, received
+  local dev = inst._sessions.s.devices.nxk
+  check("review round 2: 1000 contiguous refusals are ONE range, nothing forgotten", #dev.refused == 1 and dev.refused[1][1] == 2 and dev.refused[1][2] == 1001 and dev.refusedForgottenUpTo == nil, J(dev.refused))
+  local r = inst:submit("s", 1.3, rel(1002, 1, 1))
+  check("review round 2: received refusals are never loss: the next admitted event reports 0, certain", r.accepted and r.lost == 0 and r.lostUncertain == nil, J(r))
+  check("review round 2: the passed ranges are forgotten", #dev.refused == 0, J(dev.refused))
+  -- A real gap among refusals still counts, exactly: 1003 lost, 1004-1010 refused, 1011 admitted.
+  for i = 1004, 1010 do inst:submit("s", 1.4, rel(i, 9, 1)) end
+  local r2 = inst:submit("s", 1.5, rel(1011, 1, 1))
+  check("review round 2: one genuinely missing number among refusals is reported as exactly one, certain", r2.lost == 1 and r2.lostUncertain == nil, J(r2))
+  -- Scattered refusals (every other number) exceed the range bound: the oldest ranges are dropped and the next loss
+  -- figure says it is uncertain instead of counting the forgotten received events as lost.
+  for i = 1, 200 do inst:submit("s", 1.6, rel(1011 + 2 * i, 9, 1)) end
+  check("review round 2: the range count is bounded (seqWindow 64)", #dev.refused <= 64 and dev.refusedForgottenUpTo ~= nil and dev.refusedForgotten > 0, J({ ranges = #dev.refused, upTo = dev.refusedForgottenUpTo, forgotten = dev.refusedForgotten }))
+  -- Beyond the last forgotten number every forgotten refusal lies inside the gap: the count is exact and certain
+  -- (the 200 even numbers are the real gaps, the 200 odd ones were received and refused, 136 of them forgotten).
+  local r3 = inst:submit("s", 1.7, rel(1011 + 2 * 200 + 1, 1, 1))
+  check("review round 2: beyond the forgotten history the loss is exact and certain: the 200 real gaps, not the forgotten refusals", r3.accepted and r3.lostUncertain == nil and r3.lost == 200, J({ lost = r3.lost, uncertain = r3.lostUncertain }))
+  check("review round 2: the forgotten counters are cleared once the order passed them", dev.refusedForgottenUpTo == nil and dev.refusedForgotten == nil, J({ upTo = dev.refusedForgottenUpTo, forgotten = dev.refusedForgotten }))
+  -- An admitted event INSIDE the forgotten history: the split of the forgotten refusals is unknown, so the figure (the
+  -- gap minus the known ranges) is an upper bound and says so, and stays uncertain until the order passed the region.
+  local base = 1412
+  for i = 1, 200 do inst:submit("s", 1.75, rel(base + 2 * i, 9, 1)) end
+  local upTo = dev.refusedForgottenUpTo
+  local rU = inst:submit("s", 1.8, rel(base + 150, 1, 1))
+  check("review round 2: an admitted event inside the forgotten history reports an uncertain upper bound (the gap minus the known ranges), never a certain loss", rU.accepted and rU.lostUncertain == true and rU.lost == 149 and upTo > base + 150, J({ lost = rU.lost, uncertain = rU.lostUncertain, upTo = upTo }))
+  local r5 = inst:submit("s", 1.85, rel(base + 401, 1, 1))
+  check("review round 2: after that the count of forgotten numbers still above is unknown: uncertain until the order passed the region", r5.accepted and r5.lostUncertain == true, J({ lost = r5.lost, uncertain = r5.lostUncertain }))
+  inst:submit("s", 1.9, rel(base + 500, 9, 1))
+  local r6 = inst:submit("s", 1.95, rel(base + 501, 1, 1))
+  check("review round 2: past the forgotten region the figures are certain again", r6.accepted and r6.lostUncertain == nil and r6.lost == 500 - 401 - 1, J({ lost = r6.lost, uncertain = r6.lostUncertain }))
+  -- Review round 3, case 1: a retry of an already-forgotten refusal must not be counted twice. 200 scattered refusals
+  -- (odd offsets) drop the oldest 136 ranges; the retry of the first one (base + 2) lands inside the forgotten history.
+  local b3 = base + 501
+  for i = 1, 200 do inst:submit("s", 2.0, rel(b3 + 2 * i, 9, 1)) end
+  local rangesBefore = #dev.refused
+  inst:submit("s", 2.05, rel(b3 + 2, 9, 1))  -- retry of a forgotten refusal (it is below d.last? no: d.last is b3)
+  check("review round 3: the retry inside the forgotten history is not added again and makes the count unknown", #dev.refused == rangesBefore and dev.refusedForgottenUnknown == true, J({ ranges = #dev.refused, unknown = dev.refusedForgottenUnknown, upTo = dev.refusedForgottenUpTo }))
+  local r7 = inst:submit("s", 2.1, rel(b3 + 401, 1, 1))
+  check("review round 3: the figure beyond the region is then an uncertain upper bound, not an exact count (199 would be the double count)", r7.accepted and r7.lostUncertain == true and r7.lost >= 200, J({ lost = r7.lost, uncertain = r7.lostUncertain }))
+  check("review round 3: the unknown state clears once the order passed the region", dev.refusedForgottenUnknown == nil and dev.refusedForgottenUpTo == nil, J({ unknown = dev.refusedForgottenUnknown, upTo = dev.refusedForgottenUpTo }))
+  -- Case 2: an eviction after the order entered the forgotten region (count unknown) must not rebuild an "exact" count.
+  local b4 = b3 + 401
+  for i = 1, 200 do inst:submit("s", 2.2, rel(b4 + 2 * i, 9, 1)) end
+  inst:submit("s", 2.25, rel(b4 + 150, 1, 1))  -- inside the forgotten region: the count becomes unknown
+  check("review round 3: the order entered the forgotten region: unknown", dev.refusedForgottenUnknown == true and dev.refusedForgotten == nil, J({ unknown = dev.refusedForgottenUnknown, forgotten = dev.refusedForgotten }))
+  for i = 1, 100 do inst:submit("s", 2.3, rel(b4 + 400 + 2 * i, 9, 1)) end  -- more scattered refusals: further evictions
+  check("review round 3: evictions after the split keep the count unknown (never a partial 'exact' figure)", dev.refusedForgottenUnknown == true and dev.refusedForgotten == nil, J({ unknown = dev.refusedForgottenUnknown, forgotten = dev.refusedForgotten }))
+  local r8 = inst:submit("s", 2.4, rel(b4 + 601, 1, 1))
+  check("review round 3: the admitted event beyond is reported uncertain, with the known ranges subtracted only", r8.accepted and r8.lostUncertain == true, J({ lost = r8.lost, uncertain = r8.lostUncertain }))
+  inst:submit("s", 2.5, rel(b4 + 700, 9, 1))
+  local r9 = inst:submit("s", 2.55, rel(b4 + 701, 1, 1))
+  check("review round 3: certain again past the region", r9.accepted and r9.lostUncertain == nil and r9.lost == 700 - 601 - 1, J({ lost = r9.lost, uncertain = r9.lostUncertain }))
+end
+
+-------------------------------------------------------------------------------
+-- KB-24: queue merging across other controls' motion
+-------------------------------------------------------------------------------
+do
+  local inst, b = fresh()
+  inst:openSession({ id = "s" }, 1)
+  local r1 = inst:submit("s", 1, rel(1, 1, 1))
+  local r2 = inst:submit("s", 1.001, rel(2, 2, -1, { control = "Rotary2" }))
+  local r3 = inst:submit("s", 1.002, rel(3, 1, 1))
+  local r4 = inst:submit("s", 1.003, rel(4, 2, -1, { control = "Rotary2" }))
+  check("interleaved detents of two controls merge into one intent per control", r1.queued == 1 and r2.queued == 2 and r3.coalesced == true and r3.queued == 1 and r4.coalesced == true and r4.queued == 2 and inst:status().sessions.s.queued == 2, J({ r1, r2, r3, r4 }))
+  -- A boundary stops the merge; so does another intent of the same control (a different gesture).
+  inst:submit("s", 1.004, touch(5, 201, true))
+  local r6 = inst:submit("s", 1.005, rel(6, 1, 1))
+  check("no merge across a boundary", r6.coalesced == nil and inst:status().sessions.s.queued == 4, J(r6))
+  local r7 = inst:submit("s", 1.006, rel(7, 1, 1, { gesture = 99 }))
+  local r8 = inst:submit("s", 1.007, rel(8, 1, 1))
+  check("a different gesture of the same control is its own intent; later detents never merge past it", r7.coalesced == nil and r7.queued == 5 and r8.coalesced == nil and r8.queued == 6 and inst:status().sessions.s.queued == 6, J({ r7, r8 }))
+  inst:service(1.1)
+  check("applied: slot1 +2 then slot2 -2 in queue order, the post-boundary detents after the touch", b.intents[1].delta == 2 and b.intents[1].events == 2 and b.intents[2].delta == -2 and b.intents[3].kind == "touch", J(b.intents))
 end
 
 -------------------------------------------------------------------------------
@@ -236,11 +400,13 @@ do
   check("fine flag and gesture travel with the intent", b.intents[4].fine == true and b.intents[4].gesture == 2, J(b.intents[4]))
   out = inst:service(1.06)
   check("the rest follows: button then the post-boundary delta", out.applied == 2 and b.intents[5].kind == "button" and b.intents[5].down == true and b.intents[6].delta == 2, J(b.intents))
-  -- A changed resolution in the binding changes the generation upstream; locally, a different resolution never merges.
+  -- A changed resolution in the binding changes the generation upstream; locally, a different resolution never merges
+  -- (KB-24: within earlyMergeMs a delta merges without resolving, reusing the queued intent's resolution; after it the
+  -- resolution is compared again, so this scene waits past the bound).
   inst:submit("s", 1.07, rel(10, 1, 1))
   local saved = binding.slots.value.slots[1].resolution
   binding.slots.value.slots[1].resolution = "Fine"
-  inst:submit("s", 1.071, rel(11, 1, 1))
+  inst:submit("s", 1.2, rel(11, 1, 1))
   binding.slots.value.slots[1].resolution = saved
   check("a different resolution never merges", inst:status().sessions.s.queued == 2)
   -- Applying intents while the binding generation is the same still works after a boundary from another device.

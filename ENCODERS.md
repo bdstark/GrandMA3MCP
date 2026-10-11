@@ -613,3 +613,60 @@ the console's own out-of-gamut representation).
 - Publish a platform/device/firmware matrix separating automated tests from live hardware qualification.
 - Update shared-module versions, API documentation, protocol versions, and vendoring hashes.
 - Keep unsupported contexts and functions explicit. Do not advertise complete grandMA3 hardware equivalence.
+
+### KB-24 results (console half, 2026-10-10; documentation and harness half done, hardware pass pending)
+
+No Lua module changed: the set stays `gma3_mcp_hardkeys` 0.10.0 / `gma3_mcp_feedback` 0.6.0 / `gma3_mcp_control`
+0.5.0 at `9535ded` (`plugin/modules.lock.json`; the surface's `tools/ma3/VENDOR.md` carries the same hashes, verified
+byte-equal on 2026-10-10). The bridge (0.18.0) and the TypeScript are unchanged. Device profiles, the qualification
+matrix, the measurement harness and every record are the surface repository's (mtpnxk `KEYBOARD.md` "KB-24",
+`docs/device-profiles.md`, `docs/qualification-matrix.md`, `docs/probes/kb-24-measure-macos.md`).
+
+**Defects identified by the qualification (surface harness against onPC 2.5.1, 2026-10-10; mtpnxk
+`docs/probes/kb-24-measure-macos.md`) and what was done (2026-10-11):** (1) `gma3_mcp_control` reported every
+refused event (`target-unavailable`, `conflict`) as loss: the next admitted event of the device counted the refused
+sequence number as a gap. **Fixed in control 0.6.0:** refused numbers are remembered per device and subtracted from
+the gap; they stay uncommitted, so the same number may be sent again (a retransmitted release after `queue-full`).
+(2) The control queue held single-detent intents (merging only into the tail) and overflowed `queue-full` at about
+70 events/s with two encoders and a strip. **Fixed in control 0.6.0:** a delta merges into the most recent queued
+relative intent of its control unless a boundary or another intent of that control was queued after it; the surface
+plugin applies 8 intents per tick (was 4). (3) The surface plugin's tick costs 13 ms idle on 2.5.1 (per-tick console
+reads) and saturated at 100 detents/s, losing key taps: the surface service now sends one motion packet per control
+per 25 ms (was 5) under a per-session ceiling of 100 packets/s and retransmits after 120 ms (was 60), and the
+plugin's heartbeat load report names where the tick's time goes (modules / datagrams / state); the agreed ack
+thresholds moved to the console's measured cadence (80 ms p95, 300 ms worst, plugin tick 200 ms max; every
+zero-loss check unchanged). `test/lua/control_admission_test.lua` 279 (two new sections), `modules_test` 156; the set
+is pinned at `e4aa80a4a85ea61bd187979f0ceebdfb8cb2189a` (control sha256 `56131672…`).
+
+**Round 4 (2026-10-11, later):** control 0.7.0 merges a relative delta into a queued intent of its control before
+the binding lookup and target resolution (same target, generation, revision, gesture and fine flag; no boundary or
+other intent of the control queued after it; the intent younger than `earlyMergeMs` = 100 ms, so a resolution is
+reused only briefly; `early = 1` in the result, counted as coalesced and `mergedEarly`). Feedback 0.7.0 adds
+`config.priorityStateReads` (0 off: the KB-17 round robin; 1: due non-executor items first, inside at most half of
+`maxReadsPerService`, with their own round robin so neither class starves); the surface plugin turns it on, the
+bridge keeps the default. Set pinned at `3dd82b2` (hashes in `plugin/modules.lock.json`). Live
+on the surface: a command-line keyword reads back in 55 ms median / 165 ms p95 (was 200 / 509), and at 100 detents/s
+plus a strip plus keys the plugin never hits its datagram budget. `control_admission_test` 286, `feedback_context_test`
+161, `modules_test` 156.
+
+**Review of PR #28 (round 1):** (P1) the early merge bypassed the stale-binding/binding-required, busy-owner and
+target-owner guards: it now runs after them and skips only the target resolution and the target-dependent checks.
+(P2) Both merge paths and the absolute supersede stop at another control's motion on the same target (`A +100, B
+-100, A +100` stays three intents). (P2) The refused-sequence set is bounded to `seqWindow` entries. Set pinned at
+`e4741b90a1daeba7accf99f4a2d3b5a0d73d76a6`.
+
+**Review of PR #28 (round 2):** bounding the refused set by numbers turned forgotten received events into "lost"
+(70 refusals at 10/s then valid motion reported 6 lost). Received refusals are now kept as merged ranges bounded by
+their count; dropped history keeps its count and highest number, so a later event subtracts it exactly, and an event
+inside the forgotten region reports an upper bound with `lostUncertain = true` (the device stays uncertain until the
+order passed the region). The regression test now expects 0 lost after 1000 refusals. Set pinned at `9cf16598b75fd65d10695ef651e9465876c7edbf`.
+
+**Review of PR #28 (round 3):** the forgotten count could regain a false certainty: a retry of a forgotten refusal
+was counted twice (200 missing reported as 199, certain), and an eviction after the order entered the region treated
+the unknown count as zero. An explicit `refusedForgottenUnknown` state is now set by either and stays until the order
+passed the region; while set, the figure is an upper bound with `lostUncertain`. Set pinned at `bdcfe6edf74770f7a2eac272e054d4b341a35e6f`.
+
+**Pending (surface repository, operator at the surfaces):** the onPC run of the harness (press-to-effect, feedback
+latency and the plugin loop's load against the real console; agreed thresholds), the physical NX-K rotaries and the
+M-Touch / M-Play through `run`, two connected surfaces, USB removal, plugin restart, context changes and stale
+feedback on the physical lights, the platform matrix's live rows.

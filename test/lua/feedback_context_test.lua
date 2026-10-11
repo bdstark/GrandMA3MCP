@@ -21,7 +21,7 @@ local function loadModule(file)
   return chunk("test_plugin", (file:gsub("%.lua$", "")), {}, nil)
 end
 local FB = loadModule("gma3_mcp_feedback.lua")
-check("feedback 0.6.0 loads", FB.VERSION == "0.6.0" and FB.API_VERSION == 1)
+check("feedback 0.6.0 loads", FB.VERSION == "0.7.0" and FB.API_VERSION == 1)
 
 -------------------------------------------------------------------------------
 -- Fake console
@@ -533,13 +533,36 @@ check("missing dependencies: every part unavailable with a reason or error, the 
 -------------------------------------------------------------------------------
 -- Cached snapshots through watchContext()/service()
 -------------------------------------------------------------------------------
+-- KB-24 (0.7.0): priorityStateReads reads the due non-executor items before the executor targets, inside the budget.
+do
+  local fp = FB.new({ owner = "kb24p", deps = deps(), config = { maxReadsPerService = 5, pollIntervalMs = 100, priorityStateReads = 1 } }):init()
+  fp:watchContext({ executors = { 201, 205 } }, 100)
+  local sv1 = fp:service(100.0)
+  check("kb24 priority: the first call reads three non-executor items (half the budget of 5, rounded up) and two executors", sv1.reads == 5 and sv1.due == 1, json.encode(sv1))
+  local sv2 = fp:service(100.01)
+  check("kb24 priority: the second call reads the remaining non-executor item", sv2.reads == 1 and sv2.due == 0, json.encode(sv2))
+  local snap2 = fp:contextSnapshot({ executors = { 201, 205 } }, 100.02, { cached = true })
+  check("kb24 priority: everything observed after two calls", snap2.notObserved == 0 and snap2.generation == 1, tostring(snap2.notObserved))
+  -- With everything due again, the state items are read first even when the budget is smaller than their count.
+  local fq = FB.new({ owner = "kb24q", deps = deps(), config = { maxReadsPerService = 2, pollIntervalMs = 100, priorityStateReads = 1 } }):init()
+  fq:watchContext({ executors = { 201, 205 } }, 100)
+  fq:service(100.0); fq:service(100.01); fq:service(100.02)
+  local before = fq:status().reads
+  local sv3 = fq:service(100.2)
+  local sq = fq:contextSnapshot({ executors = { 201, 205 } }, 100.21, { cached = true })
+  check("kb24 priority: after the interval a budget of 2 is split one non-executor item (the pool first), one executor; the encoder bank waits", sv3.reads == 2 and sq.encoder.ageMs > 150 and ((sq.executors[1].ageMs > 150) ~= (sq.executors[2].ageMs > 150)), json.encode({ reads = sv3.reads, enc = sq.encoder.ageMs, ex1 = sq.executors[1].ageMs, ex2 = sq.executors[2].ageMs }))
+  fq:service(100.21); fq:service(100.22); fq:service(100.23)
+  local sq4 = fq:contextSnapshot({ executors = { 201, 205 } }, 100.24, { cached = true })
+  check("kb24 priority: two calls later every non-executor item is fresh again", sq4.encoder.ageMs < 50 and sq4.notObserved == 0, json.encode({ enc = sq4.encoder.ageMs, notObserved = sq4.notObserved }))
+end
+
 local fc = FB.new({ owner = "kb17w", deps = deps(), config = { maxReadsPerService = 2, pollIntervalMs = 100, staleMs = 1000 } }):init()
 local w = fc:watchContext({ executors = { 201, 205 } }, 100)
 check("watchContext subscribes the snapshot's items", w.watched == 6 and #w.items == 6 and w.items[4].name == "encoderSlots" and w.items[4].params.display == 1, json.encode(w))
 snap = fc:contextSnapshot({ executors = { 201, 205 } }, 100, { cached = true })
 check("cached before any service: everything not observed, snapshot stale", snap.cached == true and snap.stale == true and snap.notObserved == 6 and snap.encoder.available == false and snap.encoder.reason:find("not observed yet") and snap.executors[1].stale == true and snap.generation == nil and snap.generationUnknown == true and snap.lastGeneration == nil and snap.generationNote:find("no generation"), json.encode(snap.encoder))
 local sv = fc:service(100.0)
-check("service reads at most maxReadsPerService items", sv.reads == 2 and sv.due == 4)
+check("service reads at most maxReadsPerService items (kb24: the non-executor items first)", sv.reads == 2 and sv.due == 4, json.encode(sv))
 fc:service(100.01); fc:service(100.02)
 snap = fc:contextSnapshot({ executors = { 201, 205 } }, 100.03, { cached = true })
 check("cached after a full round: every part observed, not stale, ages reported", snap.stale == nil and snap.notObserved == 0 and snap.encoder.available and snap.slots.available and snap.executors[2].value.level.token == "FaderTemp" and snap.encoder.ageMs ~= nil and snap.encoder.stale == false and snap.generation == 1 and snap.generationChanged == false and snap.generationNote:find("first snapshot"), tostring(snap.stale) .. " notObserved=" .. tostring(snap.notObserved) .. " encoder=" .. tostring(snap.encoder.available) .. " gen=" .. tostring(snap.generation))
