@@ -1230,9 +1230,12 @@ do
   local i2 = CTL.new({ owner = "test", config = { requireBindingRevision = false, maxGestureMs = 100 }, deps = { binding = function() return binding end, busy = function() return busyOwner end, observe = observe } }):init()
   i2:enableInput(CTL.consoleBackend(deps)); i2:openSession({ id = "s" }, 1.8); cmds = {}
   i2:submit("s", 1.8, key(1, 201, true))
-  local sess = i2._sessions.s; sess.queue = {}  -- the down is lost from the queue (never applied) and the gesture ages past the bound
-  out = i2:service(2.0)
-  check("round 2 (2): the gesture bound discards an unapplied hold too", #out.ended == 1 and out.ended[1].reason == "max-gesture" and out.ended[1].outcome == "discarded" and #cmds == 0, J({ out, cmds }))
+  out = i2:service(2.0)  -- the down is still queued when the gesture bound expires it
+  check("round 2/3 (2): the gesture bound discards an unapplied hold and cancels its queued down: no Press afterwards, the queue empty", #out.ended == 1 and out.ended[1].reason == "max-gesture" and out.ended[1].outcome == "discarded" and #cmds == 0 and out.dropped.expired == 1 and i2:status(2.0).sessions.s.queued == 0, J({ out, cmds }))
+  i2:submit("s", 2.1, key(2, 201, true)); i2:service(2.11)
+  i2:submit("s", 2.12, key(3, 201, false))  -- the release is queued when the bound expires the applied hold
+  out = i2:service(2.4)
+  check("round 3 (1): an applied hold force-ended by the bound is released once; its queued release is cancelled, not applied twice", #out.ended == 1 and out.ended[1].outcome == "applied" and #cmds == 2 and cmds[2] == "Unpress Page 1.201" and out.dropped.expired == 1 and i2:status(2.4).sessions.s.queued == 0, J({ out, cmds }))
   -- Round 2 (3): an unresolved release reserves its target until recover() applies it.
   inst = freshC()
   inst:submit("s", 2.1, key(1, 201, true)); inst:service(2.11)
@@ -1247,6 +1250,24 @@ do
   rc = inst:recover(2.16)
   check("round 2 (3): recover() releases the original hold (Unpress once) and frees the target: the next down is admitted and pressed", #rc.resolved == 1 and cmds[#cmds] == "Unpress Page 1.201" and inst:submit("t", 2.17, key(2, 201, true, "PFD1")).accepted and inst:service(2.18).applied == 1 and cmds[#cmds] == "Press Page 1.201", J({ rc, cmds }))
   inst:submit("t", 2.19, key(3, 201, false, "PFD1")); inst:service(2.2)
+  -- Round 3 (2): a changed key function (or assignment) does not open an executor with an unresolved release on it.
+  inst = freshC()
+  binding.executors[1].value.functions.keyPress = "Temp"
+  inst:submit("s", 2.3, key(1, 201, true)); inst:service(2.31)
+  feedback = "Error"
+  inst:submit("s", 2.32, key(2, 201, false)); inst:service(2.33)
+  feedback = "OK"
+  binding.executors[1].value.functions.keyPress = "Flash"; binding.generation = binding.generation + 1
+  local _, eF = inst:submit("s", 2.34, { type = "button", device = "mtouch", control = "PFB1", seq = 3, generation = binding.generation, target = { executor = 201, element = "key" }, down = true })
+  check("round 3 (2): the executor's key function changed to Flash: a down is still refused conflict (the reservation is the executor's address)", eF and eF.code == "conflict" and eF.holder == "unresolved", J(eF))
+  binding.executors[1].value.assigned = { addr = "Sequence 5", class = "Sequence" }; binding.generation = binding.generation + 1
+  local _, eG = inst:submit("s", 2.35, { type = "button", device = "mtouch", control = "PFB1", seq = 4, generation = binding.generation, target = { executor = 201, element = "key" }, down = true })
+  check("round 3 (2): and after a reassignment too", eG and eG.code == "conflict" and eG.holder == "unresolved", J(eG))
+  local _, eH = inst:submit("s", 2.36, { type = "touch", device = "mtouch", control = "PB1", seq = 5, generation = binding.generation, target = { executor = 201, element = "fader" }, down = true, gesture = 3 })
+  check("round 3 (2): the fader element of the same executor is another address: its touch is admitted", eH == nil, J(eH))
+  binding.executors[1].value.assigned = { addr = "Sequence 1", class = "Sequence" }; binding.executors[1].value.functions.keyPress = "Go+"; binding.generation = binding.generation - 2
+  rc = inst:recover(2.37)
+  check("round 3 (2): recover() releases the Temp hold once the original object is observed", #rc.resolved == 1 and cmds[#cmds] == "Unpress Page 1.201", J(rc))
   observed["1.201"], observed["2.201"], observed["4.201"] = nil, nil, nil
 end
 

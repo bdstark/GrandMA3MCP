@@ -212,6 +212,12 @@
 --     from any control is refused "conflict" (holder "unresolved"), so recover() can never release a button
 --     somebody else pressed meanwhile. The reservation ends when recover() applies the release or dispose()
 --     hands the record on.
+-- Review of PR #26 (round 3):
+--   * the gesture bound (maxGestureMs) cancels the expired gesture's QUEUED intents (its down, its releases)
+--     before the queue is serviced: an expired hold is never pressed after it was discarded or released.
+--   * reservations compare the target's stable ADDRESS (exec<pool>/<page>.<n>.<element>; a slot's key), not
+--     the key that also names the assigned object and the configured function: a reassignment or a changed
+--     key function cannot open an executor that has an unresolved release or a hold on it.
 --
 -- Rules every consumer must keep (as for the other modules):
 --   * One instance per consumer; the module table is read-only; nothing is published through
@@ -791,7 +797,8 @@ local function resolveTarget(snap, target)
              -- are not in the generation digest, so this is a hint for pickup, not a guarantee of the current value)
              valueState = sl.valueState, absolute = sl.absolute, valueComplete = sl.valueComplete, valueIncomplete = sl.valueIncomplete,
              physicalRange = sl.physicalRange, physicalFrom = sl.physicalFrom, physicalTo = sl.physicalTo, physicalMixed = sl.physicalMixed, physicalUnavailable = sl.physicalUnavailable,
-             key = string.format("slot%d|%s|%s|%s", target.slot, tostring(sl.ref), tostring(sl.layer), tostring(sl.resolution)), supersedes = true }
+             key = string.format("slot%d|%s|%s|%s", target.slot, tostring(sl.ref), tostring(sl.layer), tostring(sl.resolution)), supersedes = true,
+             address = string.format("slot%d", target.slot) }
   elseif target.executor ~= nil then
     if not isInt(target.executor) or target.executor < 1 then return fail("bad-event", "target.executor must be a positive integer") end
     if not ELEMENTS[target.element] then return fail("bad-event", "target.element must be fader, key or encoder") end
@@ -830,6 +837,8 @@ local function resolveTarget(snap, target)
              keyUnpress = target.element == "key" and f.keyUnpress or nil, active = v.active,
              -- KB-21: the key names pool and page, so executor n of two pages (or pools) are two targets.
              key = string.format("exec%s/%s.%d.%s|%s|%s", tostring(pool), tostring(pageNo), target.executor, target.element, tostring(assigned), tostring(fn)),
+             -- Review (PR #26, round 3): the stable address reservations compare (no object, no function in it).
+             address = string.format("exec%s/%s.%d.%s", tostring(pool), tostring(pageNo), target.executor, target.element),
              level = v.level and v.level.value or nil,
              supersedes = not STATEFUL_FUNCTIONS[tok or ""] }
   end
@@ -975,22 +984,32 @@ end
 
 local function gestureKey(ev) return ev.device .. "/" .. ev.control end
 
+-- The stable address of a resolved target (round 3): executors by pool, page, number and element; slots by number.
+-- Records and gestures from before this field carry their key, which is reduced the same way.
+local function addressOf(resolved, targetKey)
+  if type(resolved) == "table" and resolved.address then return resolved.address end
+  if type(targetKey) == "string" then return (targetKey:gsub("|.*$", "")) end
+  return nil
+end
+
 -- Who owns a target right now: a touch/button down of ANY session's other control (review of PR #26: a hold is
 -- exclusive against every other control, this session's included), or another session's relative gesture
--- within gestureIdleMs. `gkey` is the asking control (its own hold never conflicts with itself).
-function Instance:_targetOwner(targetKey, now, session, gkey, _asking)
+-- within gestureIdleMs. `gkey` is the asking control (its own hold never conflicts with itself). Holds and
+-- unresolved records are matched by the target's stable ADDRESS (round 3), motion by its key.
+function Instance:_targetOwner(target, now, session, gkey, _asking)
+  local address, targetKey = addressOf(target, target.key), target.key
   -- Review (PR #26, round 2): an unresolved release keeps its target reserved until recover() applies it.
   for _, rec in ipairs(self._unresolved) do
-    if rec.targetKey == targetKey then
+    if addressOf(rec.resolved, rec.targetKey) == address then
       return rec.session or "unresolved", { kind = "unresolved", device = rec.device or "?", control = rec.control or "?", unresolved = true }
     end
   end
   for id, s in pairs(self._sessions) do
     if s.state == "active" then
       for key, g in pairs(s.gestures) do
-        if g.targetKey == targetKey and not (id == session and key == gkey) then
-          if g.kind == "touch" or g.kind == "button" then return id, g end
-          if id ~= session and g.lastAt + self._config.gestureIdleMs / 1000 > now then return id, g end
+        if not (id == session and key == gkey) then
+          if (g.kind == "touch" or g.kind == "button") and addressOf(g.resolved, g.targetKey) == address then return id, g end
+          if g.kind == "motion" and g.targetKey == targetKey and id ~= session and g.lastAt + self._config.gestureIdleMs / 1000 > now then return id, g end
         end
       end
     end
@@ -1111,7 +1130,7 @@ function Instance:submit(sessionId, now, ev)
       return refuse(errOf("busy", "another input owner is active: " .. tostring(busy.description or busy.reason), { reason = busy.reason, owner = busy.owner }))
     end
   end
-  local owner, og = self:_targetOwner(target.key, now, sessionId, gkey, ev.type == "touch" or ev.type == "button")
+  local owner, og = self:_targetOwner(target, now, sessionId, gkey, ev.type == "touch" or ev.type == "button")
   if owner then
     if og.unresolved then
       return refuse(errOf("conflict", string.format("%s has an unresolved release pending (%s/%s of session %s); run recover (or end that playback by hand) before pressing it again", target.key, og.device, og.control, tostring(owner)), { owner = owner, target = ev.target, holder = "unresolved", unresolved = true }))
@@ -1323,6 +1342,17 @@ function Instance:service(now)
             out.ended[#out.ended + 1] = { kind = g.kind, device = g.device, control = g.control, target = g.target, reason = "max-gesture", outcome = "discarded" }
           end
           s.gestures[key] = nil
+          -- Review (PR #26, round 3): whatever the expired gesture still had queued (its down, its releases) is
+          -- cancelled before the queue is serviced: an ended hold is never pressed afterwards.
+          local keep, n = {}, 0
+          for _, it in ipairs(s.queue) do
+            if (it.kind == "touch" or it.kind == "button") and it.device == g.device and it.control == g.control then n = n + 1 else keep[#keep + 1] = it end
+          end
+          if n > 0 then
+            s.queue = keep
+            s.counters.dropped = s.counters.dropped + n; self._counters.dropped = self._counters.dropped + n
+            out.dropped.expired = out.dropped.expired + n
+          end
         elseif g.kind == "motion" and g.lastAt + self._config.gestureIdleMs / 1000 <= now then
           s.gestures[key] = nil
         end
@@ -1587,7 +1617,7 @@ local M = {
   LIMITATIONS = {
     "the console backend serves attribute slots only: relative motion (KB-19) as the selection-scoped Attribute \"<name>\" At +/- <amount> adjustment (an explicitly limited mode, not native encoder equivalence), calibrated for the Percent/PercentFine readouts (1 per Coarse detent) and the Physical readout (the attribute's range / 120 per Coarse detent, in physical units) with Fine at a tenth, on the Absolute layer; a strip touch (KB-20) as a hold that reserves the slot and moves nothing; an absolute position (KB-20) as Attribute \"<name>\" At <value> over the verified travel only (Percent/PercentFine 0..100, Physical PhysicalFrom..PhysicalTo of the binding, never a mixed physical range), refused mixed-values while the selection's values disagree and values-incomplete while they were not completely read, unless the event says takeover; other readouts, Increment/Native, other layers, named channel functions and encoder presses are refused unsupported",
     "an executor target is explicit (pool, page, executor, element; KB-21): a number the binding reports covered by a wider neighbour, on a page that does not exist, reserved or holding a Quickey is refused target-unavailable; a hold's release goes to the target its down resolved (frozen), never to what a bank or page change mapped to the control since",
-    "executor operations on the console backend (KB-22): a key is Press/Unpress Page <p>.<e>, the console's dispatch of the CONFIGURED button function, served only for the qualified key functions (Temp, Flash, Toggle, Top, Go+); a fader is Fader<Function> Page <p>.<e> At <level> for the configured fader function, qualified separately per function (Master, Temp; Rate, Speed, X/XA/XB, CrossFade and Time are refused until qualified); a fader touch is a hold that moves nothing; relative motion on a fader and executor encoders are refused unsupported; commands address Page <p>.<e> in the CURRENT data pool, so a frozen key release is applied only on a LIVE observation of its executor (the consumer's deps.observe, read at release time; never the cached binding) showing the same pool and the same object, else kept unresolved (unverified / pool-changed / assignment-changed) for recover(); a hold stays tracked until its release is applied, a refused release is kept unresolved too, an unresolved release reserves its target against new presses until recover() applies it, and a hold whose down never applied is discarded at a session's end without a release; a held target is exclusive against every other control",
+    "executor operations on the console backend (KB-22): a key is Press/Unpress Page <p>.<e>, the console's dispatch of the CONFIGURED button function, served only for the qualified key functions (Temp, Flash, Toggle, Top, Go+); a fader is Fader<Function> Page <p>.<e> At <level> for the configured fader function, qualified separately per function (Master, Temp; Rate, Speed, X/XA/XB, CrossFade and Time are refused until qualified); a fader touch is a hold that moves nothing; relative motion on a fader and executor encoders are refused unsupported; commands address Page <p>.<e> in the CURRENT data pool, reservations (holds and unresolved releases) compare the executor's stable address (pool, page, number, element), never the assigned object or the configured function; a gesture that outlived maxGestureMs has its queued intents cancelled before the queue is serviced; so a frozen key release is applied only on a LIVE observation of its executor (the consumer's deps.observe, read at release time; never the cached binding) showing the same pool and the same object, else kept unresolved (unverified / pool-changed / assignment-changed) for recover(); a hold stays tracked until its release is applied, a refused release is kept unresolved too, an unresolved release reserves its target against new presses until recover() applies it, and a hold whose down never applied is discarded at a session's end without a release; a held target is exclusive against every other control",
     "generations are those of the consumer's binding source (one gma3_mcp_feedback instance and spec); events from a surface bound to another instance are refused as stale",
     "packet loss is reported, never repaired: a lost relative delta is gone, a lost absolute position is superseded by the next one",
   },

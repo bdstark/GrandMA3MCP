@@ -852,8 +852,15 @@ marked `applied` only once the backend took it (or raised); a session ending or 
 whose down never applied (still queued, dropped or refused) without releasing it (`ended[].outcome = "discarded"`,
 `counters.discarded`). (3) An unresolved release **reserves its target**: a new down or touch on it from any control
 of any session is refused `conflict` with `holder = "unresolved"` until `recover()` applies the release (or `dispose()`
-hands the record on), so recovery can never release a button somebody else pressed meanwhile. Harness:
-`control_admission_test` 268 (16 from round 1, 9 from round 2).
+hands the record on), so recovery can never release a button somebody else pressed meanwhile.
+
+**Review of PR #26 (round 3).** (1) The gesture bound cancels the expired gesture's queued intents (its down, its
+releases) before the queue is serviced (`dropped.expired` counts them), so a hold that was discarded or released by
+the bound is never pressed afterwards. (2) Reservations (holds and unresolved records) compare the target's stable
+`address` (`exec<pool>/<page>.<n>.<element>`, a slot's `slot<n>`), carried on every resolved target, never the key that
+also names the assigned object and the configured function: a reassignment or a changed key function cannot open an
+executor with a release pending on it; the other element of the same executor is another address. Harness:
+`control_admission_test` 273 (16 from round 1, 9 from round 2, 5 from round 3).
 
 **Bridge 0.18.0.** No new op: `control=console` serves executors through the 0.5.0 backend; `control.status` shows the
 qualified functions under `backendStatus.executorFunctions` and the assignment-changed records under `unresolved`;

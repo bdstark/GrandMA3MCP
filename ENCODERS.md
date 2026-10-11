@@ -519,7 +519,7 @@ console half serves:
   the replacement; it becomes an `assignment-changed` record with the original object, re-attempted by `recover()` and
   applied once the original object is back, otherwise ended by the operator (`Off <object>`).
 - **Page navigation:** `Page 2` / `Page 1` neither stopped the running playback nor started page 2's executors (live).
-- **Harness:** `test/lua/control_admission_test.lua` (268; 26 new, 16 from review round 1, 9 from round 2), the bridge harness (495), `test/kb22-probe.test.ts` (4).
+- **Harness:** `test/lua/control_admission_test.lua` (273; 26 new, 16 from review round 1, 9 from round 2, 5 from round 3), the bridge harness (495), `test/kb22-probe.test.ts` (4).
 - **Review round 1 (PR #26):** a hold is tracked until its release applied (a session ending first issues the Unpress;
   a refused Unpress is kept for recover); a queued down is revalidated and a stale one presses nothing and releases
   nothing; a frozen release needs a current observation of its executor (binding or the consumer's live read) in the
@@ -528,6 +528,8 @@ console half serves:
 - **Review round 2:** the verification is live (`deps.observe` at release time, never the cached binding); a hold whose
   down never applied is discarded at the session's end without a release; an unresolved release reserves its target
   against new presses until `recover()` applies it.
+- **Review round 3:** the gesture bound cancels an expired gesture's queued intents before servicing the queue;
+  reservations compare the executor's stable address (pool, page, number, element), never its object or function.
 
 **Limitations:** Rate, Speed and the crossfade fader functions are not qualified: the executor's `Fader` property is
 writable through Lua (`Set("Fader", "Rate")` took, live), but `FaderRate Page 1.181 At 75` read back `GetFader{FaderRate}`
