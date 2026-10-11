@@ -843,7 +843,17 @@ current pool only) and the same object: otherwise the record is kept `unverified
 (`control.status` `unresolved[]` carries the flag and `nowPool` / `nowAssigned`), re-judged on every `recover()`;
 (5) a held target is exclusive against every other control, this session's included: a second down or touch on it is
 refused `conflict` naming the `holder` (`device/control`), so two surface buttons mapped to one executor, or a
-dedicated-key alias, never press twice and release once. Harness: `control_admission_test` 259 (16 new).
+dedicated-key alias, never press twice and release once.
+
+**Review of PR #26 (round 2).** (1) The verification of a frozen release is **live**: `deps.observe` is called at
+release time and decides alone; the cached binding item is never used (it may predate a reassignment or a pool
+switch); without an observer, or when it raises or answers nothing, the release is kept `unverified`. (2) A down is
+marked `applied` only once the backend took it (or raised); a session ending or the gesture bound **discards** a hold
+whose down never applied (still queued, dropped or refused) without releasing it (`ended[].outcome = "discarded"`,
+`counters.discarded`). (3) An unresolved release **reserves its target**: a new down or touch on it from any control
+of any session is refused `conflict` with `holder = "unresolved"` until `recover()` applies the release (or `dispose()`
+hands the record on), so recovery can never release a button somebody else pressed meanwhile. Harness:
+`control_admission_test` 268 (16 from round 1, 9 from round 2).
 
 **Bridge 0.18.0.** No new op: `control=console` serves executors through the 0.5.0 backend; `control.status` shows the
 qualified functions under `backendStatus.executorFunctions` and the assignment-changed records under `unresolved`;

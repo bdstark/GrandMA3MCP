@@ -338,7 +338,10 @@ executor was reassigned or emptied while held is kept as an `assignment-changed`
 `unresolved` (nothing issued on the replacement) until `control.recover` finds the original object back; after the PR #26
 review a frozen release is issued only on a current observation of its executor in the same data pool (else kept
 `unverified` / `poolChanged`), a refused release is kept too, a hold stays owned until its release applied, a stale
-queued down presses nothing, and a held target is `conflict` for every other control. `control.open {leaseMs?, label?}` / `control.renew` /
+queued down presses nothing, and a held target is `conflict` for every other control; round 2: the verification is a
+live read at release time (never the cached binding), a hold whose down never applied is discarded at the session's end
+without a release, and an unresolved release reserves its target (`conflict`, `holder: "unresolved"`) until
+`control.recover` applies it. `control.open {leaseMs?, label?}` / `control.renew` /
 `control.close` are this connection's session (`conn-<id>`, opened on demand by `control.submit`). `control.submit
 {events: [...]}` (at most 32 per request, or `event` for one) admits each event in order and reports every outcome in
 place: `{accepted, queued, coalesced?, superseded?, lost, target, generation}` or `{refused: code, message, ...}` with
