@@ -613,3 +613,24 @@ the console's own out-of-gamut representation).
 - Publish a platform/device/firmware matrix separating automated tests from live hardware qualification.
 - Update shared-module versions, API documentation, protocol versions, and vendoring hashes.
 - Keep unsupported contexts and functions explicit. Do not advertise complete grandMA3 hardware equivalence.
+
+### KB-24 results (console half, 2026-10-10; documentation and harness half done, hardware pass pending)
+
+No Lua module changed: the set stays `gma3_mcp_hardkeys` 0.10.0 / `gma3_mcp_feedback` 0.6.0 / `gma3_mcp_control`
+0.5.0 at `9535ded` (`plugin/modules.lock.json`; the surface's `tools/ma3/VENDOR.md` carries the same hashes, verified
+byte-equal on 2026-10-10). The bridge (0.18.0) and the TypeScript are unchanged. Device profiles, the qualification
+matrix, the measurement harness and every record are the surface repository's (mtpnxk `KEYBOARD.md` "KB-24",
+`docs/device-profiles.md`, `docs/qualification-matrix.md`, `docs/probes/kb-24-measure-macos.md`).
+
+**Finding against the control module's accounting (not yet a defect):** the surface's harness, run against a
+console stub without an encoder bar, showed that a motion event refused `target-unavailable` is not committed to the
+device's per-device sequence (`orderEvent` / `commitOrder` run only for admitted and rate-dropped events), so the
+next admitted event of that device reports the refused ones as `lost`. Nothing was lost (the link's counters were
+zero). Whether it shows on onPC decides what happens, per this KB's rule that shared-module defects are fixed only
+when qualification identifies them: if a live run reports loss for refused-target events, the fix is to commit them
+to the sequence as rate-dropped events already are, with a regression test in `test/lua/`, then a re-vendor.
+
+**Pending (surface repository, operator at the surfaces):** the onPC run of the harness (press-to-effect, feedback
+latency and the plugin loop's load against the real console; agreed thresholds), the physical NX-K rotaries and the
+M-Touch / M-Play through `run`, two connected surfaces, USB removal, plugin restart, context changes and stale
+feedback on the physical lights, the platform matrix's live rows.
