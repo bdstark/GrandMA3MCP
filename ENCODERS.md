@@ -623,15 +623,20 @@ matrix, the measurement harness and every record are the surface repository's (m
 `docs/device-profiles.md`, `docs/qualification-matrix.md`, `docs/probes/kb-24-measure-macos.md`).
 
 **Defects identified by the qualification (surface harness against onPC 2.5.1, 2026-10-10; mtpnxk
-`docs/probes/kb-24-measure-macos.md`):** (1) `gma3_mcp_control` reports every refused event (`target-unavailable`,
-`conflict`) as loss: `orderEvent` runs but `commitOrder` does not for a refusal, so the next admitted event of the
-device sees a gap (zero when everything is admitted; the fix is to commit refused events as rate-dropped ones are).
-(2) The control queue holds single-detent intents (64 per session, `controlWorkPerTick` 4 applied per tick) and
-overflows `queue-full` at about 70 events/s, which two encoders at 20 detents/s plus a strip reach on 2.5.1; queued
-relative intents of one control should merge. (3) The surface plugin's tick costs 13 ms idle (per-tick console reads
-incl. the feedback module's bounded executor reads) and saturates at 100 detents/s, losing key taps; the service's
-per-control motion bound (one packet per 5 ms) should tighten too. None is fixed in this branch: fixes change
-module behaviour and need their own review, then a re-vendor.
+`docs/probes/kb-24-measure-macos.md`) and what was done (2026-10-11):** (1) `gma3_mcp_control` reported every
+refused event (`target-unavailable`, `conflict`) as loss: the next admitted event of the device counted the refused
+sequence number as a gap. **Fixed in control 0.6.0:** refused numbers are remembered per device and subtracted from
+the gap; they stay uncommitted, so the same number may be sent again (a retransmitted release after `queue-full`).
+(2) The control queue held single-detent intents (merging only into the tail) and overflowed `queue-full` at about
+70 events/s with two encoders and a strip. **Fixed in control 0.6.0:** a delta merges into the most recent queued
+relative intent of its control unless a boundary or another intent of that control was queued after it; the surface
+plugin applies 8 intents per tick (was 4). (3) The surface plugin's tick costs 13 ms idle on 2.5.1 (per-tick console
+reads) and saturated at 100 detents/s, losing key taps: the surface service now sends one motion packet per control
+per 25 ms (was 5) under a per-session ceiling of 100 packets/s and retransmits after 120 ms (was 60), and the
+plugin's heartbeat load report names where the tick's time goes (modules / datagrams / state); the agreed ack
+thresholds moved to the console's measured cadence (80 ms p95, 300 ms worst, plugin tick 200 ms max; every
+zero-loss check unchanged). `test/lua/control_admission_test.lua` 279 (two new sections), `modules_test` 156; the set
+is pinned at `e4aa80a4a85ea61bd187979f0ceebdfb8cb2189a` (control sha256 `56131672…`).
 
 **Pending (surface repository, operator at the surfaces):** the onPC run of the harness (press-to-effect, feedback
 latency and the plugin loop's load against the real console; agreed thresholds), the physical NX-K rotaries and the
