@@ -649,6 +649,12 @@ on the surface: a command-line keyword reads back in 55 ms median / 165 ms p95 (
 plus a strip plus keys the plugin never hits its datagram budget. `control_admission_test` 286, `feedback_context_test`
 161, `modules_test` 156.
 
+**Review of PR #28 (round 1):** (P1) the early merge bypassed the stale-binding/binding-required, busy-owner and
+target-owner guards: it now runs after them and skips only the target resolution and the target-dependent checks.
+(P2) Both merge paths and the absolute supersede stop at another control's motion on the same target (`A +100, B
+-100, A +100` stays three intents). (P2) The refused-sequence set is bounded to `seqWindow` entries. Set pinned at
+`e4741b90a1daeba7accf99f4a2d3b5a0d73d76a6`.
+
 **Pending (surface repository, operator at the surfaces):** the onPC run of the harness (press-to-effect, feedback
 latency and the plugin loop's load against the real console; agreed thresholds), the physical NX-K rotaries and the
 M-Touch / M-Play through `run`, two connected surfaces, USB removal, plugin restart, context changes and stale
