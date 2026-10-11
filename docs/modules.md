@@ -898,9 +898,11 @@ activity are what they were (KB-17/KB-21: `valueState` distinguishes `mixed` fro
 `activeUnavailable`, `level` from `level.unavailable`), the inputs for the surface's value indicators.
 
 **Bridge 0.18.0 (unchanged).** `feedback.context` carries the new fields; no new op. Harness:
-`test/lua/feedback_context_test.lua` (154; 6 new: the path names and the activation group, the float colour as 2.5.1
+`test/lua/feedback_context_test.lua` (156; 8 new: the path names and the activation group, the float colour as 2.5.1
 prints it, a definition without a colour, Dimmer's black colour as "none defined", UV's out-of-gamut colour clamped and
-flagged, the float and hex appearance forms) and `test/kb23-probe.test.ts` (4). Live:
+flagged, the float and hex appearance forms, numeric-only six- and eight-digit hex) and `test/kb23-probe.test.ts` (4).
+**Review of PR #27 (round 1).** Six-digit hex with no letter in it (`#990000`) was refused as unrecognised and fell back
+to the surface's neutral colour; every six- or eight-digit hex run is hex now (the float form always carries commas). Live:
 [kb-23-colours-macos-2.5.1.md](probes/kb-23-colours-macos-2.5.1.md) (`node scripts/kb23-probe.mjs run`, 10/10 on
 2026-10-10: the RGB components' definition colours, UV out of gamut, hex appearances).
 

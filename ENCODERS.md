@@ -577,7 +577,8 @@ limiting, the textual status and the per-device colour qualification are the sur
   configured fader function's level and `valueState` are the KB-17/KB-21 fields the surface's indicators rest on.
 - **Colours move no binding:** colour and appearance stay out of the binding digest; a surface renders mapping and
   colour from one snapshot (its half of "update bindings and their colors together").
-- **Harness:** `test/lua/feedback_context_test.lua` (153; 5 new), `test/kb23-probe.test.ts` (4).
+- **Harness:** `test/lua/feedback_context_test.lua` (156; 8 new), `test/kb23-probe.test.ts` (4).
+- **Review round 1 (PR #27):** numeric-only six-digit hex (`#990000`) parses as hex (it was refused and fell back).
 - **Live:** [kb-23-colours-macos-2.5.1.md](docs/probes/kb-23-colours-macos-2.5.1.md) with the
   [script report](docs/probes/kb-23-colours-macos-2.5.1.json) (`node scripts/kb23-probe.mjs run`, **10/10** on
   2026-10-10): the show's definitions colour R `1,0,0`, G, B, RY/"Amber" `1,0.5,0`, W `1,1,1`; Dimmer, Pan and Gobo1 are

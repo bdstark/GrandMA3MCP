@@ -134,13 +134,19 @@ local reserved = { page = 1, first = 203, count = 2 }
 -- KB-21: a second page read through ObjectList("Page 2.E"), with an expanded (width 2) assignment on 211
 -- covering 212, and an assigned 213 right after it. Page 2 executors never go through GetExecutor.
 local seqTwo = obj("Two", "Sequence", 20, { faders = { FaderMaster = 30 }, appearance = "Orange", backRGBA = "FF7F00FF" })
+-- Review of PR #27: numeric-only hex (six digits with or without '#', eight digits) must parse as hex, never be refused.
+local seqRedHex = obj("RedHex", "Sequence", 21, { faders = { FaderMaster = 30 }, appearance = "Red6", backRGBA = "#990000" })
+local seqRedHex8 = obj("RedHex8", "Sequence", 22, { faders = { FaderMaster = 30 }, appearance = "Red8", backRGBA = "99000080" })
 local function wide(index, object, width, fns) local e = ex(index, object, fns); e.Width = tostring(width); e.Get = function(_, k) if k == "Width" then return tostring(width) end; return ({ index = index, KeyPress = fns.keyPress, KeyUnpress = "", KeyUnpressCombined = fns.keyUnpressCombined, Fader = fns.fader, Encoder = "Master", EncoderLeft = "", EncoderRight = "", ExecutorConfiguration = "Configuration 2 'Wide'", IsXKey = "No" })[k] end; return e end
 local execs2 = {
   [201] = ex(201, seqTwo, { keyPress = "Go+", fader = "Master" }),
   [211] = wide(211, seqTwo, 2, { keyPress = "Go+", fader = "Master" }),
   [213] = ex(213, seqTemp, { keyPress = "Flash", fader = "Temp" }),
   [115] = wide(115, seqTwo, 3, { keyPress = "Go+", fader = "Master" }),
+  [221] = ex(221, seqRedHex, { keyPress = "Go+", fader = "Master" }),
+  [222] = ex(222, seqRedHex8, { keyPress = "Go+", fader = "Master" }),
 }
+-- (221/222 are reachable by number only: the page listing checks stay as they were)
 local page2 = H({ name = "Page 2", No = "2" }, { execs2[115], execs2[201], execs2[211], execs2[213] })
 local pages = { [1] = pageH, [2] = page2 }
 local pagedExecs = { [1] = execs, [2] = execs2 }
@@ -569,6 +575,10 @@ do
   check("kb21: an explicit page is read through ObjectList, not GetExecutor; key and identity say so", r.available and r.value.mode == "page" and r.value.page.no == 2 and r.value.page.name == "Page 2" and r.value.assigned.name == "Two" and r.value.level.value == 30 and r.value.playbackTarget == true and r.key == "executorTarget[executor=201,page=2]", json.encode(r))
   check("kb23: a hex BackRGBA (the live 2.5.1 form) is parsed to 0..1 components", r.available and r.value.appearance.name == "Orange" and r.value.appearance.format == "hex"
     and r.value.appearance.r == 1 and math.abs(r.value.appearance.g - 127 / 255) < 1e-9 and r.value.appearance.b == 0 and r.value.appearance.a == 1, json.encode(r.value.appearance))
+  r = fk:read("executorTarget", { executor = 221, page = 2 }, 1)
+  check("kb23 review: a numeric-only six-digit hex BackRGBA with '#' parses as hex (red), alpha 1", r.available and r.value.appearance.format == "hex" and r.value.appearance.r == 0x99 / 255 and r.value.appearance.g == 0 and r.value.appearance.b == 0 and r.value.appearance.a == 1, json.encode(r.value.appearance))
+  r = fk:read("executorTarget", { executor = 222, page = 2 }, 1)
+  check("kb23 review: a numeric-only eight-digit hex BackRGBA parses as hex with its alpha", r.available and r.value.appearance.format == "hex" and r.value.appearance.r == 0x99 / 255 and r.value.appearance.a == 0x80 / 255, json.encode(r.value.appearance))
   local fe = FB.new({ owner = "kb21e", deps = deps({ executor = function(n) if execs[n] then return execs[n], pageH end return nil end }) }):init()
   r = fe:read("executorTarget", { executor = 209 }, 1)
   check("kb21 live: an empty executor on the current page (GetExecutor returns no page handle) still carries the user's page", r.available and r.value.empty == true and r.value.page and r.value.page.no == 1 and r.value.mode == "current", json.encode(r.value))

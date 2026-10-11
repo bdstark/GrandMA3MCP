@@ -281,8 +281,9 @@ local function parseColor(s)
       local c = {}
       for i = 1, #h / 2 do c[i] = tonumber(h:sub(i * 2 - 1, i * 2), 16) / 255 end
       if #h == 6 then c[4] = 1 end
-      -- a 6/8-digit run of digits only ("10000000") is ambiguous; floats need a comma, so hex wins only with a letter or 8 digits
-      if h:match("%a") or #h == 8 then return { r = c[1], g = c[2], b = c[3], a = c[4] }, "hex" end
+      -- Review of PR #27: six or eight hex digits are hex whether or not a letter is among them ("990000" is red):
+      -- the float form always carries commas, so a bare digit run is never mistaken for one.
+      return { r = c[1], g = c[2], b = c[3], a = c[4] }, "hex"
     end
   end
   local n = {}
