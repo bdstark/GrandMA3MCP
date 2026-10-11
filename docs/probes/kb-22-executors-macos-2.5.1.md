@@ -71,6 +71,14 @@ run checks above with the explorations as notes).
   use `Sequence <no>`. The activity check tolerated `activeUnavailable` (the LearnSpeed executors' objects are not
   sequences).
 
+## Re-run after the PR #26 review round 1 (2026-10-10)
+
+The module set at `3e0e7c4` (control 0.5.0 with the review rules: holds tracked until released, queued downs
+revalidated, frozen releases on a current observation in the same pool, same-session conflicts; the bridge's
+`deps.observe` live read) was reinstalled the same way and `node scripts/kb22-probe.mjs run` scored **30/30** again
+(the same steps; the reassignment record now comes from the observation of page 1's executor 181 through the binding,
+`control.recover` re-judges it, the Unpress goes out once Sequence 5528 is back). The report file was replaced by this run.
+
 ## Not verified here
 
 Rate, Speed, X/XA/XB, CrossFade and Time as fader functions (unqualified, refused); executor encoders (refused); the
