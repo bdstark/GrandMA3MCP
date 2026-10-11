@@ -1,0 +1,1707 @@
+{
+  "mode": "run",
+  "host": "127.0.0.1",
+  "port": 9800,
+  "startedAt": "2026-10-11T00:08:21.521Z",
+  "ping": {
+    "bridgeVersion": "0.18.0",
+    "build": {
+      "version": "2.5.1.0",
+      "hostType": "onPC",
+      "codeType": "Release"
+    },
+    "hostname": "bdsmbpm401",
+    "showfile": "mcp-test-disposable",
+    "user": "Admin",
+    "modules": {
+      "hardkeys": {
+        "loaded": true,
+        "version": "0.10.0"
+      },
+      "feedback": {
+        "loaded": true,
+        "version": "0.5.0"
+      },
+      "control": {
+        "loaded": true,
+        "version": "0.5.0"
+      }
+    },
+    "input": {
+      "quarantined": 0,
+      "retained": 0,
+      "unresolvedFromPreviousRun": 0,
+      "sessions": 0,
+      "enabled": true,
+      "bank": {
+        "provisioned": false
+      },
+      "holds": 0,
+      "note": "ownership records, not physical key state; see input.status. busy: cmd/set/setfader/lua are refused for every connection while it is set",
+      "unresolved": 0,
+      "moduleInputEnabled": true,
+      "backend": "keyboard"
+    },
+    "control": {
+      "unresolvedFromPreviousRun": 0,
+      "gestures": 0,
+      "sessions": 0,
+      "enabled": true,
+      "spec": {
+        "executorPage": 1,
+        "executors": [
+          180,
+          181
+        ]
+      },
+      "note": "KB-19: relative motion on attribute slots is applied as Attribute \"<name>\" At +/- <amount> for the selection; KB-20: a strip touch holds the slot and moves nothing, a position is Attribute \"<name>\" At <value> over the verified travel (mixed values need takeover); KB-22: an executor key is Press/Unpress Page <p>.<e> (the configured button function, qualified functions only), an executor fader is Fader<Function> Page <p>.<e> At <level> for the qualified fader functions (Master, Temp), a fader touch holds; encoder presses and executor encoders are refused unsupported",
+      "backendStatus": {
+        "lastCommand": {
+          "reason": "recover",
+          "feedback": "OK",
+          "momentary": false,
+          "pool": "Default#1",
+          "outcome": "applied",
+          "at": 1791677213.2237,
+          "page": 1,
+          "executor": 181,
+          "assigned": "14.14.1.7.5528",
+          "session": "conn-94",
+          "forced": true,
+          "down": false,
+          "frozen": true,
+          "command": "Unpress Page 1.181",
+          "keyFunction": "Go+",
+          "element": "key"
+        },
+        "commands": 19,
+        "name": "console",
+        "calibration": {
+          "readouts": {
+            "PercentFine": 1,
+            "Physical": "range/120",
+            "Percent": 1
+          },
+          "resolutions": {
+            "Fine": 0.1,
+            "Coarse": 1
+          },
+          "note": "one physical detent = one console encoder click: 1 at Coarse and 0.1 at Fine for the Percent/PercentFine readouts, the attribute's physical range / 120 (x 0.1 at Fine) in physical units for the Physical readout, where At takes physical units (manual: 24 clicks per turn, 5 turns per range, Fine ten times finer; KB-16 measured At + 1 = one Coarse click at Percent, KB-19 At 10 = 10 degrees of Pan); other readouts, Increment/Native, non-Absolute layers and channel functions other than the attribute's own are refused",
+          "layers": {
+            "Absolute": true
+          },
+          "fineDivisor": 10
+        },
+        "counters": {
+          "raised": 0,
+          "noop": 6,
+          "refused": 0,
+          "applied": 19
+        },
+        "executorFunctions": {
+          "keys": [
+            "Flash",
+            "Go+",
+            "Temp",
+            "Toggle",
+            "Top"
+          ],
+          "faders": [
+            "Master",
+            "Temp"
+          ]
+        }
+      },
+      "counters": {
+        "rateDropped": 0,
+        "evicted": 0,
+        "admitted": 25,
+        "unresolved": 2,
+        "applied": 25,
+        "lost": 2,
+        "staleDropped": 0,
+        "dropped": 0,
+        "coalesced": 0,
+        "expired": 0,
+        "backendRefused": 0,
+        "refused": 4
+      },
+      "moduleInputEnabled": true,
+      "queued": 0,
+      "unresolved": 0,
+      "backend": "console"
+    },
+    "lua": {
+      "enabled": true
+    }
+  },
+  "steps": [
+    {
+      "name": "console",
+      "note": true,
+      "detail": {
+        "bridgeVersion": "0.18.0",
+        "build": {
+          "version": "2.5.1.0",
+          "hostType": "onPC",
+          "codeType": "Release"
+        },
+        "hostname": "bdsmbpm401",
+        "showfile": "mcp-test-disposable",
+        "user": "Admin",
+        "modules": {
+          "hardkeys": {
+            "loaded": true,
+            "version": "0.10.0"
+          },
+          "feedback": {
+            "loaded": true,
+            "version": "0.5.0"
+          },
+          "control": {
+            "loaded": true,
+            "version": "0.5.0"
+          }
+        },
+        "input": {
+          "quarantined": 0,
+          "retained": 0,
+          "unresolvedFromPreviousRun": 0,
+          "sessions": 0,
+          "enabled": true,
+          "bank": {
+            "provisioned": false
+          },
+          "holds": 0,
+          "note": "ownership records, not physical key state; see input.status. busy: cmd/set/setfader/lua are refused for every connection while it is set",
+          "unresolved": 0,
+          "moduleInputEnabled": true,
+          "backend": "keyboard"
+        },
+        "control": {
+          "unresolvedFromPreviousRun": 0,
+          "gestures": 0,
+          "sessions": 0,
+          "enabled": true,
+          "spec": {
+            "executorPage": 1,
+            "executors": [
+              180,
+              181
+            ]
+          },
+          "note": "KB-19: relative motion on attribute slots is applied as Attribute \"<name>\" At +/- <amount> for the selection; KB-20: a strip touch holds the slot and moves nothing, a position is Attribute \"<name>\" At <value> over the verified travel (mixed values need takeover); KB-22: an executor key is Press/Unpress Page <p>.<e> (the configured button function, qualified functions only), an executor fader is Fader<Function> Page <p>.<e> At <level> for the qualified fader functions (Master, Temp), a fader touch holds; encoder presses and executor encoders are refused unsupported",
+          "backendStatus": {
+            "lastCommand": {
+              "reason": "recover",
+              "feedback": "OK",
+              "momentary": false,
+              "pool": "Default#1",
+              "outcome": "applied",
+              "at": 1791677213.2237,
+              "page": 1,
+              "executor": 181,
+              "assigned": "14.14.1.7.5528",
+              "session": "conn-94",
+              "forced": true,
+              "down": false,
+              "frozen": true,
+              "command": "Unpress Page 1.181",
+              "keyFunction": "Go+",
+              "element": "key"
+            },
+            "commands": 19,
+            "name": "console",
+            "calibration": {
+              "readouts": {
+                "PercentFine": 1,
+                "Physical": "range/120",
+                "Percent": 1
+              },
+              "resolutions": {
+                "Fine": 0.1,
+                "Coarse": 1
+              },
+              "note": "one physical detent = one console encoder click: 1 at Coarse and 0.1 at Fine for the Percent/PercentFine readouts, the attribute's physical range / 120 (x 0.1 at Fine) in physical units for the Physical readout, where At takes physical units (manual: 24 clicks per turn, 5 turns per range, Fine ten times finer; KB-16 measured At + 1 = one Coarse click at Percent, KB-19 At 10 = 10 degrees of Pan); other readouts, Increment/Native, non-Absolute layers and channel functions other than the attribute's own are refused",
+              "layers": {
+                "Absolute": true
+              },
+              "fineDivisor": 10
+            },
+            "counters": {
+              "raised": 0,
+              "noop": 6,
+              "refused": 0,
+              "applied": 19
+            },
+            "executorFunctions": {
+              "keys": [
+                "Flash",
+                "Go+",
+                "Temp",
+                "Toggle",
+                "Top"
+              ],
+              "faders": [
+                "Master",
+                "Temp"
+              ]
+            }
+          },
+          "counters": {
+            "rateDropped": 0,
+            "evicted": 0,
+            "admitted": 25,
+            "unresolved": 2,
+            "applied": 25,
+            "lost": 2,
+            "staleDropped": 0,
+            "dropped": 0,
+            "coalesced": 0,
+            "expired": 0,
+            "backendRefused": 0,
+            "refused": 4
+          },
+          "moduleInputEnabled": true,
+          "queued": 0,
+          "unresolved": 0,
+          "backend": "console"
+        },
+        "lua": {
+          "enabled": true
+        }
+      }
+    },
+    {
+      "name": "control.status answers with the module version and a limitation naming the executor operations (KB-22)",
+      "pass": true,
+      "detail": {
+        "version": "0.5.0",
+        "limitations": [
+          "the console backend serves attribute slots only: relative motion (KB-19) as the selection-scoped Attribute \"<name>\" At +/- <amount> adjustment (an explicitly limited mode, not native encoder equivalence), calibrated for the Percent/PercentFine readouts (1 per Coarse detent) and the Physical readout (the attribute's range / 120 per Coarse detent, in physical units) with Fine at a tenth, on the Absolute layer; a strip touch (KB-20) as a hold that reserves the slot and moves nothing; an absolute position (KB-20) as Attribute \"<name>\" At <value> over the verified travel only (Percent/PercentFine 0..100, Physical PhysicalFrom..PhysicalTo of the binding, never a mixed physical range), refused mixed-values while the selection's values disagree and values-incomplete while they were not completely read, unless the event says takeover; other readouts, Increment/Native, other layers, named channel functions and encoder presses are refused unsupported",
+          "an executor target is explicit (pool, page, executor, element; KB-21): a number the binding reports covered by a wider neighbour, on a page that does not exist, reserved or holding a Quickey is refused target-unavailable; a hold's release goes to the target its down resolved (frozen), never to what a bank or page change mapped to the control since",
+          "executor operations on the console backend (KB-22): a key is Press/Unpress Page <p>.<e>, the console's dispatch of the CONFIGURED button function, served only for the qualified key functions (Temp, Flash, Toggle, Top, Go+); a fader is Fader<Function> Page <p>.<e> At <level> for the configured fader function, qualified separately per function (Master, Temp; Rate, Speed, X/XA/XB, CrossFade and Time are refused until qualified); a fader touch is a hold that moves nothing; relative motion on a fader and executor encoders are refused unsupported; no pool is addressed in commands (the current data pool, KB-21)",
+          "generations are those of the consumer's binding source (one gma3_mcp_feedback instance and spec); events from a surface bound to another instance are refused as stale",
+          "packet loss is reported, never repaired: a lost relative delta is gone, a lost absolute position is superseded by the next one"
+        ]
+      }
+    },
+    {
+      "name": "the console backend declares executor keys and faders (not encoders) and lists the qualified functions",
+      "pass": true,
+      "detail": {
+        "capabilities": {
+          "absolute": true,
+          "executorElements": {
+            "encoder": false,
+            "fader": true,
+            "key": true
+          },
+          "button": true,
+          "touch": true,
+          "targets": {
+            "slot": true,
+            "executor": true
+          },
+          "keyFunctions": [
+            "Flash",
+            "Go+",
+            "Temp",
+            "Toggle",
+            "Top"
+          ],
+          "faderFunctions": [
+            "Master",
+            "Temp"
+          ],
+          "relative": true
+        },
+        "functions": {
+          "keys": [
+            "Flash",
+            "Go+",
+            "Temp",
+            "Toggle",
+            "Top"
+          ],
+          "faders": [
+            "Master",
+            "Temp"
+          ]
+        }
+      }
+    },
+    {
+      "name": "feedback.context lists the playback executors of the user's page with their configured key and fader functions and the activity (or why it is unavailable)",
+      "pass": true,
+      "detail": {
+        "page": 1,
+        "count": 27,
+        "noActivity": [
+          [
+            401,
+            "the console returned nothing for this property"
+          ],
+          [
+            402,
+            "the console returned nothing for this property"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "inventory: which executors the console backend would serve (qualified key / fader functions) and which it would refuse",
+      "note": true,
+      "detail": [
+        {
+          "executor": 191,
+          "page": 1,
+          "mode": "current",
+          "empty": false,
+          "assigned": "14.14.1.7.5527",
+          "class": "Sequence",
+          "playbackTarget": true,
+          "keyPress": "Top",
+          "keyUnpress": "Go+",
+          "fader": "Master",
+          "encoder": "Master",
+          "level": 100,
+          "token": "FaderMaster",
+          "active": false,
+          "keyQualified": true,
+          "faderQualified": true
+        },
+        {
+          "executor": 192,
+          "page": 1,
+          "mode": "current",
+          "empty": false,
+          "assigned": "14.14.1.7.5528",
+          "class": "Sequence",
+          "playbackTarget": true,
+          "keyPress": "Top",
+          "keyUnpress": "Go+",
+          "fader": "Master",
+          "encoder": "Master",
+          "level": 100,
+          "token": "FaderMaster",
+          "active": false,
+          "keyQualified": true,
+          "faderQualified": true
+        },
+        {
+          "executor": 193,
+          "page": 1,
+          "mode": "current",
+          "empty": false,
+          "assigned": "14.14.1.7.5529",
+          "class": "Sequence",
+          "playbackTarget": true,
+          "keyPress": "Temp",
+          "keyUnpress": "",
+          "fader": "Master",
+          "encoder": "Master",
+          "level": 100,
+          "token": "FaderMaster",
+          "active": false,
+          "keyQualified": true,
+          "faderQualified": true
+        },
+        {
+          "executor": 194,
+          "page": 1,
+          "mode": "current",
+          "empty": false,
+          "assigned": "14.14.1.7.5530",
+          "class": "Sequence",
+          "playbackTarget": true,
+          "keyPress": "Temp",
+          "keyUnpress": "",
+          "fader": "Master",
+          "encoder": "Master",
+          "level": 100,
+          "token": "FaderMaster",
+          "active": false,
+          "keyQualified": true,
+          "faderQualified": true
+        },
+        {
+          "executor": 195,
+          "page": 1,
+          "mode": "current",
+          "empty": false,
+          "assigned": "14.14.1.7.5531",
+          "class": "Sequence",
+          "playbackTarget": true,
+          "keyPress": "Toggle",
+          "keyUnpress": "",
+          "fader": "Master",
+          "encoder": "Master",
+          "level": 100,
+          "token": "FaderMaster",
+          "active": false,
+          "keyQualified": true,
+          "faderQualified": true
+        },
+        {
+          "executor": 196,
+          "page": 1,
+          "mode": "current",
+          "empty": false,
+          "assigned": "14.14.1.7.5532",
+          "class": "Sequence",
+          "playbackTarget": true,
+          "keyPress": "Temp",
+          "keyUnpress": "",
+          "fader": "Master",
+          "encoder": "Master",
+          "level": 100,
+          "token": "FaderMaster",
+          "active": false,
+          "keyQualified": true,
+          "faderQualified": true
+        },
+        {
+          "executor": 197,
+          "page": 1,
+          "mode": "current",
+          "empty": false,
+          "assigned": "14.14.1.7.5533",
+          "class": "Sequence",
+          "playbackTarget": true,
+          "keyPress": "Temp",
+          "keyUnpress": "",
+          "fader": "Master",
+          "encoder": "Master",
+          "level": 100,
+          "token": "FaderMaster",
+          "active": false,
+          "keyQualified": true,
+          "faderQualified": true
+        },
+        {
+          "executor": 198,
+          "page": 1,
+          "mode": "current",
+          "empty": false,
+          "assigned": "14.14.1.7.5534",
+          "class": "Sequence",
+          "playbackTarget": true,
+          "keyPress": "Temp",
+          "keyUnpress": "",
+          "fader": "Master",
+          "encoder": "Master",
+          "level": 100,
+          "token": "FaderMaster",
+          "active": false,
+          "keyQualified": true,
+          "faderQualified": true
+        },
+        {
+          "executor": 201,
+          "page": 1,
+          "mode": "current",
+          "empty": false,
+          "assigned": "14.14.1.7.2",
+          "class": "Sequence",
+          "playbackTarget": true,
+          "keyPress": "Flash",
+          "keyUnpress": "",
+          "fader": "Master",
+          "encoder": "Master",
+          "level": 0,
+          "token": "FaderMaster",
+          "active": false,
+          "keyQualified": true,
+          "faderQualified": true
+        },
+        {
+          "executor": 202,
+          "page": 1,
+          "mode": "current",
+          "empty": false,
+          "assigned": "14.14.1.7.3",
+          "class": "Sequence",
+          "playbackTarget": true,
+          "keyPress": "Flash",
+          "keyUnpress": "",
+          "fader": "Master",
+          "encoder": "Master",
+          "level": 0,
+          "token": "FaderMaster",
+          "active": false,
+          "keyQualified": true,
+          "faderQualified": true
+        },
+        {
+          "executor": 203,
+          "page": 1,
+          "mode": "current",
+          "empty": false,
+          "assigned": "14.14.1.7.4",
+          "class": "Sequence",
+          "playbackTarget": true,
+          "keyPress": "Flash",
+          "keyUnpress": "",
+          "fader": "Master",
+          "encoder": "Master",
+          "level": 0,
+          "token": "FaderMaster",
+          "active": false,
+          "keyQualified": true,
+          "faderQualified": true
+        },
+        {
+          "executor": 204,
+          "page": 1,
+          "mode": "current",
+          "empty": false,
+          "assigned": "14.14.1.7.5",
+          "class": "Sequence",
+          "playbackTarget": true,
+          "keyPress": "Flash",
+          "keyUnpress": "",
+          "fader": "Master",
+          "encoder": "Master",
+          "level": 0,
+          "token": "FaderMaster",
+          "active": false,
+          "keyQualified": true,
+          "faderQualified": true
+        },
+        {
+          "executor": 205,
+          "page": 1,
+          "mode": "current",
+          "empty": false,
+          "assigned": "14.14.1.7.6",
+          "class": "Sequence",
+          "playbackTarget": true,
+          "keyPress": "Flash",
+          "keyUnpress": "",
+          "fader": "Master",
+          "encoder": "Master",
+          "level": 0,
+          "token": "FaderMaster",
+          "active": false,
+          "keyQualified": true,
+          "faderQualified": true
+        },
+        {
+          "executor": 206,
+          "page": 1,
+          "mode": "current",
+          "empty": false,
+          "assigned": "14.14.1.7.7",
+          "class": "Sequence",
+          "playbackTarget": true,
+          "keyPress": "Flash",
+          "keyUnpress": "",
+          "fader": "Master",
+          "encoder": "Master",
+          "level": 0,
+          "token": "FaderMaster",
+          "active": false,
+          "keyQualified": true,
+          "faderQualified": true
+        },
+        {
+          "executor": 207,
+          "page": 1,
+          "mode": "current",
+          "empty": false,
+          "assigned": "14.14.1.7.8",
+          "class": "Sequence",
+          "playbackTarget": true,
+          "keyPress": "Flash",
+          "keyUnpress": "",
+          "fader": "Master",
+          "encoder": "Master",
+          "level": 0,
+          "token": "FaderMaster",
+          "active": false,
+          "keyQualified": true,
+          "faderQualified": true
+        },
+        {
+          "executor": 208,
+          "page": 1,
+          "mode": "current",
+          "empty": false,
+          "assigned": "14.14.1.7.9",
+          "class": "Sequence",
+          "playbackTarget": true,
+          "keyPress": "Flash",
+          "keyUnpress": "",
+          "fader": "Master",
+          "encoder": "Master",
+          "level": 0,
+          "token": "FaderMaster",
+          "active": false,
+          "keyQualified": true,
+          "faderQualified": true
+        },
+        {
+          "executor": 210,
+          "page": 1,
+          "mode": "current",
+          "empty": false,
+          "assigned": "14.14.1.7.5437",
+          "class": "Sequence",
+          "playbackTarget": true,
+          "keyPress": "Temp",
+          "keyUnpress": "",
+          "fader": "Temp",
+          "encoder": "Temp",
+          "level": 0,
+          "token": "FaderTemp",
+          "active": false,
+          "keyQualified": true,
+          "faderQualified": true
+        },
+        {
+          "executor": 291,
+          "page": 1,
+          "mode": "current",
+          "empty": false,
+          "assigned": "14.14.1.7.5509",
+          "class": "Sequence",
+          "playbackTarget": true,
+          "keyPress": "Top",
+          "keyUnpress": "Go+",
+          "fader": "Master",
+          "encoder": "Master",
+          "level": 100,
+          "token": "FaderMaster",
+          "active": true,
+          "keyQualified": true,
+          "faderQualified": true
+        },
+        {
+          "executor": 292,
+          "page": 1,
+          "mode": "current",
+          "empty": false,
+          "assigned": "14.14.1.7.5510",
+          "class": "Sequence",
+          "playbackTarget": true,
+          "keyPress": "Top",
+          "keyUnpress": "Go+",
+          "fader": "Master",
+          "encoder": "Master",
+          "level": 100,
+          "token": "FaderMaster",
+          "active": false,
+          "keyQualified": true,
+          "faderQualified": true
+        },
+        {
+          "executor": 293,
+          "page": 1,
+          "mode": "current",
+          "empty": false,
+          "assigned": "14.14.1.7.5511",
+          "class": "Sequence",
+          "playbackTarget": true,
+          "keyPress": "Temp",
+          "keyUnpress": "",
+          "fader": "Master",
+          "encoder": "Master",
+          "level": 100,
+          "token": "FaderMaster",
+          "active": false,
+          "keyQualified": true,
+          "faderQualified": true
+        },
+        {
+          "executor": 294,
+          "page": 1,
+          "mode": "current",
+          "empty": false,
+          "assigned": "14.14.1.7.5512",
+          "class": "Sequence",
+          "playbackTarget": true,
+          "keyPress": "Temp",
+          "keyUnpress": "",
+          "fader": "Master",
+          "encoder": "Master",
+          "level": 100,
+          "token": "FaderMaster",
+          "active": false,
+          "keyQualified": true,
+          "faderQualified": true
+        },
+        {
+          "executor": 295,
+          "page": 1,
+          "mode": "current",
+          "empty": false,
+          "assigned": "14.14.1.7.5513",
+          "class": "Sequence",
+          "playbackTarget": true,
+          "keyPress": "Toggle",
+          "keyUnpress": "",
+          "fader": "Master",
+          "encoder": "Master",
+          "level": 100,
+          "token": "FaderMaster",
+          "active": false,
+          "keyQualified": true,
+          "faderQualified": true
+        },
+        {
+          "executor": 296,
+          "page": 1,
+          "mode": "current",
+          "empty": false,
+          "assigned": "14.14.1.7.5514",
+          "class": "Sequence",
+          "playbackTarget": true,
+          "keyPress": "Temp",
+          "keyUnpress": "",
+          "fader": "Master",
+          "encoder": "Master",
+          "level": 100,
+          "token": "FaderMaster",
+          "active": false,
+          "keyQualified": true,
+          "faderQualified": true
+        },
+        {
+          "executor": 297,
+          "page": 1,
+          "mode": "current",
+          "empty": false,
+          "assigned": "14.14.1.7.5515",
+          "class": "Sequence",
+          "playbackTarget": true,
+          "keyPress": "Temp",
+          "keyUnpress": "",
+          "fader": "Master",
+          "encoder": "Master",
+          "level": 100,
+          "token": "FaderMaster",
+          "active": false,
+          "keyQualified": true,
+          "faderQualified": true
+        },
+        {
+          "executor": 298,
+          "page": 1,
+          "mode": "current",
+          "empty": false,
+          "assigned": "14.14.1.7.5516",
+          "class": "Sequence",
+          "playbackTarget": true,
+          "keyPress": "Temp",
+          "keyUnpress": "",
+          "fader": "Master",
+          "encoder": "Master",
+          "level": 100,
+          "token": "FaderMaster",
+          "active": false,
+          "keyQualified": true,
+          "faderQualified": true
+        },
+        {
+          "executor": 401,
+          "page": 1,
+          "mode": "current",
+          "empty": false,
+          "assigned": "14.13.3.1",
+          "class": "MasterSpeed",
+          "playbackTarget": true,
+          "keyPress": "LearnSpeed",
+          "keyUnpress": "",
+          "fader": "Master",
+          "encoder": "Master",
+          "level": 49.802583456039,
+          "token": "FaderMaster",
+          "keyQualified": false,
+          "faderQualified": true
+        },
+        {
+          "executor": 402,
+          "page": 1,
+          "mode": "current",
+          "empty": false,
+          "assigned": "14.13.3.2",
+          "class": "MasterSpeed",
+          "playbackTarget": true,
+          "keyPress": "LearnSpeed",
+          "keyUnpress": "",
+          "fader": "Master",
+          "encoder": "Master",
+          "level": 50,
+          "token": "FaderMaster",
+          "keyQualified": false,
+          "faderQualified": true
+        }
+      ]
+    },
+    {
+      "name": "verify (console backend): an executor ENCODER element is refused unsupported and a key whose configured function (LearnSpeed) is not qualified is refused unsupported naming it: nothing is pressed, nothing owned",
+      "pass": true,
+      "detail": {
+        "accepted": 0,
+        "refused": 2,
+        "lost": 0,
+        "outcomes": [
+          "unsupported",
+          "unsupported"
+        ]
+      }
+    },
+    {
+      "name": "verify: nothing queued, no gesture, not busy",
+      "pass": true,
+      "detail": {
+        "conn-96": {
+          "devices": {
+            "probe-mtouch": {
+              "late": 0,
+              "last": 0,
+              "lost": 0,
+              "duplicates": 0,
+              "reordered": 0,
+              "rateDropped": 0
+            }
+          },
+          "openedAt": 1791677302.1103,
+          "gestures": 0,
+          "remainingMs": 14984,
+          "expiresAt": 1791677317.1103,
+          "state": "active",
+          "id": "conn-96",
+          "leaseMs": 15000,
+          "counters": {
+            "evicted": 0,
+            "refused": 2,
+            "admitted": 0,
+            "dropped": 0,
+            "coalesced": 0,
+            "lost": 0,
+            "applied": 0
+          },
+          "binding": "client 96",
+          "renewals": 0,
+          "queued": 0,
+          "gestureList": []
+        }
+      }
+    },
+    {
+      "name": "run: preflight: executors 180,181 of page 1 are empty (nothing of the operator's is touched there)",
+      "pass": true,
+      "detail": [
+        {
+          "executor": 180,
+          "page": 1,
+          "mode": "page",
+          "empty": true,
+          "playbackTarget": false,
+          "reason": "the executor is empty"
+        },
+        {
+          "executor": 181,
+          "page": 1,
+          "mode": "page",
+          "empty": true,
+          "playbackTarget": false,
+          "reason": "the executor is empty"
+        }
+      ]
+    },
+    {
+      "name": "run: the functions the console configured on the fresh assignments",
+      "note": true,
+      "detail": {
+        "180": {
+          "executor": 180,
+          "page": 1,
+          "mode": "page",
+          "empty": false,
+          "assigned": "14.14.1.7.5527",
+          "class": "Sequence",
+          "playbackTarget": true,
+          "keyPress": "Go+",
+          "keyUnpress": "",
+          "fader": "Master",
+          "encoder": "Master",
+          "level": 100,
+          "token": "FaderMaster",
+          "active": false
+        },
+        "181": {
+          "executor": 181,
+          "page": 1,
+          "mode": "page",
+          "empty": false,
+          "assigned": "14.14.1.7.5528",
+          "class": "Sequence",
+          "playbackTarget": true,
+          "keyPress": "Go+",
+          "keyUnpress": "",
+          "fader": "Master",
+          "encoder": "Master",
+          "level": 100,
+          "token": "FaderMaster",
+          "active": false
+        }
+      }
+    },
+    {
+      "name": "run: Sequence 5527 at 180 and Sequence 5528 at 181 are playback targets with a qualified key function and the Master fader function, both inactive",
+      "pass": true,
+      "detail": {
+        "t0": {
+          "executor": 180,
+          "page": 1,
+          "mode": "page",
+          "empty": false,
+          "assigned": "14.14.1.7.5527",
+          "class": "Sequence",
+          "playbackTarget": true,
+          "keyPress": "Go+",
+          "keyUnpress": "",
+          "fader": "Master",
+          "encoder": "Master",
+          "level": 100,
+          "token": "FaderMaster",
+          "active": false
+        },
+        "t1": {
+          "executor": 181,
+          "page": 1,
+          "mode": "page",
+          "empty": false,
+          "assigned": "14.14.1.7.5528",
+          "class": "Sequence",
+          "playbackTarget": true,
+          "keyPress": "Go+",
+          "keyUnpress": "",
+          "fader": "Master",
+          "encoder": "Master",
+          "level": 100,
+          "token": "FaderMaster",
+          "active": false
+        }
+      }
+    },
+    {
+      "name": "run: a down on 180 (Go+) is admitted and applied as \"Press Page 1.180\"; the record names the configured key function; Sequence 5527 is active afterwards (the console ran Go+)",
+      "pass": true,
+      "detail": {
+        "outcome": {
+          "accepted": 1,
+          "refused": 0,
+          "lost": 0,
+          "outcomes": [
+            "queued"
+          ]
+        },
+        "lastApplied": {
+          "target": "execDefault#1/1.180.key|14.14.1.7.5527|Go+",
+          "result": {
+            "feedback": "OK",
+            "pool": "Default#1",
+            "element": "key",
+            "page": 1,
+            "executor": 180,
+            "assigned": "14.14.1.7.5527",
+            "momentary": false,
+            "down": true,
+            "keyFunction": "Go+",
+            "command": "Press Page 1.180"
+          },
+          "down": true,
+          "outcome": "applied",
+          "at": 1791677302.8426,
+          "kind": "button"
+        },
+        "active": true
+      }
+    },
+    {
+      "name": "run: a console command while the key is held is refused [busy] by the bridge",
+      "pass": true,
+      "detail": {
+        "ok": false,
+        "id": "a22",
+        "code": "busy",
+        "error": "[busy] a command is refused while input ownership is active: button is down on probe-mtouch/PFA180 of session conn-96. Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first",
+        "detail": {
+          "owner": "conn-96",
+          "control": "PFA180",
+          "code": "busy",
+          "device": "probe-mtouch",
+          "module": "control",
+          "message": "a command is refused while input ownership is active: button is down on probe-mtouch/PFA180 of session conn-96. Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first",
+          "reason": "button-down"
+        }
+      }
+    },
+    {
+      "name": "run: the release is applied as \"Unpress Page 1.180\" and the instance is idle",
+      "pass": true,
+      "detail": {
+        "outcome": {
+          "accepted": 1,
+          "refused": 0,
+          "lost": 0,
+          "outcomes": [
+            "queued"
+          ]
+        },
+        "lastApplied": {
+          "target": "execDefault#1/1.180.key|14.14.1.7.5527|Go+",
+          "result": {
+            "feedback": "OK",
+            "pool": "Default#1",
+            "element": "key",
+            "page": 1,
+            "executor": 180,
+            "assigned": "14.14.1.7.5527",
+            "momentary": false,
+            "command": "Unpress Page 1.180",
+            "frozen": true,
+            "keyFunction": "Go+",
+            "down": false
+          },
+          "down": false,
+          "outcome": "applied",
+          "at": 1791677303.2949,
+          "kind": "button"
+        }
+      }
+    },
+    {
+      "name": "run: the backend counted the two commands as applied",
+      "pass": true,
+      "detail": {
+        "raised": 0,
+        "noop": 6,
+        "refused": 0,
+        "applied": 21
+      }
+    },
+    {
+      "name": "run: Page 2 / Page 1 neither stops the running Sequence 5527 nor starts page 2's executors (active there before: 0, after: 0)",
+      "pass": true,
+      "detail": {
+        "beforeNav": [],
+        "afterNav": [],
+        "stillActive": true
+      }
+    },
+    {
+      "name": "run: Off Sequence 5527 ends it (the probe's cleanup for a latching key function)",
+      "pass": true
+    },
+    {
+      "name": "run: a touch on the 180 fader is a hold (busy) and a position 0.25 is applied as \"FaderMaster Page 1.180 At 25\"; the Master level reads 25",
+      "pass": true,
+      "detail": {
+        "outcome": {
+          "accepted": 2,
+          "refused": 0,
+          "lost": 0,
+          "outcomes": [
+            "queued",
+            "queued"
+          ]
+        },
+        "lastApplied": {
+          "target": "execDefault#1/1.180.fader|14.14.1.7.5527|Master",
+          "result": {
+            "feedback": "OK",
+            "pool": "Default#1",
+            "from": 0,
+            "element": "fader",
+            "neutral": 100,
+            "level": 25,
+            "assigned": "14.14.1.7.5527",
+            "page": 1,
+            "token": "FaderMaster",
+            "command": "FaderMaster Page 1.180 At 25",
+            "to": 100,
+            "value": 0.25,
+            "executor": 180,
+            "faderFunction": "Master"
+          },
+          "outcome": "applied",
+          "at": 1791677305.3878,
+          "value": 0.25,
+          "kind": "absolute"
+        },
+        "level": 25
+      }
+    },
+    {
+      "name": "run: two Master positions in one request: the second supersedes the first while queued (stateless function); the level afterwards",
+      "note": true,
+      "detail": {
+        "outcomes": {
+          "accepted": 2,
+          "refused": 0,
+          "lost": 0,
+          "outcomes": [
+            "queued",
+            "superseded:1"
+          ]
+        },
+        "level": 50,
+        "lastCommand": "FaderMaster Page 1.180 At 50"
+      }
+    },
+    {
+      "name": "run: the Master level is 50 after the pair (At 50 was applied last)",
+      "pass": true,
+      "detail": {
+        "level": 50
+      }
+    },
+    {
+      "name": "run: the Master level is restored to 100",
+      "pass": true,
+      "detail": {
+        "back": 100
+      }
+    },
+    {
+      "name": "run: Temp on 193 (14.14.1.7.5529): active while held through \"Press Page 1.193\", inactive after \"Unpress Page 1.193\"",
+      "pass": true,
+      "detail": {
+        "down": {
+          "accepted": 1,
+          "refused": 0,
+          "lost": 0,
+          "outcomes": [
+            "queued"
+          ]
+        },
+        "during": true,
+        "up": {
+          "accepted": 1,
+          "refused": 0,
+          "lost": 0,
+          "outcomes": [
+            "queued"
+          ]
+        },
+        "after": false
+      }
+    },
+    {
+      "name": "run: a surface that disconnects while holding Temp on 193: active while held, released by the bridge on the disconnect (Unpress issued, nothing left unresolved)",
+      "pass": true,
+      "detail": {
+        "b": {
+          "accepted": 1,
+          "refused": 0,
+          "lost": 0,
+          "outcomes": [
+            "queued"
+          ]
+        },
+        "heldB": true,
+        "afterB": false
+      }
+    },
+    {
+      "name": "run: Flash on 201 (14.14.1.7.2): active while held through \"Press Page 1.201\", inactive after \"Unpress Page 1.201\"",
+      "pass": true,
+      "detail": {
+        "down": {
+          "accepted": 1,
+          "refused": 0,
+          "lost": 0,
+          "outcomes": [
+            "queued"
+          ]
+        },
+        "during": true,
+        "up": {
+          "accepted": 1,
+          "refused": 0,
+          "lost": 0,
+          "outcomes": [
+            "queued"
+          ]
+        },
+        "after": false
+      }
+    },
+    {
+      "name": "run: Toggle on 195 (14.14.1.7.5531): a tap (Press, Unpress) starts it, a second tap stops it; nothing is translated into Go+",
+      "pass": true,
+      "detail": {
+        "on": true,
+        "off": false
+      }
+    },
+    {
+      "name": "run: the Temp fader of 210 (14.14.1.7.5437): \"FaderTemp Page 1.210 At 60\" reads 60 and starts the playback; the pair At 20, At 0 is applied in order (stateful: not superseded) and At 0 ends it",
+      "pass": true,
+      "detail": {
+        "r1": {
+          "accepted": 2,
+          "refused": 0,
+          "lost": 0,
+          "outcomes": [
+            "queued",
+            "queued"
+          ]
+        },
+        "lvlT": 59.999996423721,
+        "actT": true,
+        "r2": {
+          "accepted": 2,
+          "refused": 0,
+          "lost": 0,
+          "outcomes": [
+            "queued",
+            "queued"
+          ]
+        },
+        "lvl0": 0,
+        "act0": false
+      }
+    },
+    {
+      "name": "run: the ENCODER element of 180 is refused unsupported (not qualified)",
+      "pass": true,
+      "detail": {
+        "accepted": 0,
+        "refused": 1,
+        "lost": 0,
+        "outcomes": [
+          "unsupported"
+        ]
+      }
+    },
+    {
+      "name": "run: exploration: can the fader function of 181 be set to Rate through the executor's property? (set result, read-back)",
+      "note": true,
+      "detail": [
+        "set",
+        "Rate"
+      ]
+    },
+    {
+      "name": "run: with Rate configured on 181 a position is refused unsupported naming Rate (qualified separately; not yet)",
+      "pass": true,
+      "detail": {
+        "accepted": 1,
+        "refused": 1,
+        "lost": 1,
+        "outcomes": [
+          "queued",
+          "unsupported"
+        ]
+      }
+    },
+    {
+      "name": "run: exploration: \"FaderRate Page 1.181 At 75\" on a Rate-configured executor (feedback, object FaderRate before/after, binding level)",
+      "note": true,
+      "detail": {
+        "feedback": "OK",
+        "rateBefore": 50,
+        "rateAfter": 42.998188734055,
+        "bindingLevel": 42.998188734055
+      }
+    },
+    {
+      "name": "run: 181 reassigned (Sequence 5528 -> Sequence 5527) while held: the release is admitted but NOT issued on the replacement; it is an assignment-changed record naming Sequence 5528, nothing unresolved from a raise",
+      "pass": true,
+      "detail": {
+        "held": {
+          "accepted": 1,
+          "refused": 0,
+          "lost": 0,
+          "outcomes": [
+            "queued"
+          ]
+        },
+        "target": {
+          "executor": 181,
+          "page": 1,
+          "mode": "page",
+          "empty": false,
+          "assigned": "14.14.1.7.5527",
+          "class": "Sequence",
+          "playbackTarget": true,
+          "keyPress": "Go+",
+          "keyUnpress": "",
+          "fader": "Master",
+          "encoder": "Master",
+          "level": 100,
+          "token": "FaderMaster",
+          "active": false
+        },
+        "release": {
+          "accepted": 1,
+          "refused": 0,
+          "lost": 0,
+          "outcomes": [
+            "queued"
+          ]
+        },
+        "lastApplied": {
+          "target": "execDefault#1/1.181.key|14.14.1.7.5528|Go+",
+          "at": 1791677320.6694,
+          "down": false,
+          "kind": "button",
+          "reassigned": true,
+          "error": "assignment-changed: executor 1.181 was reassigned from 14.14.1.7.5528 to 14.14.1.7.5527 while it was held; the release was not issued on the replacement (recover() applies it once the original object is back on that executor; end the original playback by hand otherwise)",
+          "outcome": "unresolved"
+        },
+        "unresolved": [
+          {
+            "targetKey": "execDefault#1/1.181.key|14.14.1.7.5528|Go+",
+            "resolved": {
+              "mode": "page",
+              "page": {
+                "class": "Page",
+                "no": 1,
+                "addr": "14.14.1.13.1",
+                "name": "Page 1"
+              },
+              "level": 100,
+              "assigned": "14.14.1.7.5528",
+              "width": 1,
+              "pool": "Default#1",
+              "function": "Go+",
+              "pageNo": 1,
+              "supersedes": true,
+              "element": "key",
+              "key": "execDefault#1/1.181.key|14.14.1.7.5528|Go+",
+              "keyUnpress": "",
+              "token": "go+",
+              "active": false,
+              "executor": 181,
+              "assignedClass": "Sequence",
+              "kind": "executor"
+            },
+            "at": 1791677320.6694,
+            "device": "probe-mtouch",
+            "nowAssigned": "14.14.1.7.5527",
+            "error": "assignment-changed: executor 1.181 was reassigned from 14.14.1.7.5528 to 14.14.1.7.5527 while it was held; the release was not issued on the replacement (recover() applies it once the original object is back on that executor; end the original playback by hand otherwise)",
+            "kind": "button",
+            "generation": 3,
+            "session": "conn-96",
+            "control": "PFA181",
+            "frozen": true,
+            "down": false,
+            "target": {
+              "element": "key",
+              "page": 1,
+              "executor": 181
+            },
+            "reassigned": true,
+            "backend": "console"
+          }
+        ]
+      }
+    },
+    {
+      "name": "run: control.recover keeps it unresolved while the replacement is assigned (nothing issued)",
+      "pass": true,
+      "detail": {
+        "ok": true,
+        "id": "a108",
+        "result": {
+          "unresolved": [
+            {
+              "reassigned": true,
+              "target": {
+                "element": "key",
+                "page": 1,
+                "executor": 181
+              },
+              "targetKey": "execDefault#1/1.181.key|14.14.1.7.5528|Go+",
+              "resolved": {
+                "mode": "page",
+                "page": {
+                  "class": "Page",
+                  "no": 1,
+                  "addr": "14.14.1.13.1",
+                  "name": "Page 1"
+                },
+                "level": 100,
+                "assigned": "14.14.1.7.5528",
+                "width": 1,
+                "pool": "Default#1",
+                "function": "Go+",
+                "pageNo": 1,
+                "supersedes": true,
+                "element": "key",
+                "key": "execDefault#1/1.181.key|14.14.1.7.5528|Go+",
+                "keyUnpress": "",
+                "token": "go+",
+                "active": false,
+                "executor": 181,
+                "assignedClass": "Sequence",
+                "kind": "executor"
+              },
+              "device": "probe-mtouch",
+              "nowAssigned": "14.14.1.7.5527",
+              "error": "assignment-changed: executor 1.181 was reassigned from 14.14.1.7.5528 to 14.14.1.7.5527 while it was held; the release was not issued on the replacement (recover() applies it once the original object is back on that executor; end the original playback by hand otherwise)",
+              "down": false,
+              "generation": 3,
+              "session": "conn-96",
+              "attempts": 2,
+              "frozen": true,
+              "control": "PFA181",
+              "kind": "button",
+              "at": 1791677320.6694,
+              "backend": "console"
+            }
+          ],
+          "adopted": 0,
+          "resolved": []
+        }
+      }
+    },
+    {
+      "name": "run: with Sequence 5528 back on 181, control.recover issues \"Unpress Page 1.181\" and resolves the record",
+      "pass": true,
+      "detail": {
+        "rec1": {
+          "ok": true,
+          "id": "a110",
+          "result": {
+            "unresolved": [],
+            "adopted": 0,
+            "resolved": [
+              {
+                "reassigned": true,
+                "target": {
+                  "element": "key",
+                  "page": 1,
+                  "executor": 181
+                },
+                "targetKey": "execDefault#1/1.181.key|14.14.1.7.5528|Go+",
+                "resolved": {
+                  "mode": "page",
+                  "page": {
+                    "class": "Page",
+                    "no": 1,
+                    "addr": "14.14.1.13.1",
+                    "name": "Page 1"
+                  },
+                  "level": 100,
+                  "assigned": "14.14.1.7.5528",
+                  "width": 1,
+                  "pool": "Default#1",
+                  "function": "Go+",
+                  "pageNo": 1,
+                  "supersedes": true,
+                  "element": "key",
+                  "key": "execDefault#1/1.181.key|14.14.1.7.5528|Go+",
+                  "keyUnpress": "",
+                  "token": "go+",
+                  "active": false,
+                  "executor": 181,
+                  "assignedClass": "Sequence",
+                  "kind": "executor"
+                },
+                "device": "probe-mtouch",
+                "nowAssigned": "14.14.1.7.5527",
+                "error": "assignment-changed: executor 1.181 was reassigned from 14.14.1.7.5528 to 14.14.1.7.5527 while it was held; the release was not issued on the replacement (recover() applies it once the original object is back on that executor; end the original playback by hand otherwise)",
+                "down": false,
+                "generation": 3,
+                "session": "conn-96",
+                "attempts": 2,
+                "frozen": true,
+                "control": "PFA181",
+                "kind": "button",
+                "at": 1791677320.6694,
+                "backend": "console"
+              }
+            ]
+          }
+        },
+        "lastCommand": {
+          "reason": "recover",
+          "feedback": "OK",
+          "momentary": false,
+          "pool": "Default#1",
+          "outcome": "applied",
+          "at": 1791677321.7887,
+          "page": 1,
+          "executor": 181,
+          "assigned": "14.14.1.7.5528",
+          "session": "conn-96",
+          "forced": true,
+          "down": false,
+          "frozen": true,
+          "command": "Unpress Page 1.181",
+          "keyFunction": "Go+",
+          "element": "key"
+        }
+      }
+    },
+    {
+      "name": "run: cleanup ran every registered undo",
+      "pass": true,
+      "detail": [
+        {
+          "label": "Assign Sequence 5528 At Page 1.181 (the original object back)",
+          "ok": true,
+          "detail": {
+            "ok": true,
+            "id": "a114",
+            "result": {
+              "command": "Assign Sequence 5528 At Page 1.181",
+              "feedback": "OK"
+            }
+          }
+        },
+        {
+          "label": "FaderRate Page 1.181 At 50",
+          "ok": true,
+          "detail": {
+            "ok": true,
+            "id": "a115",
+            "result": {
+              "command": "FaderRate Page 1.181 At 50",
+              "feedback": "OK"
+            }
+          }
+        },
+        {
+          "label": "fader function of Page 1.181 back to Master",
+          "ok": true,
+          "detail": {
+            "ok": true,
+            "id": "a116",
+            "result": {
+              "values": [
+                "set",
+                "Master"
+              ],
+              "budget": {
+                "instructionHookEnforced": false,
+                "consoleHookPreserved": true,
+                "note": "the console's own hook on the plugin thread was preserved: the instruction budget was not enforced and the wall-clock deadline was only checked at yields and at return (luahook=preserve)"
+              }
+            }
+          }
+        },
+        {
+          "label": "Delete Page 1.181 /NoConfirmation",
+          "ok": true,
+          "detail": {
+            "ok": true,
+            "id": "a117",
+            "result": {
+              "command": "Delete Page 1.181 /NoConfirmation",
+              "feedback": "OK"
+            }
+          }
+        },
+        {
+          "label": "Delete Page 1.180 /NoConfirmation",
+          "ok": true,
+          "detail": {
+            "ok": true,
+            "id": "a118",
+            "result": {
+              "command": "Delete Page 1.180 /NoConfirmation",
+              "feedback": "OK"
+            }
+          }
+        },
+        {
+          "label": "Delete Macro 116 (the probe's deferred macro)",
+          "ok": true,
+          "detail": {
+            "ok": true
+          }
+        },
+        {
+          "label": "release held keys and touches",
+          "ok": true
+        },
+        {
+          "label": "control.close B",
+          "ok": true,
+          "detail": {
+            "ok": true
+          }
+        },
+        {
+          "label": "control.close A",
+          "ok": true,
+          "detail": {
+            "ok": true,
+            "id": "a151",
+            "result": {
+              "dropped": 0,
+              "unresolved": [],
+              "session": "conn-96",
+              "ended": []
+            }
+          }
+        },
+        {
+          "label": "Page 1",
+          "ok": true,
+          "detail": {
+            "ok": true,
+            "id": "a152",
+            "result": {
+              "command": "Page 1",
+              "feedback": "OK"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "run: executors 180,181 are empty again and the console is back on page 1",
+      "pass": true,
+      "detail": {
+        "page": {
+          "no": 1,
+          "name": "Page 1"
+        },
+        "targets": [
+          {
+            "executor": 180,
+            "page": 1,
+            "mode": "page",
+            "empty": true,
+            "playbackTarget": false,
+            "reason": "the executor is empty"
+          },
+          {
+            "executor": 181,
+            "page": 1,
+            "mode": "page",
+            "empty": true,
+            "playbackTarget": false,
+            "reason": "the executor is empty"
+          }
+        ]
+      }
+    },
+    {
+      "name": "run: no playback the probe touched is left active",
+      "pass": true,
+      "detail": []
+    },
+    {
+      "name": "run: no session, gesture or queued intent is left; nothing is unresolved",
+      "pass": true,
+      "detail": {
+        "sessions": [],
+        "unresolved": []
+      }
+    }
+  ],
+  "finishedAt": "2026-10-11T00:08:53.219Z",
+  "passed": 30,
+  "failed": 0
+}

@@ -493,8 +493,10 @@ the generation (KB-17) but no pool is addressed explicitly in commands.
 
 `gma3_mcp_control` 0.5.0 and bridge 0.18.0 ([modules](docs/modules.md#executor-operations-on-the-console-backend-gma3_mcp_control-050-kb-22),
 [reference](docs/reference.md#continuous-control-plugin-v0140-kb-18)); the feedback module is unchanged (0.5.0). No
-TypeScript changed. The live record is pending (`node scripts/kb22-probe.mjs run` on the console backend of a disposable
-show; `docs/probes/kb-22-executors-macos-2.5.1.md`). Pickup, pickup display and reset, the strip-button-to-element
+TypeScript changed. The live record is [kb-22-executors-macos-2.5.1.md](docs/probes/kb-22-executors-macos-2.5.1.md) with
+the [script report](docs/probes/kb-22-executors-macos-2.5.1.json) (`node scripts/kb22-probe.mjs run`, **30/30** on
+2026-10-10 on the console backend: Press/Unpress of Go+, Temp, Flash and Toggle executors, FaderMaster and FaderTemp
+placements, the disconnect release, the reassignment record and its recovery, page navigation). Pickup, pickup display and reset, the strip-button-to-element
 profiles and the dedicated Go/Pause/Select keys are the surface service's half (mtpnxk `KEYBOARD.md` "KB-22"); what the
 console half serves:
 
@@ -516,12 +518,13 @@ console half serves:
 - **Assignment changed while held:** a release whose executor was reassigned or emptied under the hold is not issued on
   the replacement; it becomes an `assignment-changed` record with the original object, re-attempted by `recover()` and
   applied once the original object is back, otherwise ended by the operator (`Off <object>`).
-- **Page navigation:** the probe checks that `Page n` neither stops a running playback nor starts the newly visible ones
-  (KB-16 observed it; re-run live here).
+- **Page navigation:** `Page 2` / `Page 1` neither stopped the running playback nor started page 2's executors (live).
 - **Harness:** `test/lua/control_admission_test.lua` (243; 26 new), the bridge harness (495), `test/kb22-probe.test.ts` (4).
 
-**Limitations:** Rate, Speed and the crossfade fader functions are not qualified (no executor with them was available
-to the probe; the table records their ranges and neutral positions for the surface, the backend refuses them);
+**Limitations:** Rate, Speed and the crossfade fader functions are not qualified: the executor's `Fader` property is
+writable through Lua (`Set("Fader", "Rate")` took, live), but `FaderRate Page 1.181 At 75` read back `GetFader{FaderRate}`
+42.998 (from 50), so the `At` scale of that keyword is not the GetFader scale and the mapping is unmeasured (the table
+records the ranges and neutral positions, the refusal carries this evidence);
 `Press`/`Unpress` address the executor, so an original object cannot be released after a reassignment except by
 recovery or by hand; executor encoders are not served; no pool is addressed in commands (the current data pool).
 

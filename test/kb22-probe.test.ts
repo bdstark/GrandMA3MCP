@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import net from "node:net";
 import path from "node:path";
-import { QUALIFIED, isQualified, pickByFunction, pickSequences, targetSummary } from "../scripts/kb22-probe.mjs";
+import { QUALIFIED, isQualified, pickByFunction, pickSequences, sequenceRef, targetSummary } from "../scripts/kb22-probe.mjs";
 
 /**
  * scripts/kb22-probe.mjs: `verify` must send nothing that presses, places, assigns or applies (its control.submit
@@ -89,6 +89,9 @@ test("the probe's own helpers", () => {
   assert.deepEqual(pickByFunction(execs, "key", "Temp", { inactive: false }).map((x) => x.value.executor), [193, 194]);
   assert.deepEqual(pickByFunction(execs, "fader", "Master", { exclude: [191] }).map((x) => x.value.executor), [193, 195]);
   assert.deepEqual(pickSequences(execs), ["Sequence 1", "Sequence 5"], "two distinct inactive sequences, never an empty executor");
+  assert.equal(sequenceRef({ class: "Sequence", addr: "14.14.1.7.5527", no: 5527 }), "Sequence 5527", "the command-line form, never the numeric path");
+  assert.equal(sequenceRef({ class: "Sequence", addr: "14.14.1.7.5527" }), "Sequence 5527");
+  assert.equal(sequenceRef({ class: "Quickey", addr: "Quickey 1" }), undefined);
   assert.equal(targetSummary(execs[2]).keyPress, "Temp");
   assert.deepEqual(targetSummary({ available: false, params: { executor: 5, page: 2 }, reason: "not observed" }), { executor: 5, page: 2, unavailable: "not observed" });
 });

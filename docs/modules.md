@@ -835,8 +835,9 @@ and every refusal, Press/Unpress through a stub `Cmd`, a refused Press keeping t
 functions, the encoder element, the reassignment and emptied-executor records, recover with and without the object
 back, a following record on another page, a raised Unpress recovered, the fader touch hold, Master supersession,
 Temp's stateful pair, the page-bound address, the status lists), the bridge harness (495; the console capabilities)
-and `test/kb22-probe.test.ts` (4). Live: `node scripts/kb22-probe.mjs run` (pending; the record will be
-`docs/probes/kb-22-executors-macos-2.5.1.md`).
+and `test/kb22-probe.test.ts` (4). Live: [kb-22-executors-macos-2.5.1.md](probes/kb-22-executors-macos-2.5.1.md)
+(`node scripts/kb22-probe.mjs run`, 30/30 on 2026-10-10 on the console backend; the Rate exploration there is why
+`FADER_FUNCTIONS.rate` carries `evidence`).
 
 ## Vendoring into another plugin (mtpnxk)
 

@@ -72,13 +72,21 @@ export function pickByFunction(executors, element, fn, { exclude = [], inactive 
   });
 }
 
-/** Picks two distinct Sequence objects assigned on the page that are inactive (never a Quickey, never a reserved executor). */
+/** The command-line reference of an assigned Sequence: `Sequence <no>` (the object's Addr() is a numeric path the command line does not take). */
+export function sequenceRef(assigned) {
+  if (!assigned || assigned.class !== "Sequence") return undefined;
+  if (typeof assigned.no === "number") return `Sequence ${assigned.no}`;
+  const m = /(\d+)$/.exec(String(assigned.addr ?? ""));
+  return m ? `Sequence ${m[1]}` : undefined;
+}
+
+/** Picks two distinct Sequence objects assigned on the page that are inactive (never a Quickey, never a reserved executor), as command-line references. */
 export function pickSequences(executors, want = 2) {
   const out = [];
   for (const x of executors ?? []) {
     const v = x.available && x.value;
-    const addr = v && v.playbackTarget && v.active === false && v.assigned?.class === "Sequence" && v.assigned.addr;
-    if (addr && !out.includes(addr)) out.push(addr);
+    const ref = v && v.playbackTarget && v.active === false && sequenceRef(v.assigned);
+    if (ref && !out.includes(ref)) out.push(ref);
     if (out.length >= want) break;
   }
   return out;
@@ -172,7 +180,7 @@ async function main() {
   const ctxAll = await A.request("feedback.context", { allExecutors: true });
   const execs = ctxAll.ok ? ctxAll.result.executors.filter((x) => x.available && x.value.playbackTarget) : [];
   const pageNo = ctxAll.ok ? ctxAll.result.executorPage?.no : undefined;
-  record("feedback.context lists the playback executors of the user's page with their configured key and fader functions, the configured function's level and the activity", ctxAll.ok && execs.length > 0 && execs.every((x) => x.value.functions && typeof x.value.active === "boolean"), ctxAll.ok ? { page: pageNo, count: execs.length } : ctxAll);
+  record("feedback.context lists the playback executors of the user's page with their configured key and fader functions and the activity (or why it is unavailable)", ctxAll.ok && execs.length > 0 && execs.every((x) => x.value.functions && (typeof x.value.active === "boolean" || x.value.activeUnavailable)), ctxAll.ok ? { page: pageNo, count: execs.length, noActivity: execs.filter((x) => typeof x.value.active !== "boolean").map((x) => [x.value.executor, x.value.activeUnavailable]) } : ctxAll);
   const inventory = execs.map((x) => ({ ...targetSummary(x), keyQualified: isQualified(x.value.functions?.keyPress, QUALIFIED.keys), faderQualified: isQualified(x.value.functions?.fader, QUALIFIED.faders) }));
   note("inventory: which executors the console backend would serve (qualified key / fader functions) and which it would refuse", inventory);
   const unqualifiedKey = execs.find((x) => !isQualified(x.value.functions?.keyPress, QUALIFIED.keys));
@@ -292,7 +300,7 @@ async function main() {
       }
       const t0 = await target(e0); const t1 = await target(e1);
       note("run: the functions the console configured on the fresh assignments", { [e0]: targetSummary({ available: true, value: t0 }), [e1]: targetSummary({ available: true, value: t1 }) });
-      record(`run: ${S1} at ${e0} and ${S2} at ${e1} are playback targets with a qualified key function and the Master fader function, both inactive`, t0.playbackTarget && t1.playbackTarget && isQualified(t0.functions?.keyPress, QUALIFIED.keys) && isQualified(t1.functions?.keyPress, QUALIFIED.keys) && norm(t0.functions?.fader) === "master" && t0.active === false && t1.active === false, { t0: targetSummary({ available: true, value: t0 }), t1: targetSummary({ available: true, value: t1 }) });
+      record(`run: ${S1} at ${e0} and ${S2} at ${e1} are playback targets with a qualified key function and the Master fader function, both inactive`, sequenceRef(t0.assigned) === S1 && sequenceRef(t1.assigned) === S2 && t0.playbackTarget && t1.playbackTarget && isQualified(t0.functions?.keyPress, QUALIFIED.keys) && isQualified(t1.functions?.keyPress, QUALIFIED.keys) && norm(t0.functions?.fader) === "master" && t0.active === false && t1.active === false, { t0: targetSummary({ available: true, value: t0 }), t1: targetSummary({ available: true, value: t1 }) });
       const keyFn0 = t0.functions.keyPress;
       await bindTo({ executors: [e0, e1], executorPage: PAGE });
 
@@ -441,7 +449,8 @@ async function main() {
       const cRe = await context({ executors: [e0, e1], executorPage: PAGE, cached: true });
       const rRel = await submit([ev.up(e1)], "up e1 after the reassignment"); await settle();
       let stR = await status();
-      record(`run: ${e1} reassigned (${S2} -> ${S1}) while held: the release is admitted but NOT issued on the replacement; it is an assignment-changed record naming ${S2}, nothing unresolved from a raise`, rH.result.outcomes[0].accepted && cRe.executors[1].value.assigned?.addr === S1 && rRel.result.outcomes[0].accepted && stR.lastApplied?.outcome === "unresolved" && stR.lastApplied.reassigned === true && stR.unresolved.length === 1 && stR.unresolved[0].resolved?.assigned === S2 && stR.unresolved[0].nowAssigned === S1, { held: outcomesOf(rH), target: targetSummary(cRe.executors[1]), release: outcomesOf(rRel), lastApplied: stR.lastApplied, unresolved: stR.unresolved });
+      const addrOf = (ref) => (ctxAll.result.executors.find((x) => x.available && sequenceRef(x.value.assigned) === ref)?.value.assigned?.addr) ?? ref;
+      record(`run: ${e1} reassigned (${S2} -> ${S1}) while held: the release is admitted but NOT issued on the replacement; it is an assignment-changed record naming ${S2}, nothing unresolved from a raise`, rH.result.outcomes[0].accepted && sequenceRef(cRe.executors[1].value.assigned) === S1 && rRel.result.outcomes[0].accepted && stR.lastApplied?.outcome === "unresolved" && stR.lastApplied.reassigned === true && stR.unresolved.length === 1 && stR.unresolved[0].resolved?.assigned === addrOf(S2) && stR.unresolved[0].nowAssigned === addrOf(S1), { held: outcomesOf(rH), target: targetSummary(cRe.executors[1]), release: outcomesOf(rRel), lastApplied: stR.lastApplied, unresolved: stR.unresolved });
       const rec0 = await A.request("control.recover");
       record("run: control.recover keeps it unresolved while the replacement is assigned (nothing issued)", rec0.ok && (rec0.result.unresolved?.length ?? 0) === 1 && (rec0.result.resolved?.length ?? 0) === 0, rec0);
       await cmd(`Assign ${S2} At Page ${PAGE}.${e1}`); await sleep(700);

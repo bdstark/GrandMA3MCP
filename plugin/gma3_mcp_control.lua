@@ -223,7 +223,8 @@ local KEY_FUNCTIONS = {
 local FADER_FUNCTIONS = {
   master    = { name = "Master",     keyword = "FaderMaster",    from = 0, to = 100, neutral = 100, endpoints = { 0, 100 }, qualified = "KB-16 live: setfader Page 1.191 25 -> GetFader{FaderMaster} = 25; the KB-22 probe places FaderMaster Page <p>.<e> At" },
   temp      = { name = "Temp",       keyword = "FaderTemp",      from = 0, to = 100, neutral = 0,   endpoints = { 0, 100 }, stateful = true, qualified = "KB-16 live: FaderTemp Page 1.210 At 60 -> 60% and the sequence becomes active; At 0 -> inactive" },
-  rate      = { name = "Rate",       keyword = "FaderRate",      from = 0, to = 100, neutral = 50,  endpoints = { 0, 50, 100 }, qualified = false },
+  rate      = { name = "Rate",       keyword = "FaderRate",      from = 0, to = 100, neutral = 50,  endpoints = { 0, 50, 100 }, qualified = false,
+                evidence = "KB-22 live: on an executor whose Fader property was set to Rate, FaderRate Page 1.181 At 75 answered OK and the object's GetFader{FaderRate} read 42.998 (from 50): At does not take the GetFader scale for this function; unqualified until the mapping is measured" },
   speed     = { name = "Speed",      keyword = "FaderSpeed",     from = 0, to = 100, neutral = 50,  endpoints = { 0, 50, 100 }, qualified = false },
   x         = { name = "X",          keyword = "FaderX",         from = 0, to = 100, neutral = nil, endpoints = { 0, 100 }, stateful = true, qualified = false },
   xa        = { name = "XA",         keyword = "FaderXA",        from = 0, to = 100, neutral = nil, endpoints = { 0, 100 }, stateful = true, qualified = false },
@@ -350,7 +351,7 @@ local function executorOperation(kind, resolved, value)
     local entry, k = functionEntry(FADER_FUNCTIONS, resolved["function"])
     if resolved["function"] == nil or resolved["function"] == "" then return nil, "the executor has no configured fader function" end
     if entry == nil then return nil, string.format("the configured fader function '%s' is not qualified (served: %s)", tostring(resolved["function"]), table.concat(qualifiedNames(FADER_FUNCTIONS), ", ")) end
-    if not entry.qualified then return nil, string.format("the configured fader function %s is not qualified yet (served: %s); its range %d..%d%s is recorded but no setter was verified", entry.name, table.concat(qualifiedNames(FADER_FUNCTIONS), ", "), entry.from, entry.to, entry.neutral and string.format(", neutral %d", entry.neutral) or "") end
+    if not entry.qualified then return nil, string.format("the configured fader function %s is not qualified yet (served: %s); its range %d..%d%s is recorded but no setter was verified%s", entry.name, table.concat(qualifiedNames(FADER_FUNCTIONS), ", "), entry.from, entry.to, entry.neutral and string.format(", neutral %d", entry.neutral) or "", entry.evidence and (" (" .. entry.evidence .. ")") or "") end
     local plan = { entry = entry, token = k, keyword = entry.keyword, from = entry.from, to = entry.to, neutral = entry.neutral, address = string.format("Page %d.%d", resolved.pageNo, resolved.executor) }
     if value ~= nil then
       if type(value) ~= "number" or value < 0 or value > 1 then return nil, "a position must be a number in 0..1 of the travel" end
