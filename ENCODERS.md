@@ -622,13 +622,16 @@ byte-equal on 2026-10-10). The bridge (0.18.0) and the TypeScript are unchanged.
 matrix, the measurement harness and every record are the surface repository's (mtpnxk `KEYBOARD.md` "KB-24",
 `docs/device-profiles.md`, `docs/qualification-matrix.md`, `docs/probes/kb-24-measure-macos.md`).
 
-**Finding against the control module's accounting (not yet a defect):** the surface's harness, run against a
-console stub without an encoder bar, showed that a motion event refused `target-unavailable` is not committed to the
-device's per-device sequence (`orderEvent` / `commitOrder` run only for admitted and rate-dropped events), so the
-next admitted event of that device reports the refused ones as `lost`. Nothing was lost (the link's counters were
-zero). Whether it shows on onPC decides what happens, per this KB's rule that shared-module defects are fixed only
-when qualification identifies them: if a live run reports loss for refused-target events, the fix is to commit them
-to the sequence as rate-dropped events already are, with a regression test in `test/lua/`, then a re-vendor.
+**Defects identified by the qualification (surface harness against onPC 2.5.1, 2026-10-10; mtpnxk
+`docs/probes/kb-24-measure-macos.md`):** (1) `gma3_mcp_control` reports every refused event (`target-unavailable`,
+`conflict`) as loss: `orderEvent` runs but `commitOrder` does not for a refusal, so the next admitted event of the
+device sees a gap (zero when everything is admitted; the fix is to commit refused events as rate-dropped ones are).
+(2) The control queue holds single-detent intents (64 per session, `controlWorkPerTick` 4 applied per tick) and
+overflows `queue-full` at about 70 events/s, which two encoders at 20 detents/s plus a strip reach on 2.5.1; queued
+relative intents of one control should merge. (3) The surface plugin's tick costs 13 ms idle (per-tick console reads
+incl. the feedback module's bounded executor reads) and saturates at 100 detents/s, losing key taps; the service's
+per-control motion bound (one packet per 5 ms) should tighten too. None is fixed in this branch: fixes change
+module behaviour and need their own review, then a re-vendor.
 
 **Pending (surface repository, operator at the surfaces):** the onPC run of the harness (press-to-effect, feedback
 latency and the plugin loop's load against the real console; agreed thresholds), the physical NX-K rotaries and the
