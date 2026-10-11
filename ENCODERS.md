@@ -661,6 +661,11 @@ their count; dropped history keeps its count and highest number, so a later even
 inside the forgotten region reports an upper bound with `lostUncertain = true` (the device stays uncertain until the
 order passed the region). The regression test now expects 0 lost after 1000 refusals. Set pinned at `9cf16598b75fd65d10695ef651e9465876c7edbf`.
 
+**Review of PR #28 (round 3):** the forgotten count could regain a false certainty: a retry of a forgotten refusal
+was counted twice (200 missing reported as 199, certain), and an eviction after the order entered the region treated
+the unknown count as zero. An explicit `refusedForgottenUnknown` state is now set by either and stays until the order
+passed the region; while set, the figure is an upper bound with `lostUncertain`. Set pinned at `bdcfe6edf74770f7a2eac272e054d4b341a35e6f`.
+
 **Pending (surface repository, operator at the surfaces):** the onPC run of the harness (press-to-effect, feedback
 latency and the plugin loop's load against the real console; agreed thresholds), the physical NX-K rotaries and the
 M-Touch / M-Play through `run`, two connected surfaces, USB removal, plugin restart, context changes and stale
