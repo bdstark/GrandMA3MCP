@@ -905,8 +905,8 @@ components the show's definitions actually colour); the record is pending (see E
 
 ## Vendoring into another plugin (mtpnxk)
 
-Use the immutable upstream revision **`b07c71bab98bc3b5268328ebcd65458abe2bfa9d`** (KB-23, hardkeys 0.10.0 / feedback 0.6.0 /
-control 0.5.0) for the current module set; the earlier pins were `d77888d1010d405ab97e8a3debb2be3cd6764839` (KB-22 after the PR #26 review round 3, feedback 0.5.0 / control 0.5.0), `ce91371314e467cfd1afb072e9772381787e6767` (KB-22 after review round 2), `3e0e7c4f7035e58de18acbad38ba96ed382ea7d7` (KB-22 after review round 1), `04daff7ef7ba12d0a13f08d703caf8cf8c708a04` (KB-22 after the live run), `0315e181bb6b0ff4e22976797a616c8db8720585` (KB-22 before the live run), `d60bb06e080ce2fef2b593b96f0de119462a0767` (KB-21 after the PR #25 review round 1, hardkeys 0.10.0 /
+Use the immutable upstream revision **`730395f2eca2227e073c9d4dbb5495ea53b22b93`** (KB-23 after the live run, hardkeys 0.10.0 / feedback 0.6.0 /
+control 0.5.0) for the current module set; the earlier pins were `b07c71bab98bc3b5268328ebcd65458abe2bfa9d` (KB-23 before the live run), `d77888d1010d405ab97e8a3debb2be3cd6764839` (KB-22 after the PR #26 review round 3, feedback 0.5.0 / control 0.5.0), `ce91371314e467cfd1afb072e9772381787e6767` (KB-22 after review round 2), `3e0e7c4f7035e58de18acbad38ba96ed382ea7d7` (KB-22 after review round 1), `04daff7ef7ba12d0a13f08d703caf8cf8c708a04` (KB-22 after the live run), `0315e181bb6b0ff4e22976797a616c8db8720585` (KB-22 before the live run), `d60bb06e080ce2fef2b593b96f0de119462a0767` (KB-21 after the PR #25 review round 1, hardkeys 0.10.0 /
 feedback 0.5.0 / control 0.4.0), `597ba47f7e28c0c50673e8c405b555b942c9b984` (KB-20 after the PR #24 review, hardkeys 0.10.0 / feedback 0.4.0 / control 0.3.0), `01e1561490fc39ce4e2d510e2d170c9c09e4bc53`
 (KB-20 before the review), `107f54804a9f7183e8bbedee2ebbac70e38e06fd` (KB-19, hardkeys
 0.10.0 / feedback 0.4.0 / control 0.2.0), `9f08f871f864084afcd670008310b285e8b31bfc` (KB-18, hardkeys
@@ -920,7 +920,7 @@ manifest, not an automatic updater or a runtime dependency on GitHub.
 | File | Module version | API version | SHA-256 |
 | --- | --- | --- | --- |
 | `plugin/gma3_mcp_hardkeys.lua` | 0.10.0 | 1 | `a57ebd29af3b2c7e9e06ef3dcd8b7059c775db83b0dc61760f49e75973cc7dc3` |
-| `plugin/gma3_mcp_feedback.lua` | 0.6.0 | 1 | `4b0938a11dfd94e0e9a65b6fa949e00ae37b8af4388df3e1590c5440b6be0bba` |
+| `plugin/gma3_mcp_feedback.lua` | 0.6.0 | 1 | `1126d6f3ebc82fc86f8ebc5c435ecefc4b60110c4385c7d29316f2ffabd155c6` |
 | `plugin/gma3_mcp_control.lua` | 0.5.0 | 1 | `2c5b9949b626a61d662970dd353a87ab264d0d9a1c39c3b27c3d8a85e263f50b` |
 
 1. Obtain the Lua files from that exact revision of `bdstark/GrandMA3MCP`, rather than a moving branch.
