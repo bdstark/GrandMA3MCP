@@ -74,7 +74,7 @@
 -- package.loaded.
 
 local NAME        = "gma3_mcp_feedback"
-local VERSION     = "0.7.0"
+local VERSION     = "0.7.1"
 local API_VERSION = 1
 
 local DEFAULTS = {
@@ -200,8 +200,17 @@ local function encoderUi(d, displayIndex)
   local grid = field(ebc, "EncoderBarGrid")
   local base = field(field(grid, "EncoderBarBase"), "EncoderBarContainer")
   local selector = field(base, "EncoderBankSelector")
-  local presetBar = findClass(field(grid, "EncoderBar"), "PresetBar")
-  if selector == nil or presetBar == nil then return nil, "display " .. displayIndex .. " has an encoder bar without EncoderBankSelector/PresetBar" end
+  local bar = field(grid, "EncoderBar")
+  local presetBar = findClass(bar, "PresetBar")
+  -- KB-24 hardware pass: name what replaced the attribute encoders, so the reason is actionable. With onPC's Color
+  -- Picker open the bar holds the picker's encoders (a ColorEditBar: x, y, brightness, colour space) instead of the
+  -- PresetBar; those are not attribute slots and are not served (a feature gap, not a fault).
+  if presetBar == nil and findClass(bar, "ColorEditBar") ~= nil then
+    return nil, "display " .. displayIndex .. " shows the colour picker's encoders (ColorEditBar: x, y, brightness, colour space), not attribute encoders; close the Color Picker to adjust attributes"
+  end
+  if selector == nil and presetBar == nil then return nil, "display " .. displayIndex .. " has an encoder bar without its bank selector and attribute encoders (another view covers it, e.g. the Command Section)" end
+  if selector == nil then return nil, "display " .. displayIndex .. " has an encoder bar without its bank selector (EncoderBankSelector; another view covers it, e.g. the Command Section)" end
+  if presetBar == nil then return nil, "display " .. displayIndex .. " has an encoder bar without attribute encoders (no PresetBar)" end
   return { display = displayIndex, selector = selector, presetBar = presetBar }
 end
 
