@@ -79,6 +79,13 @@ revalidated, frozen releases on a current observation in the same pool, same-ses
 (the same steps; the reassignment record now comes from the observation of page 1's executor 181 through the binding,
 `control.recover` re-judges it, the Unpress goes out once Sequence 5528 is back). The report file was replaced by this run.
 
+## Re-run after review round 2 (2026-10-10)
+
+The set at `ce91371` (the verification of a frozen release is the bridge's live `deps.observe` read only; a hold whose
+down never applied is discarded at the session's end; an unresolved release reserves its target) reinstalled the same
+way: `node scripts/kb22-probe.mjs run` **30/30** again (the reassignment step's record now comes from the live read of
+page 1's executor 181; `control.recover` re-judged it and issued the Unpress once Sequence 5528 was back).
+
 ## Not verified here
 
 Rate, Speed, X/XA/XB, CrossFade and Time as fader functions (unqualified, refused); executor encoders (refused); the
