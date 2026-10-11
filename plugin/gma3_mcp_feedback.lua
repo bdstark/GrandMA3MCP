@@ -74,13 +74,16 @@
 -- package.loaded.
 
 local NAME        = "gma3_mcp_feedback"
-local VERSION     = "0.6.0"
+local VERSION     = "0.7.0"
 local API_VERSION = 1
 
 local DEFAULTS = {
   maxItems           = 64,    -- items per readMany()/watch(); the rest are reported truncated, not read
   maxExecutors       = 32,    -- executors expanded by itemsFor() per request
   maxReadsPerService = 8,     -- watched items read per service() call (bounded per-frame work)
+  priorityStateReads = 0,     -- KB-24 (0.7.0): read due non-executor items (state readers, pool, page, encoder bank, slots)
+                              -- before the executor targets inside the same budget; a consumer sizes the budget above
+                              -- its non-executor item count. 0 (off): one round robin over every item (the KB-17 behaviour); 1: on
   pollIntervalMs     = 100,   -- a watched item is not re-read before this much time passed
   staleMs            = 2000,  -- a cached observation older than this is reported stale
   identityCheckMs    = 1000,  -- show file / user / profile identity re-read at most this often
@@ -1254,12 +1257,30 @@ function Instance:service(now)
   local n = #self._watch
   if n > 0 then
     local interval = self._config.pollIntervalMs / 1000
+    local function isDue(w)
+      local c = self._cache[w.key]
+      return c == nil or c.epoch ~= self._epoch or (now - c.observedAt) >= interval
+    end
+    -- KB-24 (0.7.0): two classes inside the same budget. Due items that are not executor targets (the state
+    -- readers, the data pool, the page, the encoder bank and slots: what a surface shows as values and modes) are
+    -- read first on every call; the executor targets (up to maxExecutors of them) share what is left of the budget
+    -- in a round robin. A consumer sizes maxReadsPerService above its non-executor item count. Before, a keyword or slot
+    -- value waited behind ~100 executor items and took 200-600 ms to read back on onPC 2.5.1.
+    local priority = (self._config.priorityStateReads or 0) > 0
+    if priority then
+      for _, w in ipairs(self._watch) do
+        if reads >= self._config.maxReadsPerService then break end
+        if w.name ~= "executorTarget" and isDue(w) then
+          self._cache[w.key] = self:read(w.name, w.params, now)
+          reads = reads + 1
+        end
+      end
+    end
     for _ = 1, n do
       if reads >= self._config.maxReadsPerService then break end
       self._cursor = (self._cursor % n) + 1
       local w = self._watch[self._cursor]
-      local c = self._cache[w.key]
-      if c == nil or c.epoch ~= self._epoch or (now - c.observedAt) >= interval then
+      if (not priority or w.name == "executorTarget") and isDue(w) then
         self._cache[w.key] = self:read(w.name, w.params, now)
         reads = reads + 1
       end

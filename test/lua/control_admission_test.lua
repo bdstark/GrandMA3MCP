@@ -27,7 +27,7 @@ local CTL = assert(load(src, "=gma3_mcp_control.lua", "t", env))("test_plugin", 
 -------------------------------------------------------------------------------
 -- Loading contract
 -------------------------------------------------------------------------------
-check("module loads without console API", type(CTL) == "table" and CTL.VERSION == "0.6.0" and CTL.API_VERSION == 1 and type(CTL.new) == "function")
+check("module loads without console API", type(CTL) == "table" and CTL.VERSION == "0.7.0" and CTL.API_VERSION == 1 and type(CTL.new) == "function")
 check("module table is read-only", not pcall(function() CTL.x = 1 end) and CTL.x == nil)
 check("module registers in the signal table", signals.__gma3_mcp_modules.gma3_mcp_control == CTL)
 check("publishes nothing globally", package.loaded.gma3_mcp_control == nil and _G.gma3_mcp_control == nil)
@@ -180,6 +180,32 @@ do
 end
 
 -------------------------------------------------------------------------------
+-- KB-24 (0.7.0): a delta that merges into a queued intent skips the binding lookup and target resolution
+-------------------------------------------------------------------------------
+do
+  local inst, b = fresh()
+  inst:openSession({ id = "s" }, 1)
+  local r1 = inst:submit("s", 1, rel(1, 1, 1))
+  check("the first delta resolves and queues", r1.accepted and r1.queued == 1 and r1.early == nil)
+  -- The binding's slots become unavailable: a delta on another slot is refused, but a delta that merges into the
+  -- queued slot-1 intent is admitted without resolving (the queued intent already passed resolution).
+  local slots = binding.slots; binding.slots = { available = false, reason = "encoder bar gone" }
+  local r2, e2 = inst:submit("s", 1.001, rel(2, 1, 1))
+  local _, e3 = inst:submit("s", 1.002, rel(3, 2, 1, { control = "Rotary2" }))
+  binding.slots = slots
+  check("merged early: accepted, coalesced, no resolution", r2.accepted and r2.coalesced == true and r2.early == true and r2.queued == 1 and r2.target == r1.target, J(r2))
+  check("a delta that cannot merge still resolves (and is refused here)", e3 and e3.code == "target-unavailable", J(e3))
+  check("counters: merged early counted as coalesced", inst:status().counters.coalesced == 1 and inst:status().counters.mergedEarly == 1, J(inst:status().counters))
+  -- A different gesture, generation or fine flag does not merge early.
+  local r4 = inst:submit("s", 1.003, rel(4, 1, 1, { gesture = 7 }))
+  check("a different gesture is its own intent", r4.accepted and r4.coalesced == nil and r4.queued == 2, J(r4))
+  local r5 = inst:submit("s", 1.004, rel(5, 1, 1, { gesture = 7, fine = true }))
+  check("a different fine flag is its own intent", r5.accepted and r5.coalesced == nil and r5.queued == 3, J(r5))
+  inst:service(1.1)
+  check("applied in order: slot1 +2 (merged), slot1 +1 (gesture 7), slot1 +1 fine", b.intents[1].delta == 2 and b.intents[1].events == 2 and b.intents[2].delta == 1 and b.intents[3].fine == true, J(b.intents))
+end
+
+-------------------------------------------------------------------------------
 -- KB-24: queue merging across other controls' motion
 -------------------------------------------------------------------------------
 do
@@ -269,11 +295,13 @@ do
   check("fine flag and gesture travel with the intent", b.intents[4].fine == true and b.intents[4].gesture == 2, J(b.intents[4]))
   out = inst:service(1.06)
   check("the rest follows: button then the post-boundary delta", out.applied == 2 and b.intents[5].kind == "button" and b.intents[5].down == true and b.intents[6].delta == 2, J(b.intents))
-  -- A changed resolution in the binding changes the generation upstream; locally, a different resolution never merges.
+  -- A changed resolution in the binding changes the generation upstream; locally, a different resolution never merges
+  -- (KB-24: within earlyMergeMs a delta merges without resolving, reusing the queued intent's resolution; after it the
+  -- resolution is compared again, so this scene waits past the bound).
   inst:submit("s", 1.07, rel(10, 1, 1))
   local saved = binding.slots.value.slots[1].resolution
   binding.slots.value.slots[1].resolution = "Fine"
-  inst:submit("s", 1.071, rel(11, 1, 1))
+  inst:submit("s", 1.2, rel(11, 1, 1))
   binding.slots.value.slots[1].resolution = saved
   check("a different resolution never merges", inst:status().sessions.s.queued == 2)
   -- Applying intents while the binding generation is the same still works after a boundary from another device.

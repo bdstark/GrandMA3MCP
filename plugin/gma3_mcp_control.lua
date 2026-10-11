@@ -227,7 +227,7 @@
 --   * Input is disabled on a new instance. enableInput(adapter) is the operator's explicit decision.
 
 local NAME        = "gma3_mcp_control"
-local VERSION     = "0.6.0"
+local VERSION     = "0.7.0"
 local API_VERSION = 1
 
 local EVENT_TYPES = { relative = true, absolute = true, touch = true, button = true }
@@ -278,6 +278,8 @@ local DEFAULT_CONFIG = {
   defaultLeaseMs     = 15000,
   maxLeaseMs         = 120000,
   maxQueue           = 64,     -- queued intents per session
+  earlyMergeMs       = 100,    -- KB-24 (0.7.0): a delta merges into a queued intent of its control without resolving its
+                               -- target again only while that intent is younger than this (its resolution is reused)
   maxEventAgeMs      = 250,    -- motion older than this when applied is dropped
   maxEventsPerSecond = 400,    -- per device; motion and position only
   maxWorkPerService  = 4,      -- intents applied per service()
@@ -1068,6 +1070,24 @@ function Instance:submit(sessionId, now, ev)
     return refuse(errOf("rate", string.format("device %s exceeded %d events/s; the event is dropped, not deferred", ev.device, self._config.maxEventsPerSecond)))
   end
   local gkey = gestureKey(ev)
+  -- KB-24 (0.7.0): a relative delta that can merge into a queued intent of its control skips the binding lookup and
+  -- the target resolution (the costly part of admission on the console): the queued intent already passed them for
+  -- the same target, generation, binding revision, gesture and fine flag. Ordering and the rate limit above still
+  -- see every event; a boundary or another intent of the control queued after it stops the merge.
+  if ev.type == "relative" then
+    local merged = self:_mergeEarly(s, ev, lost, now)
+    if merged then
+      commitOrder(self, d, ev, lost, late)
+      local g = s.gestures[gkey]
+      if g then g.lastAt = now end
+      s.counters.admitted = s.counters.admitted + 1; s.counters.lost = s.counters.lost + lost
+      self._counters.admitted = self._counters.admitted + 1; self._counters.lost = self._counters.lost + lost
+      s.counters.coalesced = s.counters.coalesced + 1; self._counters.coalesced = self._counters.coalesced + 1
+      self._counters.mergedEarly = (self._counters.mergedEarly or 0) + 1
+      logEvent(self, { at = now, session = sessionId, type = ev.type, device = ev.device, control = ev.control, seq = ev.seq, admitted = true, coalesced = true, early = true, target = merged.targetKey })
+      return { accepted = true, queued = merged.position, coalesced = true, lost = lost, target = merged.targetKey, generation = merged.generation, early = true }
+    end
+  end
   local existing = s.gestures[gkey]
   if release then
     -- A touch end or button release only needs the hold it ends. It is admitted without a binding,
@@ -1190,6 +1210,34 @@ function Instance:submit(sessionId, now, ev)
   logEvent(self, { at = now, session = sessionId, type = ev.type, device = ev.device, control = ev.control, seq = ev.seq, admitted = true, coalesced = queued.coalesced or nil, target = target.key })
   return { accepted = true, queued = queued.position, coalesced = queued.coalesced or nil, superseded = queued.superseded or nil, lost = lost, target = target.key,
            generation = snap.generation, mixed = target.mixed, stateful = target.stateful }
+end
+
+-- KB-24 (0.7.0): the queued relative intent of this control a new delta may merge into without resolving its
+-- target again: same device/control, target, generation, binding revision, gesture and fine flag, with no boundary
+-- and no other intent of the control queued after it. Returns the intent (merged) or nil.
+local function sameTarget(a, b)
+  if type(a) ~= "table" or type(b) ~= "table" then return a == b end
+  return a.slot == b.slot and a.executor == b.executor and a.element == b.element and a.page == b.page
+end
+function Instance:_mergeEarly(s, ev, lost, now)
+  ev.at = now
+  local q = s.queue
+  for i = #q, 1, -1 do
+    local e = q[i]
+    if e.kind == "touch" or e.kind == "button" then return nil end
+    if e.device == ev.device and e.control == ev.control then
+      if e.kind == "relative" and e.generation == ev.generation and (ev.binding == nil or e.binding == ev.binding) and e.gesture == ev.gesture
+         and e.fine == (ev.fine or nil) and sameTarget(e.target, ev.target) and (ev.at - (e.firstAt or e.at)) * 1000 <= self._config.earlyMergeMs then
+        e.delta = e.delta + ev.delta
+        e.events = e.events + 1
+        e.lost = e.lost + lost
+        e.at, e.seq = e.at, ev.seq
+        return { position = i, targetKey = e.targetKey, generation = e.generation }
+      end
+      return nil
+    end
+  end
+  return nil
 end
 
 -- Queue discipline. Relative deltas merge into the most recent queued relative intent of the same key (same
