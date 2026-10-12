@@ -2,15 +2,17 @@
   "mode": "run",
   "host": "127.0.0.1",
   "port": 9800,
-  "startedAt": "2026-10-12T09:08:47.399Z",
+  "startedAt": "2026-10-12T09:31:24.356Z",
   "config": {
     "fid": 901,
     "universe": 2,
     "seq": 951,
     "mode": "6.3",
     "importFile": "generic@dimmer.pxml",
+    "importName": "Dimmer",
     "phases": [
       "patch",
+      "import",
       "dialogs"
     ]
   },
@@ -110,13 +112,21 @@
           "Mega Hex Par"
         ],
         "liveFp": {
-          "types": 6,
-          "typeHash": 4178312287,
-          "fixtures": 26,
-          "fixtureHash": 998371227
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
         },
         "modal": false,
         "seq": false
+      }
+    },
+    {
+      "name": "the live patch's fingerprint is complete (every collection and property read, under the object limit)",
+      "pass": true,
+      "detail": {
+        "complete": true,
+        "objects": 3177,
+        "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
       }
     },
     {
@@ -199,20 +209,18 @@
       }
     },
     {
-      "name": "run: the copy holds nothing but the live patch and the probe's own fixtures on entry",
+      "name": "run: the copy holds nothing but the live patch and the probe's own fixtures on entry (complete fingerprints equal)",
       "pass": true,
       "detail": {
-        "copyFp": {
-          "types": 6,
-          "typeHash": 4178312287,
-          "fixtures": 26,
-          "fixtureHash": 998371227
+        "copy": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
         },
-        "liveFp": {
-          "types": 6,
-          "typeHash": 4178312287,
-          "fixtures": 26,
-          "fixtureHash": 998371227
+        "live": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
         }
       }
     },
@@ -276,17 +284,15 @@
       "pass": true,
       "detail": {
         "inCopy": true,
-        "copyFp": {
-          "types": 6,
-          "typeHash": 4178312287,
-          "fixtures": 26,
-          "fixtureHash": 998371227
+        "copy": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
         },
-        "liveFp": {
-          "types": 6,
-          "typeHash": 4178312287,
-          "fixtures": 26,
-          "fixtureHash": 998371227
+        "live": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
         },
         "copyKb25": [
           "KB25 Probe|901|2.001",
@@ -335,20 +341,18 @@
       }
     },
     {
-      "name": "run: the copy holds nothing but the live patch and the probe's own fixtures on entry",
+      "name": "run: the copy holds nothing but the live patch and the probe's own fixtures on entry (complete fingerprints equal)",
       "pass": true,
       "detail": {
-        "copyFp": {
-          "types": 6,
-          "typeHash": 4178312287,
-          "fixtures": 26,
-          "fixtureHash": 998371227
+        "copy": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
         },
-        "liveFp": {
-          "types": 6,
-          "typeHash": 4178312287,
-          "fixtures": 26,
-          "fixtureHash": 998371227
+        "live": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
         }
       }
     },
@@ -397,17 +401,15 @@
       "pass": true,
       "detail": {
         "inCopy": true,
-        "copyFp": {
-          "types": 6,
-          "typeHash": 4178312287,
-          "fixtures": 26,
-          "fixtureHash": 998371227
+        "copy": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
         },
-        "liveFp": {
-          "types": 6,
-          "typeHash": 4178312287,
-          "fixtures": 26,
-          "fixtureHash": 998371227
+        "live": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
         },
         "copyKb25": [
           "KB25 Probe|901|",
@@ -493,20 +495,18 @@
       }
     },
     {
-      "name": "run: the copy holds nothing but the live patch and the probe's own fixtures on entry",
+      "name": "run: the copy holds nothing but the live patch and the probe's own fixtures on entry (complete fingerprints equal)",
       "pass": true,
       "detail": {
-        "copyFp": {
-          "types": 6,
-          "typeHash": 4178312287,
-          "fixtures": 26,
-          "fixtureHash": 998371227
+        "copy": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
         },
-        "liveFp": {
-          "types": 6,
-          "typeHash": 4178312287,
-          "fixtures": 26,
-          "fixtureHash": 998371227
+        "live": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
         }
       }
     },
@@ -640,53 +640,59 @@
       "pass": true,
       "detail": {
         "inCopy": true,
-        "copyFp": {
-          "types": 6,
-          "typeHash": 4178312287,
-          "fixtures": 26,
-          "fixtureHash": 998371227
+        "copy": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
         },
-        "liveFp": {
-          "types": 6,
-          "typeHash": 4178312287,
-          "fixtures": 26,
-          "fixtureHash": 998371227
+        "live": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
         },
         "copyKb25": [],
         "expected": []
       }
     },
     {
-      "name": "run: the commit leaves the live patch as it started (fixture count, no KB25 fixtures, FIDs and DMX free again)",
+      "name": "run: the commit leaves the live patch as it started (fixture count, no KB25 fixtures, the starting fingerprint)",
       "pass": true,
       "detail": {
         "dest": "Root",
         "liveFixtures": 26,
-        "liveKb25": []
-      }
-    },
-    {
-      "name": "run: ChangeDestination \"FixtureTypes\" inside the copy",
-      "pass": true,
-      "detail": {
-        "dest": "FixtureTypes",
-        "inCopy": true,
-        "copyFp": {
-          "types": 6,
-          "typeHash": 4178312287,
-          "fixtures": 26,
-          "fixtureHash": 998371227
+        "liveKb25": [],
+        "live": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
         },
-        "liveFp": {
-          "types": 6,
-          "typeHash": 4178312287,
-          "fixtures": 26,
-          "fixtureHash": 998371227
+        "start": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
         }
       }
     },
     {
-      "name": "run: Import Library \"generic@dimmer.pxml\" in the copy's FixtureTypes adds exactly one type with no dialog (tracked by number and name)",
+      "name": "run: ChangeDestination \"FixtureTypes\" inside the copy (complete fingerprints equal)",
+      "pass": true,
+      "detail": {
+        "dest": "FixtureTypes",
+        "inCopy": true,
+        "copy": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
+        },
+        "live": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
+        }
+      }
+    },
+    {
+      "name": "run: Import Library \"generic@dimmer.pxml\" in the copy's FixtureTypes reports success and adds exactly one type named \"Dimmer\" with no dialog (claimed by number and name)",
       "pass": true,
       "detail": {
         "last": "OK: Import Library \"generic@dimmer.pxml\"",
@@ -696,6 +702,7 @@
             "name": "Dimmer"
           }
         ],
+        "reason": null,
         "modal": false
       }
     },
@@ -739,24 +746,22 @@
       "pass": true,
       "detail": {
         "inCopy": true,
-        "copyFp": {
-          "types": 6,
-          "typeHash": 4178312287,
-          "fixtures": 26,
-          "fixtureHash": 998371227
+        "copy": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
         },
-        "liveFp": {
-          "types": 6,
-          "typeHash": 4178312287,
-          "fixtures": 26,
-          "fixtureHash": 998371227
+        "live": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
         },
         "copyKb25": [],
         "expected": []
       }
     },
     {
-      "name": "run: after the commit the live types are unchanged",
+      "name": "run: after the commit the live types are unchanged and the live patch has its starting fingerprint",
       "pass": true,
       "detail": {
         "liveTypes": [
@@ -766,7 +771,17 @@
           "Thrill Mini Profile",
           "36PCS 4in1 LED Wall Washer",
           "Mega Hex Par"
-        ]
+        ],
+        "live": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
+        },
+        "start": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
+        }
       }
     },
     {
@@ -781,7 +796,7 @@
       "name": "run: CmdIndirect of a Store over an existing cue returns at once and the bridge keeps answering while the dialog is open",
       "pass": true,
       "detail": {
-        "answerMs": 13,
+        "answerMs": 16,
         "pong": true
       }
     },
@@ -806,7 +821,7 @@
           "Release",
           "Cancel"
         ],
-        "token": 1
+        "token": 8
       }
     },
     {
@@ -926,8 +941,8 @@
       "name": "run: the reopened Store dialog is inspected and bound under a new token",
       "pass": true,
       "detail": {
-        "token": 2,
-        "firstToken": 1
+        "token": 9,
+        "firstToken": 8
       }
     },
     {
@@ -1137,9 +1152,19 @@
       ]
     },
     {
-      "name": "run: the end state matches the start (Root, no copy, no modal, the live patch's fingerprint, no KB25 fixtures, no scratch sequence)",
+      "name": "run: the end state matches the start (Root, no copy, no modal, the live patch's starting fingerprint, no KB25 fixtures, no scratch sequence)",
       "pass": true,
       "detail": {
+        "live": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
+        },
+        "start": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
+        },
         "dest": "Root",
         "copyCount": 0,
         "modal": false,
@@ -1157,7 +1182,7 @@
       }
     }
   ],
-  "finishedAt": "2026-10-12T09:08:51.318Z",
+  "finishedAt": "2026-10-12T09:32:48.074Z",
   "failed": 0,
-  "passed": 54
+  "passed": 55
 }

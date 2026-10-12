@@ -11,7 +11,7 @@
 //                                                           scratch sequence's Store / Label dialogs answered by Mouse
 //                                                           clicks, Escape / Enter and the text field's Content
 //
-// KB25_PHASES=patch,dialogs (default both) limits `run` to one half.
+// KB25_PHASES=patch,import,dialogs (default all three) limits `run` to some of its phases.
 //
 // Rules the run keeps (the manual pass and the review of PR #31 established why):
 // - Every command that changes the command-line destination or may open a dialog goes through CmdIndirect, never Cmd():
@@ -21,10 +21,14 @@
 //   refused prerequisite (a sequence that already exists, a destination that never changed) never leads to the next
 //   mutation.
 // - The patch copy is shared with the operator (the Patch menu fills the same ShowData.Patch and moves the same command
-//   line). Before every commit the copy is compared with the live patch: apart from the probe's own fixtures (named
-//   "KB25 …") every fixture and every fixture type must be unchanged, or nothing is committed and the run stops. The
-//   cleanup deletes the probe's fixtures and only the one fixture type it imported (tracked by number and name; an
-//   ambiguous match deletes nothing), and refuses to commit a copy that holds anything else.
+//   line). Before every commit a fingerprint of the copy is compared with the live patch's: every object of every
+//   patch collection (all stages, fixture types, attribute definitions, ID types, layers, classes, curves, the
+//   universes' own settings) with every property, except the probe's own fixtures (named "KB25 …") and data the
+//   console derives from the patch. Anything else that differs, or a fingerprint that could not be completed, means
+//   nothing is committed and the run stops. The cleanup deletes the probe's fixtures and only a fixture type the run
+//   provably imported (the import reported success for its file and added exactly one type of the expected name;
+//   tracked by number and name, an ambiguous match deletes nothing), and refuses to commit a copy that holds
+//   anything else.
 // - A committed patch edit has no undo (Oops fails), and Oops itself is never sent: if anything else were undoable it
 //   would undo the operator's work.
 // - A dialog is acted on only through a binding made when it was inspected: the exact UI object, a HookDelete callback
@@ -50,7 +54,10 @@ const SEQ = Number(process.env.KB25_SEQ ?? 951);
 // Fixture type and DMX mode as child indexes of LivePatch.FixtureTypes / .DMXModes ("6.3" = Mega Hex Par Ch08 in the test show).
 const [TYPE_IDX, MODE_IDX] = String(process.env.KB25_MODE ?? "6.3").split(".").map(Number);
 const IMPORT_FILE = process.env.KB25_IMPORT ?? "generic@dimmer.pxml";
-const PHASES = new Set(String(process.env.KB25_PHASES ?? "patch,dialogs").split(",").map((s) => s.trim()).filter(Boolean));
+// The fixture type name the import file creates (generic@dimmer.pxml -> "Dimmer"): part of proving the new type is ours.
+const IMPORT_NAME = process.env.KB25_IMPORT_NAME ?? "Dimmer";
+export const ALL_PHASES = ["patch", "import", "dialogs"];
+const PHASES = new Set(String(process.env.KB25_PHASES ?? ALL_PHASES.join(",")).split(",").map((s) => s.trim()).filter(Boolean));
 const PREFIX = "KB25 ";
 /** The DMX writes of the patch phase: [start address in UNIVERSE, fixtures]. 2.101 and 2.201 hold one fixture each. */
 export const DMX_PLAN = [[1, 2], [101, 1], [201, 1]];
@@ -121,9 +128,23 @@ export function kb25Keys(list) {
   return (list ?? []).map((f) => `${f.name}|${f.fid}|${f.patch}`).sort();
 }
 
-/** Whether two patch fingerprints (LUA fingerprint(): fixtures / fixtureHash / types / typeHash) are equal. */
+/** Whether two patch fingerprints (LUA fingerprint(): objects / hash / complete) are equal; an incomplete one never is. */
 export function sameFingerprint(a, b) {
-  return !!a && !!b && a.fixtures === b.fixtures && a.fixtureHash === b.fixtureHash && a.types === b.types && a.typeHash === b.typeHash;
+  return !!a && !!b && a.complete === true && b.complete === true && a.objects === b.objects && a.hash === b.hash;
+}
+
+/**
+ * The fixture type the run may claim after its import: only when the import reported success for this file, exactly
+ * one type is new, and it carries the expected name. Anything else (a failed import, a type someone else added at the
+ * same time, a different name) claims nothing, so the cleanup leaves the copy unresolved instead of deleting a type
+ * that may not be the probe's. Returns { tracked, reason }.
+ */
+export function importOwnership({ before, after, last, file = IMPORT_FILE, expectName = IMPORT_NAME }) {
+  if (last !== `OK: Import Library "${file}"`) return { tracked: null, reason: `the import did not report success for ${file}: ${JSON.stringify(last)}` };
+  const added = addedTypes(before, after);
+  if (added.length !== 1) return { tracked: null, reason: `${added.length} fixture types are new; ownership cannot be attributed`, added };
+  if (added[0].name !== expectName) return { tracked: null, reason: `the new type ${added[0].no} ${JSON.stringify(added[0].name)} is not the expected ${JSON.stringify(expectName)}`, added };
+  return { tracked: added[0], reason: null, added };
 }
 
 /** The entries of `after` that are not in `before` (fixture type lists of { no, name }). */
@@ -161,26 +182,75 @@ local function fixtures(p)
 end
 local function typeNames(p) local t = {} if p.FixtureTypes then for _, c in ipairs(p.FixtureTypes:Children()) do t[#t + 1] = tostring(c.name) end end return t end
 local function typeList(p) local t = {} if p.FixtureTypes then for _, c in ipairs(p.FixtureTypes:Children()) do t[#t + 1] = { no = c.no, name = tostring(c.name) } end end return t end
--- FNV-1a over every fixture that is not the probe's (tree order: name, FID, patch, mode) and every fixture type
--- (number, name): equal fingerprints of the copy and the live patch mean nobody else changed anything.
+-- Fingerprint of a patch: FNV-1a over every object of every collection, in tree order (depth, class, number and every
+-- property in the display role), so the copy and the live patch fingerprint equal exactly when nothing but the
+-- probe's own fixtures differs. Left out, because the console derives them from the patch: the DMX address map, UI and
+-- RT channels, the fixture-type overview, the universes' per-address children, and properties that count children or
+-- describe derived use (COUNT, MEMORYFOOTPRINT, USED, REALUSED, MAXID, GRANTED, PATCHINFO, COARSEPARAMS, PARKEDCOUNT,
+-- TESTERCOUNT), the copy's
+-- edit-state flags (STRUCTURELOCKED, IGNORENETWORK), and the Patch menu's filter state (PatchFilter). A read that fails or more than FP_LIMIT objects mark it incomplete, and an
+-- incomplete fingerprint never equals another.
+local FP_SKIP = { DmxAddresses = true, UIChannels = true, RTChannels = true, FixtureTypesOverview = true, PatchFilter = true }
+local FP_SHALLOW = { DmxUniverses = true }
+-- The console renumbers objects inside DmxCurves whenever a copy is made (DmxCurve 1's internal "Max" point: number and
+-- INDEX 18 live, 19 in the fresh copy, and the live number moved between runs; live 2026-10-12), so their numbers are
+-- not compared there. Every other property, the curve values included, still is.
+local FP_RENUMBERED = { DmxCurves = true }
+-- STRUCTURELOCKED / IGNORENETWORK are the edit state the console sets on the copy (every object of an untouched copy
+-- differs from the live patch in exactly these two, live 2026-10-12), not patch data. REALUSED (a fixture type's use
+-- count), MAXID (an ID type's highest ID in use) and GRANTED (a universe's output grant) follow from the fixtures,
+-- which are fingerprinted themselves: adding one fixture changed exactly these three (live 2026-10-12).
+local FP_PROP_SKIP = { COUNT = true, NO = true, MEMORYFOOTPRINT = true, USED = true, PATCHINFO = true, COARSEPARAMS = true, PARKEDCOUNT = true, TESTERCOUNT = true,
+  STRUCTURELOCKED = true, IGNORENETWORK = true, REALUSED = true, MAXID = true, GRANTED = true }
+local FP_LIMIT = KB25_FP_LIMIT or 200000
 local function fnv(h, s) for i = 1, #s do h = ((h ~ s:byte(i)) * 16777619) & 0xffffffff end return h end
-local function fingerprint(p)
-  local r = { fixtures = 0, fixtureHash = 2166136261, types = 0, typeHash = 2166136261 }
-  if p.Stages and p.Stages:Count() > 0 then
-    local function walk(h)
-      for _, c in ipairs(h:Children()) do
-        if c:GetClass() == "Fixture" then
-          if not isProbe(c) then
-            r.fixtures = r.fixtures + 1
-            r.fixtureHash = fnv(r.fixtureHash, table.concat({ tostring(c.name), tostring(c.FID), tostring(c:Get("Patch")), tostring(c:Get("Mode", Enums.Roles.Display)) }, "|") .. "\\n")
-          end
-          walk(c)
-        end
+-- Property names per class and count, read once per request (PropertyName is half of the cost).
+local FP_NAMES = {}
+local function propNames(h, n)
+  local key = tostring(h:GetClass()) .. "#" .. n
+  local names = FP_NAMES[key]
+  if not names then names = {}; for i = 0, n - 1 do names[i + 1] = h:PropertyName(i) end; FP_NAMES[key] = names end
+  return names
+end
+-- The whole patch, or (with \`only\`) one top-level collection of it: the probe asks per collection to stay inside
+-- the bridge's per-request budget.
+local function fingerprint(p, only)
+  local r = { objects = 0, hash = 2166136261, complete = true }
+  local function add(h, depth, renumbered)
+    if r.objects >= FP_LIMIT then r.complete = false; r.reason = "more than " .. FP_LIMIT .. " objects"; return false end
+    local okc, n = pcall(function() return h:PropertyCount() end)
+    if not okc or type(n) ~= "number" then r.complete = false; r.reason = "PropertyCount failed on " .. tostring(h.name); return false end
+    local parts = { tostring(depth), tostring(h:GetClass()), renumbered and "" or tostring(h.no) }
+    local okn, names = pcall(propNames, h, n)
+    if not okn then r.complete = false; r.reason = "PropertyName failed on " .. tostring(h.name); return false end
+    for _, pn in ipairs(names) do
+      if not FP_PROP_SKIP[pn] and not (renumbered and pn == "INDEX") then
+        local okv, v = pcall(function() return h:Get(pn, Enums.Roles.Display) end)
+        if not okv then r.complete = false; r.reason = "property " .. tostring(pn) .. " of " .. tostring(h.name) .. " could not be read"; return false end
+        parts[#parts + 1] = pn .. "=" .. tostring(v)
       end
     end
-    walk(p.Stages[1].Fixtures)
+    r.objects = r.objects + 1
+    r.hash = fnv(r.hash, table.concat(parts, "\\31") .. "\\n")
+    return true
   end
-  for _, t in ipairs(typeList(p)) do r.types = r.types + 1; r.typeHash = fnv(r.typeHash, tostring(t.no) .. "|" .. t.name .. "\\n") end
+  local function walk(h, depth, renumbered)
+    for _, c in ipairs(h:Children()) do
+      if not r.complete then return end
+      if not (c:GetClass() == "Fixture" and isProbe(c)) then
+        if not add(c, depth, renumbered) then return end
+        walk(c, depth + 1, renumbered)
+      end
+    end
+  end
+  for _, c in ipairs(p:Children()) do
+    if not r.complete then break end
+    if (only == nil or tostring(c.name) == only) and not FP_SKIP[tostring(c.name)] and add(c, 0) then
+      if FP_SHALLOW[tostring(c.name)] then
+        for _, u in ipairs(c:Children()) do if not add(u, 1) then break end end
+      else walk(c, 1, FP_RENUMBERED[tostring(c.name)]) end
+    end
+  end
   return r
 end
 local function modal()
@@ -214,14 +284,39 @@ local function bound(token, expect)
 end
 `;
 
-/** A snapshot of everything the probe judges: destination, copy, live and copy fixtures/types, fingerprints, modal, scratch sequence. */
+/** A snapshot of everything the probe judges: destination, copy, live and copy fixtures/types, modal, scratch sequence. */
 export const LUA_SNAPSHOT = () => `${PRELUDE}
 local live = fixtures(lp)
 local copy = inCopy() and fixtures(sd.Patch) or { count = 0, kb25 = {} }
 return { dest = dest(), last = tostring(CmdObj():Get("LastCommand")), inCopy = inCopy(), patchAddr = Patch():Addr(), liveAddr = lp:Addr(), copyAddr = sd.Patch:Addr(), copyCount = sd.Patch:Count(),
   stage = lp.Stages[1].name, liveFixtures = live.count, liveKb25 = live.kb25, copyFixtures = copy.count, copyKb25 = copy.kb25,
   liveTypes = typeNames(lp), liveTypeList = typeList(lp), copyTypeList = inCopy() and typeList(sd.Patch) or {},
-  liveFp = fingerprint(lp), copyFp = inCopy() and fingerprint(sd.Patch) or false, modal = modal(), seq = seqName() }`;
+  modal = modal(), seq = seqName() }`;
+
+/** The fingerprints of the whole live patch and (when it is open) the whole copy, in one request (small patches, tests). */
+export const LUA_FINGERPRINTS = () => `${PRELUDE}
+return { inCopy = inCopy(), live = fingerprint(lp), copy = inCopy() and fingerprint(sd.Patch) or false }`;
+
+/** The names of the top-level collections the fingerprint covers, for the live patch and (when it is open) the copy. */
+export const LUA_FP_COLLECTIONS = () => `${PRELUDE}
+local function names(p) local t = {} for _, c in ipairs(p:Children()) do if not FP_SKIP[tostring(c.name)] then t[#t + 1] = tostring(c.name) end end return t end
+return { inCopy = inCopy(), live = names(lp), copy = inCopy() and names(sd.Patch) or false }`;
+
+/** The fingerprint of one top-level collection of the live patch or the copy ("live" | "copy"). */
+export const LUA_FP_PART = (which, collection) => `${PRELUDE}
+if ${lua(which)} == "copy" and not inCopy() then return { complete = false, reason = "the copy is not open" } end
+return fingerprint(${which === "copy" ? "sd.Patch" : "lp"}, ${lua(collection)})`;
+
+/**
+ * Combines per-collection fingerprints into one: equal only when the collection names match and every part is
+ * complete and equal. `parts` is [{ name, fp }].
+ */
+export function combineFingerprints(names, parts) {
+  if (!Array.isArray(names) || parts.length !== names.length) return { complete: false, reason: "collections missing", objects: 0, hash: "" };
+  const bad = parts.find((x) => x.fp?.complete !== true);
+  if (bad) return { complete: false, reason: `${bad.name}: ${bad.fp?.reason ?? "incomplete"}`, objects: 0, hash: "" };
+  return { complete: true, objects: parts.reduce((n, x) => n + x.fp.objects, 0), hash: parts.map((x) => `${x.name}:${x.fp.objects}:${x.fp.hash}`).join(",") };
+}
 
 /** The Lua API the probe relies on (read-only). */
 export const API_NAMES = ["AddFixtures", "CheckFIDCollision", "CheckDMXCollision", "FindBestDMXPatchAddr", "CmdIndirect", "GetTopModal", "WaitModal", "GetTopOverlay", "Mouse", "Keyboard"];
@@ -445,8 +540,8 @@ async function main() {
     console.error("usage: node scripts/kb25-probe.mjs verify|run [--out report.json]");
     process.exit(2);
   }
-  if (![...PHASES].every((p) => p === "patch" || p === "dialogs") || PHASES.size === 0) {
-    console.error(`KB25_PHASES must name patch and/or dialogs (got ${JSON.stringify(process.env.KB25_PHASES)})`);
+  if (![...PHASES].every((p) => ALL_PHASES.includes(p)) || PHASES.size === 0) {
+    console.error(`KB25_PHASES must name some of ${ALL_PHASES.join(", ")} (got ${JSON.stringify(process.env.KB25_PHASES)})`);
     process.exit(2);
   }
   const A = new Conn("a");
@@ -459,7 +554,7 @@ async function main() {
     if (!SHOW_GUARD.test(String(ping.showfile ?? ""))) { console.error(`show "${ping.showfile}" does not look disposable (expected a name matching ${SHOW_GUARD}); refusing to change state`); process.exit(2); }
     if (ping.input?.busy) { console.error(`the bridge is busy (${JSON.stringify(ping.input.busy)}); wait for the owner to finish`); process.exit(2); }
   }
-  const report = { mode, host, port, startedAt: new Date().toISOString(), config: { fid: FID, universe: UNIVERSE, seq: SEQ, mode: `${TYPE_IDX}.${MODE_IDX}`, importFile: IMPORT_FILE, phases: [...PHASES] }, ping: { bridgeVersion: ping.bridgeVersion, build: ping.build, hostname: ping.hostname, showfile: ping.showfile, user: ping.user, modules: ping.modules, lua: { enabled: ping.lua?.enabled, hookMode: ping.lua?.hookMode } }, steps };
+  const report = { mode, host, port, startedAt: new Date().toISOString(), config: { fid: FID, universe: UNIVERSE, seq: SEQ, mode: `${TYPE_IDX}.${MODE_IDX}`, importFile: IMPORT_FILE, importName: IMPORT_NAME, phases: [...PHASES] }, ping: { bridgeVersion: ping.bridgeVersion, build: ping.build, hostname: ping.hostname, showfile: ping.showfile, user: ping.user, modules: ping.modules, lua: { enabled: ping.lua?.enabled, hookMode: ping.lua?.hookMode } }, steps };
   note("console", report.ping);
 
   const L = async (code, timeoutMs = 8000) => {
@@ -468,6 +563,20 @@ async function main() {
     return r.result?.values?.[0];
   };
   const snap = () => L(LUA_SNAPSHOT());
+  // The fingerprints of the live patch and (when it is open) the copy, one collection per request (budget).
+  const fps = async () => {
+    const cols = await L(LUA_FP_COLLECTIONS());
+    const side = async (which, names) => {
+      const parts = [];
+      for (const name of names) parts.push({ name, fp: await L(LUA_FP_PART(which, name), 15000) });
+      return combineFingerprints(names, parts);
+    };
+    const live = await side("live", cols.live);
+    const copy = cols.inCopy ? await side("copy", cols.copy) : false;
+    // A different set of collections is a difference in itself.
+    if (copy && JSON.stringify(cols.copy) !== JSON.stringify(cols.live)) return { inCopy: cols.inCopy, live, copy: { ...copy, hash: `collections ${cols.copy.join("|")};${copy.hash}` } };
+    return { inCopy: cols.inCopy, live, copy };
+  };
   /** Re-reads until `pred` holds (CmdIndirect and UI events land on later frames); returns the last read. */
   const waitFor = async (read, pred, tries = 15, ms = 100) => {
     let v;
@@ -479,7 +588,9 @@ async function main() {
   const api = await L(LUA_API());
   record("the Lua API has AddFixtures, Check*Collision, FindBestDMXPatchAddr, CmdIndirect, GetTopModal, WaitModal, GetTopOverlay, Mouse, Keyboard", api && Object.values(api).every((v) => v === true), api);
   const s0 = await snap();
-  note("starting state", { dest: s0.dest, inCopy: s0.inCopy, copyCount: s0.copyCount, liveFixtures: s0.liveFixtures, liveTypes: s0.liveTypes, liveFp: s0.liveFp, modal: s0.modal, seq: s0.seq });
+  const fp0 = await fps();
+  note("starting state", { dest: s0.dest, inCopy: s0.inCopy, copyCount: s0.copyCount, liveFixtures: s0.liveFixtures, liveTypes: s0.liveTypes, liveFp: fp0?.live, modal: s0.modal, seq: s0.seq });
+  record("the live patch's fingerprint is complete (every collection and property read, under the object limit)", fp0?.live?.complete === true && fp0.live.objects > 0, fp0?.live);
   record("with the command line outside the patch, Patch() is LivePatch and the ShowData.Patch copy is empty", !s0.inCopy && s0.patchAddr === s0.liveAddr && s0.copyCount === 0, { patchAddr: s0.patchAddr, liveAddr: s0.liveAddr, copyCount: s0.copyCount, dest: s0.dest });
   const ro = await L(LUA_COLLISIONS_READONLY());
   if (ro?.ref) record("CheckFIDCollision / CheckDMXCollision report an existing patched fixture's FID and address as taken (false)", ro.ref.fidFree === false && ro.ref.dmxFree === false, ro.ref);
@@ -503,7 +614,8 @@ async function main() {
       for (const d of planned) if (d.free !== true) pre.push(`${d.at} x${d.count} (the mode's footprint) is not free`);
     }
     record("run: preflight (Root, no patch copy, no modal, no KB25 fixtures, free FIDs / every DMX destination / sequence, the DMX mode exists)", pre.length === 0, pre);
-    if (pre.length === 0) await runMutations({ L, snap, waitFor, s0 });
+    if ((PHASES.has("patch") || PHASES.has("import")) && fp0?.live?.complete !== true) pre.push(`the live patch's fingerprint is incomplete (${fp0?.live?.reason ?? "no fingerprint"}): an unchanged copy could not be established`);
+    if (pre.length === 0) await runMutations({ L, snap, fps, waitFor, s0, fp0 });
   }
 
   await A.end();
@@ -515,7 +627,7 @@ async function main() {
   process.exit(failed ? 1 : 0);
 }
 
-async function runMutations({ L, snap, waitFor, s0 }) {
+async function runMutations({ L, snap, fps, waitFor, s0, fp0 }) {
   const cleanup = createCleanup();
   const stage = s0.stage;
   let trackedType = null;
@@ -526,7 +638,8 @@ async function runMutations({ L, snap, waitFor, s0 }) {
     await indirect('ChangeDestination "ShowData"."Patch"');
     const a = await waitFor(snap, (s) => s.inCopy && s.dest === "ShowData.Patch");
     must('run: CmdIndirect ChangeDestination "ShowData"."Patch" fills the ShowData.Patch copy and points Patch() at it (no modal)', a.inCopy && a.patchAddr === a.copyAddr && a.copyCount > 0 && a.dest === "ShowData.Patch" && !a.modal, { dest: a.dest, patchAddr: a.patchAddr, copyCount: a.copyCount, modal: a.modal });
-    must("run: the copy holds nothing but the live patch and the probe's own fixtures on entry", sameFingerprint(a.copyFp, a.liveFp), { copyFp: a.copyFp, liveFp: a.liveFp });
+    const f = await fps();
+    must("run: the copy holds nothing but the live patch and the probe's own fixtures on entry (complete fingerprints equal)", sameFingerprint(f?.copy, f?.live), { copy: f?.copy, live: f?.live });
     await indirect(`ChangeDestination "Stages"."${stage}"."Fixtures"`);
     const b = await waitFor(snap, (s) => s.inCopy && s.dest === `${stage}.Fixtures`);
     must(`run: the destination reads "${stage}.Fixtures" after ChangeDestination "Stages"."${stage}"."Fixtures"`, b.inCopy && b.dest === `${stage}.Fixtures`, { dest: b.dest, inCopy: b.inCopy });
@@ -536,7 +649,8 @@ async function runMutations({ L, snap, waitFor, s0 }) {
   // Commits only when the shared copy differs from the live patch by exactly the probe's expected fixtures.
   const safeCommit = async (label, expectKb25) => {
     const s = await snap();
-    must(`run: ${label}: the shared copy holds only the probe's expected changes (checked before committing)`, s.inCopy && sameFingerprint(s.copyFp, s.liveFp) && JSON.stringify(kb25Keys(s.copyKb25)) === JSON.stringify(kb25Keys(expectKb25)), { inCopy: s.inCopy, copyFp: s.copyFp, liveFp: s.liveFp, copyKb25: kb25Keys(s.copyKb25), expected: kb25Keys(expectKb25) });
+    const f = await fps();
+    must(`run: ${label}: the shared copy holds only the probe's expected changes (checked before committing)`, s.inCopy && f?.inCopy && sameFingerprint(f.copy, f.live) && JSON.stringify(kb25Keys(s.copyKb25)) === JSON.stringify(kb25Keys(expectKb25)), { inCopy: s.inCopy, copy: f?.copy, live: f?.live, copyKb25: kb25Keys(s.copyKb25), expected: kb25Keys(expectKb25) });
     return commit();
   };
   // Restores the patch by identity: in the copy, delete the probe's fixtures and its tracked import, then commit only
@@ -548,8 +662,9 @@ async function runMutations({ L, snap, waitFor, s0 }) {
         const d = await L(LUA_DELETE_KB25(trackedType));
         if (d?.skipped) return { ok: false, error: d.skipped };
         const t = await snap();
-        if (d?.ambiguous || !sameFingerprint(t.copyFp, t.liveFp) || (t.copyKb25 ?? []).length) {
-          return { ok: false, error: "NOT committed: the shared patch copy holds changes the probe did not make or could not remove; the command line is left in the patch. Resolve at the console: Menu > Patch, then Discard and Exit (or Save and Exit to keep them)", detail: { ambiguous: d?.ambiguous, copyFp: t.copyFp, liveFp: t.liveFp, copyKb25: t.copyKb25 } };
+        const f = await fps();
+        if (d?.ambiguous || !sameFingerprint(f?.copy, f?.live) || (t.copyKb25 ?? []).length) {
+          return { ok: false, error: "NOT committed: the shared patch copy holds changes the probe did not make or could not remove (or its fingerprint is incomplete); the command line is left in the patch. Resolve at the console: Menu > Patch, then Discard and Exit (or Save and Exit to keep them)", detail: { ambiguous: d?.ambiguous, copy: f?.copy, live: f?.live, copyKb25: t.copyKb25 } };
         }
         await commit();
         continue;
@@ -581,9 +696,8 @@ async function runMutations({ L, snap, waitFor, s0 }) {
 
   let mutationError = null;
   try {
+    if (PHASES.has("patch") || PHASES.has("import")) cleanup.add("restore the patch (KB25 fixtures, the tracked import, destination Root; never commits foreign changes)", restorePatch);
     if (PHASES.has("patch")) {
-      cleanup.add("restore the patch (KB25 fixtures, the tracked import, destination Root; never commits foreign changes)", restorePatch);
-
       // P1: AddFixtures on the live patch with the command line at Root.
       const live = await L(LUA_ADD_LIVE());
       must("run: AddFixtures with the command line at Root (live patch) returns nil and creates nothing", live && live.ok === true && live.ret === "nil" && (live.liveKb25 ?? []).length === 0, live);
@@ -627,24 +741,32 @@ async function runMutations({ L, snap, waitFor, s0 }) {
       const del = await L(LUA_DELETE_KB25(null));
       must("run: Fixtures:Delete(position) removes every KB25 fixture from the copy", del?.deletedFixtures === 4 && (del.copyKb25 ?? []).length === 0, del);
       const c3 = await safeCommit("third commit", []);
-      must("run: the commit leaves the live patch as it started (fixture count, no KB25 fixtures, FIDs and DMX free again)", atRoot(c3) && !c3.modal && c3.liveFixtures === s0.liveFixtures && (c3.liveKb25 ?? []).length === 0 && sameFingerprint(c3.liveFp, s0.liveFp), { dest: c3.dest, liveFixtures: c3.liveFixtures, liveKb25: c3.liveKb25 });
+      const f3 = await fps();
+      must("run: the commit leaves the live patch as it started (fixture count, no KB25 fixtures, the starting fingerprint)", atRoot(c3) && !c3.modal && c3.liveFixtures === s0.liveFixtures && (c3.liveKb25 ?? []).length === 0 && sameFingerprint(f3?.live, fp0.live), { dest: c3.dest, liveFixtures: c3.liveFixtures, liveKb25: c3.liveKb25, live: f3?.live, start: fp0.live });
+    }
 
-      // P6: import a library type into the copy, delete exactly that type again before committing.
+    if (PHASES.has("import")) {
+      // I1: import a library type into the copy and claim it only when the import is provably the probe's; delete exactly
+      // that type again before committing.
       await indirect('ChangeDestination "ShowData"."Patch"');
       await waitFor(snap, (s) => s.inCopy && s.dest === "ShowData.Patch");
       await indirect('ChangeDestination "FixtureTypes"');
       const ft = await waitFor(snap, (s) => s.inCopy && s.dest === "FixtureTypes");
-      must('run: ChangeDestination "FixtureTypes" inside the copy', ft.dest === "FixtureTypes" && ft.inCopy && sameFingerprint(ft.copyFp, ft.liveFp), { dest: ft.dest, inCopy: ft.inCopy, copyFp: ft.copyFp, liveFp: ft.liveFp });
+      const ff = await fps();
+      must('run: ChangeDestination "FixtureTypes" inside the copy (complete fingerprints equal)', ft.dest === "FixtureTypes" && ft.inCopy && sameFingerprint(ff?.copy, ff?.live), { dest: ft.dest, inCopy: ft.inCopy, copy: ff?.copy, live: ff?.live });
       await indirect(`Import Library "${IMPORT_FILE}"`);
       const im = await waitFor(snap, (s) => addedTypes(ft.copyTypeList, s.copyTypeList).length > 0 || /Import/.test(s.last));
-      const added = addedTypes(ft.copyTypeList, im.copyTypeList);
-      if (added.length === 1) trackedType = added[0];
-      must(`run: Import Library "${IMPORT_FILE}" in the copy's FixtureTypes adds exactly one type with no dialog (tracked by number and name)`, added.length === 1 && im.copyTypeList.length === ft.copyTypeList.length + 1 && !im.modal && /^OK: Import Library/.test(im.last), { last: im.last, added, modal: im.modal });
+      // Ownership only once the import is attributable: success reported for this file, exactly one new type, the
+      // expected name. Otherwise nothing is claimed and the cleanup leaves the copy unresolved.
+      const own = importOwnership({ before: ft.copyTypeList, after: im.copyTypeList, last: im.last });
+      trackedType = own.tracked;
+      must(`run: Import Library "${IMPORT_FILE}" in the copy's FixtureTypes reports success and adds exactly one type named ${JSON.stringify(IMPORT_NAME)} with no dialog (claimed by number and name)`, own.tracked !== null && !im.modal, { last: im.last, added: own.added, reason: own.reason, modal: im.modal });
       const d2 = await L(LUA_DELETE_KB25(trackedType));
       must("run: exactly the tracked type is deleted in the copy", d2?.deletedTypes === 1 && !d2.ambiguous && addedTypes(ft.copyTypeList, d2.copyTypeList).length === 0, d2);
       trackedType = null;
       const c4 = await safeCommit("fourth commit", []);
-      must("run: after the commit the live types are unchanged", atRoot(c4) && JSON.stringify(c4.liveTypes) === JSON.stringify(s0.liveTypes), { liveTypes: c4.liveTypes });
+      const f4 = await fps();
+      must("run: after the commit the live types are unchanged and the live patch has its starting fingerprint", atRoot(c4) && JSON.stringify(c4.liveTypes) === JSON.stringify(s0.liveTypes) && sameFingerprint(f4?.live, fp0.live), { liveTypes: c4.liveTypes, live: f4?.live, start: fp0.live });
     }
 
     if (PHASES.has("dialogs")) {
@@ -720,7 +842,8 @@ async function runMutations({ L, snap, waitFor, s0 }) {
   record("run: every registered cleanup ran", undo.every((u) => u.ok), undo);
   if (mutationError && !(mutationError instanceof Abort)) record("run: the mutation phase completed without an exception", false, String(mutationError?.stack ?? mutationError));
   const end = await snap();
-  record("run: the end state matches the start (Root, no copy, no modal, the live patch's fingerprint, no KB25 fixtures, no scratch sequence)", atRoot(end) && end.copyCount === 0 && !end.modal && end.liveFixtures === s0.liveFixtures && sameFingerprint(end.liveFp, s0.liveFp) && (end.liveKb25 ?? []).length === 0 && end.seq === false, { dest: end.dest, copyCount: end.copyCount, modal: end.modal, liveFixtures: end.liveFixtures, liveTypes: end.liveTypes, liveKb25: end.liveKb25, seq: end.seq });
+  const fEnd = await fps();
+  record("run: the end state matches the start (Root, no copy, no modal, the live patch's starting fingerprint, no KB25 fixtures, no scratch sequence)", atRoot(end) && end.copyCount === 0 && !end.modal && end.liveFixtures === s0.liveFixtures && sameFingerprint(fEnd?.live, fp0.live) && (end.liveKb25 ?? []).length === 0 && end.seq === false, { live: fEnd?.live, start: fp0.live, dest: end.dest, copyCount: end.copyCount, modal: end.modal, liveFixtures: end.liveFixtures, liveTypes: end.liveTypes, liveKb25: end.liveKb25, seq: end.seq });
 }
 
 /** A trivial Lua round trip: true when the bridge answers (used while a dialog is open). */

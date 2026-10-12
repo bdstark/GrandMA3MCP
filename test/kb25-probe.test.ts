@@ -6,9 +6,9 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import {
-  lua, dmx, absolute0, footprintOf, findButton, centre, dialogText, kb25Keys, sameFingerprint, addedTypes, API_NAMES, DMX_PLAN, MAX_FOOTPRINT,
-  STORE_DIALOG, LABEL_DIALOG,
-  LUA_SNAPSHOT, LUA_API, LUA_COLLISIONS_READONLY, LUA_ADD_LIVE, LUA_INDIRECT, LUA_ADD_COPY, LUA_SET_PATCH, LUA_COLLISIONS_AFTER_EDIT,
+  lua, dmx, absolute0, footprintOf, findButton, centre, dialogText, kb25Keys, sameFingerprint, addedTypes, importOwnership, combineFingerprints,
+  API_NAMES, DMX_PLAN, MAX_FOOTPRINT, STORE_DIALOG, LABEL_DIALOG,
+  LUA_SNAPSHOT, LUA_FINGERPRINTS, LUA_FP_COLLECTIONS, LUA_FP_PART, LUA_API, LUA_COLLISIONS_READONLY, LUA_ADD_LIVE, LUA_INDIRECT, LUA_ADD_COPY, LUA_SET_PATCH, LUA_COLLISIONS_AFTER_EDIT,
   LUA_DELETE_KB25, LUA_CREATE_SEQ, LUA_DELETE_SEQ, LUA_INSPECT, LUA_CLICK, LUA_KEY, LUA_CHAR, LUA_FIELD,
 } from "../scripts/kb25-probe.mjs";
 
@@ -65,19 +65,23 @@ function run(args: string[], env: Record<string, string>): Promise<{ status: num
 
 const ping = (extra: Record<string, unknown> = {}) => ({ bridgeVersion: "0.18.0", showfile: "mcp-test-disposable", user: "Admin", lua: { enabled: true }, input: { enabled: false, busy: null }, ...extra });
 const types = ["Grouping", "Mega Hex Par"];
-const fp = (h = 1) => ({ fixtures: 26, fixtureHash: h, types: 2, typeHash: 7 });
+const fp = (h: number | string = 1) => ({ complete: true, objects: 26, hash: h });
+const typeList = [{ no: 1, name: "Grouping" }, { no: 6, name: "Mega Hex Par" }];
 const snapshot = (extra: Record<string, unknown> = {}) => ({
   dest: "Root", last: "OK: ClearAll", inCopy: false, patchAddr: "14.9", liveAddr: "14.9", copyAddr: "14.10", copyCount: 0, stage: "Stage 1",
-  liveFixtures: 26, liveKb25: [], copyFixtures: 0, copyKb25: [], liveTypes: types, liveTypeList: [{ no: 1, name: "Grouping" }, { no: 6, name: "Mega Hex Par" }], copyTypeList: [],
-  liveFp: fp(), copyFp: false, modal: false, seq: false, ...extra,
+  liveFixtures: 26, liveKb25: [], copyFixtures: 0, copyKb25: [], liveTypes: types, liveTypeList: typeList, copyTypeList: [],
+  modal: false, seq: false, ...extra,
 });
 const readonly = (extra: Record<string, unknown> = {}) => ({
   mode: "14.9.6.6.6.3", ref: { fid: 401, patch: "1.279", mode: "14.9.6.6.6.3", fidFree: false, dmxFree: false }, targetFidFree: true,
   targetDmx: DMX_PLAN.map(([a, n]: number[]) => ({ at: dmx(2, a), count: n, free: true })), best0: 512, ...extra,
 });
 
-/** Answers the probe's snippets by what they are; anything unexpected is an error reply (so a mutation is visible). */
-function luaFake(snap: () => unknown, ro: () => unknown = () => readonly(), more: (code: string) => unknown = () => undefined) {
+/**
+ * Answers the probe's snippets by what they are; anything unexpected is an error reply (so a mutation is visible). The
+ * fingerprint is one collection ("Stages") per side: `part(which)` answers its part (default: equal and complete).
+ */
+function luaFake(snap: () => any, ro: () => unknown = () => readonly(), more: (code: string) => unknown = () => undefined, part: (which: string) => unknown = () => fp()) {
   return (op: string, args: any) => {
     if (op === "ping") return ping();
     if (op !== "lua") throw new Error(`unexpected op ${op}`);
@@ -87,6 +91,9 @@ function luaFake(snap: () => unknown, ro: () => unknown = () => readonly(), more
     if (code === LUA_API()) return { values: [Object.fromEntries(API_NAMES.map((n: string) => [n, true]))] };
     if (code === LUA_SNAPSHOT()) return { values: [snap()] };
     if (code === LUA_COLLISIONS_READONLY()) return { values: [ro()] };
+    if (code === LUA_FP_COLLECTIONS()) { const s = snap(); return { values: [{ inCopy: s.inCopy, live: ["Stages"], copy: s.inCopy ? ["Stages"] : false }] }; }
+    if (code === LUA_FP_PART("live", "Stages")) return { values: [part("live")] };
+    if (code === LUA_FP_PART("copy", "Stages")) return { values: [part("copy")] };
     throw new Error(`unexpected lua: ${code.slice(0, 80)}`);
   };
 }
@@ -130,8 +137,23 @@ test("kb25 helpers: Lua literals, DMX addresses, footprint, dialog nodes, finger
   assert.ok(sameFingerprint(fp(), fp()));
   assert.ok(!sameFingerprint(fp(1), fp(2)));
   assert.ok(!sameFingerprint(fp(), false as any));
+  assert.ok(!sameFingerprint({ ...fp(), complete: false }, { ...fp(), complete: false }), "two incomplete fingerprints are never equal");
+  const a = combineFingerprints(["A", "B"], [{ name: "A", fp: { complete: true, objects: 2, hash: 5 } }, { name: "B", fp: { complete: true, objects: 3, hash: 6 } }]);
+  assert.deepEqual(a, { complete: true, objects: 5, hash: "A:2:5,B:3:6" });
+  assert.equal(combineFingerprints(["A", "B"], [{ name: "A", fp: { complete: true, objects: 2, hash: 5 } }]).complete, false, "a missing part is incomplete");
+  assert.match(combineFingerprints(["A"], [{ name: "A", fp: { complete: false, reason: "more than 3 objects" } }]).reason, /A: more than 3 objects/);
   assert.deepEqual(addedTypes([{ no: 1, name: "Grouping" }], [{ no: 1, name: "Grouping" }, { no: 7, name: "Dimmer" }]), [{ no: 7, name: "Dimmer" }]);
   assert.deepEqual(addedTypes([{ no: 1, name: "Grouping" }], [{ no: 1, name: "Grouping" }]), []);
+  // Import ownership: claimed only for a successful, attributable import.
+  const before = [{ no: 1, name: "Grouping" }];
+  const ok = importOwnership({ before, after: [...before, { no: 7, name: "Dimmer" }], last: 'OK: Import Library "generic@dimmer.pxml"', file: "generic@dimmer.pxml", expectName: "Dimmer" });
+  assert.deepEqual(ok.tracked, { no: 7, name: "Dimmer" });
+  const failedWithForeign = importOwnership({ before, after: [...before, { no: 9, name: "OperatorAdded" }], last: 'Failed: Import Library "generic@dimmer.pxml"', file: "generic@dimmer.pxml", expectName: "Dimmer" });
+  assert.equal(failedWithForeign.tracked, null, "a failed import never claims the type someone else added");
+  assert.match(failedWithForeign.reason, /did not report success/);
+  assert.equal(importOwnership({ before, after: [...before, { no: 7, name: "Dimmer" }, { no: 9, name: "OperatorAdded" }], last: 'OK: Import Library "generic@dimmer.pxml"', file: "generic@dimmer.pxml", expectName: "Dimmer" }).tracked, null, "two new types cannot be attributed");
+  assert.equal(importOwnership({ before, after: [...before, { no: 9, name: "OperatorAdded" }], last: 'OK: Import Library "generic@dimmer.pxml"', file: "generic@dimmer.pxml", expectName: "Dimmer" }).tracked, null, "a new type of another name is not the import's");
+  assert.equal(importOwnership({ before, after: [...before, { no: 7, name: "Dimmer" }], last: 'OK: Import Library "other.xml"', file: "generic@dimmer.pxml", expectName: "Dimmer" }).tracked, null, "success for another file is not ours");
   assert.ok(MAX_FOOTPRINT * 2 < 101 && 201 + MAX_FOOTPRINT - 1 <= 512, "the plan's addresses never overlap each other or leave the universe");
 });
 
@@ -325,7 +347,8 @@ test("kb25 verify passes on a consistent console and sends only reads", async ()
     assert.equal(r.status, 0, r.stdout + r.stderr);
     assert.match(r.stdout, /PASS the Lua API has AddFixtures/);
     assert.match(r.stdout, /PASS CheckFIDCollision \/ CheckDMXCollision report an existing patched fixture/);
-    assert.match(r.stdout, /4 passed, 0 failed/);
+    assert.match(r.stdout, /PASS the live patch's fingerprint is complete/);
+    assert.match(r.stdout, /5 passed, 0 failed/);
     assert.deepEqual([...new Set(bridge.ops)].sort(), ["lua", "ping"]);
     assert.ok(bridge.codes.every((c) => !MUTATING.test(c)), "verify sends no mutating Lua");
   } finally { bridge.close(); }
@@ -427,14 +450,14 @@ test("kb25 run: a destination that never changes stops the patch phase before Ad
 
 test("kb25 run: a foreign change in the shared copy is never committed, by the run or by the cleanup", async () => {
   let entered = false;
-  const inCopy = () => snapshot({ inCopy: true, dest: "ShowData.Patch", patchAddr: "14.10", copyCount: 15, copyFp: fp(99) });
+  const inCopy = () => snapshot({ inCopy: true, dest: "ShowData.Patch", patchAddr: "14.10", copyCount: 15 });
   const bridge = await startFakeBridge(luaFake(() => (entered ? inCopy() : snapshot()), () => readonly(), (code) => {
     if (code === LUA_ADD_LIVE()) return { ok: true, ret: "nil", liveKb25: [] };
     if (code === LUA_INDIRECT('ChangeDestination "ShowData"."Patch"')) { entered = true; return true; }
     if (code.startsWith("CmdIndirect(")) return true;
     if (code === LUA_DELETE_KB25(null)) return { deletedFixtures: 0, deletedTypes: 0, copyKb25: [], copyTypeList: [] };
     return undefined;
-  }));
+  }, (which) => (which === "copy" ? fp(99) : fp())));
   try {
     const r = await run(["run"], { GMA3_BRIDGE_PORT: String(bridge.port), KB25_PHASES: "patch" });
     assert.equal(r.status, 1, r.stdout + r.stderr);
@@ -442,5 +465,99 @@ test("kb25 run: a foreign change in the shared copy is never committed, by the r
     assert.match(r.stdout, /NOT committed: the shared patch copy holds changes the probe did not make/);
     assert.ok(!bridge.codes.some((c) => c.includes('CmdIndirect("ChangeDestination Root")')), "neither the run nor the cleanup committed");
     assert.ok(!bridge.codes.some((c) => c.includes("modeOf(sd.Patch)")), "nothing was added to a copy holding a foreign change");
+  } finally { bridge.close(); }
+});
+
+test("kb25 Lua: the patch fingerprint sees foreign edits anywhere and ignores only the probe's fixtures and derived data", { skip: luaBin ? false : "no Lua 5.4+ interpreter on PATH" }, () => {
+  const out = runLua(`
+local FP = {}; FP.__index = FP
+function FP:GetClass() return self.class end
+function FP:Children() return self.kids end
+function FP:Count() return #self.kids end
+function FP:Addr() return self.addr or "x" end
+function FP:PropertyCount() return #self.pn end
+function FP:PropertyName(i) return self.pn[i + 1] end
+function FP:Get(k) if self.badGet == k then error("unreadable") end return self.pv[k] end
+local function mk(class, name, no, props, kids)
+  local o = setmetatable({ class = class, name = name, no = no, pn = { "NAME" }, pv = { NAME = name }, kids = kids or {} }, FP)
+  for _, kv in ipairs(props or {}) do o.pn[#o.pn + 1] = kv[1]; o.pv[kv[1]] = kv[2] end
+  return o
+end
+local function fixture(name, fid, cid, patch, kids) return mk("Fixture", name, fid, { { "FID", fid }, { "CID", cid }, { "PATCH", patch } }, kids) end
+-- A small patch with every rule in play; edit(d) changes one thing in the copy.
+local function build(addr, edit)
+  local d = { stage2 = {}, cid = "None", sub = "1.010", typeName = "Mega Hex Par", uniName = "DmxUniverse 2", probe = false,
+    realused = 12, maxid = 704, granted = "Yes", locked = "Yes", net = "No", curveNo = 18, used = 0, badGet = nil }
+  if edit then edit(d) end
+  local par = fixture("Par 1", 401, d.cid, "1.001", { fixture("Par 1 cell", 4011, "None", d.sub) })
+  par.badGet = d.badGet
+  local s1 = { par }
+  if d.probe then s1[#s1 + 1] = fixture("KB25 Probe", 901, "None", "2.001") end
+  local stages = { mk("Stage", "Stage 1", 1, { { "STRUCTURELOCKED", d.locked }, { "IGNORENETWORK", d.net } }, { mk("Fixtures", "Fixtures", 1, { { "COUNT", #s1 } }, s1) }) }
+  if #d.stage2 > 0 then stages[2] = mk("Stage", "Stage 2", 2, {}, { mk("Fixtures", "Fixtures", 1, { { "COUNT", #d.stage2 } }, d.stage2) }) end
+  local p = mk("Patch", "Patch", 1, {}, {
+    mk("DmxCurves", "DmxCurves", 1, {}, { mk("DmxCurve", "DmxCurve 1", 1, {}, { mk("DmxCurvePoint", "Max", d.curveNo, { { "INDEX", d.curveNo }, { "VALUE", "100" } }) }) }),
+    mk("FixtureTypes", "FixtureTypes", 2, {}, { mk("FixtureType", d.typeName, 6, { { "REALUSED", d.realused } }) }),
+    mk("Stages", "Stages", 3, {}, stages),
+    mk("IDTypes", "IDTypes", 4, {}, { mk("IDs", "Fixture", 1, { { "MAXID", d.maxid } }) }),
+    mk("DmxUniverses", "DmxUniverses", 5, {}, { mk("DmxUniverse", d.uniName, 2, { { "GRANTED", d.granted }, { "USED", d.used } }, { mk("DMX", "DMX 1", d.curveNo) }) }),
+    mk("DmxAddresses", "DmxAddresses", 6, {}, { mk("DmxAddress", "a", d.curveNo) }),
+    mk("PatchFilter", "PatchFilter", 7, { { "FILTER", d.curveNo } }),
+  })
+  p.addr = addr
+  return p
+end
+local FPS = ${L(LUA_FINGERPRINTS())}
+local function compare(label, edit)
+  live = build("14.9"); copy = build("14.10", edit)
+  local r = run(FPS)
+  emit(label, tostring(r.copy.complete and r.live.complete and r.copy.objects == r.live.objects and r.copy.hash == r.live.hash) .. "|" .. tostring(r.copy.complete) .. "|" .. tostring(r.copy.reason))
+end
+compare("unchanged", nil)
+compare("cid", function(d) d.cid = "301" end)
+compare("stage2", function(d) d.stage2 = { fixture("Operator Fixture", 950, "None", "3.001") } end)
+compare("subfixture", function(d) d.sub = "1.020" end)
+compare("typeName", function(d) d.typeName = "Mega Hex Par 2" end)
+compare("universeName", function(d) d.uniName = "Front Truss" end)
+compare("probeAndDerived", function(d) d.probe = true; d.realused = 13; d.maxid = 901; d.granted = "No"; d.used = 8 end)
+compare("editState", function(d) d.locked = "No"; d.net = "Yes" end)
+compare("curveRenumbered", function(d) d.curveNo = 19 end)
+compare("unreadable", function(d) d.badGet = "CID" end)
+KB25_FP_LIMIT = 3
+compare("limit", nil)
+`);
+  const verdict = (k: string) => out[k].split("|");
+  assert.deepEqual(verdict("unchanged").slice(0, 2), ["true", "true"]);
+  for (const k of ["cid", "stage2", "subfixture", "typeName", "universeName"]) assert.equal(verdict(k)[0], "false", `${k}: a foreign edit must change the fingerprint`);
+  for (const k of ["probeAndDerived", "editState", "curveRenumbered"]) assert.equal(verdict(k)[0], "true", `${k}: the probe's fixtures, derived data and the copy's edit state must not`);
+  assert.deepEqual(verdict("unreadable").slice(0, 3), ["false", "false", "property CID of Par 1 could not be read"], "an unreadable property makes the fingerprint incomplete");
+  assert.deepEqual(verdict("limit").slice(0, 3), ["false", "false", "more than 3 objects"], "the object limit makes it incomplete");
+});
+
+test("kb25 run: a failed import while someone else adds a type claims nothing, deletes no type and commits nothing", async () => {
+  let stage: "root" | "patch" | "types" | "imported" = "root";
+  const before = typeList;
+  const after = [...typeList, { no: 9, name: "OperatorAdded" }];
+  const snap = () => {
+    if (stage === "root") return snapshot();
+    return snapshot({ inCopy: true, patchAddr: "14.10", copyCount: 15, dest: stage === "patch" ? "ShowData.Patch" : "FixtureTypes", copyTypeList: stage === "imported" ? after : before, last: stage === "imported" ? 'Failed: Import Library "generic@dimmer.pxml"' : "OK: ChangeDestination" });
+  };
+  const bridge = await startFakeBridge(luaFake(snap, () => readonly(), (code) => {
+    if (code === LUA_INDIRECT('ChangeDestination "ShowData"."Patch"')) { stage = "patch"; return true; }
+    if (code === LUA_INDIRECT('ChangeDestination "FixtureTypes"')) { stage = "types"; return true; }
+    if (code === LUA_INDIRECT('Import Library "generic@dimmer.pxml"')) { stage = "imported"; return true; }
+    if (code.startsWith("CmdIndirect(")) return true;
+    if (code === LUA_DELETE_KB25(null)) return { deletedFixtures: 0, deletedTypes: 0, copyKb25: [], copyTypeList: after };
+    return undefined;
+  }, (which) => (which === "copy" && stage === "imported" ? fp(2) : fp(1))));
+  try {
+    const r = await run(["run"], { GMA3_BRIDGE_PORT: String(bridge.port), KB25_PHASES: "import" });
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stdout, /FAIL run: Import Library "generic@dimmer\.pxml" in the copy's FixtureTypes reports success/);
+    assert.match(r.stdout, /did not report success/);
+    assert.match(r.stdout, /NOT committed: the shared patch copy holds changes the probe did not make/);
+    assert.ok(!bridge.codes.some((c) => /local tracked = \{/.test(c)), "no fixture type was claimed for deletion");
+    assert.ok(bridge.codes.some((c) => c === LUA_DELETE_KB25(null)), "the cleanup ran with nothing tracked");
+    assert.ok(!bridge.codes.some((c) => c.includes('CmdIndirect("ChangeDestination Root")')), "nothing was committed");
   } finally { bridge.close(); }
 });

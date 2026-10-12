@@ -2,7 +2,7 @@
 
 Date: 2026-10-12. Evidence for [DIALOG.md](../../DIALOG.md) "KB-25". Manual pass through `gma3_lua`, then reproduced
 by [`scripts/kb25-probe.mjs`](../../scripts/kb25-probe.mjs) `run` ([script report](kb-25-dialogs-macos-2.5.1.json),
-54/54; see "Scripted run" below). Questions under test: can fixtures be added,
+55/55; see "Scripted run" below). Questions under test: can fixtures be added,
 readdressed, unpatched and deleted, and fixture types imported, through Lua without a dialog? Can a dialog be opened
 without blocking the bridge, then read and answered from Lua?
 
@@ -82,7 +82,7 @@ stall already established it.
 
 ## Scripted run
 
-`node scripts/kb25-probe.mjs run --out docs/probes/kb-25-dialogs-macos-2.5.1.json` (54/54, about 5 s) repeats the
+`node scripts/kb25-probe.mjs run --out docs/probes/kb-25-dialogs-macos-2.5.1.json` (55/55, about 85 s, most of it the patch fingerprints) repeats the
 patch and dialog steps above, except `Oops`, which is never sent: if anything else were undoable it would undo the
 operator's work. `verify` (4 checks) is read-only.
 
@@ -93,7 +93,8 @@ operator's work. `verify` (4 checks) is read-only.
   probe-named, and restore the patch (delete top-level "KB25 …" fixtures and any fixture type not present at the
   start, in the copy, then commit). The last check compares the end state with the start.
 - **Configuration:** `KB25_FID`, `KB25_UNIVERSE`, `KB25_SEQ`, `KB25_MODE` (type.mode child indexes, default `6.3`),
-  `KB25_IMPORT`, and `KB25_PHASES` (`patch`, `dialogs`, or both).
+  `KB25_IMPORT`, `KB25_IMPORT_NAME` (the type name the import file creates, default `Dimmer`) and `KB25_PHASES`
+  (any of `patch`, `import`, `dialogs`).
 
 **After the review of PR #31** the run enforces four more rules:
 - **A failed prerequisite stops the run.** Every step later steps depend on is a `must`. A refused sequence creation,
@@ -105,14 +106,13 @@ operator's work. `verify` (4 checks) is read-only.
   - Live: after Cancel, the reopened Store dialog (same title) got a new binding. The first binding was refused on it
     with "the bound dialog was closed (its delete hook fired)", nothing was clicked, and the dialog stayed open.
     **`HookDelete` fires when a MessageBox closes.**
-- **Nothing foreign is committed.** Before every commit, an FNV-1a fingerprint of the copy is compared with the
-  live patch's. It covers every fixture that is not the probe's (name, FID, patch, mode, in tree order) and every
-  fixture type (number, name). The copy must also hold exactly the probe's expected fixtures. If anything else
-  differs, nothing is committed and the run stops.
-  - The cleanup deletes the probe's fixtures and only the one type it imported, tracked by number and name; an
-    ambiguous match deletes nothing. It commits only a copy that then matches the live patch. Otherwise it leaves
-    the command line in the patch and asks for Menu › Patch › Discard and Exit at the console.
-  - Live: all four commits matched the live fingerprint.
+- **Nothing foreign is committed.** See "Patch fingerprint" below. The copy must also hold exactly the probe's
+  expected fixtures. If anything else differs, or a fingerprint is incomplete, nothing is committed and the run stops.
+  - The cleanup deletes the probe's fixtures and only a fixture type the run provably imported (see "Import
+    ownership"), tracked by number and name; an ambiguous match deletes nothing. It commits only a copy that then
+    matches the live patch. Otherwise it leaves the command line in the patch and asks for Menu › Patch › Discard
+    and Exit at the console.
+  - Live: the copy matched the live patch on every entry and at all five commits.
 - **Every planned DMX destination is preflighted.** Each address the run writes is checked with the mode's own
   footprint: 2.001×2, 2.101×1 and 2.201×1. The run aborts if the measured footprint exceeds 50, which the plan
   needs so that two fixtures from .001 end before .101.
@@ -129,6 +129,50 @@ Two timing facts the manual pass hid, because it waited seconds between requests
 The first scripted run also failed `FindBestDMXPatchAddr`. That was the script's own bug: the footprint was passed as
 an undefined Lua name, so the function received nil and answered nil. It was fixed, and the console answered 512 as
 in the manual pass.
+
+## Patch fingerprint (review round 2)
+
+The first version fingerprinted only `Stages[1]` fixtures (name, FID, patch, mode) and fixture types (number, name).
+A fixture's CID changing, or a fixture added in another stage, passed. The fingerprint now covers:
+- **Every object of every patch collection, every property:** all stages, sub-fixtures, fixture types with their whole
+  subtree, attribute definitions, ID types, layers, classes, DMX curves and PSR data. Each object contributes its
+  depth, class, number and every property in the display role, in tree order.
+- **The DMX universes' own settings** (name, merge mode, ports, …), but not their 512 per-address children.
+
+Live on the test show that is 3,177 objects, about 4 s per side. The bridge budget is 3 s per request, so the probe
+asks one top-level collection per request (FixtureTypes is the largest, about 1 s) and combines the parts in the
+script, including the list of collection names.
+
+What it leaves out, each established live by diffing an untouched copy, then a copy with one added fixture, against
+the live patch property by property:
+
+| Left out | Why |
+| --- | --- |
+| `DmxAddresses` (524,288 objects), `UIChannels`, `RTChannels`, `FixtureTypesOverview` | derived from the patch |
+| `PatchFilter` | the Patch menu's filter state, not patch data |
+| the universes' per-address children | derived from the patch (they also renumber in a fresh copy) |
+| `STRUCTURELOCKED`, `IGNORENETWORK` | **every object of an untouched copy differs in exactly these two**: the copy's edit state |
+| object number and `INDEX` inside `DmxCurves` only | **the console renumbers DmxCurve 1's internal "Max" point whenever a copy is made** (18 live, 19 in the fresh copy, and the live number moved between runs); every other curve property is kept |
+| `REALUSED` (fixture type), `MAXID` (ID type), `GRANTED` (universe) | **adding one fixture changed exactly these three**: use counts and output grant, derived from the fixtures (which are fingerprinted themselves) |
+| `COUNT`, `NO` (display), `MEMORYFOOTPRINT`, `USED`, `PATCHINFO`, `COARSEPARAMS`, `PARKEDCOUNT`, `TESTERCOUNT` | child counts and derived use; the raw object number is kept (outside DmxCurves) |
+
+A property that cannot be read, or more than 200,000 objects, marks the fingerprint incomplete. An incomplete
+fingerprint never equals another. Before this was settled, two runs stopped at the entry check and one at the first
+commit, each time with the copy unchanged or holding only the probe's own fixture. The guard did what it should: it
+committed nothing. Each of those copies was then closed after confirming it held nothing foreign.
+
+## Import ownership (review round 2)
+
+The run used to claim the single new fixture type before checking that the import had succeeded. A failed import
+coinciding with an operator adding a type would have deleted the operator's type. Now the run claims a type only
+when all three hold:
+- LastCommand is exactly `OK: Import Library "<file>"`;
+- exactly one type is new;
+- that type has the expected name (`KB25_IMPORT_NAME`, default `Dimmer`).
+
+Otherwise nothing is tracked, the run stops, and the cleanup refuses to commit the copy, which still holds the
+unexplained type. The import is its own phase (`KB25_PHASES=import`), so the test suite can drive exactly that
+failure end to end.
 
 ## Operator session (2026-10-12, operator at the console)
 

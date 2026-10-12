@@ -94,7 +94,7 @@ forms are recorded as such.
 Live on macOS, onPC 2.5.1.0, bridge 0.18.0 with Lua. The record is
 [docs/probes/kb-25-dialogs-macos-2.5.1.md](docs/probes/kb-25-dialogs-macos-2.5.1.md). It was a manual pass through
 `gma3_lua`, then reproduced by `node scripts/kb25-probe.mjs run`
-([script report](docs/probes/kb-25-dialogs-macos-2.5.1.json), 54/54; `verify` is read-only). The show was left as it
+([script report](docs/probes/kb-25-dialogs-macos-2.5.1.json), 55/55; `verify` is read-only). The show was left as it
 was found.
 
 **Patching works without a dialog, through the edit copy:**
@@ -152,9 +152,13 @@ was found.
   with a `HookDelete` callback, and re-checks the object, the callback and the identity before every input (live:
   the callback fires when a MessageBox closes). KB-27's `press` / `keys` should use the same binding: an
   inspection returns a token, and an action on a token whose dialog closed or was replaced is refused.
-- **Never commit what you did not change.** Compare a fingerprint of the copy with the live patch before leaving
-  the patch, and track created objects by identity (not "new since start"). With a foreign change present, leave
-  the decision to the operator (Menu › Patch › Discard / Save).
+- **Never commit what you did not change.** Compare a fingerprint of the whole copy with the live patch before
+  leaving the patch. That means every collection, every object and every property, minus what the console derives:
+  an untouched copy differs only in `STRUCTURELOCKED` / `IGNORENETWORK` and DmxCurves numbering, and an added fixture
+  moves only `REALUSED` / `MAXID` / `GRANTED`. It takes about 4 s per side on a small show, so compute it per collection.
+- **Claim only provably created objects.** Claim a created object only once the creating command reported success
+  and exactly one attributable object appeared. With a foreign change present, leave the decision to the operator
+  (Menu › Patch › Discard / Save).
 
 **Still open** (see the record): discarding a patch edit without the Patch menu; two physical displays;
 `CreateMultiPatch`, sub-fixtures, CIDs, breaks; GDTF and duplicate-type import; `CmdIndirectWait`.
