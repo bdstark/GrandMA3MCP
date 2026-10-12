@@ -131,14 +131,26 @@ was found.
   `User Canceled Command: …` / `Failed: …`. LastCommand does not name the chosen button, so the effect is confirmed
   on the target object.
 
+**Operator session** (same day, operator at the console; see the record):
+- The bridge's `Mouse` moves the console's own pointer. No cursor is drawn, but hover highlights follow it. Clicks
+  work on Display 1 and Display 2.
+- A dialog the operator opened is read and answered exactly like a bridge-opened one.
+- **The Patch menu and the bridge share one patch copy and one command-line destination.** Opening the menu fills
+  the same `ShowData.Patch` and moves the command line. The bridge's added fixture appeared in the operator's open
+  Patch grid. The bridge entering the patch shows the patch path in the operator's prompt, and commands the
+  operator types run there. Whoever leaves commits everyone's edits.
+- Closing the menu with changes shows "Leaving the patch / Keep changes?" with Save and Exit / Discard and Exit /
+  Stay in Patch. **Discard and Exit** (clicked by the bridge) dropped the edit. That is the only discard path found
+  so far.
+
 **Consequences for KB-26 / KB-27:**
-- The patch tools need no dialog control at all.
+- The patch tools need no dialog control at all. They must refuse while the copy is open (operator in the Patch
+  menu) and keep their session short, because the operator's command line is in it.
 - KB-27 can identify a dialog by class and title and a control by text, act through `Mouse` (buttons) or
   `Content` + Enter (text), and report from a re-read.
 
-**Still open** (see the record): the operator having the Patch menu open at the same time; operator typing during a
-patch session; display 1, two displays and operator-opened dialogs; `CreateMultiPatch`, sub-fixtures, CIDs, breaks;
-GDTF and duplicate-type import; `CmdIndirectWait`.
+**Still open** (see the record): discarding a patch edit without the Patch menu; two physical displays;
+`CreateMultiPatch`, sub-fixtures, CIDs, breaks; GDTF and duplicate-type import; `CmdIndirectWait`.
 
 ## KB-26 — Patch tools
 

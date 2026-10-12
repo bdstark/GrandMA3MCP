@@ -108,11 +108,38 @@ The first scripted run also failed `FindBestDMXPatchAddr`. That was the script's
 an undefined Lua name, so the function received nil and answered nil. It was fixed, and the console answered 512 as
 in the manual pass.
 
+## Operator session (2026-10-12, operator at the console)
+
+Same console and show, with the operator watching and acting at onPC. Every bridge action went through `gma3_lua`
+(clicks sent about 6 s after the operator said they were switching to the display, so they could watch).
+
+| # | Step | Observed |
+| --- | --- | --- |
+| 1 | Bridge: scratch Sequence 951, `CmdIndirect('Store Sequence 951 Cue 1')` | operator saw "Store to Cue 1" on **Display 2** (onPC has Display 1 and 2, both visible); `GetDisplayIndex()` 2 |
+| 2 | `Mouse(2, "move", …)` only, wiggled ±40 px over Cancel, then swept across all five button centres | **no cursor is drawn**, but the hover highlight followed the console pointer from button to button: `Mouse` moves the console's own pointer, not the OS cursor |
+| 3 | move/press/release at Cancel | the dialog closed on screen; `User Canceled Command: Store Sequence 951 Cue 1` |
+| 4 | Operator: opened Edit Command (keyboard icon) and typed `Store Sequence 951 Cue 1`, Please | while typing, the top modal was a `TextInput` titled "Edit Command" on Display 2. The operator's keystrokes also produced an `OK: Oops` (which restored Sequence 951's name to "KB25 Renamed", its name from an earlier run) and a keyboard-shortcuts toggle (left **off**). Then the same "Store to Cue 1" MessageBox on Display 2 |
+| 5 | Bridge: matched the title, clicked Cancel | the operator's dialog closed; `User Canceled Command: …`. A dialog the operator opened is read and answered exactly like one the bridge opened |
+| 6 | Operator: Menu › Patch on **Display 1** | **the Patch menu does what `ChangeDestination "ShowData"."Patch"` does**: `ShowData.Patch` filled (15 children, 26 fixtures), `Patch()` = 14.10, the shared command line destination `Stage 1.Fixtures`. The menu is an overlay (`FixturePatch`, class `MainDlgFixtureSetup`), not a modal |
+| 7 | Bridge: `AddFixtures` "KB25 Menu Test" FID 901 at 2.001 into that copy (after the collision checks) | `true`; the operator **saw the new row in the open Patch grid**; the live patch did not have it |
+| 8 | Operator: closed the Patch menu | MessageBox on **Display 1**: title "Leaving the patch", text "Keep changes?", buttons **Save and Exit / Discard and Exit / Stay in Patch** |
+| 9 | Bridge: clicked "Discard and Exit" at (900, 615) on Display 1 | menu and dialog closed; copy empty; destination Root; live patch 26 fixtures, no KB25 fixture, FID 901 free. **Discard exists, through the menu's exit dialog**; `Mouse` works on Display 1 |
+| 10 | Bridge: `CmdIndirect` into `ShowData.Patch` → `Stage 1.Fixtures` (no menu) | no menu or dialog appeared; the operator's prompt showed the patch path. The operator typed `List`, Please: nothing popped up, and the listing went to the command history, i.e. the operator's commands run in the bridge's patch destination |
+| 11 | Bridge: `ChangeDestination Root`, Sequence 951 deleted | `verify` 4/4; Root, no copy, no modal, 26 fixtures, 6 types |
+
+Consequences:
+- **The bridge and the operator share one patch copy and one command-line destination.** The bridge entering the
+  patch puts the operator's command line there. The operator opening the Patch menu puts the bridge there. Whoever
+  leaves commits (`ChangeDestination Root`, or "Save and Exit") everyone's edits.
+- A patch tool must refuse to start while the copy is open, as the script does, keep its session short, and treat
+  operator typing during it as possible.
+- **"Discard and Exit" abandons an edit, but only when the Patch menu is open.** Whether the bridge can discard
+  without the menu is open.
+
 ## Not covered (for the record)
 
-- The operator having the Setup › Patch menu open while the bridge enters `ShowData.Patch` (or the reverse).
-- The operator typing on the shared command line while the bridge holds the patch destination.
-- A dialog on display 1, two physical displays, and a dialog the operator opened rather than the bridge.
+- Discarding a patch edit without the Patch menu (the menu's "Discard and Exit" works; no menu-free form is known).
+- Two physical displays (Display 1 and Display 2 were both onPC windows on one machine).
 - `CreateMultiPatch`, sub-fixtures via `parent`, `idtype`/`cid`, layers/classes, multiple breaks.
 - GDTF import and importing a type that is already in the show (name clash).
 - Whether `CmdIndirectWait` blocks while a dialog is open.
