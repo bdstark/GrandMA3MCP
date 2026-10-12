@@ -1,0 +1,1188 @@
+{
+  "mode": "run",
+  "host": "127.0.0.1",
+  "port": 9800,
+  "startedAt": "2026-10-12T09:31:24.356Z",
+  "config": {
+    "fid": 901,
+    "universe": 2,
+    "seq": 951,
+    "mode": "6.3",
+    "importFile": "generic@dimmer.pxml",
+    "importName": "Dimmer",
+    "phases": [
+      "patch",
+      "import",
+      "dialogs"
+    ]
+  },
+  "ping": {
+    "bridgeVersion": "0.18.0",
+    "build": {
+      "hostType": "onPC",
+      "version": "2.5.1.0",
+      "codeType": "Release"
+    },
+    "hostname": "bdsmbpm401",
+    "showfile": "mcp-test-disposable",
+    "user": "Admin",
+    "modules": {
+      "hardkeys": {
+        "version": "0.10.0",
+        "loaded": true
+      },
+      "control": {
+        "version": "0.7.0",
+        "loaded": true
+      },
+      "feedback": {
+        "version": "0.8.0",
+        "loaded": true
+      }
+    },
+    "lua": {
+      "enabled": true,
+      "hookMode": "preserve"
+    }
+  },
+  "steps": [
+    {
+      "name": "console",
+      "note": true,
+      "detail": {
+        "bridgeVersion": "0.18.0",
+        "build": {
+          "hostType": "onPC",
+          "version": "2.5.1.0",
+          "codeType": "Release"
+        },
+        "hostname": "bdsmbpm401",
+        "showfile": "mcp-test-disposable",
+        "user": "Admin",
+        "modules": {
+          "hardkeys": {
+            "version": "0.10.0",
+            "loaded": true
+          },
+          "control": {
+            "version": "0.7.0",
+            "loaded": true
+          },
+          "feedback": {
+            "version": "0.8.0",
+            "loaded": true
+          }
+        },
+        "lua": {
+          "enabled": true,
+          "hookMode": "preserve"
+        }
+      }
+    },
+    {
+      "name": "the Lua API has AddFixtures, Check*Collision, FindBestDMXPatchAddr, CmdIndirect, GetTopModal, WaitModal, GetTopOverlay, Mouse, Keyboard",
+      "pass": true,
+      "detail": {
+        "CheckFIDCollision": true,
+        "AddFixtures": true,
+        "GetTopModal": true,
+        "CheckDMXCollision": true,
+        "FindBestDMXPatchAddr": true,
+        "CmdIndirect": true,
+        "Mouse": true,
+        "Keyboard": true,
+        "GetTopOverlay": true,
+        "WaitModal": true
+      }
+    },
+    {
+      "name": "starting state",
+      "note": true,
+      "detail": {
+        "dest": "Root",
+        "inCopy": false,
+        "copyCount": 0,
+        "liveFixtures": 26,
+        "liveTypes": [
+          "Grouping",
+          "Moving Head",
+          "180W Beam Moving Head",
+          "Thrill Mini Profile",
+          "36PCS 4in1 LED Wall Washer",
+          "Mega Hex Par"
+        ],
+        "liveFp": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
+        },
+        "modal": false,
+        "seq": false
+      }
+    },
+    {
+      "name": "the live patch's fingerprint is complete (every collection and property read, under the object limit)",
+      "pass": true,
+      "detail": {
+        "complete": true,
+        "objects": 3177,
+        "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
+      }
+    },
+    {
+      "name": "with the command line outside the patch, Patch() is LivePatch and the ShowData.Patch copy is empty",
+      "pass": true,
+      "detail": {
+        "patchAddr": "14.9",
+        "liveAddr": "14.9",
+        "copyCount": 0,
+        "dest": "Root"
+      }
+    },
+    {
+      "name": "CheckFIDCollision / CheckDMXCollision report an existing patched fixture's FID and address as taken (false)",
+      "pass": true,
+      "detail": {
+        "patch": "1.001",
+        "fid": 601,
+        "fidFree": false,
+        "dmxFree": false,
+        "mode": "14.9.6.3.6.1"
+      }
+    },
+    {
+      "name": "FindBestDMXPatchAddr answers a 0-based absolute address at or after the start",
+      "pass": true,
+      "detail": {
+        "start": 512,
+        "best": 512
+      }
+    },
+    {
+      "name": "target FIDs and DMX destinations (run): free?",
+      "note": true,
+      "detail": {
+        "fid": "901..903",
+        "fidFree": true,
+        "dmx": [
+          {
+            "at": "2.001",
+            "free": true,
+            "count": 2
+          },
+          {
+            "at": "2.101",
+            "free": true,
+            "count": 1
+          },
+          {
+            "at": "2.201",
+            "free": true,
+            "count": 1
+          }
+        ],
+        "mode": "14.9.6.6.6.3"
+      }
+    },
+    {
+      "name": "run: preflight (Root, no patch copy, no modal, no KB25 fixtures, free FIDs / every DMX destination / sequence, the DMX mode exists)",
+      "pass": true,
+      "detail": []
+    },
+    {
+      "name": "run: AddFixtures with the command line at Root (live patch) returns nil and creates nothing",
+      "pass": true,
+      "detail": {
+        "liveKb25": [],
+        "ret": "nil",
+        "ok": true
+      }
+    },
+    {
+      "name": "run: CmdIndirect ChangeDestination \"ShowData\".\"Patch\" fills the ShowData.Patch copy and points Patch() at it (no modal)",
+      "pass": true,
+      "detail": {
+        "dest": "ShowData.Patch",
+        "patchAddr": "14.10",
+        "copyCount": 15,
+        "modal": false
+      }
+    },
+    {
+      "name": "run: the copy holds nothing but the live patch and the probe's own fixtures on entry (complete fingerprints equal)",
+      "pass": true,
+      "detail": {
+        "copy": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
+        },
+        "live": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
+        }
+      }
+    },
+    {
+      "name": "run: the destination reads \"Stage 1.Fixtures\" after ChangeDestination \"Stages\".\"Stage 1\".\"Fixtures\"",
+      "pass": true,
+      "detail": {
+        "dest": "Stage 1.Fixtures",
+        "inCopy": true
+      }
+    },
+    {
+      "name": "run: AddFixtures on the copy returns true and creates FID 901 at 2.001 and 902 one footprint later; the live patch is unchanged",
+      "pass": true,
+      "detail": {
+        "results": [
+          {
+            "ok": true,
+            "ret": "true"
+          }
+        ],
+        "copyKb25": [
+          {
+            "patch": "2.001",
+            "fid": "901",
+            "conflict": "No",
+            "name": "KB25 Probe",
+            "depth": 0
+          },
+          {
+            "patch": "2.009",
+            "fid": "902",
+            "conflict": "No",
+            "name": "KB25 Probe",
+            "depth": 0
+          }
+        ],
+        "liveKb25": []
+      }
+    },
+    {
+      "name": "run: DMX footprint of the mode (from the two addresses)",
+      "note": true,
+      "detail": {
+        "footprint": 8,
+        "names": [
+          "KB25 Probe",
+          "KB25 Probe"
+        ]
+      }
+    },
+    {
+      "name": "run: the footprint (8) fits the plan (at most 50: two fixtures from .001 end before .101)",
+      "pass": true,
+      "detail": {
+        "footprint": 8
+      }
+    },
+    {
+      "name": "run: first commit: the shared copy holds only the probe's expected changes (checked before committing)",
+      "pass": true,
+      "detail": {
+        "inCopy": true,
+        "copy": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
+        },
+        "live": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
+        },
+        "copyKb25": [
+          "KB25 Probe|901|2.001",
+          "KB25 Probe|902|2.009"
+        ],
+        "expected": [
+          "KB25 Probe|901|2.001",
+          "KB25 Probe|902|2.009"
+        ]
+      }
+    },
+    {
+      "name": "run: CmdIndirect ChangeDestination Root commits the copy with no dialog: both fixtures live, the copy empty",
+      "pass": true,
+      "detail": {
+        "dest": "Root",
+        "last": "OK: ChangeDestination Root",
+        "modal": false,
+        "copyCount": 0,
+        "liveKb25": [
+          {
+            "patch": "2.001",
+            "fid": "901",
+            "conflict": "No",
+            "name": "KB25 Probe",
+            "depth": 0
+          },
+          {
+            "patch": "2.009",
+            "fid": "902",
+            "conflict": "No",
+            "name": "KB25 Probe",
+            "depth": 0
+          }
+        ]
+      }
+    },
+    {
+      "name": "run: CmdIndirect ChangeDestination \"ShowData\".\"Patch\" fills the ShowData.Patch copy and points Patch() at it (no modal)",
+      "pass": true,
+      "detail": {
+        "dest": "ShowData.Patch",
+        "patchAddr": "14.10",
+        "copyCount": 15,
+        "modal": false
+      }
+    },
+    {
+      "name": "run: the copy holds nothing but the live patch and the probe's own fixtures on entry (complete fingerprints equal)",
+      "pass": true,
+      "detail": {
+        "copy": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
+        },
+        "live": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
+        }
+      }
+    },
+    {
+      "name": "run: the destination reads \"Stage 1.Fixtures\" after ChangeDestination \"Stages\".\"Stage 1\".\"Fixtures\"",
+      "pass": true,
+      "detail": {
+        "dest": "Stage 1.Fixtures",
+        "inCopy": true
+      }
+    },
+    {
+      "name": "run: Set(\"Patch\") on the copy readdresses one fixture and unpatches the other",
+      "pass": true,
+      "detail": {
+        "done": [
+          {
+            "ok": true,
+            "fid": 901
+          },
+          {
+            "ok": true,
+            "fid": 902
+          }
+        ],
+        "copyKb25": [
+          {
+            "patch": "",
+            "fid": "901",
+            "conflict": "No",
+            "name": "KB25 Probe",
+            "depth": 0
+          },
+          {
+            "patch": "2.101",
+            "fid": "902",
+            "conflict": "No",
+            "name": "KB25 Probe",
+            "depth": 0
+          }
+        ]
+      }
+    },
+    {
+      "name": "run: second commit: the shared copy holds only the probe's expected changes (checked before committing)",
+      "pass": true,
+      "detail": {
+        "inCopy": true,
+        "copy": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
+        },
+        "live": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
+        },
+        "copyKb25": [
+          "KB25 Probe|901|",
+          "KB25 Probe|902|2.101"
+        ],
+        "expected": [
+          "KB25 Probe|901|",
+          "KB25 Probe|902|2.101"
+        ]
+      }
+    },
+    {
+      "name": "run: after the commit the live patch has 901 unpatched and 902 at 2.101 (no dialog)",
+      "pass": true,
+      "detail": {
+        "dest": "Root",
+        "modal": false,
+        "liveKb25": [
+          {
+            "patch": "",
+            "fid": "901",
+            "conflict": "No",
+            "name": "KB25 Probe",
+            "depth": 0
+          },
+          {
+            "patch": "2.101",
+            "fid": "902",
+            "conflict": "No",
+            "name": "KB25 Probe",
+            "depth": 0
+          }
+        ]
+      }
+    },
+    {
+      "name": "run: CheckFIDCollision: the probe's FID taken, the next three free",
+      "pass": true,
+      "detail": {
+        "dmxBefore": true,
+        "fidTaken": false,
+        "fidAfterFree": true,
+        "dmxFirstFree": true,
+        "dmxTaken": false,
+        "dmxOverlap": false,
+        "best": 512
+      }
+    },
+    {
+      "name": "run: CheckDMXCollision: 2.101 taken, an overlap one channel before taken, the footprint before it free, 2.001 x2 free",
+      "pass": true,
+      "detail": {
+        "dmxBefore": true,
+        "fidTaken": false,
+        "fidAfterFree": true,
+        "dmxFirstFree": true,
+        "dmxTaken": false,
+        "dmxOverlap": false,
+        "best": 512
+      }
+    },
+    {
+      "name": "run: FindBestDMXPatchAddr(512, 8) answers 512: 0-based absolute addresses in and out",
+      "pass": true,
+      "detail": {
+        "dmxBefore": true,
+        "fidTaken": false,
+        "fidAfterFree": true,
+        "dmxFirstFree": true,
+        "dmxTaken": false,
+        "dmxOverlap": false,
+        "best": 512
+      }
+    },
+    {
+      "name": "run: CmdIndirect ChangeDestination \"ShowData\".\"Patch\" fills the ShowData.Patch copy and points Patch() at it (no modal)",
+      "pass": true,
+      "detail": {
+        "dest": "ShowData.Patch",
+        "patchAddr": "14.10",
+        "copyCount": 15,
+        "modal": false
+      }
+    },
+    {
+      "name": "run: the copy holds nothing but the live patch and the probe's own fixtures on entry (complete fingerprints equal)",
+      "pass": true,
+      "detail": {
+        "copy": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
+        },
+        "live": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
+        }
+      }
+    },
+    {
+      "name": "run: the destination reads \"Stage 1.Fixtures\" after ChangeDestination \"Stages\".\"Stage 1\".\"Fixtures\"",
+      "pass": true,
+      "detail": {
+        "dest": "Stage 1.Fixtures",
+        "inCopy": true
+      }
+    },
+    {
+      "name": "run: AddFixtures with a taken FID succeeds and takes it: the new fixture is 901, the old one is left with FID \"None\"",
+      "pass": true,
+      "detail": [
+        {
+          "patch": "",
+          "fid": "None",
+          "conflict": "No",
+          "name": "KB25 Probe",
+          "depth": 0
+        },
+        {
+          "patch": "2.101",
+          "fid": "902",
+          "conflict": "No",
+          "name": "KB25 Probe",
+          "depth": 0
+        },
+        {
+          "patch": "2.201",
+          "fid": "901",
+          "conflict": "No",
+          "name": "KB25 FidClash",
+          "depth": 0
+        },
+        {
+          "patch": "2.101",
+          "fid": "903",
+          "conflict": "No",
+          "name": "KB25 DmxClash",
+          "depth": 0
+        }
+      ]
+    },
+    {
+      "name": "run: ConflitedPatch read in the same chunk as AddFixtures",
+      "note": true,
+      "detail": [
+        {
+          "fid": "902",
+          "conflict": "No"
+        },
+        {
+          "fid": "903",
+          "conflict": "No"
+        }
+      ]
+    },
+    {
+      "name": "run: AddFixtures on a taken address succeeds and double-patches: both fixtures are flagged ConflitedPatch (on a later frame)",
+      "pass": true,
+      "detail": [
+        {
+          "patch": "",
+          "fid": "None",
+          "conflict": "No",
+          "name": "KB25 Probe",
+          "depth": 0
+        },
+        {
+          "patch": "2.101",
+          "fid": "902",
+          "conflict": "Yes",
+          "name": "KB25 Probe",
+          "depth": 0
+        },
+        {
+          "patch": "2.201",
+          "fid": "901",
+          "conflict": "No",
+          "name": "KB25 FidClash",
+          "depth": 0
+        },
+        {
+          "patch": "2.101",
+          "fid": "903",
+          "conflict": "Yes",
+          "name": "KB25 DmxClash",
+          "depth": 0
+        }
+      ]
+    },
+    {
+      "name": "run: Fixtures:Delete(position) removes every KB25 fixture from the copy",
+      "pass": true,
+      "detail": {
+        "copyKb25": [],
+        "copyTypeList": [
+          {
+            "no": 1,
+            "name": "Grouping"
+          },
+          {
+            "no": 2,
+            "name": "Moving Head"
+          },
+          {
+            "no": 3,
+            "name": "180W Beam Moving Head"
+          },
+          {
+            "no": 4,
+            "name": "Thrill Mini Profile"
+          },
+          {
+            "no": 5,
+            "name": "36PCS 4in1 LED Wall Washer"
+          },
+          {
+            "no": 6,
+            "name": "Mega Hex Par"
+          }
+        ],
+        "deletedFixtures": 4,
+        "deletedTypes": 0
+      }
+    },
+    {
+      "name": "run: third commit: the shared copy holds only the probe's expected changes (checked before committing)",
+      "pass": true,
+      "detail": {
+        "inCopy": true,
+        "copy": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
+        },
+        "live": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
+        },
+        "copyKb25": [],
+        "expected": []
+      }
+    },
+    {
+      "name": "run: the commit leaves the live patch as it started (fixture count, no KB25 fixtures, the starting fingerprint)",
+      "pass": true,
+      "detail": {
+        "dest": "Root",
+        "liveFixtures": 26,
+        "liveKb25": [],
+        "live": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
+        },
+        "start": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
+        }
+      }
+    },
+    {
+      "name": "run: ChangeDestination \"FixtureTypes\" inside the copy (complete fingerprints equal)",
+      "pass": true,
+      "detail": {
+        "dest": "FixtureTypes",
+        "inCopy": true,
+        "copy": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
+        },
+        "live": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
+        }
+      }
+    },
+    {
+      "name": "run: Import Library \"generic@dimmer.pxml\" in the copy's FixtureTypes reports success and adds exactly one type named \"Dimmer\" with no dialog (claimed by number and name)",
+      "pass": true,
+      "detail": {
+        "last": "OK: Import Library \"generic@dimmer.pxml\"",
+        "added": [
+          {
+            "no": 7,
+            "name": "Dimmer"
+          }
+        ],
+        "reason": null,
+        "modal": false
+      }
+    },
+    {
+      "name": "run: exactly the tracked type is deleted in the copy",
+      "pass": true,
+      "detail": {
+        "copyKb25": [],
+        "copyTypeList": [
+          {
+            "no": 1,
+            "name": "Grouping"
+          },
+          {
+            "no": 2,
+            "name": "Moving Head"
+          },
+          {
+            "no": 3,
+            "name": "180W Beam Moving Head"
+          },
+          {
+            "no": 4,
+            "name": "Thrill Mini Profile"
+          },
+          {
+            "no": 5,
+            "name": "36PCS 4in1 LED Wall Washer"
+          },
+          {
+            "no": 6,
+            "name": "Mega Hex Par"
+          }
+        ],
+        "deletedFixtures": 0,
+        "deletedTypes": 1
+      }
+    },
+    {
+      "name": "run: fourth commit: the shared copy holds only the probe's expected changes (checked before committing)",
+      "pass": true,
+      "detail": {
+        "inCopy": true,
+        "copy": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
+        },
+        "live": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
+        },
+        "copyKb25": [],
+        "expected": []
+      }
+    },
+    {
+      "name": "run: after the commit the live types are unchanged and the live patch has its starting fingerprint",
+      "pass": true,
+      "detail": {
+        "liveTypes": [
+          "Grouping",
+          "Moving Head",
+          "180W Beam Moving Head",
+          "Thrill Mini Profile",
+          "36PCS 4in1 LED Wall Washer",
+          "Mega Hex Par"
+        ],
+        "live": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
+        },
+        "start": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
+        }
+      }
+    },
+    {
+      "name": "run: Sequence 951 created with one cue and named (Store /NoConfirmation, no dialog)",
+      "pass": true,
+      "detail": {
+        "last": "OK: Store Sequence 951 Cue 1 /NoConfirmation",
+        "name": "KB25 Dialog Probe"
+      }
+    },
+    {
+      "name": "run: CmdIndirect of a Store over an existing cue returns at once and the bridge keeps answering while the dialog is open",
+      "pass": true,
+      "detail": {
+        "answerMs": 16,
+        "pong": true
+      }
+    },
+    {
+      "name": "run: GetTopModal/WaitModal return a MessageBox titled \"Store to Cue 1\" with its message and the Overwrite / Merge / Remove / Release / Cancel buttons (text and rect), bound with a delete hook",
+      "pass": true,
+      "detail": {
+        "modal": {
+          "display": 2,
+          "name": "MsgBox",
+          "title": "Store to Cue 1",
+          "class": "MessageBox"
+        },
+        "title": "Store to Cue 1",
+        "message": "Please choose store mode.",
+        "buttons": [
+          "Load\nDefaults",
+          "Save\nDefaults",
+          "Overwrite",
+          "Merge",
+          "Remove",
+          "Release",
+          "Cancel"
+        ],
+        "token": 8
+      }
+    },
+    {
+      "name": "run: Store dialog inspection",
+      "note": true,
+      "detail": {
+        "modal": {
+          "display": 2,
+          "name": "MsgBox",
+          "title": "Store to Cue 1",
+          "class": "MessageBox"
+        },
+        "title": "Store to Cue 1",
+        "message": "Please choose store mode.",
+        "buttons": [
+          {
+            "name": "Button 4",
+            "text": "Load\nDefaults",
+            "rect": {
+              "h": 50,
+              "w": 100,
+              "x": 1140,
+              "y": 442
+            },
+            "en": true
+          },
+          {
+            "name": "Button 5",
+            "text": "Save\nDefaults",
+            "rect": {
+              "h": 50,
+              "w": 100,
+              "x": 1038,
+              "y": 442
+            },
+            "en": true
+          },
+          {
+            "name": "Button 3",
+            "text": "Overwrite",
+            "rect": {
+              "h": 50,
+              "w": 132,
+              "x": 569,
+              "y": 577
+            },
+            "en": true
+          },
+          {
+            "name": "Button 4",
+            "text": "Merge",
+            "rect": {
+              "h": 50,
+              "w": 131,
+              "x": 702,
+              "y": 577
+            },
+            "en": true
+          },
+          {
+            "name": "Button 5",
+            "text": "Remove",
+            "rect": {
+              "h": 50,
+              "w": 132,
+              "x": 834,
+              "y": 577
+            },
+            "en": true
+          },
+          {
+            "name": "Button 6",
+            "text": "Release",
+            "rect": {
+              "h": 50,
+              "w": 131,
+              "x": 967,
+              "y": 577
+            },
+            "en": true
+          },
+          {
+            "name": "Button 7",
+            "text": "Cancel",
+            "rect": {
+              "h": 50,
+              "w": 132,
+              "x": 1099,
+              "y": 577
+            },
+            "en": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "run: a Mouse move/press/release at Cancel's centre closes the dialog: LastCommand \"User Canceled Command: …\"",
+      "pass": true,
+      "detail": {
+        "click": {
+          "clicked": "Cancel",
+          "display": 2,
+          "modal": {
+            "display": 2,
+            "name": "MsgBox",
+            "title": "Store to Cue 1",
+            "class": "MessageBox"
+          },
+          "x": 1165,
+          "y": 602
+        },
+        "last": "User Canceled Command: Store Sequence 951 Cue 1",
+        "modal": false
+      }
+    },
+    {
+      "name": "run: the reopened Store dialog is inspected and bound under a new token",
+      "pass": true,
+      "detail": {
+        "token": 9,
+        "firstToken": 8
+      }
+    },
+    {
+      "name": "run: the first token is refused on the reopened dialog with the same title (nothing clicked; the dialog stays open)",
+      "pass": true,
+      "detail": {
+        "stale": {
+          "refused": "the bound dialog was closed (its delete hook fired)",
+          "modal": {
+            "display": 2,
+            "name": "MsgBox",
+            "title": "Store to Cue 1",
+            "class": "MessageBox"
+          }
+        },
+        "modal": {
+          "display": 2,
+          "name": "MsgBox",
+          "title": "Store to Cue 1",
+          "class": "MessageBox"
+        }
+      }
+    },
+    {
+      "name": "run: clicking Overwrite through the new token stores: LastCommand \"OK: …\" (it does not name the chosen answer)",
+      "pass": true,
+      "detail": {
+        "click": {
+          "clicked": "Overwrite",
+          "display": 2,
+          "modal": {
+            "display": 2,
+            "name": "MsgBox",
+            "title": "Store to Cue 1",
+            "class": "MessageBox"
+          },
+          "x": 635,
+          "y": 602
+        },
+        "last": "OK: Store Sequence 951 Cue 1"
+      }
+    },
+    {
+      "name": "run: the Store dialog is bound again",
+      "pass": true
+    },
+    {
+      "name": "run: Keyboard Escape on the bound dialog cancels it",
+      "pass": true,
+      "detail": {
+        "key": {
+          "display": 2,
+          "key": "Escape",
+          "modal": {
+            "display": 2,
+            "name": "MsgBox",
+            "title": "Store to Cue 1",
+            "class": "MessageBox"
+          }
+        },
+        "last": "User Canceled Command: Store Sequence 951 Cue 1",
+        "modal": false
+      }
+    },
+    {
+      "name": "run: Label opens a TextInput targeting the sequence; its InputField Content is the current name (bound)",
+      "pass": true,
+      "detail": {
+        "modal": {
+          "target": "Sequence 951",
+          "display": 2,
+          "name": "TextInput 3",
+          "title": "Label Sequence 951 'KB25 Dialog Probe'",
+          "class": "TextInput"
+        },
+        "field": {
+          "d": 3,
+          "name": "InputField",
+          "en": true,
+          "class": "LineEdit",
+          "rect": {
+            "h": 40,
+            "w": 973,
+            "x": 89,
+            "y": 64
+          },
+          "content": "KB25 Dialog Probe"
+        },
+        "inspections": 2
+      }
+    },
+    {
+      "name": "run: a typed character replaces the whole field (it opens fully selected)",
+      "pass": true,
+      "detail": {
+        "chr": {
+          "display": 2,
+          "char": "Z"
+        },
+        "afterChar": {
+          "value": "KB25 Dialog Probe",
+          "before": "Z"
+        }
+      }
+    },
+    {
+      "name": "run: the field's Content is writable from Lua and keeps the value on the next frame",
+      "pass": true,
+      "detail": {
+        "setC": {
+          "setOk": true,
+          "before": "Z",
+          "value": "KB25 Dialog Probe",
+          "after": "KB25 SetContent"
+        },
+        "setNext": {
+          "value": "KB25 Dialog Probe",
+          "before": "KB25 SetContent"
+        }
+      }
+    },
+    {
+      "name": "run: Escape cancels the TextInput: LastCommand \"Failed: Label …\", the name unchanged",
+      "pass": true,
+      "detail": {
+        "last": "Failed: Label Sequence 951",
+        "seq": "KB25 Dialog Probe"
+      }
+    },
+    {
+      "name": "run: the reopened TextInput is bound once its field exists",
+      "pass": true
+    },
+    {
+      "name": "run: the reopened field takes the written Content",
+      "pass": true,
+      "detail": {
+        "setOk": true,
+        "before": "KB25 Dialog Probe",
+        "value": "KB25 Dialog Probe",
+        "after": "KB25 Renamed"
+      }
+    },
+    {
+      "name": "run: \"Return\" is not a key code: the TextInput stays open",
+      "pass": true,
+      "detail": {
+        "modal": {
+          "target": "Sequence 951",
+          "display": 2,
+          "name": "TextInput 3",
+          "title": "Label Sequence 951 'KB25 Dialog Probe'",
+          "class": "TextInput"
+        },
+        "last": "Failed: Label Sequence 951"
+      }
+    },
+    {
+      "name": "run: Enter commits the written Content: LastCommand \"OK: Label …\" and the sequence is renamed",
+      "pass": true,
+      "detail": {
+        "last": "OK: Label Sequence 951",
+        "seq": "KB25 Renamed"
+      }
+    },
+    {
+      "name": "run: every registered cleanup ran",
+      "pass": true,
+      "detail": [
+        {
+          "label": "close the probe's bound dialog (Escape; never another modal)",
+          "ok": true,
+          "detail": {
+            "ok": true,
+            "detail": "no modal"
+          }
+        },
+        {
+          "label": "delete Sequence 951 (probe-named only)",
+          "ok": true,
+          "detail": {
+            "ok": true,
+            "detail": {
+              "last": "OK: Delete Sequence 951 /NoConfirmation",
+              "deleted": true
+            }
+          }
+        },
+        {
+          "label": "restore the patch (KB25 fixtures, the tracked import, destination Root; never commits foreign changes)",
+          "ok": true,
+          "detail": {
+            "ok": true,
+            "detail": {
+              "liveFixtures": 26,
+              "liveTypes": [
+                "Grouping",
+                "Moving Head",
+                "180W Beam Moving Head",
+                "Thrill Mini Profile",
+                "36PCS 4in1 LED Wall Washer",
+                "Mega Hex Par"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "run: the end state matches the start (Root, no copy, no modal, the live patch's starting fingerprint, no KB25 fixtures, no scratch sequence)",
+      "pass": true,
+      "detail": {
+        "live": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
+        },
+        "start": {
+          "complete": true,
+          "objects": 3177,
+          "hash": "DmxCurves:3:799371830,AttributeDefinitions:473:3210185704,Layers:2:3899704408,Classes:2:186808656,PsrExtraData:3:651775492,FixtureTypes:1576:2458645305,Stages:80:2949730389,IDTypes:13:4137774735,DmxUniverses:1025:1939970613"
+        },
+        "dest": "Root",
+        "copyCount": 0,
+        "modal": false,
+        "liveFixtures": 26,
+        "liveTypes": [
+          "Grouping",
+          "Moving Head",
+          "180W Beam Moving Head",
+          "Thrill Mini Profile",
+          "36PCS 4in1 LED Wall Washer",
+          "Mega Hex Par"
+        ],
+        "liveKb25": [],
+        "seq": false
+      }
+    }
+  ],
+  "finishedAt": "2026-10-12T09:32:48.074Z",
+  "failed": 0,
+  "passed": 55
+}

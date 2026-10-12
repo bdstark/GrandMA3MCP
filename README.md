@@ -88,6 +88,7 @@ OSC is optional for the normal bridge setup and is not forwarded by an SSH tunne
   [executors](docs/tools/executors.md), [inspection](docs/tools/inspection.md), [console input](docs/tools/input.md),
   [console feedback](docs/tools/feedback.md)
 - [Hardkey, keyboard and feedback feature requests and evidence](KEYBOARD.md), [console interaction modules](docs/modules.md)
+- [Dialog control and dialog-free patching: plan and evidence](DIALOG.md)
 - [Optional Lua execution](docs/lua.md)
 - [Remote access over SSH](docs/remote-access.md) and [Docker](docs/docker.md)
 - [Tested platform/version matrix](docs/compatibility.md) and [pinned modules for independent consumers](docs/modules.md#vendoring-into-another-plugin-mtpnxk)
