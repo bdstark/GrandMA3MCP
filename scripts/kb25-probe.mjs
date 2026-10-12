@@ -5,13 +5,19 @@
 //   node scripts/kb25-probe.mjs verify [--out report.json]   read-only: the Lua API surface, the live patch structure,
 //                                                           CheckFIDCollision / CheckDMXCollision against an existing
 //                                                           fixture, FindBestDMXPatchAddr; nothing is entered or changed
-//   node scripts/kb25-probe.mjs run    [--out report.json]   verify + on a DISPOSABLE show: patch edits through the
+//   node scripts/kb25-probe.mjs run --exclusive [--out report.json]
+//                                                           verify + on a DISPOSABLE show: patch edits through the
 //                                                           ShowData.Patch edit copy (add, readdress, unpatch, collisions,
 //                                                           delete, a library type import that is never committed) and a
 //                                                           scratch sequence's Store / Label dialogs answered by Mouse
 //                                                           clicks, Escape / Enter and the text field's Content
 //
 // KB25_PHASES=patch,import,dialogs (default all three) limits `run` to some of its phases.
+//
+// `run` needs --exclusive (or KB25_EXCLUSIVE=1): the operator states that nobody else uses the console during the run.
+// The patch guard below is best-effort detection, not exclusion: the fingerprint is read one collection per request
+// (about 4 s per side), so an edit to a collection after it was read, before the commit, is not seen. Nothing in the
+// run can exclude concurrent edits; supporting them would need a verified change-tracking or locking mechanism.
 //
 // Rules the run keeps (the manual pass and the review of PR #31 established why):
 // - Every command that changes the command-line destination or may open a dialog goes through CmdIndirect, never Cmd():
@@ -21,7 +27,8 @@
 //   refused prerequisite (a sequence that already exists, a destination that never changed) never leads to the next
 //   mutation.
 // - The patch copy is shared with the operator (the Patch menu fills the same ShowData.Patch and moves the same command
-//   line). Before every commit a fingerprint of the copy is compared with the live patch's: every object of every
+//   line). Best-effort, and only meaningful with exclusive use (see above): before every commit a fingerprint of the
+//   copy is compared with the live patch's: every object of every
 //   patch collection (all stages, fixture types, attribute definitions, ID types, layers, classes, curves, the
 //   universes' own settings) with every property, except the probe's own fixtures (named "KB25 …") and data the
 //   console derives from the patch. Anything else that differs, or a fingerprint that could not be completed, means
@@ -59,6 +66,7 @@ const IMPORT_NAME = process.env.KB25_IMPORT_NAME ?? "Dimmer";
 export const ALL_PHASES = ["patch", "import", "dialogs"];
 const PHASES = new Set(String(process.env.KB25_PHASES ?? ALL_PHASES.join(",")).split(",").map((s) => s.trim()).filter(Boolean));
 const PREFIX = "KB25 ";
+const EXCLUSIVE = argv.includes("--exclusive") || process.env.KB25_EXCLUSIVE === "1";
 /** The DMX writes of the patch phase: [start address in UNIVERSE, fixtures]. 2.101 and 2.201 hold one fixture each. */
 export const DMX_PLAN = [[1, 2], [101, 1], [201, 1]];
 /** The largest footprint the plan fits: two fixtures from .001 must end before .101 (and .201 + fp - 1 <= 512). */
@@ -537,7 +545,11 @@ function note(name, detail) { steps.push({ name, note: true, detail }); console.
 
 async function main() {
   if (mode !== "verify" && mode !== "run") {
-    console.error("usage: node scripts/kb25-probe.mjs verify|run [--out report.json]");
+    console.error("usage: node scripts/kb25-probe.mjs verify|run --exclusive [--out report.json]");
+    process.exit(2);
+  }
+  if (mode === "run" && !EXCLUSIVE) {
+    console.error("run needs exclusive use of the console: nobody else may edit the show (above all the patch) while it runs. The patch guard only detects foreign changes on a best-effort basis (its fingerprint is read collection by collection over several seconds) and cannot exclude them. Pass --exclusive (or KB25_EXCLUSIVE=1) to confirm.");
     process.exit(2);
   }
   if (![...PHASES].every((p) => ALL_PHASES.includes(p)) || PHASES.size === 0) {
@@ -554,7 +566,7 @@ async function main() {
     if (!SHOW_GUARD.test(String(ping.showfile ?? ""))) { console.error(`show "${ping.showfile}" does not look disposable (expected a name matching ${SHOW_GUARD}); refusing to change state`); process.exit(2); }
     if (ping.input?.busy) { console.error(`the bridge is busy (${JSON.stringify(ping.input.busy)}); wait for the owner to finish`); process.exit(2); }
   }
-  const report = { mode, host, port, startedAt: new Date().toISOString(), config: { fid: FID, universe: UNIVERSE, seq: SEQ, mode: `${TYPE_IDX}.${MODE_IDX}`, importFile: IMPORT_FILE, importName: IMPORT_NAME, phases: [...PHASES] }, ping: { bridgeVersion: ping.bridgeVersion, build: ping.build, hostname: ping.hostname, showfile: ping.showfile, user: ping.user, modules: ping.modules, lua: { enabled: ping.lua?.enabled, hookMode: ping.lua?.hookMode } }, steps };
+  const report = { mode, host, port, startedAt: new Date().toISOString(), config: { fid: FID, universe: UNIVERSE, seq: SEQ, mode: `${TYPE_IDX}.${MODE_IDX}`, importFile: IMPORT_FILE, importName: IMPORT_NAME, phases: [...PHASES], exclusive: mode === "run" ? EXCLUSIVE : undefined }, ping: { bridgeVersion: ping.bridgeVersion, build: ping.build, hostname: ping.hostname, showfile: ping.showfile, user: ping.user, modules: ping.modules, lua: { enabled: ping.lua?.enabled, hookMode: ping.lua?.hookMode } }, steps };
   note("console", report.ping);
 
   const L = async (code, timeoutMs = 8000) => {
@@ -654,7 +666,8 @@ async function runMutations({ L, snap, fps, waitFor, s0, fp0 }) {
     return commit();
   };
   // Restores the patch by identity: in the copy, delete the probe's fixtures and its tracked import, then commit only
-  // when nothing else differs from the live patch. Never sends Oops; never commits someone else's change.
+  // when the fingerprint shows nothing else differing from the live patch (best-effort detection; the run assumes
+  // exclusive use). Never sends Oops.
   const restorePatch = async () => {
     for (let i = 0; i < 4; i++) {
       const s = await snap();
@@ -696,7 +709,7 @@ async function runMutations({ L, snap, fps, waitFor, s0, fp0 }) {
 
   let mutationError = null;
   try {
-    if (PHASES.has("patch") || PHASES.has("import")) cleanup.add("restore the patch (KB25 fixtures, the tracked import, destination Root; never commits foreign changes)", restorePatch);
+    if (PHASES.has("patch") || PHASES.has("import")) cleanup.add("restore the patch (KB25 fixtures, the tracked import, destination Root; no commit when the fingerprint shows other changes)", restorePatch);
     if (PHASES.has("patch")) {
       // P1: AddFixtures on the live patch with the command line at Root.
       const live = await L(LUA_ADD_LIVE());

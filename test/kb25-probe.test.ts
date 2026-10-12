@@ -16,7 +16,9 @@ import {
  * scripts/kb25-probe.mjs: `verify` reads the Lua API surface, the live patch and the collision helpers only; `run`
  * refuses a show whose name does not look disposable, Lua disabled, a busy bridge, and (through its preflight) any
  * state it could not restore by identity. A failed prerequisite stops the run before the next mutation; dialog input
- * goes only to the bound dialog; cleanup deletes only what the probe made and never commits a foreign change. The
+ * goes only to the bound dialog; cleanup deletes only what the probe made and, on a best-effort basis, does not commit a
+ * copy whose fingerprint shows another change (the run requires exclusive console use: the fingerprint is read
+ * collection by collection, so it is not a consistent snapshot). The
  * console behaviour itself is the live record's (docs/probes/kb-25-dialogs-macos-2.5.1.md).
  */
 
@@ -363,6 +365,19 @@ test("kb25 verify fails when the collision helpers call a patched fixture free",
   } finally { bridge.close(); }
 });
 
+test("kb25 run refuses to start without --exclusive, before connecting", async () => {
+  const bridge = await startFakeBridge(() => { throw new Error("nothing may be sent"); });
+  try {
+    const r = await run(["run"], { GMA3_BRIDGE_PORT: String(bridge.port), KB25_EXCLUSIVE: "" });
+    assert.equal(r.status, 2);
+    assert.match(r.stderr, /exclusive use of the console/);
+    assert.match(r.stderr, /best-effort/);
+    assert.deepEqual(bridge.ops, []);
+    const v = await run(["verify"], { GMA3_BRIDGE_PORT: String(bridge.port), KB25_EXCLUSIVE: "" });
+    assert.doesNotMatch(v.stderr, /exclusive use/, "verify (read-only) does not need it");
+  } finally { bridge.close(); }
+});
+
 test("kb25 run refuses a non-disposable show, Lua disabled, a busy bridge and unknown phases before any Lua", async () => {
   let which: "show" | "lua" | "busy" = "show";
   const bridge = await startFakeBridge((op) => {
@@ -374,15 +389,15 @@ test("kb25 run refuses a non-disposable show, Lua disabled, a busy bridge and un
     throw new Error(`unexpected op ${op}`);
   });
   try {
-    let r = await run(["run"], { GMA3_BRIDGE_PORT: String(bridge.port) });
+    let r = await run(["run", "--exclusive"], { GMA3_BRIDGE_PORT: String(bridge.port) });
     assert.equal(r.status, 2); assert.match(r.stderr, /does not look disposable/);
     which = "lua";
     r = await run(["verify"], { GMA3_BRIDGE_PORT: String(bridge.port) });
     assert.equal(r.status, 2); assert.match(r.stderr, /Lua enabled/);
     which = "busy";
-    r = await run(["run"], { GMA3_BRIDGE_PORT: String(bridge.port) });
+    r = await run(["run", "--exclusive"], { GMA3_BRIDGE_PORT: String(bridge.port) });
     assert.equal(r.status, 2); assert.match(r.stderr, /busy/);
-    r = await run(["run"], { GMA3_BRIDGE_PORT: String(bridge.port), KB25_PHASES: "patch,nonsense" });
+    r = await run(["run", "--exclusive"], { GMA3_BRIDGE_PORT: String(bridge.port), KB25_PHASES: "patch,nonsense" });
     assert.equal(r.status, 2); assert.match(r.stderr, /KB25_PHASES/);
     assert.deepEqual([...new Set(bridge.ops)], ["ping"]);
   } finally { bridge.close(); }
@@ -406,7 +421,7 @@ test("kb25 run's preflight refuses an open modal, an open copy, KB25 fixtures, a
   for (const [snap, ro, why] of cases) {
     const bridge = await startFakeBridge(luaFake(() => snapshot(snap), () => ro));
     try {
-      const r = await run(["run"], { GMA3_BRIDGE_PORT: String(bridge.port) });
+      const r = await run(["run", "--exclusive"], { GMA3_BRIDGE_PORT: String(bridge.port) });
       assert.equal(r.status, 1, r.stdout + r.stderr);
       assert.match(r.stdout, /FAIL run: preflight/);
       assert.match(r.stdout, why);
@@ -422,7 +437,7 @@ test("kb25 run: a refused sequence creation stops the dialog phase before any St
     return undefined;
   }));
   try {
-    const r = await run(["run"], { GMA3_BRIDGE_PORT: String(bridge.port), KB25_PHASES: "dialogs" });
+    const r = await run(["run", "--exclusive"], { GMA3_BRIDGE_PORT: String(bridge.port), KB25_PHASES: "dialogs" });
     assert.equal(r.status, 1, r.stdout + r.stderr);
     assert.match(r.stdout, /FAIL run: Sequence 951 created/);
     assert.match(r.stdout, /NOTE run: stopped after a failed prerequisite/);
@@ -439,7 +454,7 @@ test("kb25 run: a destination that never changes stops the patch phase before Ad
     return undefined;
   }));
   try {
-    const r = await run(["run"], { GMA3_BRIDGE_PORT: String(bridge.port), KB25_PHASES: "patch" });
+    const r = await run(["run", "--exclusive"], { GMA3_BRIDGE_PORT: String(bridge.port), KB25_PHASES: "patch" });
     assert.equal(r.status, 1, r.stdout + r.stderr);
     assert.match(r.stdout, /FAIL run: CmdIndirect ChangeDestination "ShowData"\."Patch" fills the ShowData\.Patch copy/);
     assert.ok(!bridge.codes.some((c) => c.includes("modeOf(sd.Patch)")), "no AddFixtures on the copy");
@@ -448,7 +463,7 @@ test("kb25 run: a destination that never changes stops the patch phase before Ad
   } finally { bridge.close(); }
 });
 
-test("kb25 run: a foreign change in the shared copy is never committed, by the run or by the cleanup", async () => {
+test("kb25 run: a foreign change the fingerprint sees is not committed, by the run or by the cleanup", async () => {
   let entered = false;
   const inCopy = () => snapshot({ inCopy: true, dest: "ShowData.Patch", patchAddr: "14.10", copyCount: 15 });
   const bridge = await startFakeBridge(luaFake(() => (entered ? inCopy() : snapshot()), () => readonly(), (code) => {
@@ -459,7 +474,7 @@ test("kb25 run: a foreign change in the shared copy is never committed, by the r
     return undefined;
   }, (which) => (which === "copy" ? fp(99) : fp())));
   try {
-    const r = await run(["run"], { GMA3_BRIDGE_PORT: String(bridge.port), KB25_PHASES: "patch" });
+    const r = await run(["run", "--exclusive"], { GMA3_BRIDGE_PORT: String(bridge.port), KB25_PHASES: "patch" });
     assert.equal(r.status, 1, r.stdout + r.stderr);
     assert.match(r.stdout, /FAIL run: the copy holds nothing but the live patch and the probe's own fixtures on entry/);
     assert.match(r.stdout, /NOT committed: the shared patch copy holds changes the probe did not make/);
@@ -551,7 +566,7 @@ test("kb25 run: a failed import while someone else adds a type claims nothing, d
     return undefined;
   }, (which) => (which === "copy" && stage === "imported" ? fp(2) : fp(1))));
   try {
-    const r = await run(["run"], { GMA3_BRIDGE_PORT: String(bridge.port), KB25_PHASES: "import" });
+    const r = await run(["run", "--exclusive"], { GMA3_BRIDGE_PORT: String(bridge.port), KB25_PHASES: "import" });
     assert.equal(r.status, 1, r.stdout + r.stderr);
     assert.match(r.stdout, /FAIL run: Import Library "generic@dimmer\.pxml" in the copy's FixtureTypes reports success/);
     assert.match(r.stdout, /did not report success/);

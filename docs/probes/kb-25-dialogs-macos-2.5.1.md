@@ -82,7 +82,7 @@ stall already established it.
 
 ## Scripted run
 
-`node scripts/kb25-probe.mjs run --out docs/probes/kb-25-dialogs-macos-2.5.1.json` (55/55, about 85 s, most of it the patch fingerprints) repeats the
+`node scripts/kb25-probe.mjs run --exclusive --out docs/probes/kb-25-dialogs-macos-2.5.1.json` (55/55, about 85 s, most of it the patch fingerprints) repeats the
 patch and dialog steps above, except `Oops`, which is never sent: if anything else were undoable it would undo the
 operator's work. `verify` (4 checks) is read-only.
 
@@ -106,8 +106,9 @@ operator's work. `verify` (4 checks) is read-only.
   - Live: after Cancel, the reopened Store dialog (same title) got a new binding. The first binding was refused on it
     with "the bound dialog was closed (its delete hook fired)", nothing was clicked, and the dialog stayed open.
     **`HookDelete` fires when a MessageBox closes.**
-- **Nothing foreign is committed.** See "Patch fingerprint" below. The copy must also hold exactly the probe's
-  expected fixtures. If anything else differs, or a fingerprint is incomplete, nothing is committed and the run stops.
+- **Foreign changes are detected on a best-effort basis** (see "Patch fingerprint" and "Concurrency limit" below).
+  The copy must also hold exactly the probe's expected fixtures. If anything else differs, or a fingerprint is
+  incomplete, nothing is committed and the run stops.
   - The cleanup deletes the probe's fixtures and only a fixture type the run provably imported (see "Import
     ownership"), tracked by number and name; an ambiguous match deletes nothing. It commits only a copy that then
     matches the live patch. Otherwise it leaves the command line in the patch and asks for Menu › Patch › Discard
@@ -173,6 +174,22 @@ when all three hold:
 Otherwise nothing is tracked, the run stops, and the cleanup refuses to commit the copy, which still holds the
 unexplained type. The import is its own phase (`KB25_PHASES=import`), so the test suite can drive exactly that
 failure end to end.
+
+## Concurrency limit (review round 3)
+
+The fingerprint is not a consistent snapshot. It is read one collection per request, about 4 s per side. An edit to a
+collection after that collection was read, but before the commit, is not seen, and the commit then includes it. The
+review reproduced the guard accepting exactly that interleaving with mocked reads. A second fingerprint pass would
+narrow the window but not close it. Nothing in the probe can exclude concurrent edits.
+
+So the fingerprint is **best-effort detection**, not a guarantee:
+- `run` refuses to start unless the operator confirms exclusive use of the console with `--exclusive` (or
+  `KB25_EXCLUSIVE=1`). `verify` is read-only and does not need it.
+- Supporting concurrent editing (KB-26) needs a verified change-tracking or locking mechanism. The console's Lua API
+  has `HookObjectChange(callback, handle, plugin_handle[, target])` / `Unhook`. Whether it fires for every edit
+  anywhere under the patch (nested objects, the Patch menu, other users) is untested.
+
+The 55/55 report was recorded before the flag existed. The run's patch, import and dialog steps are unchanged.
 
 ## Operator session (2026-10-12, operator at the console)
 
