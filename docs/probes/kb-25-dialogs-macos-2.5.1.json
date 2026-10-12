@@ -2,13 +2,17 @@
   "mode": "run",
   "host": "127.0.0.1",
   "port": 9800,
-  "startedAt": "2026-10-12T08:18:53.455Z",
+  "startedAt": "2026-10-12T09:08:47.399Z",
   "config": {
     "fid": 901,
     "universe": 2,
     "seq": 951,
     "mode": "6.3",
-    "importFile": "generic@dimmer.pxml"
+    "importFile": "generic@dimmer.pxml",
+    "phases": [
+      "patch",
+      "dialogs"
+    ]
   },
   "ping": {
     "bridgeVersion": "0.18.0",
@@ -105,6 +109,12 @@
           "36PCS 4in1 LED Wall Washer",
           "Mega Hex Par"
         ],
+        "liveFp": {
+          "types": 6,
+          "typeHash": 4178312287,
+          "fixtures": 26,
+          "fixtureHash": 998371227
+        },
         "modal": false,
         "seq": false
       }
@@ -139,18 +149,33 @@
       }
     },
     {
-      "name": "target ranges (run): FID and DMX free?",
+      "name": "target FIDs and DMX destinations (run): free?",
       "note": true,
       "detail": {
         "fid": "901..903",
         "fidFree": true,
-        "dmx": "2.001 x32",
-        "dmxFree": true,
+        "dmx": [
+          {
+            "at": "2.001",
+            "free": true,
+            "count": 2
+          },
+          {
+            "at": "2.101",
+            "free": true,
+            "count": 1
+          },
+          {
+            "at": "2.201",
+            "free": true,
+            "count": 1
+          }
+        ],
         "mode": "14.9.6.6.6.3"
       }
     },
     {
-      "name": "run: preflight (Root, no patch copy, no modal, no KB25 fixtures, free FIDs / DMX / sequence, the DMX mode exists)",
+      "name": "run: preflight (Root, no patch copy, no modal, no KB25 fixtures, free FIDs / every DMX destination / sequence, the DMX mode exists)",
       "pass": true,
       "detail": []
     },
@@ -174,10 +199,29 @@
       }
     },
     {
+      "name": "run: the copy holds nothing but the live patch and the probe's own fixtures on entry",
+      "pass": true,
+      "detail": {
+        "copyFp": {
+          "types": 6,
+          "typeHash": 4178312287,
+          "fixtures": 26,
+          "fixtureHash": 998371227
+        },
+        "liveFp": {
+          "types": 6,
+          "typeHash": 4178312287,
+          "fixtures": 26,
+          "fixtureHash": 998371227
+        }
+      }
+    },
+    {
       "name": "run: the destination reads \"Stage 1.Fixtures\" after ChangeDestination \"Stages\".\"Stage 1\".\"Fixtures\"",
       "pass": true,
       "detail": {
-        "dest": "Stage 1.Fixtures"
+        "dest": "Stage 1.Fixtures",
+        "inCopy": true
       }
     },
     {
@@ -221,6 +265,40 @@
       }
     },
     {
+      "name": "run: the footprint (8) fits the plan (at most 50: two fixtures from .001 end before .101)",
+      "pass": true,
+      "detail": {
+        "footprint": 8
+      }
+    },
+    {
+      "name": "run: first commit: the shared copy holds only the probe's expected changes (checked before committing)",
+      "pass": true,
+      "detail": {
+        "inCopy": true,
+        "copyFp": {
+          "types": 6,
+          "typeHash": 4178312287,
+          "fixtures": 26,
+          "fixtureHash": 998371227
+        },
+        "liveFp": {
+          "types": 6,
+          "typeHash": 4178312287,
+          "fixtures": 26,
+          "fixtureHash": 998371227
+        },
+        "copyKb25": [
+          "KB25 Probe|901|2.001",
+          "KB25 Probe|902|2.009"
+        ],
+        "expected": [
+          "KB25 Probe|901|2.001",
+          "KB25 Probe|902|2.009"
+        ]
+      }
+    },
+    {
       "name": "run: CmdIndirect ChangeDestination Root commits the copy with no dialog: both fixtures live, the copy empty",
       "pass": true,
       "detail": {
@@ -244,6 +322,42 @@
             "depth": 0
           }
         ]
+      }
+    },
+    {
+      "name": "run: CmdIndirect ChangeDestination \"ShowData\".\"Patch\" fills the ShowData.Patch copy and points Patch() at it (no modal)",
+      "pass": true,
+      "detail": {
+        "dest": "ShowData.Patch",
+        "patchAddr": "14.10",
+        "copyCount": 15,
+        "modal": false
+      }
+    },
+    {
+      "name": "run: the copy holds nothing but the live patch and the probe's own fixtures on entry",
+      "pass": true,
+      "detail": {
+        "copyFp": {
+          "types": 6,
+          "typeHash": 4178312287,
+          "fixtures": 26,
+          "fixtureHash": 998371227
+        },
+        "liveFp": {
+          "types": 6,
+          "typeHash": 4178312287,
+          "fixtures": 26,
+          "fixtureHash": 998371227
+        }
+      }
+    },
+    {
+      "name": "run: the destination reads \"Stage 1.Fixtures\" after ChangeDestination \"Stages\".\"Stage 1\".\"Fixtures\"",
+      "pass": true,
+      "detail": {
+        "dest": "Stage 1.Fixtures",
+        "inCopy": true
       }
     },
     {
@@ -275,6 +389,33 @@
             "name": "KB25 Probe",
             "depth": 0
           }
+        ]
+      }
+    },
+    {
+      "name": "run: second commit: the shared copy holds only the probe's expected changes (checked before committing)",
+      "pass": true,
+      "detail": {
+        "inCopy": true,
+        "copyFp": {
+          "types": 6,
+          "typeHash": 4178312287,
+          "fixtures": 26,
+          "fixtureHash": 998371227
+        },
+        "liveFp": {
+          "types": 6,
+          "typeHash": 4178312287,
+          "fixtures": 26,
+          "fixtureHash": 998371227
+        },
+        "copyKb25": [
+          "KB25 Probe|901|",
+          "KB25 Probe|902|2.101"
+        ],
+        "expected": [
+          "KB25 Probe|901|",
+          "KB25 Probe|902|2.101"
         ]
       }
     },
@@ -339,6 +480,42 @@
         "dmxTaken": false,
         "dmxOverlap": false,
         "best": 512
+      }
+    },
+    {
+      "name": "run: CmdIndirect ChangeDestination \"ShowData\".\"Patch\" fills the ShowData.Patch copy and points Patch() at it (no modal)",
+      "pass": true,
+      "detail": {
+        "dest": "ShowData.Patch",
+        "patchAddr": "14.10",
+        "copyCount": 15,
+        "modal": false
+      }
+    },
+    {
+      "name": "run: the copy holds nothing but the live patch and the probe's own fixtures on entry",
+      "pass": true,
+      "detail": {
+        "copyFp": {
+          "types": 6,
+          "typeHash": 4178312287,
+          "fixtures": 26,
+          "fixtureHash": 998371227
+        },
+        "liveFp": {
+          "types": 6,
+          "typeHash": 4178312287,
+          "fixtures": 26,
+          "fixtureHash": 998371227
+        }
+      }
+    },
+    {
+      "name": "run: the destination reads \"Stage 1.Fixtures\" after ChangeDestination \"Stages\".\"Stage 1\".\"Fixtures\"",
+      "pass": true,
+      "detail": {
+        "dest": "Stage 1.Fixtures",
+        "inCopy": true
       }
     },
     {
@@ -427,17 +604,56 @@
       "name": "run: Fixtures:Delete(position) removes every KB25 fixture from the copy",
       "pass": true,
       "detail": {
-        "copyTypes": [
-          "Grouping",
-          "Moving Head",
-          "180W Beam Moving Head",
-          "Thrill Mini Profile",
-          "36PCS 4in1 LED Wall Washer",
-          "Mega Hex Par"
-        ],
         "copyKb25": [],
+        "copyTypeList": [
+          {
+            "no": 1,
+            "name": "Grouping"
+          },
+          {
+            "no": 2,
+            "name": "Moving Head"
+          },
+          {
+            "no": 3,
+            "name": "180W Beam Moving Head"
+          },
+          {
+            "no": 4,
+            "name": "Thrill Mini Profile"
+          },
+          {
+            "no": 5,
+            "name": "36PCS 4in1 LED Wall Washer"
+          },
+          {
+            "no": 6,
+            "name": "Mega Hex Par"
+          }
+        ],
         "deletedFixtures": 4,
         "deletedTypes": 0
+      }
+    },
+    {
+      "name": "run: third commit: the shared copy holds only the probe's expected changes (checked before committing)",
+      "pass": true,
+      "detail": {
+        "inCopy": true,
+        "copyFp": {
+          "types": 6,
+          "typeHash": 4178312287,
+          "fixtures": 26,
+          "fixtureHash": 998371227
+        },
+        "liveFp": {
+          "types": 6,
+          "typeHash": 4178312287,
+          "fixtures": 26,
+          "fixtureHash": 998371227
+        },
+        "copyKb25": [],
+        "expected": []
       }
     },
     {
@@ -450,33 +666,99 @@
       }
     },
     {
-      "name": "run: Import Library \"generic@dimmer.pxml\" in the copy's FixtureTypes adds one type with no dialog",
+      "name": "run: ChangeDestination \"FixtureTypes\" inside the copy",
+      "pass": true,
+      "detail": {
+        "dest": "FixtureTypes",
+        "inCopy": true,
+        "copyFp": {
+          "types": 6,
+          "typeHash": 4178312287,
+          "fixtures": 26,
+          "fixtureHash": 998371227
+        },
+        "liveFp": {
+          "types": 6,
+          "typeHash": 4178312287,
+          "fixtures": 26,
+          "fixtureHash": 998371227
+        }
+      }
+    },
+    {
+      "name": "run: Import Library \"generic@dimmer.pxml\" in the copy's FixtureTypes adds exactly one type with no dialog (tracked by number and name)",
       "pass": true,
       "detail": {
         "last": "OK: Import Library \"generic@dimmer.pxml\"",
         "added": [
-          "Dimmer"
+          {
+            "no": 7,
+            "name": "Dimmer"
+          }
         ],
         "modal": false
       }
     },
     {
-      "name": "run: the imported type is deleted in the copy; after the commit the live types are unchanged",
+      "name": "run: exactly the tracked type is deleted in the copy",
       "pass": true,
       "detail": {
-        "deleted": {
-          "copyTypes": [
-            "Grouping",
-            "Moving Head",
-            "180W Beam Moving Head",
-            "Thrill Mini Profile",
-            "36PCS 4in1 LED Wall Washer",
-            "Mega Hex Par"
-          ],
-          "copyKb25": [],
-          "deletedFixtures": 0,
-          "deletedTypes": 1
+        "copyKb25": [],
+        "copyTypeList": [
+          {
+            "no": 1,
+            "name": "Grouping"
+          },
+          {
+            "no": 2,
+            "name": "Moving Head"
+          },
+          {
+            "no": 3,
+            "name": "180W Beam Moving Head"
+          },
+          {
+            "no": 4,
+            "name": "Thrill Mini Profile"
+          },
+          {
+            "no": 5,
+            "name": "36PCS 4in1 LED Wall Washer"
+          },
+          {
+            "no": 6,
+            "name": "Mega Hex Par"
+          }
+        ],
+        "deletedFixtures": 0,
+        "deletedTypes": 1
+      }
+    },
+    {
+      "name": "run: fourth commit: the shared copy holds only the probe's expected changes (checked before committing)",
+      "pass": true,
+      "detail": {
+        "inCopy": true,
+        "copyFp": {
+          "types": 6,
+          "typeHash": 4178312287,
+          "fixtures": 26,
+          "fixtureHash": 998371227
         },
+        "liveFp": {
+          "types": 6,
+          "typeHash": 4178312287,
+          "fixtures": 26,
+          "fixtureHash": 998371227
+        },
+        "copyKb25": [],
+        "expected": []
+      }
+    },
+    {
+      "name": "run: after the commit the live types are unchanged",
+      "pass": true,
+      "detail": {
         "liveTypes": [
           "Grouping",
           "Moving Head",
@@ -499,12 +781,12 @@
       "name": "run: CmdIndirect of a Store over an existing cue returns at once and the bridge keeps answering while the dialog is open",
       "pass": true,
       "detail": {
-        "answerMs": 17,
+        "answerMs": 13,
         "pong": true
       }
     },
     {
-      "name": "run: GetTopModal/WaitModal return a MessageBox titled \"Store to Cue 1\" with its message and the Overwrite / Merge / Remove / Release / Cancel buttons (text and rect)",
+      "name": "run: GetTopModal/WaitModal return a MessageBox titled \"Store to Cue 1\" with its message and the Overwrite / Merge / Remove / Release / Cancel buttons (text and rect), bound with a delete hook",
       "pass": true,
       "detail": {
         "modal": {
@@ -523,7 +805,8 @@
           "Remove",
           "Release",
           "Cancel"
-        ]
+        ],
+        "token": 1
       }
     },
     {
@@ -640,7 +923,36 @@
       }
     },
     {
-      "name": "run: clicking Overwrite stores: LastCommand \"OK: …\" (it does not name the chosen answer)",
+      "name": "run: the reopened Store dialog is inspected and bound under a new token",
+      "pass": true,
+      "detail": {
+        "token": 2,
+        "firstToken": 1
+      }
+    },
+    {
+      "name": "run: the first token is refused on the reopened dialog with the same title (nothing clicked; the dialog stays open)",
+      "pass": true,
+      "detail": {
+        "stale": {
+          "refused": "the bound dialog was closed (its delete hook fired)",
+          "modal": {
+            "display": 2,
+            "name": "MsgBox",
+            "title": "Store to Cue 1",
+            "class": "MessageBox"
+          }
+        },
+        "modal": {
+          "display": 2,
+          "name": "MsgBox",
+          "title": "Store to Cue 1",
+          "class": "MessageBox"
+        }
+      }
+    },
+    {
+      "name": "run: clicking Overwrite through the new token stores: LastCommand \"OK: …\" (it does not name the chosen answer)",
       "pass": true,
       "detail": {
         "click": {
@@ -659,15 +971,29 @@
       }
     },
     {
-      "name": "run: Keyboard Escape cancels the Store dialog",
+      "name": "run: the Store dialog is bound again",
+      "pass": true
+    },
+    {
+      "name": "run: Keyboard Escape on the bound dialog cancels it",
       "pass": true,
       "detail": {
+        "key": {
+          "display": 2,
+          "key": "Escape",
+          "modal": {
+            "display": 2,
+            "name": "MsgBox",
+            "title": "Store to Cue 1",
+            "class": "MessageBox"
+          }
+        },
         "last": "User Canceled Command: Store Sequence 951 Cue 1",
         "modal": false
       }
     },
     {
-      "name": "run: Label opens a TextInput targeting the sequence; its InputField Content is the current name",
+      "name": "run: Label opens a TextInput targeting the sequence; its InputField Content is the current name (bound)",
       "pass": true,
       "detail": {
         "modal": {
@@ -697,8 +1023,14 @@
       "name": "run: a typed character replaces the whole field (it opens fully selected)",
       "pass": true,
       "detail": {
-        "value": "KB25 Dialog Probe",
-        "before": "Z"
+        "chr": {
+          "display": 2,
+          "char": "Z"
+        },
+        "afterChar": {
+          "value": "KB25 Dialog Probe",
+          "before": "Z"
+        }
       }
     },
     {
@@ -723,6 +1055,20 @@
       "detail": {
         "last": "Failed: Label Sequence 951",
         "seq": "KB25 Dialog Probe"
+      }
+    },
+    {
+      "name": "run: the reopened TextInput is bound once its field exists",
+      "pass": true
+    },
+    {
+      "name": "run: the reopened field takes the written Content",
+      "pass": true,
+      "detail": {
+        "setOk": true,
+        "before": "KB25 Dialog Probe",
+        "value": "KB25 Dialog Probe",
+        "after": "KB25 Renamed"
       }
     },
     {
@@ -752,7 +1098,7 @@
       "pass": true,
       "detail": [
         {
-          "label": "close the probe's own dialog (Escape)",
+          "label": "close the probe's bound dialog (Escape; never another modal)",
           "ok": true,
           "detail": {
             "ok": true,
@@ -771,7 +1117,7 @@
           }
         },
         {
-          "label": "restore the patch (KB25 fixtures, new types, destination Root)",
+          "label": "restore the patch (KB25 fixtures, the tracked import, destination Root; never commits foreign changes)",
           "ok": true,
           "detail": {
             "ok": true,
@@ -791,7 +1137,7 @@
       ]
     },
     {
-      "name": "run: the end state matches the start (Root, no copy, no modal, fixtures and types as before, no KB25 fixtures, no scratch sequence)",
+      "name": "run: the end state matches the start (Root, no copy, no modal, the live patch's fingerprint, no KB25 fixtures, no scratch sequence)",
       "pass": true,
       "detail": {
         "dest": "Root",
@@ -811,7 +1157,7 @@
       }
     }
   ],
-  "finishedAt": "2026-10-12T08:18:56.440Z",
+  "finishedAt": "2026-10-12T09:08:51.318Z",
   "failed": 0,
-  "passed": 35
+  "passed": 54
 }

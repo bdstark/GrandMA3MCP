@@ -2,7 +2,7 @@
 
 Date: 2026-10-12. Evidence for [DIALOG.md](../../DIALOG.md) "KB-25". Manual pass through `gma3_lua`, then reproduced
 by [`scripts/kb25-probe.mjs`](../../scripts/kb25-probe.mjs) `run` ([script report](kb-25-dialogs-macos-2.5.1.json),
-35/35; see "Scripted run" below). Questions under test: can fixtures be added,
+54/54; see "Scripted run" below). Questions under test: can fixtures be added,
 readdressed, unpatched and deleted, and fixture types imported, through Lua without a dialog? Can a dialog be opened
 without blocking the bridge, then read and answered from Lua?
 
@@ -82,7 +82,7 @@ stall already established it.
 
 ## Scripted run
 
-`node scripts/kb25-probe.mjs run --out docs/probes/kb-25-dialogs-macos-2.5.1.json` (35/35, about 3 s) repeats the
+`node scripts/kb25-probe.mjs run --out docs/probes/kb-25-dialogs-macos-2.5.1.json` (54/54, about 5 s) repeats the
 patch and dialog steps above, except `Oops`, which is never sent: if anything else were undoable it would undo the
 operator's work. `verify` (4 checks) is read-only.
 
@@ -92,8 +92,30 @@ operator's work. `verify` (4 checks) is read-only.
 - **Cleanup by identity:** close the probe's own dialog (never another modal), delete the scratch sequence only if
   probe-named, and restore the patch (delete top-level "KB25 …" fixtures and any fixture type not present at the
   start, in the copy, then commit). The last check compares the end state with the start.
-- **Configuration:** `KB25_FID`, `KB25_UNIVERSE`, `KB25_SEQ`, `KB25_MODE` (type.mode child indexes, default `6.3`)
-  and `KB25_IMPORT`.
+- **Configuration:** `KB25_FID`, `KB25_UNIVERSE`, `KB25_SEQ`, `KB25_MODE` (type.mode child indexes, default `6.3`),
+  `KB25_IMPORT`, and `KB25_PHASES` (`patch`, `dialogs`, or both).
+
+**After the review of PR #31** the run enforces four more rules:
+- **A failed prerequisite stops the run.** Every step later steps depend on is a `must`. A refused sequence creation,
+  or a destination that never changed, goes straight to the cleanup, and nothing after it is sent.
+- **Dialog input goes only to the bound dialog.** Inspecting a dialog binds the exact UI object: it is kept in a Lua
+  global that persists across requests, with a `HookDelete` callback and the expected class/title/target. Every
+  click, key, character and field write re-checks, immediately before dispatch, that the object is still the top
+  modal, has not been deleted and still matches. Otherwise it is refused.
+  - Live: after Cancel, the reopened Store dialog (same title) got a new binding. The first binding was refused on it
+    with "the bound dialog was closed (its delete hook fired)", nothing was clicked, and the dialog stayed open.
+    **`HookDelete` fires when a MessageBox closes.**
+- **Nothing foreign is committed.** Before every commit, an FNV-1a fingerprint of the copy is compared with the
+  live patch's. It covers every fixture that is not the probe's (name, FID, patch, mode, in tree order) and every
+  fixture type (number, name). The copy must also hold exactly the probe's expected fixtures. If anything else
+  differs, nothing is committed and the run stops.
+  - The cleanup deletes the probe's fixtures and only the one type it imported, tracked by number and name; an
+    ambiguous match deletes nothing. It commits only a copy that then matches the live patch. Otherwise it leaves
+    the command line in the patch and asks for Menu › Patch › Discard and Exit at the console.
+  - Live: all four commits matched the live fingerprint.
+- **Every planned DMX destination is preflighted.** Each address the run writes is checked with the mode's own
+  footprint: 2.001×2, 2.101×1 and 2.201×1. The run aborts if the measured footprint exceeds 50, which the plan
+  needs so that two fixtures from .001 end before .101.
 
 Two timing facts the manual pass hid, because it waited seconds between requests:
 
