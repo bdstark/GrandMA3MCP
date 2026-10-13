@@ -82,6 +82,11 @@ const WORKFLOW_TOOLS = [
   "gma3_executor_settings",
   "gma3_configure_executor",
   "gma3_configure_sequence",
+  // SB-02 groups with selection grids and MAtricks
+  "gma3_selection_grid",
+  "gma3_store_group",
+  "gma3_matricks",
+  "gma3_configure_matricks",
 ];
 
 test("all pre-existing tools are still registered under their original names", async () => {

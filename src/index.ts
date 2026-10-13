@@ -14,6 +14,7 @@ import { registerExecutorTools } from "./tools/executors.js";
 import { registerInspectionTools } from "./tools/inspection.js";
 import { registerInputTools } from "./tools/input.js";
 import { registerFeedbackTools } from "./tools/feedback.js";
+import { registerGroupTools } from "./tools/groups.js";
 import { registerPatchTools } from "./tools/patch.js";
 import { registerPlaybackTools } from "./tools/playback.js";
 
@@ -582,6 +583,7 @@ registerInputTools(server, toolContext);
 registerFeedbackTools(server, toolContext);
 registerPatchTools(server, toolContext);
 registerPlaybackTools(server, toolContext);
+registerGroupTools(server, toolContext);
 
 server.registerResource(
   "cheatsheet",

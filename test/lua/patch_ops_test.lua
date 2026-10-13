@@ -225,7 +225,7 @@ end
 -------------------------------------------------------------------------------
 
 local r = request("ping")
-check("ping reports bridge 0.20.0", r.ok and r.result.bridgeVersion == "0.20.0", J(r))
+check("ping reports bridge 0.21.0", r.ok and r.result.bridgeVersion == "0.21.0", J(r))
 
 r = request("patch.state")
 check("patch.state at Root: copy closed, stages listed", r.ok and r.result.destination == "Root" and r.result.copyOpen == false and r.result.atRoot == true and r.result.stages[1] == "Stage 1" and r.result.modal == false, J(r))
