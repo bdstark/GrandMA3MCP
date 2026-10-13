@@ -22,7 +22,8 @@
  *   2. A mirrored row and an explicit grid with gaps, a negative cell, a Z layer and a fixture with its own cells are
  *      stored, read back from the group and recalled at Grid 0/0/0 with the same fixtures on the same cells.
  *   3. An existing group needs overwrite: true and keeps its name when overwritten.
- *   4. MAtricks objects are created with exactly the requested settings, also when the selection MAtricks is dirty.
+ *   4. MAtricks objects are created with exactly the requested settings, also when the selection MAtricks is dirty
+ *      (XGroup and a speed-master override copied by Store are reset).
  *   5. Left-to-right: the row recalled without wings ramps 0 -> 100 along grid X.
  *   6. Centre-out: with wings 2 the transformed positions mirror around the centre (0 1 2 3 3 2 1 0), so a delay
  *      {from: 1, to: 0} reaches the centre first; the same mapping spreads At 100 Thru 0 symmetrically with the
@@ -140,10 +141,11 @@ liveTest("SB-02: groups with selection grids, MAtricks and two distributions (Gr
 
   // 4. MAtricks objects: exactly the requested settings, even with a dirty selection MAtricks.
   assert.equal(await cmd('Set Selection MAtricks "XGroup" 3'), "OK");
+  assert.equal(await cmd('Set Selection MAtricks "SpeedMasterOverride" 2'), "OK");
   const mc = await call("gma3_configure_matricks", { matricks: M_CENTRE, name: "SB02 centre out", create: true, x: { wings: 2, delay: { from: 1, to: 0 } } });
   assert.equal(mc.isError, false, JSON.stringify(mc.result));
   assert.equal(mc.result.verification.status, "matched", JSON.stringify(mc.result.verification));
-  assert.ok(mc.result.intended.afterStore.resets.some((r: any) => r.property === "XGroup"), "the copied XGroup is reset");
+  for (const p of ["XGroup", "SpeedMasterOverride"]) assert.ok(mc.result.intended.afterStore.resets.some((r: any) => r.property === p), `the copied ${p} is reset`);
   assert.equal(await cmd("Reset Selection MAtricks"), "OK");
   const ml = await call("gma3_configure_matricks", { matricks: M_LTR, name: "SB02 left to right", create: true, x: { fade: { from: 0, to: 2 } } });
   assert.equal(ml.isError, false, JSON.stringify(ml.result));

@@ -4002,32 +4002,34 @@ end
 
 local GRID_MAX_ITEMS = 10000
 
--- The fixture identity of a (sub)fixture: its own FID (nil for a cell without one) and the dotted path
--- from the nearest ancestor with a FID ("501.1" for the first cell of fixture 501; "401" for fixture 401).
+-- The fixture identity of a (sub)fixture: its own FID (nil for a cell without one) and the dotted path from the
+-- nearest ancestor with a FID ("501.1" for the first cell of fixture 501), which a cell with its own FID also has
+-- (the console selects it by either). A fixture inside a grouping fixture has a path too ("4.1" for fixture 401
+-- in grouping fixture 4). nil when no ancestor has a FID. The address is the stable identity.
 local function fixtureIdentity(sf)
   if not isHandle(sf) then return nil, nil end
   local own = numericFid(sf)
-  if own then return own, tostring(own) end
   local parts, h = {}, sf
   for _ = 1, 8 do
-    local no = safeProp(h, "no")
-    if no == nil then return nil, nil end
-    table.insert(parts, 1, tostring(no))
     local p = safeCall(h, "Parent")
     local pc = isHandle(p) and safeCall(p, "GetClass") or nil
-    if pc ~= "Fixture" and pc ~= "SubFixture" then return nil, nil end
+    if pc ~= "Fixture" and pc ~= "SubFixture" then break end
+    local no = safeProp(h, "no")
+    if no == nil then break end
+    table.insert(parts, 1, tostring(no))
     local pf = numericFid(p)
-    if pf then table.insert(parts, 1, tostring(pf)); return nil, table.concat(parts, ".") end
+    if pf then return own, tostring(pf) .. "." .. table.concat(parts, ".") end
     h = p
   end
-  return nil, nil
+  return own, nil
 end
 
 local function gridItem(sfIndex, x, y, z)
   local okS, sf = callApi("GetSubfixture", sfIndex)
   if not (okS and isHandle(sf)) then sf = nil end
   local fid, path = fixtureIdentity(sf)
-  return { sfIndex = sfIndex, fixture = path, fid = fid, name = sf and safeProp(sf, "name") or nil, x = x, y = y, z = z }
+  return { sfIndex = sfIndex, fixture = fid and tostring(fid) or path, fid = fid, path = path, addr = sf and safeCall(sf, "Addr") or nil,
+           name = sf and safeProp(sf, "name") or nil, x = x, y = y, z = z }
 end
 
 -- args: { ref } (a group, e.g. "Group 5")

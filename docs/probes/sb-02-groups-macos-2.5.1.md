@@ -92,6 +92,25 @@ Defaults after `Reset Selection MAtricks` (used to reset a new object): every pe
 InvertStyle Pan, AlignRange X/Y/Z No, RelativeFade/Delay/Phase Yes, RelativeSpeed No, PhaserTransform None, ShuffleMode
 Auto, SpeedMasterOverride "".
 
+## Speed-master override (review round 1)
+
+`SpeedMasterOverride` (enum `SpeedMasterMtxOverride`) is another MAtricks property Store copies from the selection.
+
+| Write on a fresh `MAtricks` (edit role read back) | Result |
+| --- | --- |
+| fresh object; selection after `Reset Selection MAtricks` | `""` |
+| `"1"`, `"2"`, `"15"`, `"16"`, `"255"` | `Beat`, `Position Speed`, `Speed15`, `BPM`, `BPM` (the speed masters' names) |
+| `"0"` from each of those | `""`: the clearing form |
+| `""`, `"None"`, `"Off"`, `"Speed 2"` | silently ignored |
+| `"Speed1"`, `"Speed2"`, `"Speed3"`, `"No Master"`, `"BPM"` (enum names) | inconsistent (`""`, `Beat`, `Position Speed`, `Speed15`, or ignored, depending on the previous value): not used |
+| `Set Selection MAtricks "SpeedMasterOverride" 2`, then `Store MAtricks 911` | the new object reads `Position Speed`: copied |
+| override 2 with SpeedFromX None | SpeedFromX becomes `1.000000` (60 BPM) |
+| SpeedFromX None again, then override `"0"` | SpeedFromX `1.000000` again; also `"0"` on an already clear override fills it |
+| SpeedFromX 120, SpeedToX 30, then override 2 and `"0"` | speeds kept |
+
+The tools reset the override with `"0"` first and then write every planned speed. The first live run after adding
+the reset wrote it last and verification caught SpeedFromX back at `1.000000`; the order fixes it.
+
 ## The tools on the console
 
 `gma3_store_group` live (bridge 0.21.0): the mirrored row (preview, then store) and an explicit grid (402@3/0, 401@0/0,

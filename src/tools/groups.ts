@@ -34,6 +34,9 @@
  *     written explicitly. MAtricks values the console does not accept are silently ignored (XWings -1, DelayToX
  *     "bogus"); 0 reads as None; phase reads "360°" up to 360 and "720.00" beyond (display role). Speed is written in
  *     BPM and read back in Hz in the edit role the set / objects ops use (60 BPM reads "1.000000").
+ *   - Store MAtricks also copies the selection's SpeedMasterOverride; "0" clears it ("", "None", "Off" are ignored).
+ *     Any override write while SpeedFromX is None (even "0" on a cleared override) sets SpeedFromX to 60 BPM, so the
+ *     override is written first and every planned speed after it.
  *   - MAtricks distributions verified as values (Attribute At 0 Thru 100 with the MAtricks recalled): no MAtricks is
  *     a left-to-right ramp in grid X; XWings 2 mirrors it; XBlock / XGroup repeat it. Timing distributions are not
  *     baked into programmer values, so they are verified as the object's settings only.
@@ -70,11 +73,18 @@ export interface GridItem {
   z: number;
 }
 
+/** Requested fixture id -> the console address it resolved to (check_fixtures); the stable identity. */
+export type AddrMap = ReadonlyMap<string, string>;
+
 /** One entry of the bridge's group.read / selection.grid reply. */
 export interface ReadItem {
   sfIndex?: number;
   fixture?: string | null;
   fid?: number | null;
+  /** Dotted path from the nearest ancestor with a FID ("501.1"), also for a cell that has its own FID. */
+  path?: string | null;
+  /** Console address of the (sub)fixture. */
+  addr?: string | null;
   name?: string;
   x?: number;
   y?: number;
@@ -84,17 +94,21 @@ export interface ReadItem {
 
 export const MAX_ITEMS = 512;
 const MAX_COORD = 9999;
-const ID_RE = /^\d+(?:\.\d+)*$/;
+/** Largest FID (the patch tools' bound) and largest cell number in a dotted id; at most 8 levels. */
+export const MAX_FID = 99_999_999;
+export const MAX_CELL = 99_999;
+const ID_RE = /^\d{1,9}(?:\.\d{1,9}){0,7}$/;
 
-/** A fixture or subfixture id ("401", "501.1") from a number or a string, normalised ("0401" -> "401"). */
+/** A fixture or subfixture id ("401", "501.1") from a number or a string, normalised ("0401" -> "401"); every part a bounded integer. */
 export function fixtureId(field: string, value: unknown): string {
-  if (typeof value === "number") {
-    if (!Number.isInteger(value) || value < 1) throw new ValidationError(`${field} must be a fixture id such as 401 or "501.1" (got ${describe(value)})`, field);
-    return String(value);
-  }
-  if (typeof value !== "string" || !ID_RE.test(value.trim())) throw new ValidationError(`${field} must be a fixture id such as 401 or "501.1" (got ${describe(value)})`, field);
-  const parts = value.trim().split(".").map((p) => Number(p));
-  if (parts[0] < 1) throw new ValidationError(`${field}: fixture ids start at 1 (got ${describe(value)})`, field);
+  const bad = () => new ValidationError(`${field} must be a fixture id such as 401 or "501.1": a FID 1-${MAX_FID}, then up to 7 cell numbers 1-${MAX_CELL} (got ${describe(value)})`, field);
+  let parts: number[];
+  if (typeof value === "number") parts = [value];
+  else if (typeof value === "string" && ID_RE.test(value.trim())) parts = value.trim().split(".").map((p) => Number(p));
+  else throw bad();
+  parts.forEach((n, i) => {
+    if (!Number.isSafeInteger(n) || n < 1 || n > (i === 0 ? MAX_FID : MAX_CELL)) throw bad();
+  });
   return parts.join(".");
 }
 
@@ -117,7 +131,8 @@ export function expandFixtures(field: string, value: unknown): string[] {
       if (to - from + 1 > MAX_ITEMS) throw new ValidationError(`${field}: a range may hold at most ${MAX_ITEMS} ids`, field);
       const prefix = a.slice(0, -1);
       const out: string[] = [];
-      for (let n = from; n <= to; n++) out.push([...prefix, String(n)].join("."));
+      // Bounded twice: the parts are validated safe integers, and the loop never runs past MAX_ITEMS.
+      for (let n = from; n <= to && out.length < MAX_ITEMS; n++) out.push([...prefix, String(n)].join("."));
       return out;
     }
   }
@@ -268,21 +283,28 @@ export function analyzeGrid(items: GridItem[]): GridAnalysis {
   return { count: items.length, duplicates, sharedCells, parentAndCell, bounds, gaps, offsetFromOrigin: !!bounds && (bounds.min.x !== 0 || bounds.min.y !== 0 || bounds.min.z !== 0) };
 }
 
-/** Does a read item stand for the requested id (its dotted path or its own FID)? */
-const sameFixture = (want: string, got: ReadItem) => got.fixture === want || (got.fid !== null && got.fid !== undefined && String(got.fid) === want);
+/**
+ * Does a read item stand for the requested id? By console address when both sides have one (a cell with its own
+ * FID is selected as "501.1" but reads back as FID 9001); otherwise by its id, dotted path or own FID.
+ */
+const sameFixture = (want: string, got: ReadItem, addrs?: AddrMap) => {
+  const a = addrs?.get(want);
+  if (a && got.addr) return got.addr === a;
+  return got.fixture === want || got.path === want || (got.fid !== null && got.fid !== undefined && String(got.fid) === want);
+};
 
 /**
  * Differences between a planned list and a read one, matched by fixture (the console keeps a stored group in patch
  * order, not in the order the fixtures were selected); cells are compared only when `coords`.
  */
-export function compareGrid(want: GridItem[], got: ReadItem[], coords: boolean): string[] {
+export function compareGrid(want: GridItem[], got: ReadItem[], coords: boolean, addrs?: AddrMap): string[] {
   const out: string[] = [];
   const unread = got.filter((g) => g.unreadable).length;
   if (unread) out.push(`${unread} item(s) could not be read`);
   const pool = got.filter((g) => !g.unreadable);
   const used = new Set<number>();
   for (const w of want) {
-    const i = pool.findIndex((g, k) => !used.has(k) && sameFixture(w.fixture, g));
+    const i = pool.findIndex((g, k) => !used.has(k) && sameFixture(w.fixture, g, addrs));
     if (i < 0) { out.push(`${w.fixture} is missing`); continue; }
     used.add(i);
     const g = pool[i];
@@ -336,7 +358,7 @@ const lockState = (v: unknown): boolean | null => {
 };
 
 function presentItems(items: ReadItem[]) {
-  return items.map((it, i) => (it.unreadable ? { order: i + 1, unreadable: true } : { order: i + 1, fixture: it.fixture ?? null, ...(it.fid !== undefined && it.fid !== null && String(it.fid) !== it.fixture ? { fid: it.fid } : {}), name: it.name, x: it.x, y: it.y, z: it.z, ...(it.fixture ? {} : { sfIndex: it.sfIndex }) }));
+  return items.map((it, i) => (it.unreadable ? { order: i + 1, unreadable: true } : { order: i + 1, fixture: it.fixture ?? null, ...(it.path && it.path !== it.fixture ? { path: it.path } : {}), name: it.name, x: it.x, y: it.y, z: it.z, ...(it.fixture ? {} : { sfIndex: it.sfIndex }) }));
 }
 
 function gridOf(items: ReadItem[]): GridItem[] {
@@ -419,12 +441,12 @@ async function buildSelection(bridge: Gma3Bridge, items: GridItem[], t: number):
   return { name: "build_selection", status: "succeeded", op: "cmd", detail: { commandsSent: sent, items: items.length } };
 }
 
-function selectionCheck(name: string, bridge: Gma3Bridge, want: GridItem[], coords: boolean, t: number, onRead?: (items: ReadItem[]) => void): () => Promise<StepResult> {
+function selectionCheck(name: string, bridge: Gma3Bridge, want: GridItem[], coords: boolean, t: number, addrs: AddrMap, onRead?: (items: ReadItem[]) => void): () => Promise<StepResult> {
   return async () => {
     try {
       const res = (await bridge.request("selection.grid", {}, t)) as SelectionRead;
       onRead?.(res.items);
-      const diff = compareGrid(want, res.items, coords);
+      const diff = compareGrid(want, res.items, coords, addrs);
       if (diff.length) return asRead({ name, status: "failed", op: "selection.grid", detail: { read: presentItems(res.items).slice(0, 20) }, error: `the selection does not match the plan: ${diff.join("; ")}` });
       return asRead({ name, status: "succeeded", op: "selection.grid", detail: { items: res.items.length } });
     } catch (err) {
@@ -483,6 +505,8 @@ export async function storeGroup(ctx: ToolContext, raw: StoreGroupArgs): Promise
     let existing: { name?: string; locked: boolean } | null = null;
     let selectionBefore: number | null = null;
     const missing: string[] = [];
+    const addrs = new Map<string, string>();
+    const aliases: string[] = [];
     const inspect = await runSteps([
       {
         name: "check_group",
@@ -507,15 +531,23 @@ export async function storeGroup(ctx: ToolContext, raw: StoreGroupArgs): Promise
         name: "check_fixtures",
         run: async () => {
           try {
+            const byAddr = new Map<string, string>();
             for (const it of items) {
               const res = await readObjects(bridge, `Fixture ${it.fixture}`, [], 1);
               const item = res?.items?.[0];
-              if (!item || item.invalid || (item.class !== "Fixture" && item.class !== "SubFixture")) missing.push(it.fixture);
+              if (!item || item.invalid || (item.class !== "Fixture" && item.class !== "SubFixture")) { missing.push(it.fixture); continue; }
+              if (!item.addr) continue;
+              addrs.set(it.fixture, item.addr);
+              // Two ids for one object ("501.1" and its own FID 9001): the console would ignore the second selection.
+              const first = byAddr.get(item.addr);
+              if (first !== undefined) aliases.push(`${first} and ${it.fixture}`);
+              else byAddr.set(item.addr, it.fixture);
             }
           } catch (err) {
             return readFailure("check_fixtures", "objects", err);
           }
           if (missing.length) return asRead({ name: "check_fixtures", status: "failed", op: "objects", detail: { missing }, error: `not in the patch: ${missing.join(", ")}` });
+          if (aliases.length) return asRead({ name: "check_fixtures", status: "failed", op: "objects", detail: { aliases }, error: `the same fixture is listed twice under different ids: ${aliases.join("; ")} (the console silently ignores selecting it again); list it once` });
           return asRead({ name: "check_fixtures", status: "succeeded", op: "objects", detail: { checked: items.length } });
         },
       },
@@ -546,7 +578,7 @@ export async function storeGroup(ctx: ToolContext, raw: StoreGroupArgs): Promise
       { name: "clear_selection", run: () => commandStep(bridge, "clear_selection", "ClearSelection", t) },
       { name: "build_selection", run: () => buildSelection(bridge, items, t) },
       // Nothing is stored unless the selection is exactly the plan (fixtures and cells).
-      { name: "check_selection", run: selectionCheck("check_selection", bridge, items, true, t) },
+      { name: "check_selection", run: selectionCheck("check_selection", bridge, items, true, t, addrs) },
       { name: "store", run: () => commandStep(bridge, "store", storeCmd, t) },
       { name: "set_preserve_grid_positions", run: setStep(ctx, "set_preserve_grid_positions", ref, "PreserveGridPositions", preserve ? "Yes" : "No", (got) => yesNo(got) === preserve) },
       ...(name !== undefined ? [{ name: "set_name", run: setStep(ctx, "set_name", ref, "Name", name, (got) => String(got).trim() === name) }] : []),
@@ -562,7 +594,7 @@ export async function storeGroup(ctx: ToolContext, raw: StoreGroupArgs): Promise
       try {
         const res = (await bridge.request("group.read", { ref }, t)) as GroupRead;
         resulting = { name: res.name, preserveGridPositions: yesNo(res.preserveGridPositions), count: res.count, items: presentItems(res.items) };
-        const diff = compareGrid(items, res.items, true);
+        const diff = compareGrid(items, res.items, true, addrs);
         if (yesNo(res.preserveGridPositions) !== preserve) diff.push(`PreserveGridPositions reads ${JSON.stringify(res.preserveGridPositions)}`);
         if (name !== undefined && String(res.name ?? "").trim() !== name) diff.push(`name reads ${JSON.stringify(res.name)}`);
         steps.push(asRead({ name: "read_back", status: "succeeded", op: "group.read", detail: { count: res.count } }));
@@ -576,7 +608,7 @@ export async function storeGroup(ctx: ToolContext, raw: StoreGroupArgs): Promise
         { name: "recall_clear", run: () => commandStep(bridge, "recall_clear", "ClearSelection", t) },
         { name: "recall_cursor", run: () => commandStep(bridge, "recall_cursor", "Grid 0/0/0", t) },
         { name: "recall_group", run: () => commandStep(bridge, "recall_group", `Group ${group}`, t) },
-        { name: "recall_check", run: selectionCheck("recall_check", bridge, items, preserve, t) },
+        { name: "recall_check", run: selectionCheck("recall_check", bridge, items, preserve, t, addrs) },
       ]);
       steps.push(...recall.steps);
       const rc = recall.steps.find((s) => s.name === "recall_check");
@@ -587,11 +619,13 @@ export async function storeGroup(ctx: ToolContext, raw: StoreGroupArgs): Promise
       else verification = unavailable(`the stored group or its recall could not be read: ${[...steps].reverse().find((s) => s.status !== "succeeded")?.error ?? "unknown"}`, ref);
     }
     // Leave no selection behind and the cursor at the origin, after a failure too (once anything was sent).
+    // The cleanup steps count towards the outcome: a selection left behind is not a success.
     const cleanup = [await commandStep(bridge, "cleanup_clear_selection", "ClearSelection", t), await commandStep(bridge, "cleanup_cursor", "Grid 0/0/0", t)];
+    steps.push(...cleanup);
     const cleanupFailed = cleanup.filter((s) => s.status !== "succeeded");
     if (cleanupFailed.length) warnings.push(`cleanup did not complete (${cleanupFailed.map((s) => `${s.command}: ${s.error}`).join("; ")}); fixtures may still be selected`);
     if (!stored && main.steps.find((s) => s.name === "check_selection")?.status === "failed") warnings.push("nothing was stored: the selection built on the console did not match the plan");
-    const result = buildResult({ operation: op, target, steps, verification, warnings, extra: { ...extra, resulting, cleanup } });
+    const result = buildResult({ operation: op, target, steps, verification, warnings, extra: { ...extra, resulting } });
     return result;
   };
   return preview ? body() : ctx.mutations.run(body);
@@ -616,7 +650,19 @@ export const MATRICKS_OTHER_DEFAULTS: Record<string, string> = {
   XInv: "No", XInvB: "No", XInvG: "No", XInvW: "No", YInv: "No", YInvB: "No", YInvG: "No", YInvW: "No", ZInv: "No", ZInvB: "No", ZInvG: "No", ZInvW: "No",
   InvertStyle: "Pan", InvertX: "No", InvertY: "No", InvertZ: "No", AlignRangeX: "No", AlignRangeY: "No", AlignRangeZ: "No",
   RelativeFade: "Yes", RelativeDelay: "Yes", RelativePhase: "Yes", RelativeSpeed: "No", PhaserTransform: "None", ShuffleMode: "Auto",
+  // No speed-master override reads "" (it otherwise reads the master's name, "Beat").
+  SpeedMasterOverride: "",
 };
+/**
+ * The value written to reset a property when it differs from the value it reads. SpeedMasterOverride is cleared
+ * with "0" (qualified on 2.5.1 from masters 1, 2, 15 and BPM); "", "None" and "Off" are silently ignored.
+ */
+export const MATRICKS_RESET_WRITE: Record<string, string> = { SpeedMasterOverride: "0" };
+/**
+ * Written before every other property: any SpeedMasterOverride write while SpeedFromX is None (also "0" on a cleared
+ * override) sets SpeedFromX to 60 BPM (1 Hz) on 2.5.1, so a later override write would undo a requested or reset speed.
+ */
+const WRITE_FIRST = new Set(["SpeedMasterOverride"]);
 
 const intProp = (axis: Axis, k: IntKey) => `${axis.toUpperCase()}${MATRICKS_INTS[k]}`;
 const rangeProps = (axis: Axis, k: RangeKey) => [`${MATRICKS_RANGES[k]}From${axis.toUpperCase()}`, `${MATRICKS_RANGES[k]}To${axis.toUpperCase()}`] as const;
@@ -854,9 +900,12 @@ export async function configureMatricks(ctx: ToolContext, raw: ConfigureMatricks
     const planWrites = (values: Record<string, unknown> | null) => {
       const writes: Write[] = [];
       const unchanged: string[] = [];
+      // Any SpeedMasterOverride write (even "0" on a cleared one) can refill SpeedFromX, so the speeds are then
+      // written after it whatever they read now.
+      const overrideWritten = reset && !(values && values.SpeedMasterOverride !== undefined && values.SpeedMasterOverride !== null && String(values.SpeedMasterOverride).trim() === MATRICKS_OTHER_DEFAULTS.SpeedMasterOverride);
       for (const w of full) {
         const from = values ? values[w.property] : undefined;
-        if (values && near(matricksValue(w.kind, from), w.value)) {
+        if (values && near(matricksValue(w.kind, from), w.value) && !(overrideWritten && w.kind === "speed")) {
           if (!w.key.startsWith("reset")) unchanged.push(w.key);
           continue;
         }
@@ -866,13 +915,14 @@ export async function configureMatricks(ctx: ToolContext, raw: ConfigureMatricks
         for (const [p, d] of Object.entries(MATRICKS_OTHER_DEFAULTS)) {
           const from = values ? values[p] : undefined;
           if (values && from !== undefined && from !== null && String(from).trim().toLowerCase() === d.toLowerCase()) continue;
-          writes.push({ key: `reset ${p}`, property: p, from: from ?? null, to: d, expect: (got) => String(got).trim().toLowerCase() === d.toLowerCase() });
+          writes.push({ key: `reset ${p}`, property: p, from: from ?? null, to: MATRICKS_RESET_WRITE[p] ?? d, expect: (got) => String(got).trim().toLowerCase() === d.toLowerCase() });
         }
       }
       if (name !== undefined) {
         if (values && String(values.Name ?? "").trim() === name) unchanged.push("name");
         else writes.push({ key: "name", property: "Name", from: values?.Name ?? null, to: name, expect: (got) => String(got).trim() === name });
       }
+      writes.sort((a, b) => Number(WRITE_FIRST.has(b.property)) - Number(WRITE_FIRST.has(a.property)));
       return { writes, unchanged };
     };
     const describePlan = (p: { writes: Write[]; unchanged: string[] }) => ({
@@ -929,7 +979,8 @@ export async function configureMatricks(ctx: ToolContext, raw: ConfigureMatricks
           resulting = { name: f.Name, axes: readAxes(f) };
           const bad: string[] = [];
           for (const w of full) if (!near(matricksValue(w.kind, f[w.property]), w.value)) bad.push(`${w.property}: expected ${sendValue(w)}, read ${JSON.stringify(f[w.property] ?? null)}`);
-          if (reset) for (const [p, d] of Object.entries(MATRICKS_OTHER_DEFAULTS)) if (String(f[p] ?? "").trim().toLowerCase() !== d.toLowerCase()) bad.push(`${p}: expected ${d}, read ${JSON.stringify(f[p] ?? null)}`);
+          // A property missing from the read is unverified, never taken as its default ("" for SpeedMasterOverride).
+          if (reset) for (const [p, d] of Object.entries(MATRICKS_OTHER_DEFAULTS)) if (f[p] === undefined || f[p] === null || String(f[p]).trim().toLowerCase() !== d.toLowerCase()) bad.push(`${p}: expected ${JSON.stringify(d)}, read ${JSON.stringify(f[p] ?? null)}`);
           if (name !== undefined && String(f.Name ?? "").trim() !== name) bad.push(`Name: expected ${JSON.stringify(name)}, read ${JSON.stringify(f.Name ?? null)}`);
           const checked = `${reset ? "every MAtricks property" : "the requested settings"} of ${ref}`;
           verification = bad.length ? { status: "mismatched", checked, detail: bad.slice(0, 10).join("; ") } : { status: "matched", checked };

@@ -48,7 +48,7 @@ function methods.Get(u, name, role)
   return v
 end
 function methods.GetClass(u) return registry[u].class end
-function methods.Addr(u) return registry[u].addr or "0" end
+function methods.Addr(u) return registry[u].addr or ("addr:" .. tostring(registry[u].name)) end
 function methods.Parent(u) return registry[u].parent end
 function methods.Children(u) return registry[u].children or {} end
 
@@ -144,7 +144,9 @@ check("group.read: selection order kept, not sorted by grid or number", r.ok and
 check("group.read: grid coordinates as stored, negative and z included", it[1] and it[1].x == 3 and it[1].y == 0 and it[1].z == 0 and it[3].x == -1 and it[3].y == 2 and it[3].z == 1, J(it))
 check("group.read: a cell without FID is named by its parent's FID and its number", it[3] and it[3].fixture == "501.1" and it[3].fid == nil and it[4].fixture == "501.2" and it[3].sfIndex == 11, J(it))
 check("group.read: shared cells are both reported", it[2] and it[4] and it[2].x == 0 and it[4].x == 0 and it[2].y == 0 and it[4].y == 0, J(it))
-check("group.read: a cell with its own FID reports it", it[5] and it[5].fid == 9001 and it[5].fixture == "9001", J(it[5]))
+check("group.read: a cell with its own FID reports it and its dotted path", it[5] and it[5].fid == 9001 and it[5].fixture == "9001" and it[5].path == "501.3", J(it[5]))
+check("group.read: every item carries the console address", it[1] and it[1].addr == "addr:Par 2" and it[3].addr == "addr:[Instance2]", J(it))
+check("group.read: a top-level fixture has no path, a cell's path is its fixture id", it[1] and it[1].path == nil and it[3].path == "501.1", J(it))
 check("group.read: a parent chain without FID gives no fixture id", it[6] and it[6].fixture == nil and it[6].sfIndex == 99 and it[6].x == 1, J(it[6]))
 check("group.read: an entry that is not an item is reported unreadable, never dropped", r.ok and r.result.unreadable == 1 and it[7] and it[7].unreadable == true, J(r))
 check("group.read: lock and PreserveGridPositions in the edit role, an unlocked group reads \"\"", r.ok and r.result.lock == "" and r.result.preserveGridPositions == "Yes" and r.result.no == 900 and r.result.name == "Mixed", J(r))

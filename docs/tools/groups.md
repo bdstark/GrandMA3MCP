@@ -46,7 +46,8 @@ and property operations, and nothing needs `gma3_lua`. Evidence: [the SB-02 prob
 
 `{ group?: number }`. With `group`: one `group.read` request returns the group's stored fixtures (in the console's
 stored order, i.e. patch order), each with `fixture` (FID, or the dotted cell id `501.1` for a cell without its own
-FID), `name`, `x`, `y`, `z`, plus `name`, `locked`, `preserveGridPositions`, `sharedCells`, `bounds` and `gaps` (empty
+FID), `path` when it has another dotted id (a cell with its own FID, a fixture inside a grouping fixture), `name`,
+`x`, `y`, `z`, plus `name`, `locked`, `preserveGridPositions`, `sharedCells`, `bounds` and `gaps` (empty
 cells in the bounding box). Nothing is selected. Without `group`: one `selection.grid` request returns the current
 selection in the order it was selected, with the cells `SelectionNext` reports; with MAtricks active on the selection
 these are the **transformed** cells (with `XWings 2`, X runs 0 1 2 3 3 2 1 0). Entries the bridge could not read are
@@ -58,7 +59,8 @@ Parameters: `group` (1–9999), `name?`, exactly one of `items` / `arrangement`,
 `preserve_grid_positions?` (default true), `allow_shared_cells?`, `exclusive` (required unless `preview`), `preview?`,
 `verify?` (default true).
 
-- **`items`**: `[{fixture, x, y, z?}]`, fixture as `401` or `"501.1"`, integer cells −9999..9999, z default 0.
+- **`items`**: `[{fixture, x, y, z?}]`, fixture as `401` or `"501.1"` (a FID 1–99999999, then up to 7 cell numbers
+  1–99999), integer cells −9999..9999, z default 0.
 - **`arrangement`** helpers, expanded into the same list (see it with `preview: true`). Fixture lists accept ids and
   `"a Thru b"` ranges within one level (`"401 Thru 404"`, `"501.1 Thru 501.12"`):
   - `{type: "row", fixtures, origin?, step? (default 1, negative runs backwards), axis? ("x" | "y" | "z")}`
@@ -77,6 +79,9 @@ Requests, in order:
 1. read `check_group`: `objects Group <n>` (Name, Lock, ...). Missing: new group. Existing without `overwrite: true`,
    locked, or with a Lock that cannot be read: refused.
 2. read `check_fixtures`: one `objects Fixture <id>` per fixture; any that is not a Fixture/SubFixture is refused.
+   Each id is resolved to its console address, the identity every later comparison uses: two ids for one object
+   (a cell's dotted path `501.3` and its own FID `9001`) are refused here, because the console would ignore the
+   second selection. A cell requested as `501.3` that reads back as FID `9001` therefore still matches.
 3. read `read_selection`: `selection.grid`, reported as `selectionBefore` (what the tool is about to clear). An old
    bridge fails here, before anything is sent.
 4. `preview: true` stops here and returns `plan` (`items`, `gaps`, `offsetFromOrigin`, `bounds`, `sharedCells`).
@@ -90,8 +95,9 @@ Requests, in order:
 10. verify (default): `group.read` compared fixture by fixture (cells, PreserveGridPositions, name); then
     `ClearSelection`, `Grid 0/0/0`, `Group <n>` and `selection.grid` compared again (fixtures only when
     `preserve_grid_positions` is false). Either difference makes `verification` `mismatched`.
-11. cleanup, always once anything was sent: `ClearSelection`, `Grid 0/0/0` (reported under `cleanup`; a failure is a
-    warning that fixtures may still be selected).
+11. cleanup, always once anything was sent: `cleanup_clear_selection` (`ClearSelection`) and `cleanup_cursor`
+    (`Grid 0/0/0`). They are ordinary steps: a failed cleanup makes the outcome `partial` (an error) and adds a warning
+    that fixtures may still be selected.
 
 The tool holds this server's mutation lock from step 5 to the end. It cannot stop another operator from selecting
 fixtures in between; `check_selection` and the recall check detect that.
@@ -113,20 +119,24 @@ centre (`to`): **a centre-out delay is `{wings: 2, delay: {from: <outer>, to: 0}
 `{fade: {from: 0, to: <seconds>}}` without wings.
 
 `gma3_matricks {matricks}` reads every per-axis setting with one `objects` request, plus `otherSettings` that differ
-from a fresh MAtricks (inverts, align ranges, relative flags, phaser transform, shuffle mode; outside the qualified
-model).
+from a fresh MAtricks (inverts, align ranges, relative flags, phaser transform, shuffle mode, speed-master override;
+outside the qualified model, which only resets them).
 
 `gma3_configure_matricks {matricks, name?, create?, x?, y?, z?, reset_unspecified?, preview?, verify?}`:
 
 1. read `read_matricks`: missing without `create: true`, locked, or with an unreadable requested value: refused.
 2. Existing object: only settings that differ are written (`intended.changes`; equal ones under `unchanged`); with
    `reset_unspecified: true` every other per-axis setting goes to None and the other settings to their defaults
-   (`intended.resets`). Nothing to change: `noop: true`, nothing sent. `preview: true` stops here.
+   (`intended.resets`), including **SpeedMasterOverride**, which is cleared with `"0"` (the only form the console
+   accepts; it reads `""` when clear and the master's name otherwise). Nothing to change: `noop: true`, nothing sent.
+   `preview: true` stops here.
 3. New object (`create: true`): `Store MAtricks <n> /NoConfirmation`, `read_new`, then the writes needed to turn the
    copy of the selection MAtricks into exactly the request (`intended.afterStore`).
-4. one `set` per property with read-back; the first value the console does not apply stops the rest.
+4. one `set` per property with read-back; the first value the console does not apply stops the rest. The override is
+   written first: any override write while `SpeedFromX` is None (even `"0"` on a clear override) sets `SpeedFromX` to
+   60 BPM, so after an override write every planned speed is written as well, whatever it read before.
 5. verify (default): one `objects` read compared with the request (every property for a new object or
-   `reset_unspecified`).
+   `reset_unspecified`). A property missing from the read is a mismatch, never taken as its default.
 
 Apply a MAtricks to a selection with `Recall MAtricks <n>` (`Call MAtricks` answers "Not implemented" on 2.5.1).
 
@@ -149,4 +159,5 @@ Apply a MAtricks to a selection with `Recall MAtricks <n>` (`Call MAtricks` answ
 `GMA3_LIVE=1 node --import tsx --test test/live/groups.live.ts` on a disposable show with an empty programmer and
 bridge 0.21.0. It uses Group and MAtricks 905–906, fixtures 401–404 and 701–704 (`GMA3_LIVE_GRID_ROW`) and fixture 501
 with its cells (`GMA3_LIVE_GRID_CELLS`), refuses to run when those objects exist, and deletes them, clears the
-programmer, resets the selection MAtricks and returns the cursor to 0/0/0 at the end. Last run: 1/1, 3.0 s.
+programmer, resets the selection MAtricks and returns the cursor to 0/0/0 at the end. The dirty selection MAtricks it creates the centre-out object from carries XGroup 3 and
+a speed-master override. Last run: 1/1, 3.2 s.

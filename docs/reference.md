@@ -215,8 +215,10 @@ render as `""`. Two read-only ops (not guarded, usable with Lua disabled) expose
 
 * `group.read {ref}` (a group, e.g. `"Group 5"`): `{ref, addr, no, name, lock, preserveGridPositions, count,
   truncated, unreadable, items}`; `lock` and `preserveGridPositions` in the edit role (`""` = unlocked). Each item is
-  `{sfIndex, fixture, fid, name, x, y, z}` in the stored order (patch order on 2.5.1). `fixture` is the item's own FID,
-  or the dotted path from the nearest ancestor with a FID (`"501.1"`); `null` when no ancestor has one. An entry that
+  `{sfIndex, fixture, fid, path, addr, name, x, y, z}` in the stored order (patch order on 2.5.1). `fixture` is the
+  item's own FID, otherwise `path`; `path` is the dotted id from the nearest ancestor with a FID (`"501.1"`; also for a
+  cell with its own FID, and `"4.1"` for fixture 401 inside grouping fixture 4); `addr` is the console address, the
+  stable identity. `fixture` is `null` when neither exists. An entry that
   is not an item is `{unreadable: true}`, never dropped. A non-group is `[not-group]`; SelectionData that is not a
   table is `[unreadable]`. Nothing is selected.
 * `selection.grid {}`: `{count, truncated, items}` for the current selection in selection order, with the cells
