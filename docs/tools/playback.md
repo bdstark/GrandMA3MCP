@@ -39,6 +39,13 @@ Cue triggers and timing (what makes a chase run) are set with `gma3_set_cue_trig
 
 - **Validation before anything is sent.** Unknown parameter values, functions not valid for that element of a
   sequence executor, and calls with nothing to configure are refused with `validationErrors`.
+- **A value that could not be read is unknown, never a default.** The bridge leaves a property it cannot read out
+  of its reply. Before planning, every value the plan depends on (the requested properties, the target's Lock, the
+  page Lock for an executor, StructureLocked and SystemLocked) must have been read; otherwise the call is refused
+  before anything is sent. A missing Lock is never taken as "unlocked", a missing function never as "Empty", and
+  a requested value is "unchanged" only when its current value was actually read. A `set` reply without a value
+  makes that step `unknown` (it confirms neither an unlock nor an `Empty` function), and a read-back missing a
+  field does not verify.
 - **Plan, then send only what changes.** The tool reads the current values and builds
   `intended.changes` (`key`, `property`, `from`, `to`); requested values that are already set are listed in
   `intended.unchanged` and never sent. Every requested value overwrites the current one; there is no merge.
@@ -69,14 +76,23 @@ Cue triggers and timing (what makes a chase run) are set with `gma3_set_cue_trig
 | `references` | boolean, default true | Scan every page for executors that share the sequence. |
 
 Requests: `objects Page <p>` (Lock), `objects Page <p>.<e>` (Object, as a handle), `objects Page <p>.<e>` (the
-function properties, Fix, Lock, StructureLocked, SystemLocked); for a sequence: `objects Sequence <n>` (settings,
-Lock), `object Sequence <n>` (HasActivePlayback), and the reference scan (`children DataPool.Pages`, then
+function properties, Fix, Lock, StructureLocked, SystemLocked); for a sequence: `object DataPool` (the current data
+pool's address), `objects <sequence address>` (settings, Lock), `object <sequence address>` (HasActivePlayback), and
+the reference scan (`children DataPool.Pages`, then
 `children <page>` with `No` and `Object` for each page; at most 200 pages, otherwise `complete: false`).
 
 Returns `pageInfo`, `empty`, `assigned` (`class`, `index`, `name`, `addr`), `executorSettings` (`functions`,
-`fix`, `locked`, ...), `allowedFunctions`, `sequence` (`settings`, `locked`, `active`), `protection` (each lock
-and protect flag by owner), `references` and a warning when the sequence is shared. An executor holding something
-other than a sequence is reported, but no function list is qualified for it.
+`fix`, `locked`, ...), `allowedFunctions`, `sequence` (`addr`, `dataPool`, `ref`, `settings`, `locked`, `active`),
+`protection` (each lock and protect flag by owner), `references` and a warning when the sequence is shared. A value
+that could not be read is `null` (never "unlocked" or "Empty") and its property is listed in `unreadable`. An
+executor holding something other than a sequence is reported, but no function list is qualified for it.
+
+**Sequences from another data pool.** An executor can hold a sequence from another data pool (see the manual's
+data pool topic), so the assigned sequence is always read by the address the executor reports, never rebuilt as
+`Sequence <n>` (which would read the current pool's sequence of the same number). `sequence.dataPool` is
+`current`, `other` or `unknown`; `sequence.ref` (`Sequence <n>`) is given only for the current pool, because
+`gma3_configure_sequence` addresses sequences by number in the current data pool and cannot configure another
+pool's sequence. The reference scan covers the current data pool's pages.
 
 ## gma3_configure_executor
 
@@ -94,9 +110,11 @@ empty). The executor must exist on an existing page and hold a sequence; anythin
 anything is sent. Executor settings belong to this executor only.
 
 Requests in order: `objects Page <p>` (Lock), `objects Page <p>.<e>` (Object), `objects Page <p>.<e>` (current
-values), `object Sequence <n>` (playback before), then `set Page <p> Lock No` / `set Page <p>.<e> Lock No` (only
+values), `object <sequence address>` (playback before; the sequence the executor holds, also from another data
+pool), then `set Page <p> Lock No` / `set Page <p>.<e> Lock No` (only
 with `unlock`), one `set Page <p>.<e> <Property> <value>` per change, `set ... Lock Yes|No` (explicit `lock`),
-the relocks, `objects Page <p>.<e>` (read-back) and `object Sequence <n>` (playback after).
+the relocks, `objects Page <p>.<e>` (read-back) and `object <sequence address>` (playback after). The result names
+the sequence (`sequence`, `sequenceAddr`).
 
 ## gma3_configure_sequence
 
@@ -131,7 +149,8 @@ non-sequence executors, Cue Zero mode and speed/rate masters.
 
 Not part of `npm test`. On a disposable show with an empty programmer:
 `GMA3_LIVE=1 node --import tsx --test test/live/playback.live.ts` (about 13 s). It refuses to run when Sequence
-905 exists or Page 90.210/90.211 are taken, then:
+905 exists or Page 90.210/90.211 are taken, and skips unless a complete programmer scan (coverage complete, no
+channel errors or limitations) finds no values, then:
 
 1. creates Page 90 if needed, Sequence 905 with three empty cues, assigns it to 90.210 and 90.211 and gives every
    cue a 0.5 s Time trigger (`gma3_set_cue_trigger`);

@@ -2,7 +2,7 @@ import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { startHarness, type Harness } from "./helpers/tool-harness.ts";
 import { SILENT } from "./helpers/fake-bridge.ts";
-import { registerPlaybackTools, functionName, isLocked, EXECUTOR_FUNCTIONS } from "../src/tools/playback.ts";
+import { registerPlaybackTools, functionName, lockState, EXECUTOR_FUNCTIONS } from "../src/tools/playback.ts";
 import { ValidationError } from "../src/validate.ts";
 
 /**
@@ -16,6 +16,8 @@ import { ValidationError } from "../src/validate.ts";
  */
 interface Exec {
   seq: number | null;
+  /** Data pool of the assigned sequence (default 1, the current one). */
+  pool?: number;
   other?: { class: string; index: number; name: string };
   props: Record<string, string>;
 }
@@ -39,9 +41,16 @@ class Console {
   silentSets = new Set<string>();
   /** Fail the reference scan. */
   childrenError = false;
+  /** Sequences of other data pools (pool number -> sequences); pool 1 is `seqs`, the current one. */
+  pools = new Map<number, Map<number, Seq>>();
+  /** "<ref> <Property>" pairs an objects read leaves out (the bridge could not read them). */
+  unreadable = new Set<string>();
+  /** "<ref> <Property>=<value>" set requests whose reply carries no value. */
+  noValueSets = new Set<string>();
 
-  seq(n: number, name = `Seq ${n}`, props: Record<string, string> = {}): this {
-    this.seqs.set(n, {
+  seq(n: number, name = `Seq ${n}`, props: Record<string, string> = {}, pool = 1): this {
+    if (pool !== 1 && !this.pools.has(pool)) this.pools.set(pool, new Map());
+    (pool === 1 ? this.seqs : this.pools.get(pool)!).set(n, {
       name,
       active: false,
       props: { WrapAround: "Yes", Priority: "LTP", RestartMode: "First Cue", ReleaseFirstCue: "Yes", AutoStart: "Yes", AutoStop: "Yes", MasterGoMode: "None", AutoFix: "No", AutoStomp: "No", Tracking: "Yes", SoftLTP: "Yes", OffWhenOverridden: "Yes", KillProtect: "No", SwapProtect: "No", UseExecutorTime: "Yes", IncludeLinkLastGo: "Yes", XFadeMode: "AB", XFadeReload: "No", Lock: "", StructureLocked: "No", SystemLocked: "No", ...props },
@@ -53,15 +62,18 @@ class Console {
     else this.pages.get(p)!.lock = lock;
     return this;
   }
-  exec(p: number, e: number, seq: number | null, props: Record<string, string> = {}): this {
+  exec(p: number, e: number, seq: number | null, props: Record<string, string> = {}, pool = 1): this {
     this.page(p);
-    this.pages.get(p)!.execs.set(e, { seq, props: { KeyPress: "Go+", KeyUnpress: "", MAKeyPress: "", MAKeyUnpress: "", Fader: "Master", Encoder: "Master", EncoderLeft: "", EncoderRight: "", Fix: "No", Lock: "", StructureLocked: "No", SystemLocked: "No", ...props } });
+    this.pages.get(p)!.execs.set(e, { seq, pool, props: { KeyPress: "Go+", KeyUnpress: "", MAKeyPress: "", MAKeyUnpress: "", Fader: "Master", Encoder: "Master", EncoderLeft: "", EncoderRight: "", Fix: "No", Lock: "", StructureLocked: "No", SystemLocked: "No", ...props } });
     return this;
   }
 
-  private seqHandle(n: number) {
-    const s = this.seqs.get(n)!;
-    return { name: s.name, class: "Sequence", index: n, addr: `14.14.1.7.${n}` };
+  private poolSeqs(pool = 1) {
+    return pool === 1 ? this.seqs : this.pools.get(pool)!;
+  }
+  private seqHandle(n: number, pool = 1) {
+    const s = this.poolSeqs(pool).get(n)!;
+    return { name: s.name, class: "Sequence", index: n, addr: `14.14.${pool}.7.${n}` };
   }
   private resolve(ref: string): { kind: "page"; p: number } | { kind: "exec"; p: number; e: number; x: Exec } | { kind: "seq"; n: number; s: Seq } | null {
     let m: RegExpMatchArray | null;
@@ -74,6 +86,10 @@ class Console {
       const s = this.seqs.get(Number(m[1]));
       return s ? { kind: "seq", n: Number(m[1]), s } : null;
     }
+    if ((m = ref.match(/^14\.14\.(\d+)\.7\.(\d+)$/))) {
+      const s = this.pools.get(Number(m[1]))?.get(Number(m[2])) ?? (Number(m[1]) === 1 ? this.seqs.get(Number(m[2])) : undefined);
+      return s ? { kind: "seq", n: Number(m[2]), s } : null;
+    }
     throw new Error(`unexpected ref ${ref}`);
   }
 
@@ -83,15 +99,18 @@ class Console {
       const fields = (args.fields as string[]) ?? [];
       const asText = args.asText !== false;
       if (!r) throw new Error(`no objects found for '${args.ref}'`);
+      const ref = String(args.ref);
+      const readable = (all: Record<string, unknown>) => pick(Object.fromEntries(Object.entries(all).filter(([k]) => !this.unreadable.has(`${ref} ${k}`))), fields);
       let item: Record<string, unknown>;
-      if (r.kind === "page") item = { name: `Page ${r.p}`, class: "Page", addr: `14.14.1.13.${r.p}`, index: r.p, fields: pick({ Lock: this.pages.get(r.p)!.lock, Name: `Page ${r.p}` }, fields) };
+      if (r.kind === "page") item = { name: `Page ${r.p}`, class: "Page", addr: `14.14.1.13.${r.p}`, index: r.p, fields: readable({ Lock: this.pages.get(r.p)!.lock, Name: `Page ${r.p}` }) };
       else if (r.kind === "exec") {
-        const obj = r.x.other ? (asText ? r.x.other.name : r.x.other) : r.x.seq === null ? "" : asText ? this.seqs.get(r.x.seq)!.name : this.seqHandle(r.x.seq);
-        item = { name: "x", class: "Executor", addr: `14.14.1.13.${r.p}.${r.e}`, index: r.e - 100, fields: pick({ ...r.x.props, Object: obj }, fields) };
-      } else item = { name: r.s.name, class: "Sequence", addr: `14.14.1.7.${r.n}`, index: r.n, fields: pick({ ...r.s.props, Name: r.s.name }, fields) };
+        const obj = r.x.other ? (asText ? r.x.other.name : r.x.other) : r.x.seq === null ? "" : asText ? this.poolSeqs(r.x.pool).get(r.x.seq)!.name : this.seqHandle(r.x.seq, r.x.pool);
+        item = { name: "x", class: "Executor", addr: `14.14.1.13.${r.p}.${r.e}`, index: r.e - 100, fields: readable({ ...r.x.props, Object: obj }) };
+      } else item = { name: r.s.name, class: "Sequence", addr: `14.14.1.7.${r.n}`, index: r.n, fields: readable({ ...r.s.props, Name: r.s.name }) };
       return { total: 1, offset: 0, count: 1, items: [item] };
     });
     h.fake.on("object", (args) => {
+      if (args.ref === "DataPool") return { name: "Default", class: "DataPool", addr: "14.14.1" };
       const r = this.resolve(String(args.ref));
       if (!r) throw new Error(`no object found for '${args.ref}'`);
       return r.kind === "seq" ? { name: r.s.name, class: "Sequence", hasActivePlayback: r.s.active } : { name: "x" };
@@ -105,7 +124,7 @@ class Console {
       }
       const m = ref.match(/^14\.14\.1\.13\.(\d+)$/);
       if (!m) throw new Error(`unexpected children ref ${ref}`);
-      const items = [...this.pages.get(Number(m[1]))!.execs.entries()].map(([e, x]) => ({ name: "x", class: "Executor", fields: { No: e, Object: x.seq === null ? "" : this.seqHandle(x.seq) } }));
+      const items = [...this.pages.get(Number(m[1]))!.execs.entries()].map(([e, x]) => ({ name: "x", class: "Executor", fields: { No: e, Object: x.seq === null ? "" : this.seqHandle(x.seq, x.pool) } }));
       return { total: items.length, offset: 0, count: items.length, items };
     });
     h.fake.on("set", (args) => {
@@ -113,6 +132,7 @@ class Console {
       const property = String(args.property);
       const value = String(args.value);
       if (this.silentSets.has(`${ref} ${property}=${value}`)) return SILENT;
+      const noValue = this.noValueSets.has(`${ref} ${property}=${value}`);
       const r = this.resolve(ref);
       if (!r) throw new Error(`no object found for '${ref}'`);
       const accept = (bag: Record<string, string>, blocked: boolean) => {
@@ -134,15 +154,15 @@ class Console {
         const bag = { Lock: pg.lock };
         accept(bag, false);
         pg.lock = bag.Lock;
-        return { ref, property, value: pg.lock };
+        return noValue ? { ref, property } : { ref, property, value: pg.lock };
       }
       if (r.kind === "exec") {
         const pageLocked = this.pages.get(r.p)!.lock !== "";
         accept(r.x.props, pageLocked || (property !== "Lock" && r.x.props.Lock !== ""));
-        return { ref, property, value: r.x.props[property] };
+        return noValue ? { ref, property } : { ref, property, value: r.x.props[property] };
       }
       accept(r.s.props, property !== "Lock" && r.s.props.Lock !== "");
-      return { ref, property, value: r.s.props[property] };
+      return noValue ? { ref, property } : { ref, property, value: r.s.props[property] };
     });
     h.fake.on("cmd", () => {
       throw new Error("SB-01 tools must not send commands");
@@ -185,10 +205,12 @@ test("functionName matches case-insensitively and refuses functions that do not 
   }
 });
 
-test("isLocked reads the console's lock display values", () => {
-  assert.equal(isLocked("UL"), true);
-  assert.equal(isLocked("Yes"), true);
-  for (const v of ["", "No", null, undefined, false]) assert.equal(isLocked(v), false, String(v));
+test("lockState reads the console's lock display values and keeps a missing value unknown", () => {
+  assert.equal(lockState("UL"), true);
+  assert.equal(lockState("Yes"), true);
+  for (const v of ["", "No", false]) assert.equal(lockState(v), false, String(v));
+  assert.equal(lockState(undefined), null);
+  assert.equal(lockState(null), null);
 });
 
 test("invalid requests are refused before anything is sent", async () => {
@@ -228,7 +250,8 @@ test("configure_executor writes only the changed functions, reads them back and 
   assert.deepEqual(result.intended.unchanged.sort(), ["encoder", "key_unpress"]);
   assert.deepEqual(result.intended.changes.map((c: { key: string; from: string; to: string }) => `${c.key}:${c.from}->${c.to}`), ["key_press:Go+->Temp", "fader:Master->Temp"]);
   assert.deepEqual(result.playback, { activeBefore: false, activeAfter: false });
-  assert.equal(result.sequence, "Sequence 5");
+  assert.equal(result.sequence, "Sequence 5 (14.14.1.7.5)");
+  assert.equal(result.sequenceAddr, "14.14.1.7.5");
   assert.equal(con.pages.get(1)!.execs.get(201)!.props.KeyPress, "Temp");
   assert.equal(h.fake.commands.length, 0);
 });
@@ -489,4 +512,150 @@ test("executor_settings on an empty executor or a missing page says so", async (
   assert.equal(missing.result.pageExists, false);
   const bad = await h.callJson("gma3_executor_settings", { page: 1, executor: 99 });
   assert.equal(bad.isError, true);
+});
+
+// ---------------------------------------------------------------------------
+// Review round 1: values that could not be read are unknown, never "unlocked", "Empty" or "unchanged"
+// ---------------------------------------------------------------------------
+
+test("an executor Lock that could not be read refuses the change; lock: false is not a no-op", async () => {
+  con.pages.get(1)!.execs.get(201)!.props.Lock = "UL";
+  con.unreadable.add("Page 1.201 Lock");
+  for (const args of [{ key_press: "Temp" }, { lock: false }, { lock: false, unlock: true }]) {
+    const { result, isError } = await h.callJson("gma3_configure_executor", { page: 1, executor: 201, ...args });
+    assert.equal(isError, true, JSON.stringify(args));
+    assert.equal(result.outcome, "failed");
+    assert.notEqual(result.noop, true);
+    assert.match(result.summary, /Lock of Page 1\.201 could not be read/);
+  }
+  assert.deepEqual(sets(), []);
+  assert.equal(con.pages.get(1)!.execs.get(201)!.props.Lock, "UL");
+});
+
+test("a page Lock or a requested function that could not be read refuses the change", async () => {
+  con.unreadable.add("Page 1 Lock");
+  const page = await h.callJson("gma3_configure_executor", { page: 1, executor: 201, key_press: "Temp" });
+  assert.equal(page.isError, true);
+  assert.match(page.result.summary, /Lock of Page 1 could not be read/);
+  con.unreadable.clear();
+  con.unreadable.add("Page 1.201 KeyUnpress");
+  const fn = await h.callJson("gma3_configure_executor", { page: 1, executor: 201, key_unpress: "Empty" });
+  assert.equal(fn.isError, true);
+  assert.match(fn.result.summary, /KeyUnpress of Page 1\.201 could not be read/);
+  assert.deepEqual(sets(), []);
+});
+
+test("a sequence Lock that could not be read refuses the change; lock: false is not a no-op", async () => {
+  con.seqs.get(5)!.props.Lock = "UL";
+  con.unreadable.add("Sequence 5 Lock");
+  for (const args of [{ wrap_around: false }, { lock: false }]) {
+    const { result, isError } = await h.callJson("gma3_configure_sequence", { sequence: 5, ...args });
+    assert.equal(isError, true, JSON.stringify(args));
+    assert.notEqual(result.noop, true);
+    assert.match(result.summary, /Lock of Sequence 5 could not be read/);
+  }
+  con.unreadable.clear();
+  con.unreadable.add("Sequence 5 WrapAround");
+  const setting = await h.callJson("gma3_configure_sequence", { sequence: 5, wrap_around: true });
+  assert.equal(setting.isError, true);
+  assert.match(setting.result.summary, /WrapAround of Sequence 5 could not be read/);
+  assert.deepEqual(sets(), []);
+});
+
+test("a set reply without a value is unknown: it neither confirms an unlock nor an Empty function", async () => {
+  con.pages.get(1)!.execs.get(201)!.props.Lock = "UL";
+  con.noValueSets.add("Page 1.201 Lock=No");
+  const unlock = await h.callJson("gma3_configure_executor", { page: 1, executor: 201, lock: false });
+  assert.equal(unlock.isError, true);
+  assert.equal(unlock.result.outcome, "unknown");
+  assert.equal(unlock.result.steps.find((s: { name: string }) => s.name === "unlock").status, "unknown");
+
+  h.fake.requests.length = 0;
+  con.pages.get(1)!.execs.get(201)!.props.Lock = "";
+  con.pages.get(1)!.execs.get(201)!.props.KeyUnpress = "Off";
+  con.noValueSets.add("Page 1.201 KeyUnpress=Empty");
+  const empty = await h.callJson("gma3_configure_executor", { page: 1, executor: 201, key_unpress: "Empty", fader: "Temp" });
+  assert.equal(empty.isError, true);
+  assert.equal(empty.result.outcome, "unknown");
+  assert.match(empty.result.steps.find((s: { name: string }) => s.name === "set_key_unpress").error, /could not be read back/);
+  assert.equal(empty.result.steps.find((s: { name: string }) => s.name === "set_fader").status, "skipped");
+});
+
+test("an unconfirmed unlock is still followed by a relock attempt", async () => {
+  con.pages.get(1)!.execs.get(201)!.props.Lock = "UL";
+  con.noValueSets.add("Page 1.201 Lock=No");
+  const { result, isError } = await h.callJson("gma3_configure_executor", { page: 1, executor: 201, key_press: "Temp", unlock: true });
+  assert.equal(isError, true);
+  assert.deepEqual(sets(), ["Page 1.201 Lock=No", "Page 1.201 Lock=Yes"]);
+  assert.equal(result.steps.find((s: { name: string }) => s.name === "relock_executor").status, "succeeded");
+});
+
+test("a read-back missing the Lock or a function does not verify", async () => {
+  const orig = h.fake.handlerFor("objects")!;
+  let reads = 0;
+  h.fake.on("objects", (args, req) => {
+    // Reads of Page 1.201 that include Lock: read_executor first, then the read-back, which loses Lock and KeyPress.
+    if (args.ref === "Page 1.201" && (args.fields as string[]).includes("Lock") && ++reads === 2) {
+      const res = orig(args, req) as { items: Array<{ fields: Record<string, unknown> }> };
+      delete res.items[0].fields.Lock;
+      delete res.items[0].fields.KeyPress;
+      return res;
+    }
+    return orig(args, req);
+  });
+  const { result, isError } = await h.callJson("gma3_configure_executor", { page: 1, executor: 201, key_press: "Temp" });
+  assert.equal(isError, true);
+  assert.equal(result.verification.status, "mismatched");
+  assert.match(result.verification.detail, /KeyPress.*Lock|Lock.*KeyPress/);
+});
+
+test("executor_settings reports a value that could not be read as null and lists it", async () => {
+  con.unreadable.add("Page 1.201 Lock");
+  con.unreadable.add("Page 1.201 Fader");
+  con.unreadable.add("Page 1 Lock");
+  const { result } = await h.callJson("gma3_executor_settings", { page: 1, executor: 201, references: false });
+  assert.equal(result.executorSettings.locked, null);
+  assert.equal(result.executorSettings.functions.fader, null);
+  assert.equal(result.executorSettings.functions.key_press, "Go+");
+  assert.equal(result.pageInfo.locked, null);
+  assert.deepEqual(result.unreadable.sort(), ["Fader", "Lock"]);
+});
+
+// ---------------------------------------------------------------------------
+// Review round 1: an executor holding a sequence from another data pool
+// ---------------------------------------------------------------------------
+
+test("a sequence from another data pool is read by its address, not as the local sequence of the same number", async () => {
+  con.seq(5, "Remote", { WrapAround: "No", Priority: "High", Lock: "UL" }, 2);
+  con.exec(1, 220, 5, {}, 2);
+  con.pools.get(2)!.get(5)!.active = true;
+  const { result, isError } = await h.callJson("gma3_executor_settings", { page: 1, executor: 220 });
+  assert.equal(isError, false, JSON.stringify(result));
+  assert.equal(result.sequence.addr, "14.14.2.7.5");
+  assert.equal(result.sequence.dataPool, "other");
+  assert.equal(result.sequence.ref, null);
+  assert.equal(result.sequence.name, "Remote");
+  assert.equal(result.sequence.settings.wrap_around, false);
+  assert.equal(result.sequence.settings.priority, "high");
+  assert.equal(result.sequence.locked, true);
+  assert.equal(result.sequence.active, true);
+  assert.match(result.sequence.note, /another data pool/);
+  assert.deepEqual(result.references.executors.map((r: { ref: string }) => r.ref), ["Page 1.220"]);
+
+  const local = await h.callJson("gma3_executor_settings", { page: 1, executor: 201, references: false });
+  assert.equal(local.result.sequence.dataPool, "current");
+  assert.equal(local.result.sequence.ref, "Sequence 5");
+  assert.equal(local.result.sequence.settings.wrap_around, true);
+});
+
+test("configure_executor watches the playback of the sequence the executor actually holds", async () => {
+  con.seq(5, "Remote", {}, 2);
+  con.exec(1, 220, 5, {}, 2);
+  con.pools.get(2)!.get(5)!.active = true;
+  const { result, isError } = await h.callJson("gma3_configure_executor", { page: 1, executor: 220, key_press: "Temp" });
+  assert.equal(isError, false, JSON.stringify(result));
+  assert.equal(result.sequenceAddr, "14.14.2.7.5");
+  assert.deepEqual(result.playback, { activeBefore: true, activeAfter: true });
+  const playbackReads = h.fake.requests.filter((r) => r.op === "object").map((r) => r.args.ref);
+  assert.deepEqual(playbackReads, ["14.14.2.7.5", "14.14.2.7.5"]);
 });

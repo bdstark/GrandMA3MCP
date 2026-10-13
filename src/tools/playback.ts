@@ -149,15 +149,27 @@ function optionalBool(field: string, value: unknown): boolean | undefined {
 // Console readers
 // ---------------------------------------------------------------------------
 
-/** Whether a Lock display value means locked ("UL" on 2.5.1; "" or "No" when unlocked). */
-export function isLocked(value: unknown): boolean {
-  if (value === true) return true;
-  if (value === null || value === undefined || value === false) return false;
+/**
+ * The lock state of a Lock display value ("UL" on 2.5.1 when locked; "" or "No" when not), or null when the value is
+ * missing: a property the bridge could not read is absent from the reply and is never taken as "unlocked".
+ */
+export function lockState(value: unknown): boolean | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "boolean") return value;
   const s = String(value).trim().toLowerCase();
-  return s !== "" && s !== "no" && s !== "off" && s !== "false";
+  return !(s === "" || s === "no" || s === "off" || s === "false");
 }
-const isYes = (v: unknown) => typeof v === "string" && v.trim().toLowerCase() === "yes";
+/** Yes/No display value as a boolean, or null when missing or not a Yes/No word. */
+const yesNo = (v: unknown): boolean | null => {
+  if (typeof v !== "string") return null;
+  const s = v.trim().toLowerCase();
+  return s === "yes" ? true : s === "no" ? false : null;
+};
+const isYes = (v: unknown) => yesNo(v) === true;
 const displayOf = (v: unknown): string => (v === null || v === undefined ? "" : String(v).trim());
+const isMissing = (v: unknown) => v === null || v === undefined;
+/** The fields of `names` that a read did not return. */
+const missingFields = (fields: Record<string, unknown>, names: string[]) => names.filter((n) => isMissing(fields[n]));
 
 export interface AssignedRef {
   class?: string;
@@ -250,14 +262,14 @@ export async function findReferences(bridge: Gma3Bridge, addr: string, timeoutMs
   return out;
 }
 
-function referenceWarning(seqNo: number, refs: References, self?: string): string | undefined {
+function referenceWarning(label: string, refs: References, self?: string): string | undefined {
   // Without an executor of its own (gma3_configure_sequence) a single referencing executor is no sharing.
   const others = refs.executors.filter((r) => r.ref !== self);
   const incomplete = refs.complete ? "" : ` (the page scan was incomplete: ${refs.error ?? "unknown reason"})`;
   if (others.length === 0 || (self === undefined && others.length === 1 && refs.complete)) {
-    return refs.complete ? undefined : `executors sharing Sequence ${seqNo} could not all be determined${incomplete}`;
+    return refs.complete ? undefined : `executors sharing ${label} could not all be determined${incomplete}`;
   }
-  return `sequence settings belong to Sequence ${seqNo}, so they also apply to ${others.map((r) => r.ref).join(", ")}${incomplete}`;
+  return `sequence settings belong to ${label}, so they also apply to ${others.map((r) => r.ref).join(", ")}${incomplete}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -281,6 +293,10 @@ function setStep(ctx: ToolContext, name: string, ref: string, property: string, 
   return () =>
     requestStep(ctx.bridge, name, "set", { ref, property, value }, (res) => {
       const got = (res as { value?: unknown } | null)?.value;
+      if (isMissing(got)) {
+        // Sent, but the reply carries no read-back value: whether the console applied it is unknown.
+        return { name, status: "unknown", op: "set", detail: { ref, property, sent: value }, error: `${property} of ${ref} could not be read back after the write; whether the console applied ${JSON.stringify(value)} is unknown` };
+      }
       if (!expect(got)) {
         return { name, status: "failed", op: "set", detail: { ref, property, sent: value, readBack: got ?? null }, error: `the console did not apply ${property}=${JSON.stringify(value)} on ${ref}: it reads ${JSON.stringify(got ?? null)} (the console silently keeps the previous value when it does not accept one)` };
       }
@@ -289,7 +305,7 @@ function setStep(ctx: ToolContext, name: string, ref: string, property: string, 
 }
 
 const sameDisplay = (want: string) => (got: unknown) => displayOf(got).toLowerCase() === (want === "Empty" ? "" : want).toLowerCase();
-const lockedIs = (want: boolean) => (got: unknown) => isLocked(got) === want;
+const lockedIs = (want: boolean) => (got: unknown) => lockState(got) === want;
 
 interface LockOwner {
   /** "page", "executor" or "sequence". */
@@ -359,17 +375,40 @@ async function readBackObject(bridge: Gma3Bridge, ref: string, expected: Record<
   const want: Record<string, unknown> = {};
   for (const [p, v] of Object.entries(expected)) want[p] = v === "Empty" ? "" : v;
   if (lockExpected !== undefined) want.Lock = lockExpected;
-  const verification = compareFields(`${Object.keys(want).join(", ")} of ${ref}`, want, values, { normalize: { Lock: (v) => isLocked(v) } });
+  const verification = compareFields(`${Object.keys(want).join(", ")} of ${ref}`, want, values, { normalize: { Lock: (v) => lockState(v) } });
   return { step, verification, values };
+}
+
+/**
+ * Where an assigned sequence lives. An executor can hold a sequence from another data pool (manual: data pools), so
+ * the sequence is always read by its address; `ref` (`Sequence <n>`) is given only when it is in the current data
+ * pool, where gma3_configure_sequence can address it by number.
+ */
+async function sequenceLocation(bridge: Gma3Bridge, assigned: AssignedRef, timeoutMs: number): Promise<{ ref: string | null; dataPool: "current" | "other" | "unknown"; label: string; note?: string }> {
+  let pool: string | undefined;
+  try {
+    pool = ((await bridge.request("object", { ref: "DataPool", properties: false }, timeoutMs)) as { addr?: string })?.addr;
+  } catch {
+    pool = undefined;
+  }
+  const addr = assigned.addr ?? "";
+  const label = assigned.index !== undefined ? `Sequence ${assigned.index}${assigned.name ? ` "${assigned.name}"` : ""}` : `the sequence at ${addr}`;
+  if (!pool) return { ref: null, dataPool: "unknown", label, note: "the current data pool could not be read; the sequence was read by its address" };
+  if (addr.startsWith(`${pool}.`) && assigned.index !== undefined) return { ref: `Sequence ${assigned.index}`, dataPool: "current", label: `Sequence ${assigned.index}` };
+  return { ref: null, dataPool: "other", label: `${label} (address ${addr}, another data pool)`, note: `the executor holds a sequence from another data pool (address ${addr}); it was read by address, and gma3_configure_sequence (current data pool, by number) cannot address it` };
 }
 
 // ---------------------------------------------------------------------------
 // gma3_executor_settings (read-only)
 // ---------------------------------------------------------------------------
 
-function readFunctions(fields: Record<string, unknown>): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const k of FUNCTION_KEYS) out[k] = displayOf(fields[EXECUTOR_FUNCTIONS[k].property]) || "Empty";
+/** Function names as read ("Empty" for an empty function), null for a property that could not be read. */
+function readFunctions(fields: Record<string, unknown>): Record<string, string | null> {
+  const out: Record<string, string | null> = {};
+  for (const k of FUNCTION_KEYS) {
+    const v = fields[EXECUTOR_FUNCTIONS[k].property];
+    out[k] = isMissing(v) ? null : displayOf(v) || "Empty";
+  }
   return out;
 }
 
@@ -378,7 +417,7 @@ function readSettings(fields: Record<string, unknown>): Record<string, unknown> 
   for (const k of SETTING_KEYS) {
     const def = SEQUENCE_SETTINGS[k];
     const raw = displayOf(fields[def.property]);
-    if (def.kind === "bool") out[k] = raw === "" ? null : isYes(raw);
+    if (def.kind === "bool") out[k] = yesNo(raw);
     else out[k] = Object.entries(def.values).find(([, v]) => v.toLowerCase() === raw.toLowerCase())?.[0] ?? (raw || null);
   }
   return out;
@@ -400,7 +439,8 @@ export async function executorSettings(ctx: ToolContext, raw: { page: number; ex
   if (!pageItem) return { page, executor, ref, pageExists: false, empty: true, note: `Page ${page} does not exist` };
   const objRes = await readObjects(bridge, ref, ["Object"], 1, { asText: false });
   const assigned = toAssigned(objRes?.items?.[0]?.fields?.Object);
-  const pageInfo = { exists: true, locked: isLocked(pageItem.fields?.Lock) };
+  // null = the value could not be read (never reported as unlocked).
+  const pageInfo = { exists: true, locked: lockState(pageItem.fields?.Lock) };
   if (!assigned) return { page, executor, ref, pageInfo, empty: true, note: `${ref} is empty: nothing is assigned` };
 
   const exec = (await readObjects(bridge, ref, EXECUTOR_READ_FIELDS, 1))?.items?.[0]?.fields ?? {};
@@ -410,41 +450,47 @@ export async function executorSettings(ctx: ToolContext, raw: { page: number; ex
     ref,
     empty: false,
     pageInfo,
-    executorSettings: { functions: readFunctions(exec), fix: isYes(exec.Fix), locked: isLocked(exec.Lock), structureLocked: isYes(exec.StructureLocked), systemLocked: isYes(exec.SystemLocked) },
+    executorSettings: { functions: readFunctions(exec), fix: yesNo(exec.Fix), locked: lockState(exec.Lock), structureLocked: yesNo(exec.StructureLocked), systemLocked: yesNo(exec.SystemLocked) },
     assigned,
     protection: {
       page: { property: "Lock", locked: pageInfo.locked, protects: "every executor on the page from configuration changes and new assignments" },
-      executor: { property: "Lock", locked: isLocked(exec.Lock), protects: "this executor's functions and assignment" },
+      executor: { property: "Lock", locked: lockState(exec.Lock), protects: "this executor's functions and assignment" },
     },
   };
-  if (assigned.class !== "Sequence" || assigned.index === undefined) {
+  const unread = missingFields(exec, EXECUTOR_READ_FIELDS);
+  if (unread.length) out.unreadable = unread;
+  if (assigned.class !== "Sequence" || !assigned.addr) {
     out.note = `${ref} holds a ${assigned.class ?? "non-sequence"} object; SB-01 configures sequence executors only, so no function list is qualified for it`;
     return out;
   }
   out.allowedFunctions = allowedFor();
-  const seqRef = `Sequence ${assigned.index}`;
-  const seq = (await readObjects(bridge, seqRef, SEQUENCE_READ_FIELDS, 1))?.items?.[0]?.fields ?? {};
+  // Read the sequence the executor actually holds, by address: it may come from another data pool.
+  const where = await sequenceLocation(bridge, assigned, t);
+  const seq = (await readObjects(bridge, assigned.addr, SEQUENCE_READ_FIELDS, 1))?.items?.[0]?.fields ?? {};
   out.sequence = {
-    ref: seqRef,
+    ref: where.ref,
+    addr: assigned.addr,
+    dataPool: where.dataPool,
     name: seq.Name ?? assigned.name,
     settings: readSettings(seq),
-    locked: isLocked(seq.Lock),
-    structureLocked: isYes(seq.StructureLocked),
-    systemLocked: isYes(seq.SystemLocked),
-    active: await playbackActive(bridge, seqRef, t),
+    locked: lockState(seq.Lock),
+    structureLocked: yesNo(seq.StructureLocked),
+    systemLocked: yesNo(seq.SystemLocked),
+    active: await playbackActive(bridge, assigned.addr, t),
+    ...(where.note ? { note: where.note } : {}),
   };
   (out.protection as Record<string, unknown>).sequence = {
     property: "Lock",
-    locked: isLocked(seq.Lock),
+    locked: lockState(seq.Lock),
     protects: "the sequence's settings and cues (Store answers \"Cannot Create Object\"); not protected by a page or executor lock",
-    killProtect: isYes(seq.KillProtect),
-    swapProtect: isYes(seq.SwapProtect),
+    killProtect: yesNo(seq.KillProtect),
+    swapProtect: yesNo(seq.SwapProtect),
     note: "Kill Protect and Swap Protect protect playback from the Kill and Swap actions, not from editing",
   };
-  if (raw.references !== false && assigned.addr) {
+  if (raw.references !== false) {
     const refs = await findReferences(bridge, assigned.addr, t);
     out.references = refs;
-    const w = referenceWarning(assigned.index, refs, ref);
+    const w = referenceWarning(where.label, refs, ref);
     if (w) out.warnings = [w];
   }
   return out;
@@ -505,7 +551,9 @@ export async function configureExecutor(ctx: ToolContext, raw: ConfigureExecutor
         run: () =>
           objectsRead(bridge, "check_page", `Page ${page}`, ["Lock"], true, (item) => {
             if (!item) return { name: "check_page", status: "failed", op: "objects", error: `Page ${page} does not exist` };
-            pageLocked = isLocked(item.fields?.Lock);
+            const state = lockState(item.fields?.Lock);
+            if (state === null) return { name: "check_page", status: "failed", op: "objects", error: `the Lock of Page ${page} could not be read; nothing was sent because a locked page silently ignores changes` };
+            pageLocked = state;
             return { name: "check_page", status: "succeeded", op: "objects", detail: { locked: pageLocked } };
           }),
       },
@@ -515,7 +563,7 @@ export async function configureExecutor(ctx: ToolContext, raw: ConfigureExecutor
           objectsRead(bridge, "inspect_executor", ref, ["Object"], false, (item) => {
             assigned = toAssigned(item?.fields?.Object);
             if (!assigned) return { name: "inspect_executor", status: "failed", op: "objects", error: `${ref} is empty: nothing is assigned, so there is nothing to configure (assign a sequence first)` };
-            if (assigned.class !== "Sequence" || assigned.index === undefined) {
+            if (assigned.class !== "Sequence" || !assigned.addr) {
               return { name: "inspect_executor", status: "failed", op: "objects", detail: { assigned }, error: `${ref} holds a ${assigned.class ?? "non-sequence"} object; only sequence executors are configurable (SB-01 qualifies sequence functions only)` };
             }
             return { name: "inspect_executor", status: "succeeded", op: "objects", detail: { assigned } };
@@ -527,13 +575,19 @@ export async function configureExecutor(ctx: ToolContext, raw: ConfigureExecutor
           objectsRead(bridge, "read_executor", ref, EXECUTOR_READ_FIELDS, true, (item) => {
             if (!item) return { name: "read_executor", status: "failed", op: "objects", error: `${ref} could not be read` };
             current = item.fields ?? {};
+            // Every value the plan depends on must have been read: a missing one is unknown, never "Empty" or "unlocked".
+            const needed = ["Lock", "StructureLocked", "SystemLocked", ...(Object.keys(wanted) as FunctionKey[]).map((k) => EXECUTOR_FUNCTIONS[k].property), ...(fix !== undefined ? ["Fix"] : [])];
+            const unread = [...missingFields(current, needed), ...["StructureLocked", "SystemLocked", ...(fix !== undefined ? ["Fix"] : [])].filter((f) => !isMissing(current[f]) && yesNo(current[f]) === null)];
+            if (unread.length) return { name: "read_executor", status: "failed", op: "objects", detail: { values: current }, error: `${unread.join(", ")} of ${ref} could not be read; nothing was sent because the current values are unknown` };
             return { name: "read_executor", status: "succeeded", op: "objects", detail: { functions: readFunctions(current), fix: displayOf(current.Fix), lock: displayOf(current.Lock) } };
           }),
       },
     ]);
     const a = assigned as AssignedRef | null;
-    const seqRef = a?.index !== undefined ? `Sequence ${a.index}` : undefined;
-    const base = { previous: inspect.outcome === "succeeded" ? { functions: readFunctions(current), fix: isYes(current.Fix), locked: isLocked(current.Lock), pageLocked } : undefined, assigned: a };
+    // Playback is watched on the sequence the executor holds, by address (it may belong to another data pool).
+    const seqAddr = a?.addr;
+    const seqLabel = a?.index !== undefined ? `Sequence ${a.index}${seqAddr ? ` (${seqAddr})` : ""}` : seqAddr;
+    const base = { previous: inspect.outcome === "succeeded" ? { functions: readFunctions(current), fix: yesNo(current.Fix), locked: lockState(current.Lock), pageLocked } : undefined, assigned: a };
     if (inspect.outcome !== "succeeded") {
       return buildResult({ operation: op, target, steps: inspect.steps, verification: notRequested(), summary: `${op} was not performed; nothing was sent: ${inspect.steps.find((s) => s.status !== "succeeded")?.error ?? "inspection failed"}`, extra: base });
     }
@@ -552,7 +606,7 @@ export async function configureExecutor(ctx: ToolContext, raw: ConfigureExecutor
       if (from === fix) unchanged.push("fix");
       else changes.push({ key: "fix", ref, property: "Fix", from: from ? "Yes" : "No", to: fix ? "Yes" : "No" });
     }
-    const execLocked = isLocked(current.Lock);
+    const execLocked = lockState(current.Lock) === true;
     const hardLocked = isYes(current.StructureLocked) || isYes(current.SystemLocked);
     const lockChange = lock !== undefined && lock !== execLocked;
     if (lock !== undefined && !lockChange) unchanged.push("lock");
@@ -581,7 +635,7 @@ export async function configureExecutor(ctx: ToolContext, raw: ConfigureExecutor
       locks: { page: pageLocked, executor: execLocked },
       unlockAndRelock: plan.relocks.map((r) => r.ref),
     };
-    const extra = { ...base, sequence: seqRef, intended };
+    const extra = { ...base, sequence: seqLabel, sequenceAddr: seqAddr, intended };
 
     if (hardLocked) {
       const s: StepResult = { name: "check_locks", status: "failed", error: `${ref} is structure- or system-locked by the console; it cannot be configured` };
@@ -593,7 +647,7 @@ export async function configureExecutor(ctx: ToolContext, raw: ConfigureExecutor
       return buildResult({ operation: op, target, steps: [...inspect.steps, s, ...skippedSteps(plannedStepNames(plan), "refused because of the lock")], verification: notRequested(), summary: `${op} refused: ${s.error}. Nothing was sent.`, extra });
     }
 
-    const activeBefore = seqRef ? await playbackActive(bridge, seqRef, t) : null;
+    const activeBefore = seqAddr ? await playbackActive(bridge, seqAddr, t) : null;
     if (preview || (changes.length === 0 && !lockChange)) {
       const what = preview ? "Preview only; nothing was sent." : `Every requested value is already set on ${ref}; nothing was sent.`;
       return buildResult({ operation: op, target, steps: inspect.steps, verification: notRequested(), summary: what, extra: { ...extra, preview, noop: !preview, playback: { activeBefore } } });
@@ -615,8 +669,8 @@ export async function configureExecutor(ctx: ToolContext, raw: ConfigureExecutor
       verification = rb.verification;
       resulting = rb.values;
     }
-    const activeAfter = seqRef ? await playbackActive(bridge, seqRef, t) : null;
-    if (activeBefore === false && activeAfter === true) warnings.push(`${seqRef} has active playback after the configuration although none was started by this tool (another client or an operator may have started it)`);
+    const activeAfter = seqAddr ? await playbackActive(bridge, seqAddr, t) : null;
+    if (activeBefore === false && activeAfter === true) warnings.push(`${seqLabel} has active playback after the configuration although none was started by this tool (another client or an operator may have started it)`);
     const result = buildResult({ operation: op, target, steps, verification, warnings, extra: { ...extra, resulting, playback: { activeBefore, activeAfter } } });
     result.steps.push(...readBackSteps);
     return result;
@@ -667,6 +721,10 @@ export async function configureSequence(ctx: ToolContext, raw: ConfigureSequence
             if (!item) return { name: "read_sequence", status: "failed", op: "objects", error: `${ref} does not exist` };
             current = item.fields ?? {};
             addr = item.addr;
+            // Every value the plan depends on must have been read: a missing one is unknown, never "unlocked" or "unchanged".
+            const needed = ["Lock", "StructureLocked", "SystemLocked", ...Object.keys(wanted).map((k) => SEQUENCE_SETTINGS[k].property)];
+            const unread = [...missingFields(current, needed), ...["StructureLocked", "SystemLocked"].filter((f) => !isMissing(current[f]) && yesNo(current[f]) === null)];
+            if (unread.length) return { name: "read_sequence", status: "failed", op: "objects", detail: { values: current }, error: `${unread.join(", ")} of ${ref} could not be read; nothing was sent because the current values are unknown` };
             return { name: "read_sequence", status: "succeeded", op: "objects", detail: { name: current.Name, settings: readSettings(current), lock: displayOf(current.Lock) } };
           }),
       },
@@ -686,7 +744,7 @@ export async function configureSequence(ctx: ToolContext, raw: ConfigureSequence
       if (from.toLowerCase() === to.toLowerCase()) unchanged.push(k);
       else changes.push({ key: k, ref, property: prop, from, to });
     }
-    const seqLocked = isLocked(current.Lock);
+    const seqLocked = lockState(current.Lock) === true;
     const hardLocked = isYes(current.StructureLocked) || isYes(current.SystemLocked);
     const lockChange = lock !== undefined && lock !== seqLocked;
     if (lock !== undefined && !lockChange) unchanged.push("lock");
@@ -700,7 +758,7 @@ export async function configureSequence(ctx: ToolContext, raw: ConfigureSequence
       plan.relocks = [{ owner: "sequence", ref, locked: true }];
     }
     const warnings: string[] = [];
-    const rw = referenceWarning(sequence, refs);
+    const rw = referenceWarning(`Sequence ${sequence}`, refs);
     if (rw) warnings.push(rw);
     const intended = {
       changes: changes.map(({ key, property, from, to }) => ({ key, property, from, to })),
@@ -759,6 +817,7 @@ const COMMON =
   "A locked target is refused before anything is sent (the console silently ignores writes to it) unless unlock: true, which unlocks the owning object, applies the changes and locks it again (relocking is attempted even after a failed change). " +
   "preview: true performs only the reads and returns the planned changes (from -> to); values already set are reported as unchanged and never sent. " +
   "Each value is written with one 'set' request whose reply must read back the requested value, because the console silently keeps the previous value for anything it does not accept; the first failure stops the remaining changes. " +
+  "A value that could not be read is unknown, never a default: the call is refused when a value the plan depends on (requested property, Lock, page Lock) is missing, and a set reply without a value is an unknown step. " +
   "verify (default true) reads every changed property and the lock back. Mutations from this server are serialised, but not isolated from other operators or clients.";
 
 const fnSchema = (k: FunctionKey) => z.string().optional().describe(`${EXECUTOR_FUNCTIONS[k].property} function: ${EXECUTOR_FUNCTIONS[k].allowed.join(", ")} (Empty clears it).`);
@@ -771,7 +830,8 @@ export const registerPlaybackTools: RegisterTools = (server, ctx) => {
       description:
         "Read-only. For Page <p>.<e>: the assigned object; the executor's key, MA-key, fader and encoder functions, Fix and Lock; the page lock; " +
         "for a sequence executor also the allowed function choices, the sequence's playback settings (wrap_around, priority, restart_mode, release_first_cue, auto_start/stop, master_go_mode, protect flags, ...), its Lock, whether it has active playback, " +
-        "which object owns each protection setting, and every executor in the current data pool that references the same sequence (sequence settings apply to all of them). Sends no command and changes nothing.",
+        "which object owns each protection setting, and every executor in the current data pool that references the same sequence (sequence settings apply to all of them). " +
+        "The sequence is read by the address the executor reports, so a sequence from another data pool is reported as such (dataPool: other, ref: null). A value that could not be read is null and listed in unreadable. Sends no command and changes nothing.",
       inputSchema: {
         page: z.number().describe("Executor page number (1-9999)."),
         executor: z.number().describe(EXECUTOR_DESC),

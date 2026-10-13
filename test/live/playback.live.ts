@@ -12,8 +12,9 @@
  *   - Sequence 905                 created with three empty cues (`Store Sequence 905 Cue n /NoConfirmation` with an
  *                                  empty programmer), turned into a 0.5 s Time-triggered chase, PLAYED (Go+ / Press /
  *                                  Unpress / Off are sent by this test, never by the tools) and deleted at the end.
- *   The test refuses to run when Sequence 905 exists, Page 90.210/90.211 are not empty or the programmer holds values,
- *   so it never deletes anything it did not create. Locks it sets are removed before cleanup. Nothing calls SaveShow.
+ *   The test refuses to run when Sequence 905 exists, Page 90.210/90.211 are not empty, and skips unless a
+ *   complete programmer scan (coverage complete, no channel errors or limitations) finds no values, so it never
+ *   stores programmer content and never deletes anything it did not create. Locks it sets are removed before cleanup. Nothing calls SaveShow.
  *
  * What it demonstrates (SB-01 acceptance criteria):
  *   1. executor_settings reports the assignment, functions, locks by owner and both executors sharing Sequence 905.
@@ -85,9 +86,23 @@ liveTest("SB-01: executor functions, sequence playback settings, a looping chase
   if (pageExisted) {
     for (const e of [EXEC, EXEC_SHARED]) assert.ok(await absent(`Page ${PAGE}.${e}`), `Page ${PAGE}.${e} is not empty`);
   }
-  const prog = (await bridge.request("programmer", {})) as { rows?: unknown[] };
-  if ((prog.rows ?? []).length) {
-    t.skip("the programmer holds values; clear it first (Store would record them into the test cues)");
+  // The cues must be empty: Store records whatever the programmer holds. Zero rows count only from a complete scan
+  // without channel errors or limitations; anything less leaves programmer content unexamined.
+  const prog = (await bridge.request("programmer", {})) as {
+    rows?: unknown[];
+    coverage?: { complete?: boolean };
+    stats?: { channelErrors?: number; channelsWithData?: number };
+    limitations?: unknown[];
+  };
+  const progEmpty =
+    prog.coverage?.complete === true &&
+    Array.isArray(prog.rows) &&
+    prog.rows.length === 0 &&
+    prog.stats?.channelErrors === 0 &&
+    prog.stats?.channelsWithData === 0 &&
+    (prog.limitations ?? []).length === 0;
+  if (!progEmpty) {
+    t.skip(`the programmer is not confirmed empty (complete: ${prog.coverage?.complete}, rows: ${prog.rows?.length}, channel errors: ${prog.stats?.channelErrors}, limitations: ${JSON.stringify(prog.limitations ?? [])}); clear it first`);
     return;
   }
 
