@@ -67,6 +67,8 @@ export interface ObjectRefInfo {
 
 export interface PresetRow {
   fixture: string;
+  /** Produced by a recipe (cue parts and recipe presets; bridge 0.24.0). */
+  cooked?: boolean;
   attribute: string;
   sfIndex?: number;
   fixtureType?: string;

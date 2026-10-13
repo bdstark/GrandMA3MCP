@@ -83,7 +83,7 @@ IsObjectValid = function(h) return not invalid[h] end
 
 local function step(v) return { absolute = v, absolute_value = math.floor(v / 100 * 16777216), channel_function = 0, mask_individual = 2 } end
 local function chan(ui, pm, v, extra)
-  local c = { step(v), ui_channel_index = ui, preset_store_mode = pm, selective = pm == 1, dict_flags = { has_absolute = 1, has_relative = 0 } }
+  local c = { step(v), ui_channel_index = ui, preset_store_mode = pm, selective = pm == 1, mask_cooked = 0, dict_flags = { has_absolute = 1, has_relative = 0 } }
   for k, x in pairs(extra or {}) do c[k] = x end
   return c
 end
@@ -97,10 +97,11 @@ local embedded = H({ name = "Look", class = "Preset", no = 3, parent = allPool, 
   Dependencies = { { key = source, content_crc = 1920816742600600000, name_crc = -3 }, { key = deleted, content_crc = 7, name_crc = 8 } },
 } })
 local unreadable = H({ name = "Bad", class = "Preset", no = 5, parent = allPool, props = {} })
-local presetData = { [embedded] = embeddedData, [source] = { by_fixtures = {} } }
+local part = H({ name = "Part 0", class = "Part", no = 0, props = {} })
+local presetData = { [embedded] = embeddedData, [source] = { by_fixtures = {} }, [part] = { by_fixtures = { ["401"] = { ColorRGB_R = chan(320, 0, 100, { mask_cooked = 511 }), Dimmer = chan(321, 0, 70) } } } }
 GetPresetData = function(h) return presetData[h] end
 local seq = H({ name = "Seq", class = "Sequence", no = 1, props = {} })
-local objects = { ["Preset 23.3"] = embedded, ["Preset 4.902"] = source, ["Preset 23.5"] = unreadable, ["Sequence 1"] = seq, ["Preset 4"] = colorPool, ["Preset 23"] = allPool }
+local objects = { ["Preset 23.3"] = embedded, ["Preset 4.902"] = source, ["Preset 23.5"] = unreadable, ["Sequence 9 Cue 1 Part 0"] = part, ["Sequence 1"] = seq, ["Preset 4"] = colorPool, ["Preset 23"] = allPool }
 ObjectList = function(ref) local h = objects[ref]; return h and { h } or nil end
 
 local prefs = H({ name = "StorePreferences", class = "StorePreferences", props = { StoreMode = "Ask", StoreSource = "Programmer", ChannelFilter = "Active", StoreLook = "No", PresetMode = "Default", PresetInputFilter = "Yes", StoreEmbedded = "No", StoreMAtricks = "Yes", KeepActivation = "No" } })
@@ -135,7 +136,7 @@ local function request(op, args)
 end
 
 local r = request("ping")
-check("ping reports bridge 0.23.0", r.ok and r.result.bridgeVersion == "0.23.0", J(r))
+check("ping reports bridge 0.24.0", r.ok and r.result.bridgeVersion == "0.24.0", J(r))
 
 r = request("preset.read", { ref = "Preset 23.3" })
 local res = r.ok and r.result or {}
@@ -159,6 +160,10 @@ r = request("preset.read", { ref = "Preset 4.902" })
 check("preset.read: references are counted, an empty preset has an empty rows array", r.ok and r.result.referencedBy == 2 and r.result.count == 0 and J(r):find('"rows":%[%]') ~= nil and J(r):find('"dependencies":%[%]') ~= nil, J(r))
 r = request("preset.read", { ref = "Preset 23.5" })
 check("preset.read: unreadable preset data is an error, never an empty preset", r.ok == false and r.code == "unreadable", J(r))
+r = request("preset.read", { ref = "Sequence 9 Cue 1 Part 0" })
+local pr = r.ok and r.result.rows or {}
+check("preset.read: a cue part is read like a preset, rows say what was cooked", r.ok and r.result.class == "Part" and #pr == 2 and pr[1].attribute == "ColorRGB_R" and pr[1].cooked == true and pr[2].attribute == "Dimmer" and pr[2].cooked == false, J(r))
+check("preset.read: a preset's rows are not cooked unless the channel says so", row("401", "ColorRGB_R").cooked == false, J(rows))
 r = request("preset.read", { ref = "Sequence 1" })
 check("preset.read: a non-preset is refused", r.ok == false and r.code == "not-preset", J(r))
 
