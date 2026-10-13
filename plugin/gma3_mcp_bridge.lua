@@ -154,7 +154,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.22.0"
+local VERSION      = "0.23.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -1196,7 +1196,8 @@ local function programmerRow(p, ui, sfIdx, sf, attrCache, stats)
     row.valueRaw = p[1].absolute_value
     row.relative = p[1].relative
   end
-  local timing = { fade = p.fade, delay = p.delay, speed = p.speed, phase = p.phase, measure = p.measure, gridPos = p.gridpos }
+  -- speed in Hz, measure x100 (beats), speedMaster 0-based (SB-04 probe); gridPosMatricks the MAtricks-transformed position.
+  local timing = { fade = p.fade, delay = p.delay, speed = p.speed, phase = p.phase, measure = p.measure, speedMaster = p.speed_master, gridPos = p.gridpos, gridPosMatricks = p.gridposmatr }
   if stepCount >= 1 and #row.steps == stepCount then
     row.phaser = merge({ supported = true, multiStep = stepCount > 1 }, timing)
   else
@@ -2974,6 +2975,8 @@ ops.programmer = function(args)
   local page = paginate(rows, limit, offset)
   return {
     scope = scope, fixtures = args.fixtures, source = "programmer",
+    -- SB-04: the user environment the programmer belongs to ("Normal", or "Preview" with its own programmer).
+    environment = (function() local ok, e = pcall(function() return CurrentEnvironment().name end); return ok and e or nil end)(),
     note = "rows are programmer content read with GetProgPhaser; they are not output values (use fixtureOutput or dmx for output)",
     coverage = coverage, stats = stats, maxChannels = maxChannels,
     selectionCount = scope == "selection" and #indices or nil,
@@ -4135,15 +4138,20 @@ local function presetRow(fixtureKey, attr, ch, typeCache)
     fixture = tostring(fixtureKey), attribute = tostring(attr), sfIndex = sfIndex, uiChannel = ui, fixtureType = fixtureType or nil,
     mode = PRESET_MODES[pm] or (pm and tostring(pm)) or nil,
     hasAbsolute = flags.has_absolute == 1 or flags.has_absolute == true, hasRelative = flags.has_relative == 1 or flags.has_relative == true,
-    fade = ch.fade, delay = ch.delay, speed = ch.speed, phase = ch.phase, stepCount = #ch,
+    fade = ch.fade, delay = ch.delay, speed = ch.speed, phase = ch.phase, measure = ch.measure, speedMaster = ch.speed_master, stepCount = #ch,
     absPreset = objectRefInfo(ch.abs_preset), relPreset = objectRefInfo(ch.rel_preset),
   }
   if #ch == 1 and type(ch[1]) == "table" then
     row.value = ch[1].absolute; row.valueRaw = ch[1].absolute_value; row.relative = ch[1].relative
   elseif #ch > 1 then
+    -- SB-04: every step with its layers (absent = the console default: width / trans 100, accel / decel 0) and
+    -- the preset it integrates.
     row.steps = {}
     for i, st in ipairs(ch) do
-      if type(st) == "table" then row.steps[#row.steps + 1] = { step = i, absolute = st.absolute, relative = st.relative } end
+      if type(st) == "table" then
+        row.steps[#row.steps + 1] = { step = i, absolute = st.absolute, relative = st.relative, accel = st.accel, decel = st.decel, accelType = st.accel_type, decelType = st.decel_type,
+          trans = st.trans, width = st.width, integrated = objectRefInfo(st.integrated) }
+      end
     end
   end
   return row

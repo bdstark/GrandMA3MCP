@@ -122,6 +122,9 @@ dependency inspection.
     (how many objects use the preset).
   - **Rows:** one per fixture and attribute, with `mode`, `value` (percent) or `steps`, `fade`, `delay`, `relative`,
     `fixtureType`, and `embeddedFrom` / `relativeFrom` for an embedded absolute / relative value.
+  - **Phaser data** (bridge 0.23.0): `steps` with each step's `absolute`/`relative`, `width`, `trans`, `accel`,
+    `decel` and the preset it integrates, and the phaser layers `speedBpm`, `phase`, `measure` (beats) and
+    `speedMaster` (absent = console default: 60 BPM, phase 0). The store's read-back compares all of them.
   - **Dependencies:** the direct dependencies with validity, and `dependencyInspection`. The inspection follows embedded
     sources recursively (four levels) by address. `complete: false` says why (a source not found, dependencies not
     readable, beyond depth), and `invalid` lists deleted sources.
@@ -140,7 +143,8 @@ dependency inspection.
   - a forced conversion from `Selective/Global` to `Global`;
   - the store preferences unchanged after every store.
 - Not covered:
-  - relative values and multi-step phaser data are compared by value and step count only (SB-04 will qualify phasers);
+  - relative values are compared by value; multi-step phaser data step by step with bridge 0.23.0 (see
+    [phasers](phasers.md));
     relative embedding is verified by the unit tests, not on the console (the live test embeds absolute values);
   - MAgic presets and recipe content are not modelled;
   - a pool's own input filter (a filter or world assigned to the pool) is not predicted; only the read-back catches it.
