@@ -24,7 +24,7 @@
 | `gma3_lua_api` | Search the live Lua API descriptor (names, arguments, returns) |
 | `gma3_get_object` | Properties (and optionally children and schema) of any object |
 | `gma3_list_children` | Children of an object with selected property values, paginated |
-| `gma3_objects` | Resolve a range like `Fixture 1 Thru 20` to objects with property values |
+| `gma3_objects` | Resolve a range like `Fixture 1 Thru 20` to objects with property values. Page and executor lists are expanded by the bridge (v0.20.0, [below](#page-and-executor-ranges-plugin-v0200)) |
 | `gma3_dump` | Raw `Dump()` text of an object |
 | `gma3_set_property` | `Set()` a property |
 | `gma3_playback` | Go+, Go-, Pause, Off, Top, Flash, Load, ... on a sequence or executor |
@@ -172,7 +172,7 @@ Ops: `ping`, `cmd`, `lua`, `object`, `children`, `objects`, `dump`, `set`, `setf
 `input.status` and the fake-backend test control `input.fake` (below), since v0.6.0 `input.combo` (below), and since
 v0.7.0 the interaction and sequence ops `input.begin`, `input.extend`, `input.end`, `input.sequence`,
 `input.sequence.status`, `input.sequence.abort` ([below](#interactions-admission-text-and-sequences-plugin-v070-kb-05)), and since
-v0.8.0 the read-only feedback ops `feedback.describe` and `feedback.read` ([below](#console-feedback-plugin-v080-kb-06)), v0.13.0 `feedback.context`, `feedback.watch` and `feedback.unwatch` ([below](#control-context-plugin-v0130-kb-17)), and v0.14.0 the continuous-control ops `control.bind`, `control.open`, `control.renew`, `control.close`, `control.submit`, `control.status` and `control.recover` ([below](#continuous-control-plugin-v0140-kb-18)), and v0.19.0 the patch ops: reads `patch.state`, `patch.types`, `patch.list`, `patch.check`, `patch.collections` and `patch.fingerprint`, and the guarded, `exclusive`-only `patch.enter`, `patch.add`, `patch.set`, `patch.remove` and `patch.commit` ([tools/patch.md](tools/patch.md)). See
+v0.8.0 the read-only feedback ops `feedback.describe` and `feedback.read` ([below](#console-feedback-plugin-v080-kb-06)), v0.13.0 `feedback.context`, `feedback.watch` and `feedback.unwatch` ([below](#control-context-plugin-v0130-kb-17)), and v0.14.0 the continuous-control ops `control.bind`, `control.open`, `control.renew`, `control.close`, `control.submit`, `control.status` and `control.recover` ([below](#continuous-control-plugin-v0140-kb-18)), and v0.19.0 the patch ops: reads `patch.state`, `patch.types`, `patch.list`, `patch.check`, `patch.collections` and `patch.fingerprint`, and the guarded, `exclusive`-only `patch.enter`, `patch.add`, `patch.set`, `patch.remove` and `patch.commit` ([tools/patch.md](tools/patch.md)), and since v0.20.0 the page/executor range guard on every op that takes an object reference ([below](#page-and-executor-ranges-plugin-v0200)). See
 [`plugin/gma3_mcp_bridge.lua`](../plugin/gma3_mcp_bridge.lua).
 
 Error replies are `{"id", "ok": false, "error": "[code] message"}`; since v0.7.0 they also carry `code` (the bracketed
@@ -183,6 +183,30 @@ of a press that raised). The TypeScript `BridgeError` keeps both as `code` and `
 `ping` reports the Lua execution policy as `lua: {enabled, maxMs, maxSteps, bounded}`. The `lua` op is
 refused with an error while `enabled` is false; its optional `maxMs` / `maxSteps` args can only tighten the
 console's budget, never loosen it.
+
+### Page and executor ranges (plugin v0.20.0)
+
+On onPC 2.5.1, `ObjectList` over an executor range (`Page 1.180 Thru 1.181`, empty or assigned executors alike) never returns: the console's DataBase
+task hangs (`onpc/temp/watchdog_status` reads `DataBase;Graphics;`), the UI stops reacting and onPC has to be quit and
+relaunched, losing unsaved show changes. The bridge cannot interrupt a C call. Since v0.20.0 every op that takes an
+object reference (`object`, `children`, `objects`, `dump`, `set`, `setfader`, `getfader` and the inspection ops) checks
+the reference first:
+
+* No `Page`/`Executor` keyword (shortcuts `P`, `Ex` and longer prefixes count), or no list operator (`Thru`/`T`, `+`,
+  `-`): sent to `ObjectList` unchanged. `Page 1.180` (one empty executor reads nil, "no object found") and
+  `Sequence 9000 Thru 9001` are verified safe.
+* `Page P.E Thru P.E2`, `Page P Thru P2` and `+` lists of those terms (pages and executors not mixed, an executor
+  range on one page, every number 1–9999): expanded into single `Page P` / `Page P.E` lookups, in the given order,
+  duplicates once, at most 1000 objects. Empty executors and missing pages are skipped, so the result matches what the range names that exists;
+  a covered executor comes back as its `Proxy` handle like the single lookup returns it.
+* Any other form with a Page/Executor keyword and a list operator is refused with `[unsafe-range]` before any console
+  call: open ranges (`Page Thru`, `Page 1.180 Thru`), ranges across pages, `Executor`/`Exec` lists (they follow the
+  user's current page), `-`, names, deeper addresses, numbers outside 1–9999, more than 1000 objects, and the `*`
+  wildcard in any form (`Page 1.*`, `Executor *`, `Page "LOS*"`), even without a list operator. Read a page's executors with
+  `gma3_list_children` on `Page P` instead.
+
+The guard does not cover `gma3_lua`: a script that calls `ObjectList` with an executor range still hangs the console.
+Evidence: [probes/objectlist-hang-macos-2.5.1.md](probes/objectlist-hang-macos-2.5.1.md).
 
 ### Owned input sessions (plugin v0.5.0, KB-03)
 
