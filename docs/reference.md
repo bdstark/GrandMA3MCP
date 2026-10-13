@@ -172,7 +172,7 @@ Ops: `ping`, `cmd`, `lua`, `object`, `children`, `objects`, `dump`, `set`, `setf
 `input.status` and the fake-backend test control `input.fake` (below), since v0.6.0 `input.combo` (below), and since
 v0.7.0 the interaction and sequence ops `input.begin`, `input.extend`, `input.end`, `input.sequence`,
 `input.sequence.status`, `input.sequence.abort` ([below](#interactions-admission-text-and-sequences-plugin-v070-kb-05)), and since
-v0.8.0 the read-only feedback ops `feedback.describe` and `feedback.read` ([below](#console-feedback-plugin-v080-kb-06)), v0.13.0 `feedback.context`, `feedback.watch` and `feedback.unwatch` ([below](#control-context-plugin-v0130-kb-17)), and v0.14.0 the continuous-control ops `control.bind`, `control.open`, `control.renew`, `control.close`, `control.submit`, `control.status` and `control.recover` ([below](#continuous-control-plugin-v0140-kb-18)), and v0.19.0 the patch ops: reads `patch.state`, `patch.types`, `patch.list`, `patch.check`, `patch.collections` and `patch.fingerprint`, and the guarded, `exclusive`-only `patch.enter`, `patch.add`, `patch.set`, `patch.remove` and `patch.commit` ([tools/patch.md](tools/patch.md)), and since v0.20.0 the page/executor range guard on every op that takes an object reference ([below](#page-and-executor-ranges-plugin-v0200)). See
+v0.8.0 the read-only feedback ops `feedback.describe` and `feedback.read` ([below](#console-feedback-plugin-v080-kb-06)), v0.13.0 `feedback.context`, `feedback.watch` and `feedback.unwatch` ([below](#control-context-plugin-v0130-kb-17)), and v0.14.0 the continuous-control ops `control.bind`, `control.open`, `control.renew`, `control.close`, `control.submit`, `control.status` and `control.recover` ([below](#continuous-control-plugin-v0140-kb-18)), and v0.19.0 the patch ops: reads `patch.state`, `patch.types`, `patch.list`, `patch.check`, `patch.collections` and `patch.fingerprint`, and the guarded, `exclusive`-only `patch.enter`, `patch.add`, `patch.set`, `patch.remove` and `patch.commit` ([tools/patch.md](tools/patch.md)), and since v0.20.0 the page/executor range guard on every op that takes an object reference ([below](#page-and-executor-ranges-plugin-v0200)), and since v0.21.0 the read-only selection-grid ops `group.read` and `selection.grid` ([below](#selection-grid-reads-plugin-v0210-sb-02)). See
 [`plugin/gma3_mcp_bridge.lua`](../plugin/gma3_mcp_bridge.lua).
 
 Error replies are `{"id", "ok": false, "error": "[code] message"}`; since v0.7.0 they also carry `code` (the bracketed
@@ -207,6 +207,25 @@ the reference first:
 
 The guard does not cover `gma3_lua`: a script that calls `ObjectList` with an executor range still hangs the console.
 Evidence: [probes/objectlist-hang-macos-2.5.1.md](probes/objectlist-hang-macos-2.5.1.md).
+
+### Selection-grid reads (plugin v0.21.0, SB-02)
+
+A group keeps its fixtures and their selection-grid cells in `SelectionData`, a Lua table the `object` / `objects` ops
+render as `""`. Two read-only ops (not guarded, usable with Lua disabled) expose it and the live selection:
+
+* `group.read {ref}` (a group, e.g. `"Group 5"`): `{ref, addr, no, name, lock, preserveGridPositions, count,
+  truncated, unreadable, items}`; `lock` and `preserveGridPositions` in the edit role (`""` = unlocked). Each item is
+  `{sfIndex, fixture, fid, path, addr, name, x, y, z}` in the stored order (patch order on 2.5.1). `fixture` is the
+  item's own FID, otherwise `path`; `path` is the dotted id from the nearest ancestor with a FID (`"501.1"`; also for a
+  cell with its own FID, and `"4.1"` for fixture 401 inside grouping fixture 4); `addr` is the console address, the
+  stable identity. `fixture` is `null` when neither exists. An entry that
+  is not an item is `{unreadable: true}`, never dropped. A non-group is `[not-group]`; SelectionData that is not a
+  table is `[unreadable]`. Nothing is selected.
+* `selection.grid {}`: `{count, truncated, items}` for the current selection in selection order, with the cells
+  `SelectionFirst` / `SelectionNext` report (MAtricks-transformed while MAtricks is active). A failing
+  `SelectionFirst` / `SelectionNext` is `[unreadable]`, never an empty selection.
+
+Both stop at 10000 items (`truncated: true`). Tools: [tools/groups.md](tools/groups.md).
 
 ### Owned input sessions (plugin v0.5.0, KB-03)
 

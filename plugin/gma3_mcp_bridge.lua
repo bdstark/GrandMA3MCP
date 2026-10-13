@@ -154,7 +154,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.20.0"
+local VERSION      = "0.21.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -3990,6 +3990,89 @@ ops["patch.fingerprint"] = function(args)
   fp.side = args.side or "live"
   fp.ms = math.floor((now() - started) * 1000 + 0.5)
   return fp
+end
+
+-------------------------------------------------------------------------------
+-- SB-02: selection-grid readback (read-only)
+-------------------------------------------------------------------------------
+-- A group keeps its selection in SelectionData, a Lua table of { sf_index, grid = { x, y, z, ... } } in
+-- selection order (onPC 2.5.1, docs/probes/sb-02-groups-macos-2.5.1.md); the object/objects ops render it
+-- as "" in the display role. These two ops read it, and the live selection through SelectionFirst /
+-- SelectionNext, without selecting anything.
+
+local GRID_MAX_ITEMS = 10000
+
+-- The fixture identity of a (sub)fixture: its own FID (nil for a cell without one) and the dotted path from the
+-- nearest ancestor with a FID ("501.1" for the first cell of fixture 501), which a cell with its own FID also has
+-- (the console selects it by either). A fixture inside a grouping fixture has a path too ("4.1" for fixture 401
+-- in grouping fixture 4). nil when no ancestor has a FID. The address is the stable identity.
+local function fixtureIdentity(sf)
+  if not isHandle(sf) then return nil, nil end
+  local own = numericFid(sf)
+  local parts, h = {}, sf
+  for _ = 1, 8 do
+    local p = safeCall(h, "Parent")
+    local pc = isHandle(p) and safeCall(p, "GetClass") or nil
+    if pc ~= "Fixture" and pc ~= "SubFixture" then break end
+    local no = safeProp(h, "no")
+    if no == nil then break end
+    table.insert(parts, 1, tostring(no))
+    local pf = numericFid(p)
+    if pf then return own, tostring(pf) .. "." .. table.concat(parts, ".") end
+    h = p
+  end
+  return own, nil
+end
+
+local function gridItem(sfIndex, x, y, z)
+  local okS, sf = callApi("GetSubfixture", sfIndex)
+  if not (okS and isHandle(sf)) then sf = nil end
+  local fid, path = fixtureIdentity(sf)
+  return { sfIndex = sfIndex, fixture = fid and tostring(fid) or path, fid = fid, path = path, addr = sf and safeCall(sf, "Addr") or nil,
+           name = sf and safeProp(sf, "name") or nil, x = x, y = y, z = z }
+end
+
+-- args: { ref } (a group, e.g. "Group 5")
+ops["group.read"] = function(args)
+  local h = resolve(args.ref)
+  local class = safeCall(h, "GetClass")
+  if class ~= "Group" then raise("[not-group] " .. tostring(args.ref) .. " is a " .. tostring(class) .. ", not a group") end
+  local okD, data = pcall(function() return h:Get("SelectionData") end)
+  if not okD or type(data) ~= "table" then raise("[unreadable] the SelectionData of " .. tostring(args.ref) .. " could not be read: " .. (okD and ("it is a " .. type(data)) or tostring(data))) end
+  local items, truncated, unreadable = {}, false, 0
+  for i, e in ipairs(data) do
+    if i > GRID_MAX_ITEMS then truncated = true; break end
+    local g = type(e) == "table" and e.grid or nil
+    if type(e) == "table" and type(e.sf_index) == "number" and type(g) == "table" then
+      items[#items + 1] = gridItem(e.sf_index, g.x, g.y, g.z)
+    else
+      unreadable = unreadable + 1
+      items[#items + 1] = { unreadable = true }
+    end
+  end
+  return {
+    ref = args.ref, addr = safeCall(h, "Addr"), no = safeProp(h, "no"), name = safeProp(h, "name"),
+    -- Lock reads "" when unlocked (textProp would turn that into nil, i.e. "unreadable").
+    lock = getProp(h, "Lock", true), preserveGridPositions = getProp(h, "PreserveGridPositions", true),
+    count = #data, truncated = truncated, unreadable = unreadable, items = emptyArray(items),
+  }
+end
+
+-- The current selection in selection order with its grid positions as SelectionNext reports them (with
+-- MAtricks applied to the selection these are the transformed positions).
+ops["selection.grid"] = function()
+  local okC, count = callApi("SelectionCount")
+  local items, truncated = {}, false
+  local okF, i, x, y, z = pcall(SelectionFirst)
+  if not okF then raise("[unreadable] SelectionFirst failed: " .. tostring(i)) end
+  while i ~= nil do
+    if #items >= GRID_MAX_ITEMS then truncated = true; break end
+    items[#items + 1] = gridItem(i, x, y, z)
+    local okN, ni, nx, ny, nz = pcall(SelectionNext, i)
+    if not okN then raise("[unreadable] SelectionNext failed: " .. tostring(ni)) end
+    i, x, y, z = ni, nx, ny, nz
+  end
+  return { count = okC and count or nil, truncated = truncated, items = emptyArray(items) }
 end
 
 -------------------------------------------------------------------------------

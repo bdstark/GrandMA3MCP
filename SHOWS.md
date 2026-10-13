@@ -53,6 +53,8 @@ These workflows are not necessarily UI-only. grandMA3 documents command support 
 
 **Lua changes:** Likely for structured selection-grid readback if existing object inspection cannot expose coordinates and order. Prefer existing commands for creation.
 
+**Status:** implemented: `gma3_selection_grid`, `gma3_store_group`, `gma3_matricks`, `gma3_configure_matricks` ([docs/tools/groups.md](docs/tools/groups.md), probe record [sb-02-groups-macos-2.5.1.md](docs/probes/sb-02-groups-macos-2.5.1.md), live test `test/live/groups.live.ts` 1/1 on macOS onPC 2.5.1). Lua expansion as expected: two read-only bridge ops (0.21.0), `group.read` (a group's `SelectionData`) and `selection.grid` (`SelectionFirst` / `SelectionNext`); creation uses `Grid`, `Fixture`, `Store` and `set` only. The console keeps a stored group in patch order and distributes along the grid, so the cells define the order. MAtricks timing distributions are verified as object settings only (not readable per fixture).
+
 ### Acceptance criteria
 
 - Create or update a group from an ordered fixture/subfixture list with explicit X/Y/Z selection-grid coordinates.
