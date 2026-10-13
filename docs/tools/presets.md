@@ -100,7 +100,9 @@ Requests, in order:
      - universal: the universal row of the attribute;
      - in every mode the same value (±0.05 %), fade/delay and step count; the absolute and the relative reference are
        checked separately: with `embed`, each reference the programmer value had must be stored, valid and to the same
-       source, and none it did not have; without `embed`, no reference of either kind.
+       source, and none it did not have; without `embed`, no reference of either kind. Phaser steps are checked the
+       same way per step: a stored step reference must match the programmer step's, and a step that had none must not
+       have one.
    - A new or overwritten preset must not hold anything else (`unexpected stored content`): only the fixtures'
      own rows, and in global mode a global holder only for an attribute and fixture type a programmer value has; merge
      keeps other rows.
