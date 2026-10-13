@@ -27,6 +27,11 @@ only tighten the console policy. The MCP server also sends its request timeout a
 **A client timeout does not cancel a running script.** Enforcement depends on the hook policy below;
 in the default preserve mode, a non-yielding script may continue indefinitely.
 
+**Never pass a page or executor range to `ObjectList` from a script** (`ObjectList("Page 1.180 Thru 1.181")`):
+it never returns on onPC 2.5.1 (empty or assigned executors alike) and freezes the whole console until onPC is relaunched (see
+[reference.md](reference.md#page-and-executor-ranges-plugin-v0200)). The structured ops expand such ranges safely; a
+script has to look executors up one at a time (`ObjectList("Page 1.180")`, nil when empty).
+
 The script runs on the plugin's own thread. It has to: grandMA3 binds the plugin context to the thread it
 created for the plugin, and a coroutine created from Lua gets no context, so `ObjectList()`, `DataPool()`,
 `Programmer()` and every other context-bound function return nothing there (plugin 0.2.0 ran scripts in a

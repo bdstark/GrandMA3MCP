@@ -154,7 +154,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.19.0"
+local VERSION      = "0.20.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -309,6 +309,153 @@ end
 -- Object helpers
 -------------------------------------------------------------------------------
 
+-- Page and executor lists never reach ObjectList as one expression (bridge 0.20.0).
+-- On onPC 2.5.1 ObjectList("Page 1.180 Thru 1.181") never returns, for empty and assigned executors: the
+-- console's DataBase task hangs (watchdog "DataBase;Graphics;"), the UI ignores input and onPC has
+-- to be quit and relaunched (2026-10-13, docs/probes/objectlist-hang-macos-2.5.1.md). The bridge
+-- cannot interrupt a C call, so a reference that names more than one page or executor is expanded
+-- here into single "Page P" / "Page P.E" lookups (an empty executor or a missing page reads nil,
+-- verified live) or refused with [unsafe-range] when it cannot be expanded faithfully. References
+-- without a Page or Executor keyword, and single pages/executors, still go to ObjectList unchanged.
+local MAX_EXPANDED_OBJECTS = 1000
+-- Page and executor numbers taken from a reference: plain digit strings in 1..9999 (the page pool
+-- holds 9999; executor numbers stay below 1000 on 2.5.1). Anything else is refused before any
+-- arithmetic, so a huge endpoint cannot turn the expansion into an endless loop (a float that +1
+-- cannot advance) or a "%d" format error.
+local MAX_OBJECT_NUMBER = 9999
+
+-- Lexical tokens of a command-line reference: words, numbers ("1.180"), quoted strings and single
+-- symbols. "1Thru5" splits like the console's parser does (1, Thru, 5).
+local function refTokens(ref)
+  local toks, i, n = {}, 1, #ref
+  while i <= n do
+    local c = ref:sub(i, i)
+    if c:match("%s") then
+      i = i + 1
+    elseif c == '"' or c == "'" then
+      local j = ref:find(c, i + 1, true) or n
+      toks[#toks + 1] = { kind = "string", text = ref:sub(i, j) }
+      i = j + 1
+    elseif c:match("%d") then
+      local s = ref:match("^[%d%.]+", i)
+      toks[#toks + 1] = { kind = "number", text = s }
+      i = i + #s
+    elseif c:match("[%a_]") then
+      local s = ref:match("^[%a_]+", i)
+      toks[#toks + 1] = { kind = "word", text = s, lower = s:lower() }
+      i = i + #s
+    else
+      toks[#toks + 1] = { kind = "symbol", text = c }
+      i = i + 1
+    end
+  end
+  return toks
+end
+
+-- Keyword shortcuts per the 2.5 manual: Page "P", Executor "Ex", Thru "T"; any longer prefix counts too.
+local function isPrefixOf(word, keyword, minLen) return #word >= minLen and keyword:sub(1, #word) == word end
+local function isPageWord(t) return t.kind == "word" and isPrefixOf(t.lower, "page", 1) end
+local function isExecutorWord(t) return t.kind == "word" and isPrefixOf(t.lower, "executor", 2) end
+local function isThruWord(t) return t.kind == "word" and isPrefixOf(t.lower, "thru", 1) end
+
+-- Plan for a reference that names pages or executors. Returns nil when the reference does not need
+-- the guard (no Page/Executor keyword, or no Thru / + / - list operator and no * wildcard), otherwise a plan
+-- { kind = "pages" | "executors", items = { { page = P, exec = E|nil }, ... } } in the given order
+-- without duplicates. Raises [unsafe-range] for a multi-object form it does not expand.
+local function pageRangePlan(ref)
+  local toks = refTokens(ref)
+  local keyed, listOps, wildcard = false, 0, false
+  for _, t in ipairs(toks) do
+    if isPageWord(t) or isExecutorWord(t) then keyed = true end
+    if isThruWord(t) or (t.kind == "symbol" and (t.text == "+" or t.text == "-" or t.text == ",")) then listOps = listOps + 1 end
+    -- "*" selects every object of the type as a number ("Page 1.*", "Executor *") and matches
+    -- several names inside quotes ("Page \"*\""), per the 2.5 manual.
+    if (t.kind == "symbol" and t.text == "*") or (t.kind == "string" and t.text:find("*", 1, true)) then wildcard = true end
+  end
+  if not keyed then return nil end
+  local function refuse(why)
+    error(string.format("[unsafe-range] '%s' names several pages or executors and %s. ObjectList over an executor range can hang onPC 2.5.1 for good (the console must be relaunched), so the bridge only expands \"Page P.E Thru P.E2\", \"Page P Thru P2\" and '+' lists of those (numbers 1..%d); read a page's executors with the children op on \"Page P\" instead", ref, why, MAX_OBJECT_NUMBER), 0)
+  end
+  if wildcard then refuse("uses the * wildcard (all objects or several names)") end
+  if listOps == 0 then return nil end
+  if not isPageWord(toks[1]) then refuse("does not start with the Page keyword (Executor ranges follow the user's current page)") end
+  local kind, items, seen, i = nil, {}, {}, 2
+  -- A bounded integer from a digit string, refused (not nil) when it is out of 1..MAX_OBJECT_NUMBER.
+  local function objectNumber(digits)
+    local significant = digits:gsub("^0+", "")
+    local n = #significant <= #tostring(MAX_OBJECT_NUMBER) and math.tointeger(tonumber(significant ~= "" and significant or "0")) or nil
+    if n == nil or n < 1 or n > MAX_OBJECT_NUMBER then refuse(string.format("uses the number %s (pages and executors are 1..%d)", digits, MAX_OBJECT_NUMBER)) end
+    return n
+  end
+  local function parseNumber(t)
+    if not t or t.kind ~= "number" then return nil end
+    local p, e = t.text:match("^(%d+)%.(%d+)$")
+    if p then return { page = objectNumber(p), exec = objectNumber(e) } end
+    if t.text:match("^%d+$") then return { page = objectNumber(t.text) } end
+    return nil
+  end
+  local function add(page, exec)
+    local key = page .. "." .. tostring(exec)
+    if seen[key] then return end
+    seen[key] = true
+    items[#items + 1] = { page = page, exec = exec }
+    if #items > MAX_EXPANDED_OBJECTS then refuse(string.format("expands to more than %d objects", MAX_EXPANDED_OBJECTS)) end
+  end
+  while true do
+    local a = parseNumber(toks[i])
+    if not a then refuse("is not a list of page numbers or P.E executor numbers (open ranges and names are not expanded)") end
+    local thisKind = a.exec and "executors" or "pages"
+    if kind and kind ~= thisKind then refuse("mixes pages and executors") end
+    kind = thisKind
+    i = i + 1
+    if toks[i] and isThruWord(toks[i]) then
+      local b = parseNumber(toks[i + 1])
+      if not b then refuse("has an open or non-numeric range end") end
+      if (b.exec ~= nil) ~= (a.exec ~= nil) then refuse("mixes pages and executors") end
+      if a.exec and b.page ~= a.page then refuse("ranges across pages are not expanded") end
+      local from, to = a.exec or a.page, b.exec or b.page
+      if math.abs(to - from) + 1 > MAX_EXPANDED_OBJECTS then refuse(string.format("expands to more than %d objects", MAX_EXPANDED_OBJECTS)) end
+      local step = to >= from and 1 or -1
+      for v = from, to, step do
+        if a.exec then add(a.page, v) else add(v, nil) end
+      end
+      i = i + 2
+    else
+      add(a.page, a.exec)
+    end
+    local t = toks[i]
+    if t == nil then break end
+    if not (t.kind == "symbol" and t.text == "+") then refuse("uses '" .. tostring(t.text) .. "' (only Thru and + are expanded)") end
+    i = i + 1
+  end
+  return { kind = kind, items = items }
+end
+
+-- ObjectList for one reference, with page/executor lists expanded into single lookups.
+local function objectList(ref)
+  local plan = pageRangePlan(ref)
+  if not plan then return ObjectList(ref) end
+  local out, pages = {}, {}
+  local function page(p)
+    if pages[p] == nil then
+      local list = ObjectList(string.format("Page %d", p))
+      pages[p] = (list and list[1]) or false
+    end
+    return pages[p]
+  end
+  for _, it in ipairs(plan.items) do
+    if page(it.page) then
+      if it.exec == nil then
+        out[#out + 1] = pages[it.page]
+      else
+        local list = ObjectList(string.format("Page %d.%d", it.page, it.exec))
+        if list and list[1] then out[#out + 1] = list[1] end
+      end
+    end
+  end
+  return out
+end
+
 -- Resolve an object reference to a handle.
 --   "14.14.1.6.1"            numeric address (FromAddr)
 --   "Sequence 1 Cue 3"       command-line object syntax (ObjectList)
@@ -364,7 +511,7 @@ local function resolve(ref)
       return h
     end
   end
-  local list = ObjectList(ref)
+  local list = objectList(ref)
   if list == nil or list[1] == nil then error("no object found for '" .. ref .. "'") end
   return list[1]
 end
@@ -377,7 +524,7 @@ local function resolveMany(ref)
     local ok, h = pcall(resolve, ref)
     if ok and h then return { h } end
   end
-  local list = ObjectList(ref)
+  local list = objectList(ref)
   if list == nil then error("no objects found for '" .. tostring(ref) .. "'") end
   return list
 end

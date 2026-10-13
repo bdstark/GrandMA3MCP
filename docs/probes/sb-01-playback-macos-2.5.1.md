@@ -74,5 +74,7 @@ Page `No` reads `"1 (390)"` in the display role; the numeric prefix is the page 
 Before this probe, two read-only `objects` requests sent through the MCP tools back to back, `Page 1.180 Thru 1.190`
 (fields Object, Key, Fader; all empty executors) and `Sequence 9000 Thru 9999` (no such sequences), never
 returned. The bridge stopped answering, the onPC UI ignored clicks, and onPC's watchdog file afterwards read
-`DataBase;Graphics;`; onPC had to be relaunched. Which of the two requests hung was not isolated (each attempt
-costs a relaunch). The SB-01 tools read single objects and page children only, never `Thru` ranges.
+`DataBase;Graphics;`; onPC had to be relaunched. The cause was isolated afterwards in
+[objectlist-hang-macos-2.5.1.md](objectlist-hang-macos-2.5.1.md): `ObjectList` over an executor range never returns
+(bridge 0.20.0 no longer sends page/executor ranges to it). The SB-01 tools read single objects and page children
+only, never `Thru` ranges.
