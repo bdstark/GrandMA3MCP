@@ -172,7 +172,7 @@ Ops: `ping`, `cmd`, `lua`, `object`, `children`, `objects`, `dump`, `set`, `setf
 `input.status` and the fake-backend test control `input.fake` (below), since v0.6.0 `input.combo` (below), and since
 v0.7.0 the interaction and sequence ops `input.begin`, `input.extend`, `input.end`, `input.sequence`,
 `input.sequence.status`, `input.sequence.abort` ([below](#interactions-admission-text-and-sequences-plugin-v070-kb-05)), and since
-v0.8.0 the read-only feedback ops `feedback.describe` and `feedback.read` ([below](#console-feedback-plugin-v080-kb-06)), v0.13.0 `feedback.context`, `feedback.watch` and `feedback.unwatch` ([below](#control-context-plugin-v0130-kb-17)), and v0.14.0 the continuous-control ops `control.bind`, `control.open`, `control.renew`, `control.close`, `control.submit`, `control.status` and `control.recover` ([below](#continuous-control-plugin-v0140-kb-18)), and v0.19.0 the patch ops: reads `patch.state`, `patch.types`, `patch.list`, `patch.check`, `patch.collections` and `patch.fingerprint`, and the guarded, `exclusive`-only `patch.enter`, `patch.add`, `patch.set`, `patch.remove` and `patch.commit` ([tools/patch.md](tools/patch.md)), and since v0.20.0 the page/executor range guard on every op that takes an object reference ([below](#page-and-executor-ranges-plugin-v0200)), and since v0.21.0 the read-only selection-grid ops `group.read` and `selection.grid` ([below](#selection-grid-reads-plugin-v0210-sb-02)). See
+v0.8.0 the read-only feedback ops `feedback.describe` and `feedback.read` ([below](#console-feedback-plugin-v080-kb-06)), v0.13.0 `feedback.context`, `feedback.watch` and `feedback.unwatch` ([below](#control-context-plugin-v0130-kb-17)), and v0.14.0 the continuous-control ops `control.bind`, `control.open`, `control.renew`, `control.close`, `control.submit`, `control.status` and `control.recover` ([below](#continuous-control-plugin-v0140-kb-18)), and v0.19.0 the patch ops: reads `patch.state`, `patch.types`, `patch.list`, `patch.check`, `patch.collections` and `patch.fingerprint`, and the guarded, `exclusive`-only `patch.enter`, `patch.add`, `patch.set`, `patch.remove` and `patch.commit` ([tools/patch.md](tools/patch.md)), and since v0.20.0 the page/executor range guard on every op that takes an object reference ([below](#page-and-executor-ranges-plugin-v0200)), and since v0.21.0 the read-only selection-grid ops `group.read` and `selection.grid` ([below](#selection-grid-reads-plugin-v0210-sb-02)), and since v0.22.0 the read-only preset ops `preset.read` and `preset.context` ([below](#preset-reads-plugin-v0220-sb-03)). See
 [`plugin/gma3_mcp_bridge.lua`](../plugin/gma3_mcp_bridge.lua).
 
 Error replies are `{"id", "ok": false, "error": "[code] message"}`; since v0.7.0 they also carry `code` (the bracketed
@@ -226,6 +226,27 @@ render as `""`. Two read-only ops (not guarded, usable with Lua disabled) expose
   `SelectionFirst` / `SelectionNext` is `[unreadable]`, never an empty selection.
 
 Both stop at 10000 items (`truncated: true`). Tools: [tools/groups.md](tools/groups.md).
+
+### Preset reads (plugin v0.22.0, SB-03)
+
+Two read-only ops (not guarded, usable with Lua disabled):
+
+* `preset.read {ref, typesFor?}` (a preset, e.g. `"Preset 4.12"`, or its numeric address): `{ref, addr, addrNative,
+  no, name, pool: {no, name}, presetMode, storedData, featureGroup, lock, maxDepth, hasMAtricks, magic, inputFilter,
+  referencedBy, dependencies, dependenciesReadable, rows, count, truncated, types?}`. Each row comes from
+  `GetPresetData(..).by_fixtures`: `{fixture (the FID or dotted cell key), attribute, sfIndex, uiChannel, fixtureType,
+  mode (selective | global | universal), hasAbsolute, hasRelative, value, valueRaw, relative, fade, delay, speed,
+  phase, stepCount, steps?, absPreset?, relPreset?}`, sorted by subfixture index; `absPreset` / `relPreset` and each
+  dependency are `{valid, addr, addrNative, name, no, pool, poolName}`, or `{valid: false}` for a deleted source;
+  dependencies also carry `contentCrc`. `typesFor: [subfixture index, ...]` returns `types` with the fixture type each
+  of those subfixtures gets in the rows (a cell takes its fixture's). A non-preset is `[not-preset]`; unreadable preset
+  data is `[unreadable]`, never an empty preset. At most 5000 rows.
+* `preset.context {pool?}`: `{preferences, preferencesReadable, pool?}`: the operator's StorePreferences (StoreMode,
+  StoreSource, ChannelFilter, StoreLook, PresetMode, PresetInputFilter, StoreEmbedded, StoreMAtricks, KeepActivation,
+  UpdateModePresets, UpdatePresetMode, UpdateInputFilter, GridMergeMode, RecipeStoreMode, CueOnly, TrackingShield) in
+  the edit role and, with `pool`, `{no, exists, name, presetMode, inputFilter}`.
+
+Tools: [tools/presets.md](tools/presets.md).
 
 ### Owned input sessions (plugin v0.5.0, KB-03)
 

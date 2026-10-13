@@ -87,6 +87,9 @@ const WORKFLOW_TOOLS = [
   "gma3_store_group",
   "gma3_matricks",
   "gma3_configure_matricks",
+  // SB-03 presets
+  "gma3_preset",
+  "gma3_store_preset",
 ];
 
 test("all pre-existing tools are still registered under their original names", async () => {

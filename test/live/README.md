@@ -22,6 +22,7 @@ Guard rails, enforced by `test/live/live.ts`:
 | --- | --- |
 | Sequence 900–909 and their cues | cue storage, editing, navigation and deletion tests (905: SB-01 playback configuration) |
 | Group 900–902 | fixture selection tests |
+| Presets 2.901, 4.901–4.904, 23.901–23.903 | SB-03 preset tests (fixtures 401–404, 501.1/501.2, 601, 602, 701–704 by default: `GMA3_LIVE_PRESET_PARS`, `_CELLS`, `_MOVERS`) |
 | Group 905–906, MAtricks 905–906 | SB-02 group and MAtricks tests (fixtures 401–404, 701–704 and 501 with its cells by default: `GMA3_LIVE_GRID_ROW`, `GMA3_LIVE_GRID_CELLS`) |
 | Page 90, executors 90.201–90.215 | executor assignment and labelling tests (90.210–90.211: SB-01 playback configuration) |
 | Fixtures 1–10 (must be patched in the disposable show) | programmer, attribute and output tests |

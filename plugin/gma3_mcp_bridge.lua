@@ -154,7 +154,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.21.0"
+local VERSION      = "0.22.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -4073,6 +4073,181 @@ ops["selection.grid"] = function()
     i, x, y, z = ni, nx, ny, nz
   end
   return { count = okC and count or nil, truncated = truncated, items = emptyArray(items) }
+end
+
+-------------------------------------------------------------------------------
+-- SB-03: preset content, references and storage context (read-only)
+-------------------------------------------------------------------------------
+-- GetPresetData gives per fixture and attribute the stored steps, the mode the value was stored in
+-- (preset_store_mode 1 selective, 2 global, 3 universal), fade/delay and the source preset of an
+-- embedded value (abs_preset / rel_preset); Get("Dependencies") lists the embedded sources with their
+-- content checksum (docs/probes/sb-03-presets-macos-2.5.1.md). Neither is reachable through the
+-- object ops, which render them as "". Nothing here stores, calls or selects anything.
+
+do -- (a block: the main chunk is at the 200-locals limit)
+local PRESET_MAX_ROWS = 5000
+local PRESET_MODES = { [1] = "selective", [2] = "global", [3] = "universal" }
+
+-- A referenced object: { valid, addr, addrNative, name, no, pool } or { valid = false } for a handle that no
+-- longer exists (a deleted embedded source keeps an invalid handle).
+local function objectRefInfo(h)
+  if not isHandle(h) then return nil end
+  local okV, valid = pcall(IsObjectValid, h)
+  if okV and valid == false then return { valid = false } end
+  local out = { valid = true, addr = safeCall(h, "Addr"), addrNative = safeCall(h, "AddrNative"), name = safeProp(h, "name"), no = safeProp(h, "no") }
+  local parent = safeCall(h, "Parent")
+  if isHandle(parent) then out.pool = safeProp(parent, "no"); out.poolName = safeProp(parent, "name") end
+  if out.addr == nil and out.name == nil then return { valid = false } end
+  return out
+end
+
+-- Fixture type of a (sub)fixture: a cell has none of its own, its fixture's applies.
+local function fixtureTypeOf(sf)
+  local h = sf
+  for _ = 1, 8 do
+    if not isHandle(h) then return nil end
+    local t = textProp(h, "FixtureType")
+    if t then return t end
+    h = safeCall(h, "Parent")
+  end
+  return nil
+end
+
+local function presetRow(fixtureKey, attr, ch, typeCache)
+  local ui = tonumber(ch.ui_channel_index)
+  local sfIndex
+  if ui then
+    local okU, u = callApi("GetUIChannel", ui)
+    if okU and type(u) == "table" then sfIndex = tonumber(u.sf_index) end
+  end
+  local fixtureType
+  if sfIndex then
+    fixtureType = typeCache[sfIndex]
+    if fixtureType == nil then
+      local okS, sf = callApi("GetSubfixture", sfIndex)
+      fixtureType = (okS and isHandle(sf)) and fixtureTypeOf(sf) or false
+      typeCache[sfIndex] = fixtureType
+    end
+  end
+  local flags = type(ch.dict_flags) == "table" and ch.dict_flags or {}
+  local pm = tonumber(ch.preset_store_mode)
+  local row = {
+    fixture = tostring(fixtureKey), attribute = tostring(attr), sfIndex = sfIndex, uiChannel = ui, fixtureType = fixtureType or nil,
+    mode = PRESET_MODES[pm] or (pm and tostring(pm)) or nil,
+    hasAbsolute = flags.has_absolute == 1 or flags.has_absolute == true, hasRelative = flags.has_relative == 1 or flags.has_relative == true,
+    fade = ch.fade, delay = ch.delay, speed = ch.speed, phase = ch.phase, stepCount = #ch,
+    absPreset = objectRefInfo(ch.abs_preset), relPreset = objectRefInfo(ch.rel_preset),
+  }
+  if #ch == 1 and type(ch[1]) == "table" then
+    row.value = ch[1].absolute; row.valueRaw = ch[1].absolute_value; row.relative = ch[1].relative
+  elseif #ch > 1 then
+    row.steps = {}
+    for i, st in ipairs(ch) do
+      if type(st) == "table" then row.steps[#row.steps + 1] = { step = i, absolute = st.absolute, relative = st.relative } end
+    end
+  end
+  return row
+end
+
+-- args: { ref (e.g. "Preset 4.12" or a numeric address), typesFor? = [subfixture index, ...] }. typesFor returns
+-- the fixture type the rows use for those subfixtures, so a client can tell which global row covers a fixture.
+ops["preset.read"] = function(args)
+  local h = resolve(args.ref)
+  local class = safeCall(h, "GetClass")
+  if class ~= "Preset" then raise("[not-preset] " .. tostring(args.ref) .. " is a " .. tostring(class) .. ", not a preset") end
+  local pool = safeCall(h, "Parent")
+  local out = {
+    ref = args.ref, addr = safeCall(h, "Addr"), addrNative = safeCall(h, "AddrNative"), no = safeProp(h, "no"), name = safeProp(h, "name"),
+    pool = isHandle(pool) and { no = safeProp(pool, "no"), name = safeProp(pool, "name") } or nil,
+    presetMode = getProp(h, "PresetMode", true), storedData = getProp(h, "StoredData", true), featureGroup = getProp(h, "FeatureGroup", true),
+    lock = getProp(h, "Lock", true), maxDepth = getProp(h, "MaxDepth", true), hasMAtricks = getProp(h, "HasAnyMAtricksData", true),
+    magic = getProp(h, "MAgic", true), inputFilter = getProp(h, "InputFilter", true),
+    rows = {}, dependencies = {}, truncated = false,
+  }
+  local okR, refs = pcall(function() return h:Get("References") end)
+  if okR and type(refs) == "string" then
+    local n = 0
+    for _ in refs:gmatch("[^,]+") do n = n + 1 end
+    out.referencedBy = n
+  end
+  local okD, deps = pcall(function() return h:Get("Dependencies") end)
+  if okD and type(deps) == "table" then
+    for _, e in ipairs(deps) do
+      local info = type(e) == "table" and objectRefInfo(e.key) or nil
+      local dep = info or { valid = false }
+      if type(e) == "table" then dep.contentCrc = e.content_crc ~= nil and tostring(e.content_crc) or nil end
+      out.dependencies[#out.dependencies + 1] = dep
+    end
+    out.dependenciesReadable = true
+  else
+    out.dependenciesReadable = false
+  end
+  local okP, data = callApi("GetPresetData", h, false, true)
+  if not okP or type(data) ~= "table" then raise("[unreadable] GetPresetData of " .. tostring(args.ref) .. " failed: " .. (okP and ("it returned " .. type(data)) or tostring(data))) end
+  local typeCache = {}
+  if type(data.by_fixtures) == "table" then
+    out.byFixtures = true
+    for fixtureKey, attrs in pairs(data.by_fixtures) do
+      if type(attrs) == "table" then
+        for attr, ch in pairs(attrs) do
+          if #out.rows >= PRESET_MAX_ROWS then out.truncated = true; break end
+          if type(ch) == "table" then out.rows[#out.rows + 1] = presetRow(fixtureKey, attr, ch, typeCache) end
+        end
+      end
+    end
+  else
+    out.byFixtures = false
+  end
+  table.sort(out.rows, function(a, b)
+    if (a.sfIndex or 0) ~= (b.sfIndex or 0) then return (a.sfIndex or 0) < (b.sfIndex or 0) end
+    return a.attribute < b.attribute
+  end)
+  for _, r in ipairs(out.rows) do if r.steps then emptyArray(r.steps) end end
+  out.count = #out.rows
+  if type(args.typesFor) == "table" then
+    out.types = {}
+    for i, sfi in ipairs(args.typesFor) do
+      if i > PRESET_MAX_ROWS then break end
+      local n = tonumber(sfi)
+      if n then
+        if typeCache[n] == nil then
+          local okS, sf = callApi("GetSubfixture", n)
+          typeCache[n] = (okS and isHandle(sf)) and fixtureTypeOf(sf) or false
+        end
+        out.types[tostring(n)] = typeCache[n] or nil
+      end
+    end
+  end
+  emptyArray(out.rows); emptyArray(out.dependencies)
+  return out
+end
+
+local STORE_PREFERENCE_FIELDS = { "StoreMode", "StoreSource", "ChannelFilter", "StoreLook", "PresetMode", "PresetInputFilter", "StoreEmbedded", "StoreMAtricks",
+  "KeepActivation", "UpdateModePresets", "UpdatePresetMode", "UpdateInputFilter", "GridMergeMode", "RecipeStoreMode", "CueOnly", "TrackingShield" }
+
+-- args: { pool? } -> the operator's store preferences and, with pool, the preset pool's defaults.
+ops["preset.context"] = function(args)
+  local out = { preferences = {} }
+  local okP, prefs = pcall(function() return CurrentProfile().StorePreferences end)
+  if okP and isHandle(prefs) then
+    for _, k in ipairs(STORE_PREFERENCE_FIELDS) do out.preferences[k] = getProp(prefs, k, true) end
+    out.preferencesReadable = true
+  else
+    out.preferencesReadable = false
+  end
+  if args.pool ~= nil then
+    local n = tonumber(args.pool)
+    if not n then raise("[bad-args] pool must be a number") end
+    local list = objectList("Preset " .. math.floor(n))
+    local pool = list and list[1]
+    if not isHandle(pool) or safeCall(pool, "GetClass") ~= "Presets" then
+      out.pool = { no = n, exists = false }
+    else
+      out.pool = { no = safeProp(pool, "no"), exists = true, name = safeProp(pool, "name"), presetMode = getProp(pool, "PresetMode", true), inputFilter = getProp(pool, "InputFilter", true) }
+    end
+  end
+  return out
+end
 end
 
 -------------------------------------------------------------------------------
