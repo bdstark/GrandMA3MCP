@@ -52,6 +52,8 @@ The bridge answered `ping` after every step.
 
 ## Not established
 
+- Whether `*` wildcards on pages or executors (`Page 1.*`, `Executor *`, `Page "*"`) hang. The manual documents `*` as
+  all objects of the type or a name match, so the guard refuses them without evidence.
 - Whether `+` lists of executors (`Page 1.180 + 1.181`) or `Executor 180 Thru 181` hang too. The guard treats them as
   unsafe without evidence either way.
 - Whether a wide sparse pool range (`Sequence 9000 Thru 9999`) is slow or hangs; ranges without a Page/Executor keyword

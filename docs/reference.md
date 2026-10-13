@@ -196,12 +196,13 @@ the reference first:
   `-`): sent to `ObjectList` unchanged. `Page 1.180` (one empty executor reads nil, "no object found") and
   `Sequence 9000 Thru 9001` are verified safe.
 * `Page P.E Thru P.E2`, `Page P Thru P2` and `+` lists of those terms (pages and executors not mixed, an executor
-  range on one page): expanded into single `Page P` / `Page P.E` lookups, in the given order, duplicates once, at most
-  1000 objects. Empty executors and missing pages are skipped, so the result matches what the range names that exists;
+  range on one page, every number 1–9999): expanded into single `Page P` / `Page P.E` lookups, in the given order,
+  duplicates once, at most 1000 objects. Empty executors and missing pages are skipped, so the result matches what the range names that exists;
   a covered executor comes back as its `Proxy` handle like the single lookup returns it.
 * Any other form with a Page/Executor keyword and a list operator is refused with `[unsafe-range]` before any console
   call: open ranges (`Page Thru`, `Page 1.180 Thru`), ranges across pages, `Executor`/`Exec` lists (they follow the
-  user's current page), `-`, names, deeper addresses, more than 1000 objects. Read a page's executors with
+  user's current page), `-`, names, deeper addresses, numbers outside 1–9999, more than 1000 objects, and the `*`
+  wildcard in any form (`Page 1.*`, `Executor *`, `Page "LOS*"`), even without a list operator. Read a page's executors with
   `gma3_list_children` on `Page P` instead.
 
 The guard does not cover `gma3_lua`: a script that calls `ObjectList` with an executor range still hangs the console.

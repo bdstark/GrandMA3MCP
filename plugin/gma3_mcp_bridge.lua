@@ -318,6 +318,11 @@ end
 -- verified live) or refused with [unsafe-range] when it cannot be expanded faithfully. References
 -- without a Page or Executor keyword, and single pages/executors, still go to ObjectList unchanged.
 local MAX_EXPANDED_OBJECTS = 1000
+-- Page and executor numbers taken from a reference: plain digit strings in 1..9999 (the page pool
+-- holds 9999; executor numbers stay below 1000 on 2.5.1). Anything else is refused before any
+-- arithmetic, so a huge endpoint cannot turn the expansion into an endless loop (a float that +1
+-- cannot advance) or a "%d" format error.
+local MAX_OBJECT_NUMBER = 9999
 
 -- Lexical tokens of a command-line reference: words, numbers ("1.180"), quoted strings and single
 -- symbols. "1Thru5" splits like the console's parser does (1, Thru, 5).
@@ -354,27 +359,39 @@ local function isExecutorWord(t) return t.kind == "word" and isPrefixOf(t.lower,
 local function isThruWord(t) return t.kind == "word" and isPrefixOf(t.lower, "thru", 1) end
 
 -- Plan for a reference that names pages or executors. Returns nil when the reference does not need
--- the guard (no Page/Executor keyword, or no Thru / + / - list operator), otherwise a plan
+-- the guard (no Page/Executor keyword, or no Thru / + / - list operator and no * wildcard), otherwise a plan
 -- { kind = "pages" | "executors", items = { { page = P, exec = E|nil }, ... } } in the given order
 -- without duplicates. Raises [unsafe-range] for a multi-object form it does not expand.
 local function pageRangePlan(ref)
   local toks = refTokens(ref)
-  local keyed, listOps = false, 0
+  local keyed, listOps, wildcard = false, 0, false
   for _, t in ipairs(toks) do
     if isPageWord(t) or isExecutorWord(t) then keyed = true end
     if isThruWord(t) or (t.kind == "symbol" and (t.text == "+" or t.text == "-" or t.text == ",")) then listOps = listOps + 1 end
+    -- "*" selects every object of the type as a number ("Page 1.*", "Executor *") and matches
+    -- several names inside quotes ("Page \"*\""), per the 2.5 manual.
+    if (t.kind == "symbol" and t.text == "*") or (t.kind == "string" and t.text:find("*", 1, true)) then wildcard = true end
   end
-  if not keyed or listOps == 0 then return nil end
+  if not keyed then return nil end
   local function refuse(why)
-    error(string.format("[unsafe-range] '%s' names several pages or executors and %s. ObjectList over an executor range can hang onPC 2.5.1 for good (the console must be relaunched), so the bridge only expands \"Page P.E Thru P.E2\", \"Page P Thru P2\" and '+' lists of those; read a page's executors with the children op on \"Page P\" instead", ref, why), 0)
+    error(string.format("[unsafe-range] '%s' names several pages or executors and %s. ObjectList over an executor range can hang onPC 2.5.1 for good (the console must be relaunched), so the bridge only expands \"Page P.E Thru P.E2\", \"Page P Thru P2\" and '+' lists of those (numbers 1..%d); read a page's executors with the children op on \"Page P\" instead", ref, why, MAX_OBJECT_NUMBER), 0)
   end
+  if wildcard then refuse("uses the * wildcard (all objects or several names)") end
+  if listOps == 0 then return nil end
   if not isPageWord(toks[1]) then refuse("does not start with the Page keyword (Executor ranges follow the user's current page)") end
   local kind, items, seen, i = nil, {}, {}, 2
+  -- A bounded integer from a digit string, refused (not nil) when it is out of 1..MAX_OBJECT_NUMBER.
+  local function objectNumber(digits)
+    local significant = digits:gsub("^0+", "")
+    local n = #significant <= #tostring(MAX_OBJECT_NUMBER) and math.tointeger(tonumber(significant ~= "" and significant or "0")) or nil
+    if n == nil or n < 1 or n > MAX_OBJECT_NUMBER then refuse(string.format("uses the number %s (pages and executors are 1..%d)", digits, MAX_OBJECT_NUMBER)) end
+    return n
+  end
   local function parseNumber(t)
     if not t or t.kind ~= "number" then return nil end
     local p, e = t.text:match("^(%d+)%.(%d+)$")
-    if p then return { page = tonumber(p), exec = tonumber(e) } end
-    if t.text:match("^%d+$") then return { page = tonumber(t.text) } end
+    if p then return { page = objectNumber(p), exec = objectNumber(e) } end
+    if t.text:match("^%d+$") then return { page = objectNumber(t.text) } end
     return nil
   end
   local function add(page, exec)

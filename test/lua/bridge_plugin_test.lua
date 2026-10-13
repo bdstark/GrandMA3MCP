@@ -2175,6 +2175,42 @@ do
     check("objects: refuses " .. case[2] .. " (" .. case[1] .. ") without calling ObjectList", r.ok == false and r.error:find("[unsafe-range]", 1, true) ~= nil and #calls == 0, J({ r, calls }))
   end
 
+  -- Review of PR #35: endpoints a float +1 cannot advance looped forever (dedup kept the object
+  -- limit from firing), and * wildcards reached ObjectList. The request runs under an instruction
+  -- hook so a regression fails here instead of hanging the suite.
+  local function boundedRequest(op, args)
+    local line = json.encode({ id = "t", op = op, args = args })
+    local co = coroutine.create(function() return state._handleLine(nil, line) end)
+    debug.sethook(co, function() error("endless loop: instruction limit reached", 0) end, "", 50000000)
+    local ok, res = coroutine.resume(co)
+    if not ok then return { ok = false, error = tostring(res) } end
+    return json.decode(res)
+  end
+  local hostile = {
+    { "Page 100000000000000000000 Thru 100000000000000000000", "an oversized page range" },
+    { "Page 1.100000000000000000000 Thru 1.100000000000000000000", "an oversized executor range" },
+    { "Page 9007199254740993 Thru 9007199254740993", "a page past 2^53" },
+    { "Page 1.99999999999999999999 + 1.1", "an oversized executor in a + list" },
+    { "Page 10000 Thru 10001", "pages above 9999" }, { "Page 1.10000 Thru 1.10001", "executors above 9999" },
+    { "Page 0 Thru 2", "page 0" }, { "Page 1.0 Thru 1.2", "executor 0" },
+    { "Page 1.*", "Page P.* (all executors)" }, { "Executor *", "Executor *" }, { "P *", "P * (all pages)" },
+    { 'Page "*"', "a quoted * name" }, { 'Page "LOS*"', "a name wildcard" }, { "Page 1.* Thru 1.3", "* in a range" },
+  }
+  for _, case in ipairs(hostile) do
+    reset()
+    r = boundedRequest("objects", { ref = case[1] })
+    check("objects: refuses " .. case[2] .. " (" .. case[1] .. ") promptly without calling ObjectList", r.ok == false and r.error:find("[unsafe-range]", 1, true) ~= nil and #calls == 0, J({ r, calls }))
+  end
+  reset()
+  r = boundedRequest("object", { ref = "Page 1.*" })
+  check("object: a single wildcard is refused too (resolve shares the guard)", r.ok == false and r.error:find("[unsafe-range]", 1, true) ~= nil and #calls == 0, J({ r, calls }))
+  reset()
+  r = boundedRequest("objects", { ref = "Page 0001.0191 Thru 1.193 + 1.9998 Thru 1.9999" })
+  check("objects: leading zeros and the 9999 bound are accepted", r.ok and names(r.result) == "Exec 191,Exec 192,Proxy" and #hung == 0 and #calls == 6 and calls[2] == "Page 1.191" and calls[6] == "Page 1.9999", J({ r, calls }))
+  reset()
+  r = boundedRequest("objects", { ref = "Sequence *" })
+  check("objects: wildcards without a Page/Executor keyword go to ObjectList unchanged", r.ok and #calls == 1 and calls[1] == "Sequence *", J({ r, calls }))
+
   -- resolve() (object, children, dump, set, getfader, ...) shares the guard.
   reset()
   r = request("object", { ref = "Page 1.180 Thru 1.192", properties = false })
