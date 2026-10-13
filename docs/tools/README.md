@@ -17,6 +17,7 @@ the live test procedure on a disposable show.
 | Executor and sequence playback configuration (SB-01) | `gma3_executor_settings`, `gma3_configure_executor`, `gma3_configure_sequence` | [playback.md](playback.md) |
 | Groups with selection grids and MAtricks (SB-02, bridge 0.21.0; storing a group needs `exclusive: true`) | `gma3_selection_grid`, `gma3_store_group`, `gma3_matricks`, `gma3_configure_matricks` | [groups.md](groups.md) |
 | Presets with explicit storage rules (SB-03, bridge 0.22.0; storing needs `exclusive: true`) | `gma3_preset`, `gma3_store_preset` | [presets.md](presets.md) |
+| Phasers and effect distributions (SB-04, bridge 0.23.0; building needs `exclusive: true`) | `gma3_build_phaser`, `gma3_phaser_release` | [phasers.md](phasers.md) |
 
 `AGENT-RULES.md` records the implementation rules every area follows (bridge-only, no retries, shared
 validation and result helpers, serialised mutations, documentation and test requirements).

@@ -97,6 +97,8 @@ These workflows are not necessarily UI-only. grandMA3 documents command support 
 
 **Lua changes:** Likely for detailed phaser inspection or manipulation not covered by qualified commands. Extend existing phaser/programmer readers rather than creating a parallel representation.
 
+**Status:** implemented: `gma3_build_phaser`, `gma3_phaser_release` ([docs/tools/phasers.md](docs/tools/phasers.md), probe record [sb-04-phasers-macos-2.5.1.md](docs/probes/sb-04-phasers-macos-2.5.1.md), live test `test/live/phasers.live.ts` 1/1 on macOS onPC 2.5.1). Built with qualified commands (`Step`, `At ...` layers) in the console's Preview environment, which has its own programmer, so the Normal programmer is never touched (fingerprinted before and after) and nothing is output unless an audition is requested. The existing readers were extended (bridge 0.23.0): the `programmer` op reports its environment and speed master, `preset.read` every step's layers and integrated preset. The store reuses the SB-03 path; its read-back now compares every phaser step.
+
 ### Acceptance criteria
 
 - Describe steps by attribute, absolute/relative values or preset references, and supported timing/transition parameters.

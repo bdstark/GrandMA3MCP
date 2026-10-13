@@ -493,3 +493,11 @@ test("a global row for another fixture type or attribute is unexpected content",
   assert.match(v([holder, { fixture: "701", sfIndex: 5, attribute: "ColorRGB_R", value: 100, mode: "global", fixtureType: "Mover" }]), /unexpected stored content: 701 ColorRGB_R/, "same attribute, other type");
   assert.match(v([holder, { fixture: "?", attribute: "ColorRGB_R", value: 100, mode: "global" }]), /unexpected stored content/, "a global row without a known type is not exempt");
 });
+
+test("with embed on, a stored step reference where the programmer step had none is a mismatch", () => {
+  const prow: ProgrammerRow = { subfixtureIndex: 63, fid: "401", attribute: "ColorRGB_R", stepCount: 2, steps: [{ absolute: 100, integratedPreset: { addrNative: "P.4.4" } }, { absolute: 0 }], phaser: {} };
+  const srow = (second?: PresetRow["steps"] extends Array<infer S> | undefined ? S["integrated"] : never): PresetRow => ({ fixture: "401", sfIndex: 63, attribute: "ColorRGB_R", mode: "selective", stepCount: 2, steps: [{ step: 1, absolute: 100, integrated: { valid: true, addrNative: "P.4.4" } }, { step: 2, absolute: 0, integrated: second ?? null }] });
+  const v = (st: PresetRow) => verifyStored({ rows: [prow], stored: [st], mode: "selective", forced: false, merge: false, embed: true, types: {} }).join();
+  assert.equal(v(srow()), "");
+  assert.match(v(srow({ valid: true, addrNative: "P.4.9" })), /step 2: a reference to P\.4\.9 was stored although the programmer step had none/);
+});

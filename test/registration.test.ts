@@ -90,6 +90,9 @@ const WORKFLOW_TOOLS = [
   // SB-03 presets
   "gma3_preset",
   "gma3_store_preset",
+  // SB-04 phasers
+  "gma3_build_phaser",
+  "gma3_phaser_release",
 ];
 
 test("all pre-existing tools are still registered under their original names", async () => {

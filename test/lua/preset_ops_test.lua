@@ -90,7 +90,7 @@ end
 local embeddedData = { count = 4, by_fixtures = {
   ["401"] = { ColorRGB_R = chan(320, 1, 100, { abs_preset = source }), Dimmer = chan(321, 1, 50, { fade = 3.0 }) },
   ["402"] = { ColorRGB_R = chan(330, 2, 0, { delay = 1.0 }) },
-  ["501.2"] = { ColorRGB_R = { { absolute = 10 }, { absolute = 90 }, ui_channel_index = 700, preset_store_mode = 3, dict_flags = { has_absolute = 1, has_relative = 1 } } },
+  ["501.2"] = { ColorRGB_R = { { absolute = 10, trans = 0, width = 50 }, { absolute = 90, accel = -100, decel = 20, accel_type = 2, integrated = source }, ui_channel_index = 700, preset_store_mode = 3, speed = 2.0, phase = 90, measure = 400, speed_master = 1, dict_flags = { has_absolute = 1, has_relative = 1 } } },
 } }
 local embedded = H({ name = "Look", class = "Preset", no = 3, parent = allPool, addr = "14.14.1.5.23.3", props = {
   StoredData = "Selective/Global", PresetMode = "Selective", FeatureGroup = "", Lock = "UL", MaxDepth = 0, HasAnyMAtricksData = "No",
@@ -135,7 +135,7 @@ local function request(op, args)
 end
 
 local r = request("ping")
-check("ping reports bridge 0.22.0", r.ok and r.result.bridgeVersion == "0.22.0", J(r))
+check("ping reports bridge 0.23.0", r.ok and r.result.bridgeVersion == "0.23.0", J(r))
 
 r = request("preset.read", { ref = "Preset 23.3" })
 local res = r.ok and r.result or {}
@@ -149,6 +149,7 @@ check("preset.read: an embedded value names its source preset", r401 and r401.ab
 check("preset.read: fade and delay layers", row("401", "Dimmer").fade == 3.0 and row("402", "ColorRGB_R").delay == 1.0 and row("402", "ColorRGB_R").mode == "global", J(rows))
 local cell = row("501.2", "ColorRGB_R")
 check("preset.read: a cell's fixture type comes from its fixture; multi-step rows list steps", cell and cell.fixtureType == "5 Wall Washer" and cell.mode == "universal" and cell.value == nil and #cell.steps == 2 and cell.steps[2].absolute == 90 and cell.hasRelative == true, J(cell))
+check("preset.read: phaser steps carry their layers and integrated preset; the row its phaser layers", cell and cell.steps[1].trans == 0 and cell.steps[1].width == 50 and cell.steps[2].accel == -100 and cell.steps[2].decel == 20 and cell.steps[2].accelType == 2 and cell.steps[2].integrated and cell.steps[2].integrated.no == 902 and cell.steps[1].integrated == nil and cell.speed == 2.0 and cell.phase == 90 and cell.measure == 400 and cell.speedMaster == 1, J(cell))
 check("preset.read: dependencies with validity and checksum, a deleted source invalid", #res.dependencies == 2 and res.dependencies[1].valid == true and res.dependencies[1].addr == "14.14.1.5.4.902" and res.dependencies[1].contentCrc ~= nil and res.dependencies[2].valid == false and res.dependenciesReadable == true, J(res.dependencies))
 
 r = request("preset.read", { ref = "Preset 23.3", typesFor = { 63, 12, 99 } })

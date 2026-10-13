@@ -78,7 +78,12 @@ export interface PresetRow {
   fade?: number | null;
   delay?: number | null;
   stepCount?: number;
-  steps?: Array<{ step: number; absolute?: number; relative?: number }>;
+  /** Multi-step rows: every step with its layers (absent = console default) and integrated preset (bridge 0.23.0). */
+  steps?: Array<{ step: number; absolute?: number; relative?: number; accel?: number; decel?: number; trans?: number; width?: number; integrated?: ObjectRefInfo | null }>;
+  speed?: number | null;
+  phase?: number | null;
+  measure?: number | null;
+  speedMaster?: number | null;
   absPreset?: ObjectRefInfo | null;
   relPreset?: ObjectRefInfo | null;
 }
@@ -121,12 +126,15 @@ export interface ProgrammerRow {
   value?: number | null;
   relative?: number | null;
   stepCount?: number;
-  phaser?: { fade?: number | null; delay?: number | null };
+  steps?: Array<{ step?: number; absolute?: number | null; relative?: number | null; accel?: number | null; decel?: number | null; trans?: number | null; width?: number | null; integratedPreset?: { name?: string; addrNative?: string } | null }>;
+  /** speed in Hz, measure x100, speedMaster 0-based, as GetProgPhaser reports them. */
+  phaser?: { fade?: number | null; delay?: number | null; speed?: number | null; phase?: number | null; measure?: number | null; speedMaster?: number | null };
   absPreset?: { name?: string; addrNative?: string } | null;
   relPreset?: { name?: string; addrNative?: string } | null;
 }
 
 interface ProgrammerScan {
+  environment?: string;
   rows: ProgrammerRow[];
   total: number;
   count: number;
@@ -250,9 +258,10 @@ export function analyzeContent(input: {
     const divergent = [...byAttr].filter(([, rs]) => rs.some((r) => !sameValue(r, rs[0])));
     if (divergent.length) problems.push(`universal data keeps one value per attribute, but these differ between fixtures: ${divergent.map(([a]) => a).join(", ")}; use selective or global, or give every fixture the same value`);
   }
-  const refs = inScope.filter((r) => r.absPreset || r.relPreset);
+  const stepRefs = (r: ProgrammerRow) => (r.stepCount ?? 1) > 1 ? (r.steps ?? []).map((st) => st.integratedPreset).filter((x): x is { name?: string; addrNative?: string } => !!x) : [];
+  const refs = inScope.filter((r) => r.absPreset || r.relPreset || stepRefs(r).length);
   const refName = (x: { addrNative?: string; name?: string }) => x.addrNative ?? x.name ?? "?";
-  const embeddedSources = [...new Set(refs.flatMap((r) => [...(r.absPreset ? [`${refName(r.absPreset)} (absolute)`] : []), ...(r.relPreset ? [`${refName(r.relPreset)} (relative)`] : [])]))];
+  const embeddedSources = [...new Set(refs.flatMap((r) => [...(r.absPreset ? [`${refName(r.absPreset)} (absolute)`] : []), ...(r.relPreset ? [`${refName(r.relPreset)} (relative)`] : []), ...stepRefs(r).map((x) => `${refName(x)} (step)`)]))];
   if (input.embed && refs.length === 0) problems.push("embed is true but no programmer value references a preset (call a preset with At Preset first)");
   if (!input.embed && refs.length) warnings.push(`programmer values reference ${embeddedSources.join(", ")}; with embed false they are stored as plain values, not references`);
   if (input.filterGroup) {
@@ -343,10 +352,51 @@ export function verifyStored(input: {
   return out.slice(0, 20);
 }
 
+/** Console defaults of the step layers, which the console leaves out when they are not set. */
+export const STEP_DEFAULTS = { accel: 0, decel: 0, trans: 100, width: 100 } as const;
+
+/** Every step of a phaser (value, relative, step layers, integrated preset) and its phaser layers. */
+function compareSteps(r: ProgrammerRow, s: PresetRow, embed: boolean): string[] {
+  const d: string[] = [];
+  const opt = (x: unknown) => (x === null || x === undefined ? null : x);
+  const same = (a: unknown, b: unknown) => (opt(a) === null ? opt(b) === null : near(a, b));
+  if (!r.steps || !s.steps) return [`the steps could not be compared (${!r.steps ? "programmer" : "stored"} steps not read)`];
+  for (let i = 0; i < r.steps.length; i++) {
+    const a = r.steps[i];
+    const b = s.steps[i];
+    if (!b) { d.push(`step ${i + 1} not stored`); continue; }
+    if (!same(a.absolute, b.absolute)) d.push(`step ${i + 1} value ${a.absolute ?? "none"} expected, ${b.absolute ?? "none"} stored`);
+    if (!same(a.relative, b.relative)) d.push(`step ${i + 1} relative ${a.relative ?? "none"} expected, ${b.relative ?? "none"} stored`);
+    for (const k of ["accel", "decel", "trans", "width"] as const) {
+      const want = opt(a[k]) ?? STEP_DEFAULTS[k];
+      const got = opt(b[k]) ?? STEP_DEFAULTS[k];
+      if (!near(want, got)) d.push(`step ${i + 1} ${k} ${want} expected, ${got} stored`);
+    }
+    const ref = a.integratedPreset;
+    if (embed && ref) {
+      if (!b.integrated) d.push(`step ${i + 1}: reference to ${ref.addrNative ?? ref.name} expected, none stored`);
+      else if (!b.integrated.valid) d.push(`step ${i + 1}: the stored reference is invalid`);
+      else if (ref.addrNative && b.integrated.addrNative !== ref.addrNative) d.push(`step ${i + 1}: reference to ${ref.addrNative} expected, ${b.integrated.addrNative} stored`);
+    } else if (embed && b.integrated) {
+      d.push(`step ${i + 1}: a reference to ${b.integrated.addrNative ?? b.integrated.name ?? "a preset"} was stored although the programmer step had none`);
+    }
+    if (!embed && b.integrated) d.push(`step ${i + 1}: a reference to ${b.integrated.addrNative ?? b.integrated.name ?? "a preset"} was stored although embed is false`);
+  }
+  // A stored preset leaves a layer out when it has the console default: speed 1 Hz (60 BPM), phase 0°.
+  const LAYER_DEFAULTS: Record<string, number | null> = { speed: 1, phase: 0, measure: null, speedMaster: null };
+  for (const [k, label] of [["speed", "speed"], ["phase", "phase"], ["measure", "measure"], ["speedMaster", "speed master"]] as const) {
+    const want = opt(r.phaser?.[k]) ?? LAYER_DEFAULTS[k];
+    const got = opt(s[k]) ?? LAYER_DEFAULTS[k];
+    if (want === null ? got !== null : !(got !== null && near(want, got))) d.push(`${label} ${want ?? "none"} expected, ${got ?? "none"} stored`);
+  }
+  return d;
+}
+
 function compareRow(r: ProgrammerRow, s: PresetRow, embed: boolean): string[] {
   const d: string[] = [];
   if ((r.stepCount ?? 1) > 1) {
     if ((s.stepCount ?? 1) !== r.stepCount) d.push(`${r.stepCount} steps expected, ${s.stepCount ?? 1} stored`);
+    else d.push(...compareSteps(r, s, embed));
   } else if (r.value !== null && r.value !== undefined && !near(r.value, s.value)) d.push(`value ${r.value} expected, ${s.value ?? "none"} stored`);
   if (r.relative && !near(r.relative, s.relative)) d.push(`relative ${r.relative} expected, ${s.relative ?? "none"} stored`);
   if (r.phaser?.fade !== null && r.phaser?.fade !== undefined && !near(r.phaser.fade, s.fade)) d.push(`fade ${r.phaser.fade} expected, ${s.fade ?? "none"} stored`);
@@ -440,10 +490,15 @@ function presentRows(rows: PresetRow[]) {
     attribute: r.attribute,
     mode: r.mode ?? null,
     ...(r.value !== undefined && r.value !== null ? { value: r.value } : {}),
-    ...(r.steps ? { steps: r.steps } : {}),
+    ...(r.steps ? { steps: r.steps.map((st) => ({ ...st, integrated: st.integrated ? (st.integrated.valid ? depLabel(st.integrated) : "invalid reference") : undefined })) } : {}),
     ...(r.relative ? { relative: r.relative } : {}),
     ...(r.fade !== undefined && r.fade !== null ? { fade: r.fade } : {}),
     ...(r.delay !== undefined && r.delay !== null ? { delay: r.delay } : {}),
+    // Phaser layers in user units (the console reads speed in Hz, measure x100, the speed master 0-based).
+    ...(typeof r.speed === "number" ? { speedBpm: Math.round(r.speed * 60 * 1000) / 1000 } : {}),
+    ...(typeof r.phase === "number" ? { phase: r.phase } : {}),
+    ...(typeof r.measure === "number" ? { measure: r.measure / 100 } : {}),
+    ...(typeof r.speedMaster === "number" ? { speedMaster: r.speedMaster + 1 } : {}),
     ...(r.absPreset ? { embeddedFrom: r.absPreset.valid ? depLabel(r.absPreset) : "invalid reference" } : {}),
     ...(r.relPreset ? { relativeFrom: r.relPreset.valid ? depLabel(r.relPreset) : "invalid reference" } : {}),
     ...(r.fixtureType ? { fixtureType: r.fixtureType } : {}),
@@ -495,7 +550,7 @@ export async function presetInfo(ctx: ToolContext, raw: { preset?: string; pool?
 // gma3_store_preset
 // ---------------------------------------------------------------------------
 
-interface StorePresetArgs {
+export interface StorePresetArgs {
   preset: string;
   fixtures: unknown;
   mode?: Mode;
@@ -511,6 +566,8 @@ interface StorePresetArgs {
   exclusive?: boolean;
   preview?: boolean;
   verify?: boolean;
+  /** The user environment the programmer must belong to (default Normal; gma3_build_phaser stores from Preview). */
+  environment?: "Normal" | "Preview";
 }
 
 const yn = (b: boolean) => (b ? '"Yes"' : '"No"');
@@ -531,6 +588,16 @@ export function storeCommand(o: { pool: number; number: number; mode?: Mode; for
 }
 
 export async function storePreset(ctx: ToolContext, raw: StorePresetArgs): Promise<OperationResult> {
+  const p = prepareStorePreset(ctx, raw);
+  if ("operation" in p) return p;
+  return p.preview ? p.body() : ctx.mutations.run(p.body);
+}
+
+/**
+ * Validate a store request; returns the validation failure, or the body to run (inside this server's mutation lock
+ * unless it is a preview). Exported for tools that already hold the lock (gma3_build_phaser).
+ */
+export function prepareStorePreset(ctx: ToolContext, raw: StorePresetArgs): OperationResult | { preview: boolean; body: () => Promise<OperationResult> } {
   const op = "store_preset";
   const v = new Validator();
   const id = v.check(() => presetId("preset", raw.preset));
@@ -572,6 +639,7 @@ export async function storePreset(ctx: ToolContext, raw: StorePresetArgs): Promi
   const bridge = ctx.bridge;
   const t = ctx.requestTimeoutMs;
   const targetMode: Mode = (force ?? mode)!;
+  const allowedEnvironment = raw.environment ?? "Normal";
 
   const body = async (): Promise<OperationResult> => {
     let context: PresetContext | null = null;
@@ -668,6 +736,9 @@ export async function storePreset(ctx: ToolContext, raw: StorePresetArgs): Promi
             return readFailure("read_programmer", "programmer", err);
           }
           const s = scan as ProgrammerScan;
+          if (s.environment !== undefined && s.environment !== allowedEnvironment) {
+            return asRead({ name: "read_programmer", status: "failed", op: "programmer", detail: { environment: s.environment }, error: `the console is in the ${s.environment} environment (its own programmer), not ${allowedEnvironment}; nothing was sent` });
+          }
           // Deactivated values (e.g. after an earlier store) are reported as a limitation; /Active does not store them.
           const limits = (s.limitations ?? []).filter((l) => !/activity masks zero/.test(String(l)));
           if (s.coverage?.complete !== true || (s.stats?.channelErrors ?? 0) > 0 || limits.length || s.total > s.rows.length) {
@@ -791,7 +862,7 @@ export async function storePreset(ctx: ToolContext, raw: StorePresetArgs): Promi
     }
     return buildResult({ operation: op, target, steps, verification, warnings, extra: { ...extra, resulting } });
   };
-  return preview ? body() : ctx.mutations.run(body);
+  return { preview, body };
 }
 
 // ---------------------------------------------------------------------------
@@ -804,7 +875,7 @@ export const registerPresetTools: RegisterTools = (server, ctx) => {
     {
       title: "Read a preset's stored content and references, or a pool's storage defaults",
       description:
-        "Read-only. preset: \"<pool>.<number>\" returns what the preset actually stores: per fixture and attribute the mode the value was stored in (selective; global, held by the lowest FID of a fixture type; universal, one holder), value (percent) or steps, fade/delay, and the source preset of an embedded value; plus PresetMode, StoredData, lock, how many objects reference it, " +
+        "Read-only. preset: \"<pool>.<number>\" returns what the preset actually stores: per fixture and attribute the mode the value was stored in (selective; global, held by the lowest FID of a fixture type; universal, one holder), value (percent) or steps (each with absolute/relative, width, trans, accel, decel and the preset it integrates; absent layers are the console defaults width/trans 100, accel/decel 0), the phaser layers speedBpm, phase (degrees), measure (beats) and speedMaster (absent: 60 BPM, phase 0), fade/delay, and the source preset of an embedded value; plus PresetMode, StoredData, lock, how many objects reference it, " +
         "and its dependencies (embedded sources) followed recursively with validity (a deleted source is an invalid dependency) and whether that inspection was complete. pool: <n> returns the pool's default mode and input filter and the operator's store preferences (the defaults a store would otherwise use). Needs bridge 0.22.0.",
       inputSchema: {
         preset: z.string().optional().describe('Preset as "<pool>.<number>", e.g. "4.12".'),

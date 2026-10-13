@@ -35,6 +35,7 @@ automated checks and deployments still awaiting qualification.
 | Playback | Sequence and executor actions, faders, executor assignment and labeling, executor functions and sequence playback settings (Wrap Around, priority, restart, locks) |
 | Groups and MAtricks | Groups from explicit selection-grid cells or row, rectangle and mirror helpers (stored, read back and recall-checked), group and selection grid reads, MAtricks objects with wings, blocks, groups and fade/delay/phase/speed distributions |
 | Presets | Store the programmer into presets with explicit mode (selective, global, universal), forced conversion, merge/overwrite, scope, attribute and layer filters, embedding and input filter, refusing unrequested content and verifying the stored rows; read preset content, references and dependencies |
+| Phasers | Build effects from structured steps or templates (dimmer chase, alternating colours, pan/tilt circle) with step timing, phase distribution, direction, repetition and speed, in the console's Preview environment, stored as presets and read back step by step; explicit audition and release |
 | Structured inspection | Fixture attributes, programmer values, fixture output, DMX and supported cue contents |
 | Reference | Local grandMA3 manual, live Lua API descriptions and the `gma3://cheatsheet` resource |
 | Advanced control | Command-line commands and optional Lua execution |
@@ -89,7 +90,7 @@ OSC is optional for the normal bridge setup and is not forwarded by an SSH tunne
 - Workflow details: [fixtures](docs/tools/fixtures.md), [cues](docs/tools/cues.md),
   [executors](docs/tools/executors.md), [inspection](docs/tools/inspection.md), [console input](docs/tools/input.md),
   [console feedback](docs/tools/feedback.md), [patch](docs/tools/patch.md), [playback configuration](docs/tools/playback.md),
-  [groups and MAtricks](docs/tools/groups.md), [presets](docs/tools/presets.md)
+  [groups and MAtricks](docs/tools/groups.md), [presets](docs/tools/presets.md), [phasers](docs/tools/phasers.md)
 - [Show-building features (SB-01 .. SB-08)](SHOWS.md)
 - [Hardkey, keyboard and feedback feature requests and evidence](KEYBOARD.md), [console interaction modules](docs/modules.md)
 - [Dialog control and dialog-free patching: plan and evidence](DIALOG.md)

@@ -100,7 +100,9 @@ Requests, in order:
      - universal: the universal row of the attribute;
      - in every mode the same value (±0.05 %), fade/delay and step count; the absolute and the relative reference are
        checked separately: with `embed`, each reference the programmer value had must be stored, valid and to the same
-       source, and none it did not have; without `embed`, no reference of either kind.
+       source, and none it did not have; without `embed`, no reference of either kind. Phaser steps are checked the
+       same way per step: a stored step reference must match the programmer step's, and a step that had none must not
+       have one.
    - A new or overwritten preset must not hold anything else (`unexpected stored content`): only the fixtures'
      own rows, and in global mode a global holder only for an attribute and fixture type a programmer value has; merge
      keeps other rows.
@@ -122,6 +124,9 @@ dependency inspection.
     (how many objects use the preset).
   - **Rows:** one per fixture and attribute, with `mode`, `value` (percent) or `steps`, `fade`, `delay`, `relative`,
     `fixtureType`, and `embeddedFrom` / `relativeFrom` for an embedded absolute / relative value.
+  - **Phaser data** (bridge 0.23.0): `steps` with each step's `absolute`/`relative`, `width`, `trans`, `accel`,
+    `decel` and the preset it integrates, and the phaser layers `speedBpm`, `phase`, `measure` (beats) and
+    `speedMaster` (absent = console default: 60 BPM, phase 0). The store's read-back compares all of them.
   - **Dependencies:** the direct dependencies with validity, and `dependencyInspection`. The inspection follows embedded
     sources recursively (four levels) by address. `complete: false` says why (a source not found, dependencies not
     readable, beyond depth), and `invalid` lists deleted sources.
@@ -140,7 +145,8 @@ dependency inspection.
   - a forced conversion from `Selective/Global` to `Global`;
   - the store preferences unchanged after every store.
 - Not covered:
-  - relative values and multi-step phaser data are compared by value and step count only (SB-04 will qualify phasers);
+  - relative values are compared by value; multi-step phaser data step by step with bridge 0.23.0 (see
+    [phasers](phasers.md));
     relative embedding is verified by the unit tests, not on the console (the live test embeds absolute values);
   - MAgic presets and recipe content are not modelled;
   - a pool's own input filter (a filter or world assigned to the pool) is not predicted; only the read-back catches it.

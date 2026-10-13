@@ -16,6 +16,7 @@ import { registerInputTools } from "./tools/input.js";
 import { registerFeedbackTools } from "./tools/feedback.js";
 import { registerGroupTools } from "./tools/groups.js";
 import { registerPatchTools } from "./tools/patch.js";
+import { registerPhaserTools } from "./tools/phasers.js";
 import { registerPresetTools } from "./tools/presets.js";
 import { registerPlaybackTools } from "./tools/playback.js";
 
@@ -586,6 +587,7 @@ registerPatchTools(server, toolContext);
 registerPlaybackTools(server, toolContext);
 registerGroupTools(server, toolContext);
 registerPresetTools(server, toolContext);
+registerPhaserTools(server, toolContext);
 
 server.registerResource(
   "cheatsheet",
