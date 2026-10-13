@@ -20,9 +20,9 @@ Guard rails, enforced by `test/live/live.ts`:
 
 | Range | Used by |
 | --- | --- |
-| Sequence 900–909 and their cues | cue storage, editing, navigation and deletion tests |
+| Sequence 900–909 and their cues | cue storage, editing, navigation and deletion tests (905: SB-01 playback configuration) |
 | Group 900–902 | fixture selection tests |
-| Page 90, executors 90.201–90.215 | executor assignment and labelling tests |
+| Page 90, executors 90.201–90.215 | executor assignment and labelling tests (90.210–90.211: SB-01 playback configuration) |
 | Fixtures 1–10 (must be patched in the disposable show) | programmer, attribute and output tests |
 | Macro 900 | reserved |
 | Fixtures with FID 990–993, DMX from the first free block at 3.001 (also needs `GMA3_LIVE_EXCLUSIVE=1`) | patch tests (committed with no undo) |

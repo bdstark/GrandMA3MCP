@@ -15,6 +15,7 @@ import { registerInspectionTools } from "./tools/inspection.js";
 import { registerInputTools } from "./tools/input.js";
 import { registerFeedbackTools } from "./tools/feedback.js";
 import { registerPatchTools } from "./tools/patch.js";
+import { registerPlaybackTools } from "./tools/playback.js";
 
 const env = process.env;
 const bridge = new Gma3Bridge({
@@ -580,6 +581,7 @@ registerInspectionTools(server, toolContext);
 registerInputTools(server, toolContext);
 registerFeedbackTools(server, toolContext);
 registerPatchTools(server, toolContext);
+registerPlaybackTools(server, toolContext);
 
 server.registerResource(
   "cheatsheet",

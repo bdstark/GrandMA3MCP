@@ -14,6 +14,7 @@ the live test procedure on a disposable show.
 | Console input (KB-05, opt-in on the console) | `gma3_input_interaction`, `gma3_hardkey`, `gma3_keyboard`, `gma3_type`, `gma3_input_sequence`, `gma3_hardkeys_status`, `gma3_hardkeys_release_all` | [input.md](input.md) |
 | Console feedback (KB-06, read-only) | `gma3_feedback` | [feedback.md](feedback.md) |
 | Patch (KB-26, bridge 0.19.0; changes need `exclusive: true`) | `gma3_patch_types`, `gma3_patch_list`, `gma3_patch_add`, `gma3_patch_set`, `gma3_patch_remove` | [patch.md](patch.md) |
+| Executor and sequence playback configuration (SB-01) | `gma3_executor_settings`, `gma3_configure_executor`, `gma3_configure_sequence` | [playback.md](playback.md) |
 
 `AGENT-RULES.md` records the implementation rules every area follows (bridge-only, no retries, shared
 validation and result helpers, serialised mutations, documentation and test requirements).
