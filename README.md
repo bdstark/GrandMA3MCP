@@ -86,7 +86,7 @@ OSC is optional for the normal bridge setup and is not forwarded by an SSH tunne
 - [Configuration, tools, workflow results and bridge protocol](docs/reference.md)
 - Workflow details: [fixtures](docs/tools/fixtures.md), [cues](docs/tools/cues.md),
   [executors](docs/tools/executors.md), [inspection](docs/tools/inspection.md), [console input](docs/tools/input.md),
-  [console feedback](docs/tools/feedback.md)
+  [console feedback](docs/tools/feedback.md), [patch](docs/tools/patch.md)
 - [Hardkey, keyboard and feedback feature requests and evidence](KEYBOARD.md), [console interaction modules](docs/modules.md)
 - [Dialog control and dialog-free patching: plan and evidence](DIALOG.md)
 - [Optional Lua execution](docs/lua.md)
