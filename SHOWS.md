@@ -120,6 +120,8 @@ These workflows are not necessarily UI-only. grandMA3 documents command support 
 
 **Lua changes:** Likely for structured recipe-line creation and inspection. Reuse property operations wherever the probe proves sufficient.
 
+**Status:** implemented: `gma3_recipes`, `gma3_edit_recipe`, `gma3_cook_recipes` ([docs/tools/recipes.md](docs/tools/recipes.md), probe record [sb-05-recipes-macos-2.5.1.md](docs/probes/sb-05-recipes-macos-2.5.1.md), live test `test/live/recipes.live.ts` 1/1 on macOS onPC 2.5.1). The probe showed property operations sufficient: lines are read and written with the existing `children` / `objects` / `set` ops and `Assign` / `Move` / `Delete` / `Cook` commands; the only bridge change (0.24.0) lets `preset.read` read a cue part's data with a cooked flag per value. The console cooks an edited line at once and re-cooks group and preset changes in the background, so editing and cooking cannot be fully separated on the console; the edit tool reports the coverage change and the cook tool gives an explicit, verified cook. First release: standard lines (group, preset, MAtricks, Enabled, Name, SelectionMode); phaser lines, filters and shapes are read and kept but not edited.
+
 ### Acceptance criteria
 
 - List, create, edit, reorder, and remove recipe lines in explicit presets or sequence/cue/part targets.

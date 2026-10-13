@@ -172,7 +172,7 @@ Ops: `ping`, `cmd`, `lua`, `object`, `children`, `objects`, `dump`, `set`, `setf
 `input.status` and the fake-backend test control `input.fake` (below), since v0.6.0 `input.combo` (below), and since
 v0.7.0 the interaction and sequence ops `input.begin`, `input.extend`, `input.end`, `input.sequence`,
 `input.sequence.status`, `input.sequence.abort` ([below](#interactions-admission-text-and-sequences-plugin-v070-kb-05)), and since
-v0.8.0 the read-only feedback ops `feedback.describe` and `feedback.read` ([below](#console-feedback-plugin-v080-kb-06)), v0.13.0 `feedback.context`, `feedback.watch` and `feedback.unwatch` ([below](#control-context-plugin-v0130-kb-17)), and v0.14.0 the continuous-control ops `control.bind`, `control.open`, `control.renew`, `control.close`, `control.submit`, `control.status` and `control.recover` ([below](#continuous-control-plugin-v0140-kb-18)), and v0.19.0 the patch ops: reads `patch.state`, `patch.types`, `patch.list`, `patch.check`, `patch.collections` and `patch.fingerprint`, and the guarded, `exclusive`-only `patch.enter`, `patch.add`, `patch.set`, `patch.remove` and `patch.commit` ([tools/patch.md](tools/patch.md)), and since v0.20.0 the page/executor range guard on every op that takes an object reference ([below](#page-and-executor-ranges-plugin-v0200)), and since v0.21.0 the read-only selection-grid ops `group.read` and `selection.grid` ([below](#selection-grid-reads-plugin-v0210-sb-02)), and since v0.22.0 the read-only preset ops `preset.read` and `preset.context` ([below](#preset-reads-plugin-v0220-sb-03)), and since v0.23.0 the programmer's environment and the phaser layers of programmer and preset steps ([below](#phaser-layers-plugin-v0230-sb-04)). See
+v0.8.0 the read-only feedback ops `feedback.describe` and `feedback.read` ([below](#console-feedback-plugin-v080-kb-06)), v0.13.0 `feedback.context`, `feedback.watch` and `feedback.unwatch` ([below](#control-context-plugin-v0130-kb-17)), and v0.14.0 the continuous-control ops `control.bind`, `control.open`, `control.renew`, `control.close`, `control.submit`, `control.status` and `control.recover` ([below](#continuous-control-plugin-v0140-kb-18)), and v0.19.0 the patch ops: reads `patch.state`, `patch.types`, `patch.list`, `patch.check`, `patch.collections` and `patch.fingerprint`, and the guarded, `exclusive`-only `patch.enter`, `patch.add`, `patch.set`, `patch.remove` and `patch.commit` ([tools/patch.md](tools/patch.md)), and since v0.20.0 the page/executor range guard on every op that takes an object reference ([below](#page-and-executor-ranges-plugin-v0200)), and since v0.21.0 the read-only selection-grid ops `group.read` and `selection.grid` ([below](#selection-grid-reads-plugin-v0210-sb-02)), and since v0.22.0 the read-only preset ops `preset.read` and `preset.context` ([below](#preset-reads-plugin-v0220-sb-03)), and since v0.23.0 the programmer's environment and the phaser layers of programmer and preset steps ([below](#phaser-layers-plugin-v0230-sb-04)), and since v0.24.0 cue-part data with cooked flags in `preset.read` ([below](#cue-part-data-plugin-v0240-sb-05)). See
 [`plugin/gma3_mcp_bridge.lua`](../plugin/gma3_mcp_bridge.lua).
 
 Error replies are `{"id", "ok": false, "error": "[code] message"}`; since v0.7.0 they also carry `code` (the bracketed
@@ -261,6 +261,14 @@ Extensions of existing read ops (no new op):
   `integrated`, the preset the step calls (`{valid, addr, addrNative, name, no, pool}`).
 
 Tools: [tools/phasers.md](tools/phasers.md).
+
+### Cue part data (plugin v0.24.0, SB-05)
+
+`preset.read` also accepts a cue part (`"Sequence S Cue C Part P"`): `GetPresetData` reads it like a preset. The result
+carries `class` (`"Preset"` or `"Part"`), and every row has `cooked` (true when the value came from a recipe,
+`mask_cooked` non-zero; 511 on 2.5.1). Recipe lines themselves are read and written with `children` / `objects`
+(`asText: false` for their Selection, Values, MAtricks and Filter handles) and `set`. Tools:
+[tools/recipes.md](tools/recipes.md).
 
 ### Owned input sessions (plugin v0.5.0, KB-03)
 

@@ -154,7 +154,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.23.0"
+local VERSION      = "0.24.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -4137,6 +4137,8 @@ local function presetRow(fixtureKey, attr, ch, typeCache)
   local row = {
     fixture = tostring(fixtureKey), attribute = tostring(attr), sfIndex = sfIndex, uiChannel = ui, fixtureType = fixtureType or nil,
     mode = PRESET_MODES[pm] or (pm and tostring(pm)) or nil,
+    -- SB-05: produced by a recipe (mask_cooked non-zero; 511 on 2.5.1) rather than stored directly.
+    cooked = (tonumber(ch.mask_cooked) or 0) ~= 0,
     hasAbsolute = flags.has_absolute == 1 or flags.has_absolute == true, hasRelative = flags.has_relative == 1 or flags.has_relative == true,
     fade = ch.fade, delay = ch.delay, speed = ch.speed, phase = ch.phase, measure = ch.measure, speedMaster = ch.speed_master, stepCount = #ch,
     absPreset = objectRefInfo(ch.abs_preset), relPreset = objectRefInfo(ch.rel_preset),
@@ -4162,10 +4164,11 @@ end
 ops["preset.read"] = function(args)
   local h = resolve(args.ref)
   local class = safeCall(h, "GetClass")
-  if class ~= "Preset" then raise("[not-preset] " .. tostring(args.ref) .. " is a " .. tostring(class) .. ", not a preset") end
+  -- SB-05: a cue Part holds data the same way (GetPresetData works on it); its rows say which values were cooked.
+  if class ~= "Preset" and class ~= "Part" then raise("[not-preset] " .. tostring(args.ref) .. " is a " .. tostring(class) .. ", not a preset or cue part") end
   local pool = safeCall(h, "Parent")
   local out = {
-    ref = args.ref, addr = safeCall(h, "Addr"), addrNative = safeCall(h, "AddrNative"), no = safeProp(h, "no"), name = safeProp(h, "name"),
+    ref = args.ref, class = class, addr = safeCall(h, "Addr"), addrNative = safeCall(h, "AddrNative"), no = safeProp(h, "no"), name = safeProp(h, "name"),
     pool = isHandle(pool) and { no = safeProp(pool, "no"), name = safeProp(pool, "name") } or nil,
     presetMode = getProp(h, "PresetMode", true), storedData = getProp(h, "StoredData", true), featureGroup = getProp(h, "FeatureGroup", true),
     lock = getProp(h, "Lock", true), maxDepth = getProp(h, "MaxDepth", true), hasMAtricks = getProp(h, "HasAnyMAtricksData", true),

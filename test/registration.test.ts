@@ -93,6 +93,10 @@ const WORKFLOW_TOOLS = [
   // SB-04 phasers
   "gma3_build_phaser",
   "gma3_phaser_release",
+  // SB-05 recipes
+  "gma3_recipes",
+  "gma3_edit_recipe",
+  "gma3_cook_recipes",
 ];
 
 test("all pre-existing tools are still registered under their original names", async () => {
