@@ -14,6 +14,7 @@ const modulesHarness = path.join("test", "lua", "modules_test.lua");
 const sessionsHarness = path.join("test", "lua", "hardkeys_sessions_test.lua");
 const contextHarness = path.join("test", "lua", "feedback_context_test.lua");
 const controlHarness = path.join("test", "lua", "control_admission_test.lua");
+const patchHarness = path.join("test", "lua", "patch_ops_test.lua");
 
 function findLua(): string | null {
   for (const bin of ["lua5.4", "lua54", "lua"]) {
@@ -62,6 +63,14 @@ test("control-context readers and snapshots Lua harness (KB-17)", { skip: lua ? 
 
 test("continuous-control admission Lua harness (KB-18)", { skip: lua ? false : "no Lua 5.4+ interpreter on PATH (install lua to run the control tests)" }, () => {
   const r = spawnSync(lua!, [controlHarness], { cwd: root, encoding: "utf8" });
+  const output = `${r.stdout}${r.stderr}`;
+  assert.equal(r.status, 0, `harness failed:\n${output}`);
+  assert.match(output, /ALL PASSED/, output);
+  assert.doesNotMatch(output, /^FAIL /m, output);
+});
+
+test("patch ops Lua harness (KB-26)", { skip: lua ? false : "no Lua 5.4+ interpreter on PATH (install lua to run the patch tests)" }, () => {
+  const r = spawnSync(lua!, [patchHarness], { cwd: root, encoding: "utf8" });
   const output = `${r.stdout}${r.stderr}`;
   assert.equal(r.status, 0, `harness failed:\n${output}`);
   assert.match(output, /ALL PASSED/, output);
