@@ -65,21 +65,30 @@ The plan the tool returns (`plan.steps[].stepTiming`, `plan.distribution`, `plan
      `Set Selection MAtricks` / `Reset Selection MAtricks` for a repeat;
    - finally `Step 1`.
 5. `check_build`: the Preview programmer is read and checked before anything is stored.
-   - Every fixture has every requested attribute, with the right number of steps.
+   - Every fixture has a value, and every requested attribute, with the right number of steps.
+   - Step timing and the phaser layers are checked on **every** attribute of the effect: the explicit ones, those a
+     step preset brought, and activation-group siblings.
    - Each step has its value (percent; physical values converted through the attribute's range, relative values
      through its size) and its timing.
    - Each step preset is referenced by every fixture in its step, and no other preset is referenced there.
    - Speed, measure and speed master match, and every fixture has the expected phase for its grid position and the
      repetition.
-   - Only activation-group siblings and attributes of step presets may be there in addition, and they are reported.
+   - Only activation-group siblings and attributes of step presets may be there in addition, and they are reported
+     (their values come from the preset or the group; their timing and layers are checked as above).
 6. `store`: the `gma3_store_preset` body, run inside this tool's lock, from the Preview programmer. It uses the mode
    and existing policy, layers absolute, relative and phaser, `/Embed "Yes"` when steps reference presets, and
    KeepActivation No. Its verification reads every stored step back: values, relative, width, transition, accel,
    decel, integrated preset, speed, phase, measure and speed master. Layers the preset leaves out are the console
    defaults (60 BPM, phase 0, width/transition 100, accel/decel 0).
-7. `release_preview_programmer` (`ClearAll` in Preview) and `preview_off`, **always** once Preview was entered.
-8. `check_normal_programmer`: back in Normal, the fingerprint must be unchanged.
-9. With `audition_ms`, after a verified store:
+7. `confirm_preview`, then `release_preview_programmer` (`ClearAll`) and `preview_off`, **always** once `Preview On` was
+   sent. The environment is read first and `ClearAll` is sent only when the console confirms Preview: in Normal it
+   would discard the operator's programmer. When the environment cannot be read, nothing is cleared and the result says
+   to run `gma3_phaser_release`.
+8. `check_normal_programmer`: back in Normal, the fingerprint must be unchanged. It covers every row's values, steps
+   (value, relative, timing, integrated preset), speed, phase, measure, speed master, fade, delay and absolute/relative
+   preset references.
+9. With `audition_ms`, only after a store whose read-back **matched** (so `audition_ms` needs `verify`) and an untouched
+   Normal programmer:
    - `ClearSelection`, the selection again, `At Preset <target>`;
    - wait;
    - `audition_release` (`ClearAll`, always);

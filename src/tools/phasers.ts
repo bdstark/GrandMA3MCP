@@ -308,7 +308,10 @@ export function verifyBuild(input: { effect: Effect; rows: BuildRow[]; scope: Ma
   const span = positions.length ? Math.max(...positions) - minPos + 1 : 1;
   for (const [sf, id] of input.scope) {
     const rows = bySf.get(sf) ?? [];
-    for (const attr of attrs) {
+    if (!rows.length) { problems.push(`${id}: no programmer value (the effect was not applied)`); continue; }
+    // Every attribute of the effect on this fixture: the explicit ones and those that came with a step preset or an
+    // activation group. All of them carry the step timing and phaser layers; values are checked where they were given.
+    for (const attr of [...new Set([...attrs, ...rows.map((x) => String(x.attribute))])]) {
       const r = rows.find((x) => x.attribute === attr);
       const where = `${id} ${attr}`;
       if (!r) { problems.push(`${where}: no programmer value (the attribute was not applied)`); continue; }
@@ -380,7 +383,14 @@ async function scan(bridge: Gma3Bridge, t: number): Promise<Scan> {
 /** A comparable fingerprint of programmer content (row identity, values, steps, layers). */
 export function fingerprint(rows: ProgrammerRow[]): string {
   return rows
-    .map((r) => JSON.stringify([r.subfixtureIndex, r.attribute, r.value ?? null, r.relative ?? null, r.stepCount ?? 1, (r.steps ?? []).map((s) => [s.absolute ?? null, s.relative ?? null, s.accel ?? null, s.decel ?? null, s.trans ?? null, s.width ?? null]), r.phaser?.speed ?? null, r.phaser?.phase ?? null, r.phaser?.fade ?? null, r.phaser?.delay ?? null, r.absPreset?.addrNative ?? null]))
+    .map((r) =>
+      JSON.stringify([
+        r.subfixtureIndex, r.attribute, r.value ?? null, r.relative ?? null, r.stepCount ?? 1,
+        (r.steps ?? []).map((s) => [s.absolute ?? null, s.relative ?? null, s.accel ?? null, s.decel ?? null, s.trans ?? null, s.width ?? null, s.integratedPreset?.addrNative ?? s.integratedPreset?.name ?? null]),
+        r.phaser?.speed ?? null, r.phaser?.phase ?? null, r.phaser?.measure ?? null, r.phaser?.speedMaster ?? null, r.phaser?.fade ?? null, r.phaser?.delay ?? null,
+        r.absPreset?.addrNative ?? r.absPreset?.name ?? null, r.relPreset?.addrNative ?? r.relPreset?.name ?? null,
+      ]),
+    )
     .sort()
     .join("\n");
 }
@@ -458,6 +468,7 @@ export async function buildPhaser(ctx: ToolContext, raw: BuildArgs): Promise<Ope
   const audition = raw.audition_ms === undefined ? 0 : v.check(() => finiteNumber("audition_ms", raw.audition_ms, { integer: true, min: 0, max: 30000 })) ?? 0;
   const preview = raw.preview === true;
   const verify = raw.verify !== false;
+  if (audition > 0 && !verify) v.fail("audition_ms needs verify: only an effect whose read-back matched is played");
   if (!preview && raw.exclusive !== true) v.fail("exclusive must be true: the tool switches the console to its Preview environment to build the effect and stores a preset; nobody else may use the console while it runs. preview: true needs no acknowledgement");
   let effect: Effect | undefined;
   if ((raw.template === undefined) === (raw.steps === undefined)) v.fail("give exactly one of steps (with phaser) or template");
@@ -672,10 +683,22 @@ export async function buildPhaser(ctx: ToolContext, raw: BuildArgs): Promise<Ope
         steps.push(...main.steps);
       }
     } finally {
-      // Leave the Preview environment whatever happened, once it may have been entered.
+      // Leave the Preview environment whatever happened, once it may have been entered. ClearAll is sent only after
+      // the console confirms it is in Preview: in Normal it would discard the operator's programmer.
       if (entered) {
-        steps.push(await commandStep(bridge, "release_preview_programmer", "ClearAll", t));
-        steps.push(await commandStep(bridge, "preview_off", "Preview Off", t));
+        let env: string | undefined;
+        try {
+          env = (await scan(bridge, t)).environment;
+        } catch {
+          env = undefined;
+        }
+        steps.push(asRead({ name: "confirm_preview", status: env === undefined ? "unknown" : "succeeded", op: "programmer", detail: { environment: env ?? null }, ...(env === undefined ? { error: "the environment could not be read, so nothing was cleared; run gma3_phaser_release" } : {}) }));
+        if (env === "Preview") {
+          steps.push(await commandStep(bridge, "release_preview_programmer", "ClearAll", t));
+          steps.push(await commandStep(bridge, "preview_off", "Preview Off", t));
+        } else if (env === undefined) {
+          warnings.push("the console's environment after the build could not be read; nothing was cleared. Run gma3_phaser_release, which clears only after confirming Preview");
+        }
       }
     }
     // The Normal programmer must be exactly as before.
@@ -690,7 +713,8 @@ export async function buildPhaser(ctx: ToolContext, raw: BuildArgs): Promise<Ope
       }
     }
     const stored = storeResult as OperationResult | null;
-    const storedOk = !!stored && stored.outcome === "succeeded";
+    // Only a stored and verified effect is played.
+    const storedOk = !!stored && stored.outcome === "succeeded" && stored.verification.status === "matched";
     // Audition: explicit only, in the (empty) Normal programmer, always released.
     let auditioned: unknown = null;
     if (audition > 0 && storedOk && untouched) {
@@ -710,7 +734,7 @@ export async function buildPhaser(ctx: ToolContext, raw: BuildArgs): Promise<Ope
       } catch (err) {
         steps.push(readStepFromError("check_audition_released", "programmer", err));
       }
-    } else if (audition > 0) warnings.push("the audition was skipped because the effect was not stored and verified");
+    } else if (audition > 0) warnings.push("the audition was skipped: it needs a stored effect whose read-back matched, and an untouched Normal programmer");
 
     let verification: Verification = notRequested();
     if (stored) {

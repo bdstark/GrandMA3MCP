@@ -80,7 +80,7 @@ test("a correct build verifies; each kind of deviation is named", () => {
   const ok = [chaseRow(63, 0), chaseRow(64, 1), chaseRow(65, 2), chaseRow(66, 3)];
   assert.deepEqual(verifyBuild({ effect: chaseEffect(), rows: ok, scope, implied: new Set(), stepPresets: [] }).problems, []);
   const p = (rows: Row[], extra: Partial<Parameters<typeof verifyBuild>[0]> = {}) => verifyBuild({ effect: chaseEffect(), rows, scope, implied: new Set(), stepPresets: [], ...extra }).problems.join(" | ");
-  assert.match(p(ok.slice(0, 3)), /404 Dimmer: no programmer value/);
+  assert.match(p(ok.slice(0, 3)), /404: no programmer value \(the effect was not applied\)/);
   assert.match(p([...ok.slice(0, 3), chaseRow(66, 3, { stepCount: 1 })]), /404 Dimmer: 1 steps, 2 expected/);
   assert.match(p([...ok.slice(0, 3), chaseRow(66, 3, { steps: [{ absolute: 100, trans: 100 }, { absolute: 0, trans: 0 }] })]), /404 Dimmer step 1: transition 0 expected, 100 read/);
   assert.match(p([...ok.slice(0, 3), chaseRow(66, 3, { steps: [{ absolute: 90, trans: 0 }, { absolute: 0, trans: 0 }] })]), /404 Dimmer step 1: absolute 100 % expected, 90 read/);
@@ -133,6 +133,10 @@ class Console {
   presets = new Map<string, unknown>();
   /** A step layer the console does not apply (e.g. on the first step). */
   dropFirstStepTransition = false;
+  /** Preview On answers OK but the console stays in Normal. */
+  previewIgnored = false;
+  /** Corrupt the stored copy of step 2 (a store the read-back must catch). */
+  corruptStore = false;
   failPreviewOff = false;
   fixtures: Record<string, { sf: number; attrs: string[] }> = { "401": { sf: 63, attrs: ["Dimmer", "ColorRGB_R"] }, "402": { sf: 64, attrs: ["Dimmer", "ColorRGB_R"] }, "601": { sf: 2, attrs: ["Pan", "Tilt"] } };
 
@@ -174,9 +178,13 @@ class Console {
       const c = String(args.command);
       this.commands.push(c);
       let m: RegExpMatchArray | null;
-      if ((m = c.match(/^Store Preset (\d+\.\d+) /))) { this.presets.set(m[1], this.prog().map((r) => ({ ...r }))); for (const r of this.prog()) r.stepCount = 0; return { feedback: "OK" }; }
+      if ((m = c.match(/^Store Preset (\d+\.\d+) /))) {
+        this.presets.set(m[1], this.prog().map((r) => ({ ...r, steps: r.steps!.map((st, i) => (this.corruptStore && i === 1 ? { ...st, absolute: 55 } : { ...st })) })));
+        for (const r of this.prog()) r.stepCount = 0;
+        return { feedback: "OK" };
+      }
       if (/^Grid /.test(c) || /MAtricks/.test(c)) return { feedback: "OK" };
-      if (c === "Preview On") { this.env = "Preview"; this.selection = []; return { feedback: "OK" }; }
+      if (c === "Preview On") { if (!this.previewIgnored) { this.env = "Preview"; this.selection = []; } return { feedback: "OK" }; }
       if (c === "Preview Off") { if (this.failPreviewOff) return { feedback: "Error" }; this.env = "Normal"; return { feedback: "OK" }; }
       if (c === "ClearAll") { this.programmers[this.env] = []; this.selection = []; return { feedback: "OK" }; }
       if (c === "ClearSelection") { this.selection = []; return { feedback: "OK" }; }
@@ -311,4 +319,64 @@ test("gma3_phaser_release leaves Preview, clears Normal only on request, and is 
   const clear = await h.callJson("gma3_phaser_release", { clear_normal: true, exclusive: true });
   assert.equal(clear.isError, false);
   assert.equal(con.programmers.Normal.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Review round 1
+// ---------------------------------------------------------------------------
+
+test("cleanup clears only after the console confirms Preview: a Preview On that did not take leaves Normal alone", async () => {
+  con.previewIgnored = true;
+  con.programmers.Normal.push({ subfixtureIndex: 5, fid: "701", attribute: "Dimmer", stepCount: 1, value: 30, steps: [{ absolute: 30 }], phaser: {} });
+  const { result, isError } = await build({ preset: "23.1", fixtures: [401, 402], template: { type: "dimmer_chase" } });
+  assert.equal(isError, true);
+  assert.match(errorOf(result, "check_preview"), /reports the Normal environment after Preview On/);
+  assert.equal(con.commands.includes("ClearAll"), false, "no ClearAll in Normal");
+  assert.equal(con.commands.includes("Preview Off"), false);
+  assert.equal(result.steps.find((s: { name: string }) => s.name === "confirm_preview").detail.environment, "Normal");
+  assert.equal(con.programmers.Normal.length, 1, "the operator's value survives");
+  assert.equal(result.normalProgrammerUntouched, true);
+});
+
+test("an effect whose read-back mismatched is not auditioned; audition_ms needs verify", async () => {
+  con.corruptStore = true;
+  const { result, isError } = await build({ preset: "23.1", fixtures: [401, 402], template: { type: "dimmer_chase" }, audition_ms: 50 });
+  assert.equal(isError, true);
+  assert.equal(result.verification.status, "mismatched");
+  assert.equal(con.commands.some((c) => c.startsWith("At Preset")), false, "nothing is played");
+  assert.ok(result.warnings.some((w: string) => /audition was skipped/.test(w)));
+  const noVerify = await h.callJson("gma3_build_phaser", { preset: "23.1", fixtures: [401], template: { type: "dimmer_chase" }, audition_ms: 50, verify: false, exclusive: true });
+  assert.match(noVerify.result.validationErrors.join(), /audition_ms needs verify/);
+});
+
+test("preset-only steps and activation-group siblings get the timing and distribution checks too", () => {
+  const e: Effect = { unit: "percent", steps: [{ values: {}, preset: { pool: 4, number: 4 }, transition: 0 }, { values: {}, preset: { pool: 4, number: 6 } }], phaser: { speedBpm: 120, phase: { from: 0, to: 90 }, measure: 2, speedMaster: 3 } };
+  const row = (sf: number, pos: number, over: Partial<Row> = {}): Row => ({
+    subfixtureIndex: sf, fid: String(sf), attribute: "ColorRGB_R", stepCount: 2,
+    steps: [{ absolute: 100, trans: 0, integratedPreset: { addrNative: "P.4.4" } }, { absolute: 80, integratedPreset: { addrNative: "P.4.6" } }],
+    phaser: { speed: 2, phase: pos * 90, measure: 200, speedMaster: 2, gridPos: pos },
+    ...over,
+  });
+  const sc = new Map([[63, "401"], [64, "402"]]);
+  const v = (rows: Row[]) => verifyBuild({ effect: e, rows, scope: sc, implied: new Set(), stepPresets: ["P.4.4", "P.4.6"] }).problems.join(" | ");
+  assert.equal(v([row(63, 0), row(64, 1)]), "");
+  const bad = row(64, 1, { steps: [{ absolute: 100, trans: 100, integratedPreset: { addrNative: "P.4.4" } }, { absolute: 80, integratedPreset: { addrNative: "P.4.6" } }], phaser: { speed: 1, phase: 0, measure: 400, speedMaster: 0, gridPos: 1 } });
+  const out = v([row(63, 0), bad]);
+  for (const re of [/402 ColorRGB_R step 1: transition 0 expected, 100 read/, /402 ColorRGB_R: speed 120 BPM expected, 60 BPM read/, /402 ColorRGB_R: measure 2 expected, 400 read/, /402 ColorRGB_R: speed master 3 expected, 1 read/, /402 ColorRGB_R: phase 90° expected/]) assert.match(out, re);
+  // An activation-group sibling of an explicit attribute is checked as well.
+  const sib = verifyBuild({ effect: chaseEffect(), rows: [chaseRow(63, 0), chaseRow(64, 1), chaseRow(65, 2), chaseRow(66, 3), { ...chaseRow(63, 0), attribute: "ColorRGB_W", phaser: { speed: 1, phase: 0, gridPos: 0 } }], scope, implied: new Set(["ColorRGB_W"]), stepPresets: [] });
+  assert.match(sib.problems.join(), /401 ColorRGB_W: speed 120 BPM expected, 60 BPM read/);
+  assert.match(v([row(63, 0)]), /402: no programmer value/);
+});
+
+test("the fingerprint includes measure, speed master, relative and per-step references", () => {
+  const base: ProgrammerRow = { subfixtureIndex: 5, attribute: "Dimmer", stepCount: 2, steps: [{ absolute: 100 }, { absolute: 0 }], phaser: { speed: 1, phase: 0, measure: 200, speedMaster: 1 } };
+  const fp = fingerprint([base]);
+  for (const changed of [
+    { ...base, phaser: { ...base.phaser, measure: 400 } },
+    { ...base, phaser: { ...base.phaser, speedMaster: 2 } },
+    { ...base, relPreset: { addrNative: "P.2.1" } },
+    { ...base, steps: [{ absolute: 100, integratedPreset: { addrNative: "P.4.4" } }, { absolute: 0 }] },
+    { ...base, absPreset: { addrNative: "P.4.4" } },
+  ]) assert.notEqual(fingerprint([changed as ProgrammerRow]), fp, JSON.stringify(changed));
 });

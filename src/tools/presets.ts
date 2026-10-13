@@ -377,6 +377,8 @@ function compareSteps(r: ProgrammerRow, s: PresetRow, embed: boolean): string[] 
       if (!b.integrated) d.push(`step ${i + 1}: reference to ${ref.addrNative ?? ref.name} expected, none stored`);
       else if (!b.integrated.valid) d.push(`step ${i + 1}: the stored reference is invalid`);
       else if (ref.addrNative && b.integrated.addrNative !== ref.addrNative) d.push(`step ${i + 1}: reference to ${ref.addrNative} expected, ${b.integrated.addrNative} stored`);
+    } else if (embed && b.integrated) {
+      d.push(`step ${i + 1}: a reference to ${b.integrated.addrNative ?? b.integrated.name ?? "a preset"} was stored although the programmer step had none`);
     }
     if (!embed && b.integrated) d.push(`step ${i + 1}: a reference to ${b.integrated.addrNative ?? b.integrated.name ?? "a preset"} was stored although embed is false`);
   }
