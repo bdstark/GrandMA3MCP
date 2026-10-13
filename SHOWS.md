@@ -75,6 +75,8 @@ These workflows are not necessarily UI-only. grandMA3 documents command support 
 
 **Lua changes:** Not expected for storage options. Structured preset-content/reference inspection may require a narrow Lua reader.
 
+**Status:** implemented: `gma3_store_preset`, `gma3_preset` ([docs/tools/presets.md](docs/tools/presets.md), probe record [sb-03-presets-macos-2.5.1.md](docs/probes/sb-03-presets-macos-2.5.1.md), live test `test/live/presets.live.ts` 1/1 on macOS onPC 2.5.1). Storage uses one `Store Preset` command with every content-deciding option explicit; the narrow Lua reader is two read-only bridge ops (0.22.0), `preset.read` (stored rows with mode, layers and embedded sources, dependencies) and `preset.context` (pool defaults and the operator's store preferences). The Look store preference cannot be overridden per store (`/Look "No"` turns it on), so the tool refuses while it is on.
+
 ### Acceptance criteria
 
 - Store or update with explicit selective, global, or universal mode; handle forced conversion separately.
