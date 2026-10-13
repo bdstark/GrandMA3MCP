@@ -154,7 +154,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.18.0"
+local VERSION      = "0.19.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -1784,7 +1784,7 @@ local function inputSummary()
     retained = st and st.retained or 0,
     quarantined = st and st.quarantined or 0,
     bank = st and st.bank and { provisioned = st.bank.provisioned, id = st.bank.id, state = st.bank.state, codes = st.bank.codeCount, qualified = st.bank.qualifiedCount, problems = st.bank.problemCount } or (type(state.input.bank) == "table" and { provisioned = false, kept = state.input.bank.id } or nil),
-    note = "ownership records, not physical key state; see input.status. busy: cmd/set/setfader/lua are refused for every connection while it is set",
+    note = "ownership records, not physical key state; see input.status. busy: cmd/set/setfader/lua and the mutating patch.* ops are refused for every connection while it is set",
   }
 end
 
@@ -1792,7 +1792,8 @@ end
 -- instance reports itself busy (an open interaction, a running sequence or a held key, of any
 -- connection). Returns the module's busy descriptor or nil. Reads and the input recovery ops are
 -- never guarded; a bridge without the module (or with it disabled) is never busy.
-local GUARDED_OPS = { cmd = "a command", set = "a property change", setfader = "a fader change", lua = "arbitrary Lua" }
+local GUARDED_OPS = { cmd = "a command", set = "a property change", setfader = "a fader change", lua = "arbitrary Lua",
+  ["patch.enter"] = "a patch session", ["patch.add"] = "a patch change", ["patch.set"] = "a patch change", ["patch.remove"] = "a patch change", ["patch.commit"] = "a patch commit" }
 local function inputBusy()
   local rec = hardkeysRec()
   if rec and type(rec.instance.admission) == "function" then
@@ -3098,6 +3099,750 @@ end
 ops.stop = function(args)
   state.stopRequested = true
   return { stopping = true }
+end
+
+-------------------------------------------------------------------------------
+-- Patch ops (KB-26, bridge 0.19.0). Fixtures are patched through the patch edit copy (ShowData.Patch),
+-- never through a dialog (DIALOG.md "KB-25", docs/probes/kb-25-dialogs-macos-2.5.1.md):
+--   patch.enter   queues ChangeDestination into the copy and its stage's Fixtures with CmdIndirect. Never
+--                 Cmd(): a dialog opened from the plugin thread stalls the bridge. CmdIndirect lands on a
+--                 later frame, so the client polls patch.state until the destination has changed.
+--   patch.add / patch.set / patch.remove   edit the copy, and only while it is open; each checks the
+--                 copy itself, and add also the destination, and refuses otherwise.
+--   patch.commit  queues ChangeDestination Root, which commits the copy silently. A committed patch edit
+--                 has no undo (Oops fails).
+-- The copy and the command line are shared with the operator: the Patch menu fills the same copy and
+-- moves the same command line, so patch.enter refuses while the copy is open, the destination is not
+-- Root, or a modal is open. Every mutating op needs exclusive = true: the client confirms that nobody
+-- else edits the show while a session runs. patch.fingerprint is best-effort detection of foreign
+-- changes, read one collection per request; it is not a consistent snapshot, which is why exclusive use
+-- is required rather than implied.
+-------------------------------------------------------------------------------
+
+local PATCH_MAX_COUNT = 256
+local PATCH_MAX_FID = 99999999
+
+local function patchDestination()
+  local ok, d = pcall(function() return tostring(CmdObj():Get("Destination", Enums.Roles.Display)) end)
+  if ok then return d end
+  return nil
+end
+
+local function patchCopyOpen()
+  local ok, open = pcall(function()
+    local sd = ShowData()
+    return Patch():Addr() == sd.Patch:Addr() and sd.Patch:Count() > 0
+  end)
+  return ok and open == true
+end
+
+local function patchModal()
+  if type(GetTopModal) ~= "function" then return false end
+  local ok, m = pcall(GetTopModal)
+  if not ok or not m then return false end
+  local r = { name = safeProp(m, "name"), class = safeCall(m, "GetClass") }
+  pcall(function() r.display = m:GetDisplayIndex() end)
+  return r
+end
+
+local function requireExclusive(args, what)
+  if args.exclusive ~= true then
+    raise("[not-exclusive] " .. what .. " needs exclusive = true: the client confirms that nobody else edits the show while a patch session runs (the fingerprint check is best-effort detection, not exclusion)")
+  end
+end
+
+-- The copy must be open (and, for adding, the command line on its stage's Fixtures).
+local function requireCopy(expectDestination)
+  if not patchCopyOpen() then raise("[copy-closed] the patch copy is not open; start a session with patch.enter and wait until patch.state reports it") end
+  if expectDestination then
+    local d = patchDestination()
+    if d ~= expectDestination then raise("[wrong-destination] the command line destination is " .. tostring(d) .. ", not " .. expectDestination .. " (CmdIndirect lands on a later frame; poll patch.state)") end
+  end
+  return ShowData().Patch
+end
+
+local function patchSide(side)
+  local sd = ShowData()
+  if side == "copy" then
+    if not patchCopyOpen() then raise("[copy-closed] the patch copy is not open") end
+    return sd.Patch
+  end
+  if side ~= nil and side ~= "live" then raise("[bad-side] side must be live or copy") end
+  return sd.LivePatch
+end
+
+local function stageOf(p, stageName)
+  local stages = p.Stages
+  if not stages or stages:Count() == 0 then raise("[no-stage] the patch has no stages") end
+  if stageName == nil then return stages:Children()[1] end
+  for _, s in ipairs(stages:Children()) do
+    if tostring(s.name) == stageName then return s end
+  end
+  raise("[no-stage] no stage named " .. tostring(stageName))
+end
+
+local function findType(p, t)
+  for _, c in ipairs(p.FixtureTypes:Children()) do
+    if (type(t) == "number" and c.no == t) or (type(t) == "string" and tostring(c.name) == t) then return c end
+  end
+  return nil
+end
+
+local function findMode(ft, m)
+  for _, c in ipairs(ft.DMXModes:Children()) do
+    if (type(m) == "number" and c.no == m) or (type(m) == "string" and tostring(c.name) == m) then return c end
+  end
+  return nil
+end
+
+-- A mode's footprint and per-break channel ranges. DMXFootprint in the display role reads "first,last" per
+-- break (0-based channel offsets, -1 for an unused break): "0,7,-1,-1,..." is one break of 8 channels. Read
+-- raw it is a table (onPC 2.5.1), so only the display role is parsed.
+local function modeInfo(mode)
+  local info = { no = safeProp(mode, "no"), name = tostring(safeProp(mode, "name")), breaks = {} }
+  local okF, fp = pcall(function() return mode:Get("TotalFootprint") end)
+  info.footprint = okF and tonumber(tostring(fp)) or nil
+  local okD, df = pcall(function() return mode:Get("DMXFootprint", Enums.Roles.Display) end)
+  if okD and type(df) ~= "string" then okD = false end
+  if okD and df then
+    local nums = {}
+    for n in df:gmatch("%-?%d+") do nums[#nums + 1] = tonumber(n) end
+    for b = 1, math.floor(#nums / 2) do
+      local first, last = nums[2 * b - 1], nums[2 * b]
+      if first and last and first >= 0 and last >= first then info.breaks[#info.breaks + 1] = { ["break"] = b, channels = last - first + 1 } end
+    end
+  end
+  if #info.breaks == 0 and info.footprint and info.footprint > 0 then info.breaks[1] = { ["break"] = 1, channels = info.footprint } end
+  info.breaks = emptyArray(info.breaks)
+  return info
+end
+
+-- A mode as reported to clients: breaks as a flat list of channel counts (break 1 first), which keeps
+-- patch.types inside the bridge's JSON nesting limit.
+local function modeOut(info)
+  local channels = {}
+  for _, b in ipairs(info.breaks) do channels[#channels + 1] = b.channels end
+  return { no = info.no, name = info.name, footprint = info.footprint, breaks = #info.breaks, breakChannels = emptyArray(channels) }
+end
+
+-- "U.AAA" -> universe, address (1-based) and the 0-based absolute address; nil for anything else.
+local function parseDmx(text)
+  if type(text) ~= "string" then return nil end
+  local u, a = text:match("^%s*(%d+)%.(%d+)%s*$")
+  u, a = tonumber(u), tonumber(a)
+  if not u or not a or u < 1 or u > 1024 or a < 1 or a > 512 then return nil end
+  return { universe = u, address = a, abs = (u - 1) * 512 + (a - 1) }
+end
+
+local function formatDmx(abs)
+  return string.format("%d.%03d", abs // 512 + 1, abs % 512 + 1)
+end
+
+local function fixtureMode(c)
+  local ok, m = pcall(function() return c.ModeDirect end)
+  if ok and isHandle(m) then return m end
+  if ok and type(m) == "table" then return m end
+  return nil
+end
+
+local function displayProp(c, k)
+  local ok, v = pcall(function() return c:Get(k, Enums.Roles.Display) end)
+  if ok and v ~= nil then return tostring(v) end
+  return nil
+end
+
+local function numericFid(c)
+  local fid = safeProp(c, "FID")
+  if type(fid) == "number" then return fid end
+  return nil
+end
+
+-- Every fixture of a patch, all stages, sub-fixtures included, in tree order:
+-- { fixture, stage, depth, parent (fixture or nil), parentList (the collection or fixture holding it), index }.
+local function walkFixtures(p)
+  local out = {}
+  if not p.Stages then return out end
+  for _, st in ipairs(p.Stages:Children()) do
+    local stageName = tostring(st.name)
+    local function walk(holder, depth, parent)
+      for i, c in ipairs(holder:Children()) do
+        if safeCall(c, "GetClass") == "Fixture" then
+          out[#out + 1] = { fixture = c, stage = stageName, depth = depth, parent = parent, holder = holder, index = i }
+          walk(c, depth + 1, c)
+        end
+      end
+    end
+    local fx = st.Fixtures
+    if fx then walk(fx, 0, nil) end
+  end
+  return out
+end
+
+local function fixtureChildren(c)
+  local n = 0
+  for _, k in ipairs(c:Children()) do if safeCall(k, "GetClass") == "Fixture" then n = n + 1 end end
+  return n
+end
+
+-- The DMX ranges a fixture occupies: one per patched break, from its mode's per-break channel count.
+-- Returns ranges, unknown: `unknown` (a reason) when a patched break's range cannot be established (the
+-- break is unreadable or not an address, the mode is unavailable, or the mode has no such break). Callers
+-- treat an unknown range as occupied space they cannot see, never as free.
+local function fixtureRanges(c)
+  local ranges = {}
+  local mode = fixtureMode(c)
+  local per
+  local function channelsOf(b)
+    if per == nil then
+      per = {}
+      if mode then for _, x in ipairs(modeInfo(mode).breaks) do per[x["break"]] = x.channels end end
+    end
+    return per[b]
+  end
+  for b = 1, 8 do
+    local okB, v = pcall(function() return c:Get("Break" .. b, Enums.Roles.Display) end)
+    if not okB then return ranges, "break " .. b .. " could not be read" end
+    local text = v ~= nil and tostring(v) or ""
+    if text ~= "" then
+      local d = parseDmx(text)
+      if not d then return ranges, "break " .. b .. " reads " .. text .. ", not an address" end
+      if not mode then return ranges, "break " .. b .. " is patched at " .. text .. " but the DMX mode is unavailable" end
+      local n = channelsOf(b)
+      if not n then return ranges, "break " .. b .. " is patched at " .. text .. " but its DMX mode has no such break" end
+      ranges[#ranges + 1] = { ["break"] = b, first = d.abs, last = d.abs + n - 1 }
+    end
+  end
+  return ranges, nil
+end
+
+local function fixtureRow(e)
+  local c = e.fixture
+  local breaks = {}
+  for b = 1, 8 do
+    local v = displayProp(c, "Break" .. b)
+    if v and v ~= "" then breaks[#breaks + 1] = { ["break"] = b, address = v } end
+  end
+  return {
+    fid = numericFid(c) or tostring(safeProp(c, "FID")),
+    cid = displayProp(c, "CID"),
+    idType = displayProp(c, "IDType"),
+    name = tostring(safeProp(c, "name")),
+    type = displayProp(c, "FixtureType"),
+    mode = displayProp(c, "Mode"),
+    patch = displayProp(c, "Patch"),
+    breaks = emptyArray(breaks),
+    layer = displayProp(c, "Layer"),
+    class = displayProp(c, "Class"),
+    stage = e.stage,
+    depth = e.depth,
+    parentFid = e.parent and (numericFid(e.parent) or tostring(safeProp(e.parent, "FID"))) or nil,
+    subfixtures = fixtureChildren(c),
+  }
+end
+
+local function fixturesByFid(p)
+  local by = {}
+  for _, e in ipairs(walkFixtures(p)) do
+    local fid = numericFid(e.fixture)
+    if fid then by[fid] = e end
+  end
+  return by
+end
+
+-- Conflicts of `proposed` ranges ({fid, first, last}) with every patched range of `p`, ignoring the
+-- current ranges of the fixtures in `ignore` (they are being moved), and among the proposed ranges.
+-- Returns conflicts, unknown: `unknown` lists the fixtures whose occupied ranges could not be established;
+-- when it is not empty the absence of conflicts proves nothing, and callers refuse.
+local function rangeConflicts(p, proposed, ignore)
+  local conflicts = {}
+  local occupied = {}
+  local unknown = {}
+  for _, e in ipairs(walkFixtures(p)) do
+    local fid = numericFid(e.fixture)
+    if not (fid and ignore[fid]) then
+      local ranges, why = fixtureRanges(e.fixture)
+      if why then unknown[#unknown + 1] = { fid = fid or tostring(safeProp(e.fixture, "FID")), name = tostring(safeProp(e.fixture, "name")), reason = why } end
+      for _, r in ipairs(ranges) do occupied[#occupied + 1] = { fid = fid or tostring(safeProp(e.fixture, "FID")), name = tostring(safeProp(e.fixture, "name")), first = r.first, last = r.last } end
+    end
+  end
+  for i, pr in ipairs(proposed) do
+    if pr.last // 512 ~= pr.first // 512 then
+      conflicts[#conflicts + 1] = { fid = pr.fid, range = formatDmx(pr.first) .. "-" .. formatDmx(pr.last), reason = "crosses the end of universe " .. (pr.first // 512 + 1) }
+    end
+    for _, o in ipairs(occupied) do
+      if pr.first <= o.last and o.first <= pr.last then
+        conflicts[#conflicts + 1] = { fid = pr.fid, range = formatDmx(pr.first) .. "-" .. formatDmx(pr.last), with = o.fid, withName = o.name, withRange = formatDmx(o.first) .. "-" .. formatDmx(o.last) }
+      end
+    end
+    for j = i + 1, #proposed do
+      local q = proposed[j]
+      if pr.first <= q.last and q.first <= pr.last then
+        conflicts[#conflicts + 1] = { fid = pr.fid, range = formatDmx(pr.first) .. "-" .. formatDmx(pr.last), with = q.fid, withRange = formatDmx(q.first) .. "-" .. formatDmx(q.last), reason = "two requested ranges overlap" }
+      end
+    end
+  end
+  return emptyArray(conflicts), emptyArray(unknown)
+end
+
+local function occupancyUnknownError(unknown)
+  local first = unknown[1]
+  return { code = "occupancy-unknown", message = "the DMX occupancy of " .. #unknown .. " patched fixture(s) cannot be established (FID " .. tostring(first.fid) .. ": " .. first.reason .. "), so a free range cannot be proven; nothing was changed", occupancyUnknown = unknown }
+end
+
+local function integerArg(v, name, lo, hi)
+  local n = tonumber(v)
+  if not n or n ~= math.floor(n) or n < lo or n > hi then raise(string.format("[bad-args] %s must be an integer from %d to %d", name, lo, hi)) end
+  return n
+end
+
+local function nameArg(v, name)
+  if v == nil then return nil end
+  if type(v) ~= "string" or v == "" or #v > 128 or v:find('[%c"]') then raise("[bad-args] " .. name .. " must be a non-empty string without quotes or control characters (at most 128 characters)") end
+  return v
+end
+
+local function modeArgs(p, args)
+  if args.type == nil or args.mode == nil then raise("[bad-args] type and mode (number or name) are required") end
+  local ft = findType(p, args.type)
+  if not ft then raise("[no-type] no fixture type " .. tostring(args.type) .. " in the show (import it first)") end
+  local mode = findMode(ft, args.mode)
+  if not mode then raise("[no-mode] fixture type " .. tostring(ft.name) .. " has no DMX mode " .. tostring(args.mode)) end
+  return ft, mode, modeInfo(mode)
+end
+
+-- Proposed ranges of `count` consecutive fixtures of one mode from a start address (single break only).
+local function addRanges(info, start, count, fid)
+  local fp = info.footprint or 0
+  local out = {}
+  for i = 0, count - 1 do out[#out + 1] = { fid = fid + i, first = start.abs + i * fp, last = start.abs + (i + 1) * fp - 1 } end
+  return out
+end
+
+-- The whole block of an add must stay in the start address's universe (the console would otherwise
+-- continue in the next universe); nil when it fits, else a conflict entry.
+local function blockCrossing(info, start, count)
+  local last = start.abs + (info.footprint or 0) * count - 1
+  if last // 512 ~= start.abs // 512 then
+    return { range = formatDmx(start.abs) .. "-" .. formatDmx(last), reason = "the block of " .. count .. " fixtures crosses the end of universe " .. (start.abs // 512 + 1) }
+  end
+  return nil
+end
+
+ops["patch.state"] = function()
+  local sd = ShowData()
+  local res = { destination = patchDestination(), copyOpen = patchCopyOpen(), modal = patchModal(), lastCommand = nil, stages = {} }
+  pcall(function() res.patchAddr = Patch():Addr(); res.liveAddr = sd.LivePatch:Addr(); res.copyAddr = sd.Patch:Addr(); res.copyCount = sd.Patch:Count() end)
+  pcall(function() res.lastCommand = tostring(CmdObj():Get("LastCommand")) end)
+  pcall(function() for _, s in ipairs(sd.LivePatch.Stages:Children()) do res.stages[#res.stages + 1] = tostring(s.name) end end)
+  res.stages = emptyArray(res.stages)
+  res.atRoot = res.destination == "Root" and not res.copyOpen
+  return res
+end
+
+ops["patch.types"] = function(args)
+  local p = patchSide(args.side)
+  local types = {}
+  for _, t in ipairs(p.FixtureTypes:Children()) do
+    local modes = {}
+    for _, m in ipairs(t.DMXModes:Children()) do modes[#modes + 1] = modeOut(modeInfo(m)) end
+    types[#types + 1] = { no = safeProp(t, "no"), name = tostring(safeProp(t, "name")), shortName = displayProp(t, "ShortName"), manufacturer = displayProp(t, "Manufacturer"), source = displayProp(t, "Source"), modes = emptyArray(modes) }
+  end
+  return { side = args.side or "live", count = #types, types = emptyArray(types) }
+end
+
+ops["patch.list"] = function(args)
+  local p = patchSide(args.side)
+  local limit, offset = pageArgs(args, 200, 2000)
+  local from, to = tonumber(args.fromFid), tonumber(args.toFid)
+  local rows = {}
+  for _, e in ipairs(walkFixtures(p)) do
+    local fid = numericFid(e.fixture)
+    local inRange = (from == nil and to == nil) or (fid ~= nil and (from == nil or fid >= from) and (to == nil or fid <= to))
+    if inRange then rows[#rows + 1] = fixtureRow(e) end
+  end
+  local page = paginate(rows, limit, offset)
+  return { side = args.side or "live", total = page.total, offset = page.offset, count = page.count, fixtures = page.items }
+end
+
+-- Read-only pre-flight against the live patch. One of:
+--   add    = { type, mode, fid, count, address?, findFreeFrom? }
+--   edits  = [ { fid, address? ("U.AAA", "" = unpatch), name? } ]
+--   fids   = [ fid, ... ]  (removal)
+ops["patch.check"] = function(args)
+  local lp = ShowData().LivePatch
+  local res = {}
+  if type(args.add) == "table" then
+    local a = args.add
+    local ft, mode, info = modeArgs(lp, a)
+    local count = integerArg(a.count or 1, "count", 1, PATCH_MAX_COUNT)
+    local fid = integerArg(a.fid, "fid", 1, PATCH_MAX_FID)
+    res.type = { no = safeProp(ft, "no"), name = tostring(safeProp(ft, "name")) }
+    res.mode = modeOut(info)
+    res.singleBreak = #info.breaks <= 1
+    res.fidFree = CheckFIDCollision(fid, count) == true
+    if a.address ~= nil then
+      local start = parseDmx(a.address)
+      if not start then raise("[bad-args] address must be U.AAA (universe 1-1024, address 1-512)") end
+      res.address = formatDmx(start.abs)
+      res.consoleDmxFree = CheckDMXCollision(mode, res.address, count) == true
+      res.conflicts, res.occupancyUnknown = rangeConflicts(lp, addRanges(info, start, count, fid), {})
+      local crossing = blockCrossing(info, start, count)
+      if crossing then table.insert(res.conflicts, 1, crossing) end
+      res.dmxFree = res.consoleDmxFree and #res.conflicts == 0 and #res.occupancyUnknown == 0
+    end
+    if a.findFreeFrom ~= nil then
+      local start = parseDmx(a.findFreeFrom)
+      if not start then raise("[bad-args] findFreeFrom must be U.AAA") end
+      local need = math.max((info.footprint or 0) * count, 1)
+      local ok, best = pcall(FindBestDMXPatchAddr, lp, start.abs, need)
+      if ok and type(best) == "number" and best >= 0 then
+        res.suggested = formatDmx(best)
+        local s = parseDmx(res.suggested)
+        local sc, su = rangeConflicts(lp, addRanges(info, s, count, fid), {})
+        res.suggestedFree = CheckDMXCollision(mode, res.suggested, count) == true and #sc == 0 and #su == 0 and blockCrossing(info, s, count) == nil
+        if #su > 0 then res.occupancyUnknown = su end
+      else
+        res.suggested = false
+      end
+    end
+  elseif type(args.edits) == "table" then
+    local by = fixturesByFid(lp)
+    local moving, proposed, rows = {}, {}, {}
+    for _, e in ipairs(args.edits) do
+      local fid = integerArg(e.fid, "edits[].fid", 1, PATCH_MAX_FID)
+      local entry = by[fid]
+      local row = { fid = fid, exists = entry ~= nil }
+      if entry then
+        row.current = fixtureRow(entry)
+        if e.address ~= nil then
+          moving[fid] = true
+          if e.address ~= "" then
+            local start = parseDmx(e.address)
+            if not start then raise("[bad-args] edits[].address must be U.AAA or \"\" (unpatch)") end
+            local info = fixtureMode(entry.fixture) and modeInfo(fixtureMode(entry.fixture)) or { breaks = {} }
+            row.singleBreak = #info.breaks <= 1
+            row.footprint = info.footprint
+            if info.footprint and info.footprint > 0 then proposed[#proposed + 1] = { fid = fid, first = start.abs, last = start.abs + info.footprint - 1 } end
+          end
+        end
+      end
+      rows[#rows + 1] = row
+    end
+    res.edits = emptyArray(rows)
+    res.conflicts, res.occupancyUnknown = rangeConflicts(lp, proposed, moving)
+  elseif type(args.fids) == "table" then
+    local by = fixturesByFid(lp)
+    local rows = {}
+    for _, f in ipairs(args.fids) do
+      local fid = integerArg(f, "fids[]", 1, PATCH_MAX_FID)
+      local entry = by[fid]
+      rows[#rows + 1] = entry and { fid = fid, exists = true, current = fixtureRow(entry) } or { fid = fid, exists = false }
+    end
+    res.fixtures = emptyArray(rows)
+  else
+    raise("[bad-args] patch.check needs add, edits or fids")
+  end
+  return res
+end
+
+ops["patch.enter"] = function(args)
+  requireExclusive(args, "patch.enter")
+  if patchCopyOpen() then raise("[copy-open] the patch copy is already open (the Patch menu, or an unfinished session); close it at the console (Menu > Patch, then Save and Exit or Discard and Exit) before patching from here") end
+  local d = patchDestination()
+  if d ~= "Root" then raise("[not-root] the command line destination is " .. tostring(d) .. ", not Root; ChangeDestination Root at the console first") end
+  local m = patchModal()
+  if m then raise({ code = "modal-open", message = "a modal is open (" .. tostring(m.name) .. "); close it at the console first", modal = m }) end
+  local stage = stageOf(ShowData().LivePatch, args.stage)
+  local stageName = tostring(stage.name)
+  if stageName:find('"') then raise("[bad-stage] the stage name contains a quote and cannot be addressed") end
+  CmdIndirect('ChangeDestination "ShowData"."Patch"')
+  CmdIndirect('ChangeDestination "Stages"."' .. stageName .. '"."Fixtures"')
+  return { queued = true, stage = stageName, expectDestination = stageName .. ".Fixtures" }
+end
+
+-- Add `count` fixtures of one mode at `fid` (consecutive FIDs), patched consecutively from `address`
+-- (unpatched without it). Refuses multi-break modes, a taken FID range and any DMX conflict; after
+-- AddFixtures the created fixtures are checked against every other range of the copy, and deleted
+-- again (the op then fails) when they conflict or are not exactly the requested ones.
+ops["patch.add"] = function(args)
+  requireExclusive(args, "patch.add")
+  local stageName = nameArg(args.stage, "stage")
+  if not stageName then raise("[bad-args] stage is required (patch.enter reports it)") end
+  local p = requireCopy(stageName .. ".Fixtures")
+  local ft, mode, info = modeArgs(p, args)
+  if #info.breaks > 1 then raise("[multi-break] DMX mode " .. info.name .. " has " .. #info.breaks .. " DMX breaks; multi-break modes are not supported by patch.add") end
+  local count = integerArg(args.count or 1, "count", 1, PATCH_MAX_COUNT)
+  local fid = integerArg(args.fid, "fid", 1, PATCH_MAX_FID)
+  local name = nameArg(args.name, "name")
+  local by = fixturesByFid(p)
+  for i = 0, count - 1 do if by[fid + i] then raise("[fid-taken] FID " .. (fid + i) .. " is taken in the copy") end end
+  if CheckFIDCollision(fid, count) ~= true then raise("[fid-taken] FID " .. fid .. ".." .. (fid + count - 1) .. " is not free") end
+  local start
+  if args.address ~= nil then
+    start = parseDmx(args.address)
+    if not start then raise("[bad-args] address must be U.AAA (universe 1-1024, address 1-512)") end
+    local crossing = blockCrossing(info, start, count)
+    if crossing then raise("[crosses-universe] " .. crossing.reason) end
+    if CheckDMXCollision(mode, formatDmx(start.abs), count) ~= true then raise("[dmx-taken] " .. formatDmx(start.abs) .. " x" .. count .. " is not free") end
+    local conflicts, unknown = rangeConflicts(p, addRanges(info, start, count, fid), {})
+    if #unknown > 0 then raise(occupancyUnknownError(unknown)) end
+    if #conflicts > 0 then raise({ code = "dmx-taken", message = "the requested addresses overlap patched fixtures", conflicts = conflicts }) end
+  end
+  local spec = { mode = mode, amount = count, fid = tostring(fid) }
+  if name then spec.name = name end
+  if start then spec.patch = { formatDmx(start.abs) } end
+  local okA, ret = pcall(AddFixtures, spec)
+  local created, createdEntries = {}, {}
+  local after = fixturesByFid(p)
+  for i = 0, count - 1 do local e = after[fid + i]; if e then created[#created + 1] = fixtureRow(e); createdEntries[#createdEntries + 1] = e end end
+  local problem
+  if not okA then problem = "AddFixtures raised: " .. tostring(ret)
+  elseif ret ~= true then problem = "AddFixtures did not report success (" .. tostring(ret) .. ")"
+  elseif #created ~= count then problem = "AddFixtures created " .. #created .. " of " .. count .. " fixtures at the requested FIDs" end
+  local setByBridge = 0
+  if not problem and start then
+    -- AddFixtures does not always step the address for every fixture of the block: on onPC 2.5.1 a
+    -- two-fixture add of an 18-channel mode at 3.001 patched only the first (KB-26 live, 2026-10-13), where
+    -- an 8-channel add at 2.001 had patched both (KB-25). Every fixture not at its expected address is
+    -- patched explicitly, then each address is verified exactly.
+    table.sort(createdEntries, function(a, b) return numericFid(a.fixture) < numericFid(b.fixture) end)
+    for i, e in ipairs(createdEntries) do
+      local want = formatDmx(start.abs + (i - 1) * (info.footprint or 0))
+      if (displayProp(e.fixture, "Patch") or "") ~= want then
+        local okS = pcall(function() e.fixture:Set("Patch", want) end)
+        if okS then setByBridge = setByBridge + 1 end
+      end
+    end
+    local ranges, ignore, wrong = {}, {}, {}
+    for i, e in ipairs(createdEntries) do
+      local f = numericFid(e.fixture); ignore[f] = true
+      local want = formatDmx(start.abs + (i - 1) * (info.footprint or 0))
+      local now = displayProp(e.fixture, "Patch") or ""
+      if now ~= want then wrong[#wrong + 1] = "FID " .. f .. " at " .. (now == "" and "no address" or now) .. ", not " .. want end
+      local rs, why = fixtureRanges(e.fixture)
+      if why then wrong[#wrong + 1] = "FID " .. f .. ": " .. why end
+      for _, r in ipairs(rs) do ranges[#ranges + 1] = { fid = f, first = r.first, last = r.last } end
+    end
+    local conflicts, unknown = rangeConflicts(p, ranges, ignore)
+    if #wrong > 0 then problem = "the created fixtures could not be patched as requested (" .. table.concat(wrong, "; ") .. ")"
+    elseif #unknown > 0 then problem = occupancyUnknownError(unknown).message
+    elseif #ranges ~= count or #conflicts > 0 then problem = "the created fixtures overlap other fixtures" end
+    created = {}
+    for _, e in ipairs(createdEntries) do created[#created + 1] = fixtureRow(e) end
+  end
+  if problem then
+    -- Undo exactly what this call created (in the copy; nothing is committed here).
+    local removed = 0
+    table.sort(createdEntries, function(a, b) return a.index > b.index end)
+    for _, e in ipairs(createdEntries) do if pcall(function() e.holder:Delete(e.index) end) then removed = removed + 1 end end
+    raise({ code = "add-failed", message = problem .. "; the " .. removed .. " fixture(s) it created were deleted from the copy again", created = emptyArray(created), removed = removed })
+  end
+  return { added = true, ret = tostring(ret), type = { no = safeProp(ft, "no"), name = tostring(safeProp(ft, "name")) }, mode = modeOut(info), created = emptyArray(created), patchedByBridge = setByBridge }
+end
+
+-- Readdress, unpatch or rename fixtures in the copy. Every addressed fixture is unpatched first and then
+-- given its new address, so swaps work; the new ranges are checked against every other range of the copy,
+-- and on any problem every change of this call is restored and the op fails.
+ops["patch.set"] = function(args)
+  requireExclusive(args, "patch.set")
+  local p = requireCopy(nil)
+  if type(args.edits) ~= "table" or #args.edits == 0 then raise("[bad-args] edits must be a non-empty list") end
+  local by = fixturesByFid(p)
+  local edits, seen = {}, {}
+  for _, e in ipairs(args.edits) do
+    local fid = integerArg(e.fid, "edits[].fid", 1, PATCH_MAX_FID)
+    if seen[fid] then raise("[bad-args] FID " .. fid .. " appears twice in edits") end
+    seen[fid] = true
+    local entry = by[fid]
+    if not entry then raise("[no-fixture] no fixture with FID " .. fid .. " in the copy") end
+    local ed = { fid = fid, entry = entry, name = nameArg(e.name, "edits[].name") }
+    if e.address ~= nil then
+      if e.address == "" then ed.address = ""
+      else
+        local d = parseDmx(e.address)
+        if not d then raise("[bad-args] edits[].address must be U.AAA or \"\" (unpatch)") end
+        ed.address = formatDmx(d.abs)
+        local mode = fixtureMode(entry.fixture)
+        local info = mode and modeInfo(mode) or { breaks = {} }
+        if #info.breaks > 1 then raise("[multi-break] FID " .. fid .. " uses a multi-break mode; readdressing it is not supported") end
+        if not info.footprint or info.footprint < 1 then raise("[no-footprint] FID " .. fid .. " has no DMX footprint to patch") end
+      end
+    end
+    if ed.address == nil and ed.name == nil then raise("[bad-args] edit for FID " .. fid .. " changes nothing (give address and/or name)") end
+    edits[#edits + 1] = ed
+  end
+  local orig = {}
+  for _, ed in ipairs(edits) do orig[ed.fid] = { patch = displayProp(ed.entry.fixture, "Patch") or "", name = tostring(safeProp(ed.entry.fixture, "name")) } end
+  local function restore()
+    for _, ed in ipairs(edits) do pcall(function() ed.entry.fixture:Set("Patch", "") end) end
+    for _, ed in ipairs(edits) do
+      local o = orig[ed.fid]
+      pcall(function() ed.entry.fixture:Set("Patch", o.patch) end)
+      pcall(function() ed.entry.fixture:Set("Name", o.name) end)
+    end
+  end
+  local okE, errE = pcall(function()
+    for _, ed in ipairs(edits) do if ed.address ~= nil then ed.entry.fixture:Set("Patch", "") end end
+    for _, ed in ipairs(edits) do if ed.address ~= nil and ed.address ~= "" then ed.entry.fixture:Set("Patch", ed.address) end end
+    for _, ed in ipairs(edits) do if ed.name ~= nil then ed.entry.fixture:Set("Name", ed.name) end end
+  end)
+  local problem, conflicts
+  if not okE then problem = "a Set raised: " .. tostring(errE) end
+  if not problem then
+    local ranges, ignore = {}, {}
+    for _, ed in ipairs(edits) do
+      if ed.address ~= nil then
+        ignore[ed.fid] = true
+        local rs, why = fixtureRanges(ed.entry.fixture)
+        if why then problem = "FID " .. ed.fid .. ": " .. why end
+        for _, r in ipairs(rs) do ranges[#ranges + 1] = { fid = ed.fid, first = r.first, last = r.last } end
+        local now = displayProp(ed.entry.fixture, "Patch") or ""
+        if now ~= ed.address then problem = "FID " .. ed.fid .. " reads back patch " .. now .. ", not " .. (ed.address == "" and "unpatched" or ed.address) end
+      end
+      if ed.name ~= nil and tostring(safeProp(ed.entry.fixture, "name")) ~= ed.name then problem = "FID " .. ed.fid .. " reads back name " .. tostring(safeProp(ed.entry.fixture, "name")) end
+    end
+    local unknown
+    conflicts, unknown = rangeConflicts(p, ranges, ignore)
+    -- Only new ranges need proven free space: a rename or an unpatch adds none.
+    if not problem and #ranges > 0 and #unknown > 0 then problem = occupancyUnknownError(unknown).message end
+    if not problem and #conflicts > 0 then problem = "the new addresses overlap patched fixtures" end
+  end
+  if problem then
+    restore()
+    raise({ code = "set-failed", message = problem .. "; every change of this call was restored in the copy", conflicts = conflicts })
+  end
+  local rows = {}
+  for _, ed in ipairs(edits) do rows[#rows + 1] = { fid = ed.fid, before = orig[ed.fid], after = fixtureRow(ed.entry) } end
+  return { set = true, edits = emptyArray(rows) }
+end
+
+-- Delete fixtures from the copy by FID. Fixtures with sub-fixtures are refused (nothing is deleted).
+ops["patch.remove"] = function(args)
+  requireExclusive(args, "patch.remove")
+  local p = requireCopy(nil)
+  if type(args.fids) ~= "table" or #args.fids == 0 then raise("[bad-args] fids must be a non-empty list") end
+  local by = fixturesByFid(p)
+  local targets, seen = {}, {}
+  for _, f in ipairs(args.fids) do
+    local fid = integerArg(f, "fids[]", 1, PATCH_MAX_FID)
+    if not seen[fid] then
+      seen[fid] = true
+      local e = by[fid]
+      if not e then raise("[no-fixture] no fixture with FID " .. fid .. " in the copy") end
+      if fixtureChildren(e.fixture) > 0 then raise("[has-subfixtures] FID " .. fid .. " has sub-fixtures; removing it is not supported (remove them first)") end
+      targets[#targets + 1] = { fid = fid, entry = e, row = fixtureRow(e) }
+    end
+  end
+  -- Highest index first within each holder, so earlier positions stay valid.
+  table.sort(targets, function(a, b) if a.entry.holder ~= b.entry.holder then return tostring(a.entry.holder) < tostring(b.entry.holder) end return a.entry.index > b.entry.index end)
+  local removed = {}
+  for _, t in ipairs(targets) do
+    local ok, err = pcall(function() t.entry.holder:Delete(t.entry.index) end)
+    if not ok then raise({ code = "remove-failed", message = "deleting FID " .. t.fid .. " raised: " .. tostring(err) .. " (" .. #removed .. " removed before it, in the copy only)", removed = emptyArray(removed) }) end
+    removed[#removed + 1] = t.row
+  end
+  local left = fixturesByFid(p)
+  for _, t in ipairs(targets) do if left[t.fid] then raise({ code = "remove-failed", message = "FID " .. t.fid .. " is still in the copy after Delete", removed = emptyArray(removed) }) end end
+  return { removed = emptyArray(removed) }
+end
+
+ops["patch.commit"] = function(args)
+  requireExclusive(args, "patch.commit")
+  requireCopy(nil)
+  local m = patchModal()
+  if m then raise({ code = "modal-open", message = "a modal is open (" .. tostring(m.name) .. "); nothing was committed", modal = m }) end
+  CmdIndirect("ChangeDestination Root")
+  return { queued = true }
+end
+
+-- Fingerprint of a patch for best-effort detection of foreign changes (KB-25 "Patch fingerprint"): FNV-1a
+-- over every object of every collection, in tree order (depth, class, number and every property in the
+-- display role). Fixtures whose FID is in `exclude` (the ones a session touches) are left out with their
+-- sub-fixtures. Left out because the console derives or toggles them itself (each established live): the
+-- DMX address map, UI and RT channels, the fixture-type overview and the Patch menu's filter state; the
+-- universes' per-address children; numbering inside DmxCurves (renumbered whenever a copy is made); and the
+-- properties below. A read that fails or more than PATCH_FP_LIMIT objects mark it incomplete.
+local PATCH_FP_SKIP = { DmxAddresses = true, UIChannels = true, RTChannels = true, FixtureTypesOverview = true, PatchFilter = true }
+local PATCH_FP_SHALLOW = { DmxUniverses = true }
+local PATCH_FP_RENUMBERED = { DmxCurves = true }
+local PATCH_FP_PROP_SKIP = { COUNT = true, NO = true, MEMORYFOOTPRINT = true, USED = true, PATCHINFO = true, COARSEPARAMS = true, PARKEDCOUNT = true, TESTERCOUNT = true,
+  STRUCTURELOCKED = true, IGNORENETWORK = true, REALUSED = true, MAXID = true, GRANTED = true, SUBFIXTUREINDEX = true, OLDSUBFIXTUREINDEX = true }
+local PATCH_FP_LIMIT = 200000
+
+local function fnv(h, s)
+  for i = 1, #s do h = ((h ~ s:byte(i)) * 16777619) & 0xffffffff end
+  return h
+end
+
+local function patchFingerprint(p, only, exclude)
+  local r = { objects = 0, hash = 2166136261, complete = true }
+  local names = {}
+  local function add(h, depth, renumbered)
+    if r.objects >= PATCH_FP_LIMIT then r.complete = false; r.reason = "more than " .. PATCH_FP_LIMIT .. " objects"; return false end
+    local okc, n = pcall(function() return h:PropertyCount() end)
+    if not okc or type(n) ~= "number" then r.complete = false; r.reason = "PropertyCount failed on " .. tostring(safeProp(h, "name")); return false end
+    local key = tostring(safeCall(h, "GetClass")) .. "#" .. n
+    local pn = names[key]
+    if not pn then
+      local okn, list = pcall(function() local t = {} for i = 0, n - 1 do t[i + 1] = h:PropertyName(i) end return t end)
+      if not okn then r.complete = false; r.reason = "PropertyName failed on " .. tostring(safeProp(h, "name")); return false end
+      pn = list; names[key] = list
+    end
+    local parts = { tostring(depth), tostring(safeCall(h, "GetClass")), renumbered and "" or tostring(safeProp(h, "no")) }
+    for _, k in ipairs(pn) do
+      if not PATCH_FP_PROP_SKIP[k] and not (renumbered and k == "INDEX") then
+        local okv, v = pcall(function() return h:Get(k, Enums.Roles.Display) end)
+        if not okv then r.complete = false; r.reason = "property " .. tostring(k) .. " of " .. tostring(safeProp(h, "name")) .. " could not be read"; return false end
+        parts[#parts + 1] = k .. "=" .. tostring(v)
+      end
+    end
+    r.objects = r.objects + 1
+    r.hash = fnv(r.hash, table.concat(parts, "\31") .. "\n")
+    return true
+  end
+  local function walk(h, depth, renumbered)
+    for _, c in ipairs(h:Children()) do
+      if not r.complete then return end
+      local fid = safeCall(c, "GetClass") == "Fixture" and numericFid(c) or nil
+      if not (fid and exclude[fid]) then
+        if not add(c, depth, renumbered) then return end
+        walk(c, depth + 1, renumbered)
+      end
+    end
+  end
+  for _, c in ipairs(p:Children()) do
+    if not r.complete then break end
+    local cname = tostring(safeProp(c, "name"))
+    if (only == nil or cname == only) and not PATCH_FP_SKIP[cname] and add(c, 0) then
+      if PATCH_FP_SHALLOW[cname] then
+        for _, u in ipairs(c:Children()) do if not add(u, 1) then break end end
+      else
+        walk(c, 1, PATCH_FP_RENUMBERED[cname])
+      end
+    end
+  end
+  return r
+end
+
+ops["patch.collections"] = function()
+  local sd = ShowData()
+  local function names(p) local t = {} for _, c in ipairs(p:Children()) do local n = tostring(safeProp(c, "name")); if not PATCH_FP_SKIP[n] then t[#t + 1] = n end end return emptyArray(t) end
+  local open = patchCopyOpen()
+  return { copyOpen = open, live = names(sd.LivePatch), copy = open and names(sd.Patch) or false }
+end
+
+-- args: { side = "live" | "copy", collection = <name>, excludeFids = [ ... ] }
+ops["patch.fingerprint"] = function(args)
+  if type(args.collection) ~= "string" then raise("[bad-args] collection (string) is required; patch.collections lists them") end
+  local exclude = {}
+  if type(args.excludeFids) == "table" then for _, f in ipairs(args.excludeFids) do local n = tonumber(f); if n then exclude[n] = true end end end
+  local p = patchSide(args.side or "live")
+  local started = now()
+  local fp = patchFingerprint(p, args.collection, exclude)
+  fp.collection = args.collection
+  fp.side = args.side or "live"
+  fp.ms = math.floor((now() - started) * 1000 + 0.5)
+  return fp
 end
 
 -------------------------------------------------------------------------------

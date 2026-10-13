@@ -189,6 +189,40 @@ tools.
 - Type import only if KB-25 found a dialog-free path.
 - Live test on the disposable show in a free FID range, cleaning up after itself; docs in `docs/tools/patch.md`.
 
+### KB-26 results (2026-10-13)
+
+Bridge 0.19.0 (`patch.*` ops) and five MCP tools. Details are in [docs/tools/patch.md](docs/tools/patch.md).
+
+| Criterion | Status |
+| --- | --- |
+| `gma3_patch_types` | done: types and modes with footprint, number of breaks, channels per break |
+| `gma3_patch_list` | done: all stages, sub-fixtures, FID / CID / ID type / type / mode / address / breaks; FID range and pagination |
+| `gma3_patch_add` | done: type + mode by number or name, count, FID start, name, explicit address or first free block (`findFreeFrom`); FID and DMX ranges pre-checked (block inside one universe); every created fixture read back |
+| `gma3_patch_set` | readdress / unpatch / rename done (swaps and moves across a fixture's own range work); **re-numbering not done** (FID changes untested live) |
+| `gma3_patch_remove` | done for explicit FIDs, each checked first; fixtures with sub-fixtures refused |
+| Type import | **not done**: the dialog-free path exists (KB-25), but claiming the imported type needs the ownership rule; left for a follow-up |
+| Live test | done: `test/live/patch.live.ts`, 1/1 in 31 s (four committed sessions) |
+
+**Concurrency, as decided:** every change tool requires `exclusive: true`. The isolation check (whole-patch
+fingerprints of copy and live, minus the touched FIDs) is best-effort detection.
+
+`HookObjectChange` was probed as an alternative and is not recursive. It fires for the hooked object's own properties
+and for children added directly under it, not for deeper edits, so watching the whole patch would need about 3,200
+hooks. Live patch fixtures also accept `Set()` outside patch mode.
+
+**Console findings from the live run (onPC 2.5.1):**
+- **`DMXFootprint` read raw is a Lua table.** Only the display role gives the `"first,last"` text per break. The first
+  install parsed the table's address text and reported wrong breaks. The harness mock now returns a table too, so
+  that regression is covered.
+- **`AddFixtures` does not always step the address for every fixture of a block.** Two 18-channel fixtures at 3.001
+  patched only the first. In KB-25, two 8-channel fixtures at 2.001 had patched both.
+  - The first live run's `patch.add` noticed the unpatched second fixture, deleted both from the copy, and the tool
+    closed the unchanged copy. Nothing was committed.
+  - `patch.add` now patches any block member that is not at its expected address with `Set("Patch")` (reported as
+    `patchedByBridge`), then verifies every address exactly.
+- **Cost:** the bridge fingerprints one side in about 3.7 s (FixtureTypes 1.7 s, DmxUniverses 1.0 s, AttributeDefinitions
+  0.7 s). A change session therefore takes about 8 s, and the four sessions of the live test took 31 s.
+
 ## KB-27 — Dialog inspection and control
 
 **Request:** Let a client see and operate whatever dialog is open, for operations with no data-model path.

@@ -72,6 +72,12 @@ const WORKFLOW_TOOLS = [
   "gma3_hardkeys_release_all",
   // KB-06 read-only feedback
   "gma3_feedback",
+  // KB-26 patch
+  "gma3_patch_types",
+  "gma3_patch_list",
+  "gma3_patch_add",
+  "gma3_patch_set",
+  "gma3_patch_remove",
 ];
 
 test("all pre-existing tools are still registered under their original names", async () => {

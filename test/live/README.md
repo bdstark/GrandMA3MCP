@@ -25,5 +25,6 @@ Guard rails, enforced by `test/live/live.ts`:
 | Page 90, executors 90.201–90.215 | executor assignment and labelling tests |
 | Fixtures 1–10 (must be patched in the disposable show) | programmer, attribute and output tests |
 | Macro 900 | reserved |
+| Fixtures with FID 990–993, DMX from the first free block at 3.001 (also needs `GMA3_LIVE_EXCLUSIVE=1`) | patch tests (committed with no undo) |
 
 Each live test file documents the exact objects it creates at the top of the file.

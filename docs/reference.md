@@ -69,6 +69,17 @@ real console keys are pressed; details in [`tools/input.md`](tools/input.md)):
 | `gma3_hardkeys_status` | Read-only: enablement, backend and limitations, ownership records, interactions, sequence, busy descriptor; works with input disabled |
 | `gma3_hardkeys_release_all` | Release this server's keys newest first with the stored tuples; `recover: true` re-attempts unresolved releases; works with input disabled |
 
+Patch tools (KB-26; need plugin v0.19.0; no dialogs: one session through the patch edit copy per change; changes
+require `exclusive: true` and have no undo; details in [`tools/patch.md`](tools/patch.md)):
+
+| Tool | What it does |
+| --- | --- |
+| `gma3_patch_types` | Read-only: the show's fixture types and DMX modes with footprint and breaks |
+| `gma3_patch_list` | Read-only: fixtures of the live patch (all stages, sub-fixtures) with FID, CID, type, mode, address, breaks, stage; FID range filter |
+| `gma3_patch_add` | Add fixtures of one type/mode at consecutive FIDs, patched from an address or the first free block; pre-checked, committed, read back |
+| `gma3_patch_set` | Readdress (swaps and moves across a fixture's own range work), unpatch or rename fixtures |
+| `gma3_patch_remove` | Delete fixtures (not ones with sub-fixtures) |
+
 Console feedback (KB-06; needs plugin v0.8.0; read-only, works with Lua and input disabled and while another client
 owns input; details in [`tools/feedback.md`](tools/feedback.md)):
 
@@ -161,7 +172,7 @@ Ops: `ping`, `cmd`, `lua`, `object`, `children`, `objects`, `dump`, `set`, `setf
 `input.status` and the fake-backend test control `input.fake` (below), since v0.6.0 `input.combo` (below), and since
 v0.7.0 the interaction and sequence ops `input.begin`, `input.extend`, `input.end`, `input.sequence`,
 `input.sequence.status`, `input.sequence.abort` ([below](#interactions-admission-text-and-sequences-plugin-v070-kb-05)), and since
-v0.8.0 the read-only feedback ops `feedback.describe` and `feedback.read` ([below](#console-feedback-plugin-v080-kb-06)), v0.13.0 `feedback.context`, `feedback.watch` and `feedback.unwatch` ([below](#control-context-plugin-v0130-kb-17)), and v0.14.0 the continuous-control ops `control.bind`, `control.open`, `control.renew`, `control.close`, `control.submit`, `control.status` and `control.recover` ([below](#continuous-control-plugin-v0140-kb-18)). See
+v0.8.0 the read-only feedback ops `feedback.describe` and `feedback.read` ([below](#console-feedback-plugin-v080-kb-06)), v0.13.0 `feedback.context`, `feedback.watch` and `feedback.unwatch` ([below](#control-context-plugin-v0130-kb-17)), and v0.14.0 the continuous-control ops `control.bind`, `control.open`, `control.renew`, `control.close`, `control.submit`, `control.status` and `control.recover` ([below](#continuous-control-plugin-v0140-kb-18)), and v0.19.0 the patch ops: reads `patch.state`, `patch.types`, `patch.list`, `patch.check`, `patch.collections` and `patch.fingerprint`, and the guarded, `exclusive`-only `patch.enter`, `patch.add`, `patch.set`, `patch.remove` and `patch.commit` ([tools/patch.md](tools/patch.md)). See
 [`plugin/gma3_mcp_bridge.lua`](../plugin/gma3_mcp_bridge.lua).
 
 Error replies are `{"id", "ok": false, "error": "[code] message"}`; since v0.7.0 they also carry `code` (the bracketed
