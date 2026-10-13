@@ -78,6 +78,10 @@ const WORKFLOW_TOOLS = [
   "gma3_patch_add",
   "gma3_patch_set",
   "gma3_patch_remove",
+  // SB-01 executor and sequence playback configuration
+  "gma3_executor_settings",
+  "gma3_configure_executor",
+  "gma3_configure_sequence",
 ];
 
 test("all pre-existing tools are still registered under their original names", async () => {
