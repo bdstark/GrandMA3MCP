@@ -131,19 +131,27 @@ the sequence (`sequence`, `sequenceAddr`).
 | `kill_protect`, `swap_protect` | KillProtect, SwapProtect | true / false (protect playback, not editing) |
 | `use_executor_time`, `include_link_last_go` | UseExecutorTime, IncludeLinkLastGo | true / false |
 | `xfade_mode`, `xfade_reload` | XFadeMode, XFadeReload | ab / split, true / false |
+| `rate_master` (SB-06) | RateMaster | a speed master 1–16 or `"none"`: the cue timing runs at its effective BPM / 60 (60 BPM = 1:1) |
+| `speed_master` (SB-06) | SpeedMaster | a speed master 1–16 or `"none"`: the phasers in the cues follow it |
+| `rate_scale`, `speed_scale` (SB-06) | RateScale, SpeedScale | one, mul2 … mul256, div2 … div256 |
+| `speed_from_rate` (SB-06) | SpeedFromRate | true / false: the rate also scales the stored speeds |
 | `lock`, `unlock`, `preview`, `verify` | | see above |
 
 Requests in order: `objects Sequence <n>` (settings, Lock), the reference scan, `object Sequence <n>` (playback
 before), the `set` requests (unlock, one per change, explicit lock, relock), `objects Sequence <n>` (read-back),
 `object Sequence <n>` (playback after). The result lists `references` (every executor of the current data pool
 assigned this sequence) and warns when more than one executor shares it, or when the scan was incomplete; an
-incomplete scan never blocks the change. Speed and rate masters, scales and input/output filters are not part of
-the first release (SB-06 covers speed).
+incomplete scan never blocks the change. Input/output filters are not part of the first release.
+
+Masters are written by name, which the console requires (a number is silently ignored): a `resolve_masters` read step
+(`children ShowData.Masters.Speed`) turns the number into the master's name first and refuses a master without a name
+or one that shares its name with another. While a rate master is linked, the sequence's own rate fader is the shared
+master. See [speed.md](speed.md) for the masters themselves.
 
 ## Not in the first release
 
 Custom key commands, executor width/height, executor configurations (save/load/recast), MA-encoder functions,
-non-sequence executors, Cue Zero mode and speed/rate masters.
+non-sequence executors and Cue Zero mode. Speed and rate masters: [speed.md](speed.md) (SB-06).
 
 ## Live test procedure (`test/live/playback.live.ts`)
 

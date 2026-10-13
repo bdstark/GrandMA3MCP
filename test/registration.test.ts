@@ -97,6 +97,10 @@ const WORKFLOW_TOOLS = [
   "gma3_recipes",
   "gma3_edit_recipe",
   "gma3_cook_recipes",
+  "gma3_speed_masters",
+  "gma3_configure_speed_master",
+  "gma3_speed_master_action",
+  "gma3_observe_tempo",
 ];
 
 test("all pre-existing tools are still registered under their original names", async () => {
