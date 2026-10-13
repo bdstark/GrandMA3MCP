@@ -1522,7 +1522,7 @@ do
   r = request("feedback.read", {}, nil, C)
   check("feedback.read without items is refused with a code", r.ok == false and r.code == "no-items", r.error)
   r = request("feedback.read", { readers = { "commandText", "lastCommand", "blind", "solo", "page", "freeze", "selectedSequence", "previewBar", "sequenceActive" }, displays = { 1, 2, 9 }, executors = { 201, 202 }, sequences = { 5, 6 } }, nil, C)
-  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.19.0" and r.result.module.version == feedbackModule.VERSION and r.result.identity.showFile == "mcp-test-disposable", J(r))
+  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.20.0" and r.result.module.version == feedbackModule.VERSION and r.result.identity.showFile == "mcp-test-disposable", J(r))
   local by = {}
   if r.ok then for _, it in ipairs(r.result.items) do by[it.key] = it end end
   check("feedback.read: command text and last command are raw observations", by.commandText and by.commandText.value == "Store " and by.lastCommand.value == "Go+ Sequence 5 : OK" and by.lastCommand.note:find("not confirmation"), J(by.lastCommand))
@@ -1635,7 +1635,7 @@ do
   end
   local C = { id = 71 }
   r = request("feedback.context", { executors = { 201, 202 } }, nil, C)
-  check("feedback.context answers with Lua and input disabled", r.ok and r.result.bridgeVersion == "0.19.0" and r.result.module.version == feedbackModule.VERSION and r.result.atomic == false and r.result.generation == 1 and r.result.generationChanged == false and r.result.identity.showFile == "mcp-test-disposable" and r.result.identity.dataPool.name == "Default", J(r))
+  check("feedback.context answers with Lua and input disabled", r.ok and r.result.bridgeVersion == "0.20.0" and r.result.module.version == feedbackModule.VERSION and r.result.atomic == false and r.result.generation == 1 and r.result.generationChanged == false and r.result.identity.showFile == "mcp-test-disposable" and r.result.identity.dataPool.name == "Default", J(r))
   check("feedback.context: authoritative display, bank/page, slots with availability and value", r.ok and r.result.authoritativeDisplay.rule == "configured" and r.result.encoder.value.bank.name == "Color" and r.result.encoder.value.page.name == "RGB" and r.result.slots.value.slots[1].name == "ColorRGB_R" and r.result.slots.value.slots[1].availability == "available" and r.result.slots.value.slots[1].absolute == 50 and r.result.slots.value.slots[1].unit == "None" and r.result.slots.value.slots[2].valueState == "empty" and r.result.executorPage.no == 1, J(r.result.slots))
   check("feedback.context: executor targets with functions, level and playback-target status", r.ok and #r.result.executors == 2 and r.result.executors[1].value.functions.keyPress == "Temp" and r.result.executors[1].value.level.value == 100 and r.result.executors[1].value.playbackTarget == true and r.result.executors[2].value.empty == true and r.result.executors[2].value.reserved == nil, J(r.result.executors))
   check("feedback.context: nested fields survive the serialiser depth bound", r.ok and type(r.result.slots.value.slots[1].feature) == "string" and type(r.result.executors[1].value.assigned.name) == "string")
@@ -2105,6 +2105,88 @@ do
   check("the operator's input recover restores the original state on the original profile", fakeProfile.shortcutsActive == "true" and hk.instance:status().modeChange == nil and logFound("mode restoration m%d+ restored") ~= nil, lastLog())
   request("input.close", {}, nil, A); request("input.close", {}, nil, B)
   Main(nil, "stop"); Cleanup()
+end
+
+-------------------------------------------------------------------------------
+-- Page and executor lists are expanded into single lookups (bridge 0.20.0): ObjectList over
+-- "Page 1.180 Thru 1.181" (empty or assigned executors) hung onPC 2.5.1 for good on 2026-10-13.
+-------------------------------------------------------------------------------
+do
+  local function H(name, class) return { name = name, GetClass = function() return class end } end
+  local pages = { [1] = H("Page 1", "Page"), [2] = H("Page 2", "Page") }
+  local execs = { ["1.191"] = H("Exec 191", "Executor"), ["1.192"] = H("Exec 192", "Executor"), ["1.193"] = H("Proxy", "Proxy"), ["2.5"] = H("Exec 2.5", "Executor") }
+  local seq = H("Seq 1", "Sequence")
+  local calls, hung = {}, {}
+  local savedObjectList = ObjectList
+  ObjectList = function(ref)
+    calls[#calls + 1] = ref
+    local l = ref:lower()
+    -- Any multi-object page/executor expression stands for the console call that never returns.
+    if l:find("page") and (l:find("thru") or l:find("%+") or l:find(" t ")) then hung[#hung + 1] = ref; return {} end
+    local p, e = ref:match("^Page (%d+)%.(%d+)$")
+    if p then local h = execs[p .. "." .. e]; return h and { h } or nil end
+    p = ref:match("^Page (%d+)$")
+    if p then local h = pages[tonumber(p)]; return h and { h } or nil end
+    if ref == "Sequence 1 Thru 3" or ref == "Sequence 1" then return { seq } end
+    return {}
+  end
+  local function names(res) local t = {}; for _, it in ipairs(res.items or {}) do t[#t + 1] = it.name end; return table.concat(t, ",") end
+  local function reset() calls = {}; hung = {} end
+
+  reset()
+  r = request("objects", { ref = "Page 1.180 Thru 1.190", fields = { "Object" } })
+  check("objects: an executor range over empty executors is expanded, never sent as one ObjectList", r.ok and r.result.total == 0 and #hung == 0 and #calls == 12 and calls[1] == "Page 1" and calls[2] == "Page 1.180" and calls[12] == "Page 1.190", J({ r, calls }))
+  reset()
+  r = request("objects", { ref = "Page 1.190 Thru 1.193" })
+  check("objects: assigned and covered (Proxy) executors come back in range order", r.ok and r.result.total == 3 and names(r.result) == "Exec 191,Exec 192,Proxy" and #hung == 0, J(r))
+  reset()
+  r = request("objects", { ref = "page 1.193 thru 1.191" })
+  check("objects: a descending range keeps its order (lower-case keywords)", r.ok and names(r.result) == "Proxy,Exec 192,Exec 191" and #hung == 0, J(r))
+  reset()
+  r = request("objects", { ref = "P 1.191 T 1.192 + 2.5 + 1.191" })
+  check("objects: shortcuts P/T and + lists across pages, duplicates once", r.ok and names(r.result) == "Exec 191,Exec 192,Exec 2.5" and #hung == 0, J(r))
+  reset()
+  r = request("objects", { ref = "Page1.191Thru1.192" })
+  check("objects: unspaced 'Page1.191Thru1.192' is expanded too", r.ok and names(r.result) == "Exec 191,Exec 192" and #hung == 0, J({ r, calls }))
+  reset()
+  r = request("objects", { ref = "Page 9.1 Thru 9.400" })
+  check("objects: executors of a missing page cost one page lookup", r.ok and r.result.total == 0 and #calls == 1 and calls[1] == "Page 9", J({ r, calls }))
+  reset()
+  r = request("objects", { ref = "Page 1 Thru 3" })
+  check("objects: page ranges are expanded (missing pages skipped)", r.ok and names(r.result) == "Page 1,Page 2" and #hung == 0 and #calls == 3, J({ r, calls }))
+  reset()
+  r = request("objects", { ref = "Page 1.191", fields = { "Object" } })
+  check("objects: a single executor still goes to ObjectList unchanged", r.ok and names(r.result) == "Exec 191" and #calls == 1 and calls[1] == "Page 1.191", J({ r, calls }))
+  reset()
+  r = request("objects", { ref = "Sequence 1 Thru 3" })
+  check("objects: ranges without a Page/Executor keyword go to ObjectList unchanged", r.ok and names(r.result) == "Seq 1" and #calls == 1 and calls[1] == "Sequence 1 Thru 3", J({ r, calls }))
+
+  local refused = {
+    { "Page Thru", "open range" }, { "Page 1.180 Thru", "open end" }, { "Page 1.180 Thru 2.5", "across pages" },
+    { "Page 1.180 Thru 190", "executor start with a page end" }, { "Page 1 Thru 1.5", "page start with an executor end" },
+    { "Executor 180 Thru 181", "Executor keyword (current page)" }, { "Exec 1.180 + 1.181", "Exec shortcut" },
+    { "Page 1.180 - 1.181", "minus" }, { "Page 1.1 Thru 1.1001", "more than 1000" },
+    { 'Page "Ray" + 2', "names" }, { "Page 1.180.1 Thru 1.180.3", "deeper addresses" },
+    { "Sequence 1 Page 1.180 Thru 1.181", "Page not first" },
+  }
+  for _, case in ipairs(refused) do
+    reset()
+    r = request("objects", { ref = case[1] })
+    check("objects: refuses " .. case[2] .. " (" .. case[1] .. ") without calling ObjectList", r.ok == false and r.error:find("[unsafe-range]", 1, true) ~= nil and #calls == 0, J({ r, calls }))
+  end
+
+  -- resolve() (object, children, dump, set, getfader, ...) shares the guard.
+  reset()
+  r = request("object", { ref = "Page 1.180 Thru 1.192", properties = false })
+  check("object: a range resolves to its first existing executor without a range ObjectList", r.ok and r.result.name == "Exec 191" and #hung == 0, J({ r, calls }))
+  reset()
+  r = request("children", { ref = "Page 1.180 Thru 1.181" })
+  check("children: an empty executor range is 'no object found', not a hang", r.ok == false and r.error:find("no object found") and #hung == 0, J({ r, calls }))
+  reset()
+  r = request("set", { ref = "Exec 1.180 Thru 1.181", property = "Width", value = "2" })
+  check("set: an Executor range is refused before anything is read or written", r.ok == false and r.error:find("[unsafe-range]", 1, true) ~= nil and #calls == 0, J({ r, calls }))
+
+  ObjectList = savedObjectList
 end
 
 print(string.format("%d passed, %d failed", passes, failures))
