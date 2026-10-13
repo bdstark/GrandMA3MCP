@@ -63,6 +63,10 @@ the console: Menu › Patch, then **Discard and Exit** (drops everything in the 
   again on any problem.
 - `patch.set`: unpatches every fixture it readdresses first and then applies the new addresses, so swaps work. It
   checks the new ranges against every other fixture and restores every change of the call on any problem.
+- **Unreadable occupancy is never free space.** A patched fixture whose range cannot be established makes every
+  range check report it as `occupancyUnknown`, and an add or readdress is refused, both in the pre-flight and in the
+  copy. Such a fixture has an unreadable break, a break that is not an address, a DMX mode that cannot be read, or a
+  break the mode does not have. A rename or an unpatch adds no range and is not affected.
 - `patch.remove`: refuses fixtures with sub-fixtures.
 - All five mutating ops are on the bridge's input-ownership guard (refused with `[busy]` while someone owns console
   input) and need `exclusive = true`.
@@ -77,7 +81,9 @@ the KB-25 probe.
 
 ## gma3_patch_list
 
-Read-only (`patch.list`). Fixtures of the live patch, every stage, sub-fixtures included, in patch order. Each row has
+Read-only (`patch.list`). Fixtures of the live patch, every stage, sub-fixtures included, in patch order. The change
+tools' read-back reads every page of their FID range. A listing that ends before its reported total makes the
+verification `unavailable`; it never reports a fixture missing. Each row has
 `fid`, `cid`, `idType`, `name`, `type`, `mode`, `patch`, `breaks` (`[{break, address}]`), `stage`, `depth`,
 `parentFid` and `subfixtures`. `fromFid` / `toFid` filter numeric FIDs; `limit` (default 200, max 2000) / `offset`
 paginate.
@@ -135,7 +141,10 @@ undo). It needs a disposable show with a fixture type that has a single-break mo
 3. swaps the two addresses and renames 990, then unpatches 991;
 4. removes both, and checks that the command line is back at Root with the copy closed.
 
-The cleanup removes anything left in 990–993.
+The cleanup is armed only after the run has passed the show guard and proved FIDs 990–991 free. It then removes only
+those FIDs, and only fixtures whose name starts with "MCP live". A skipped run (a show that is not disposable, no
+`GMA3_LIVE_EXCLUSIVE`) or a run that finds the FIDs occupied deletes nothing. `test/patch-live.test.ts` runs the live
+file against a fake bridge in both cases and checks that no patch change is sent.
 
 ```bash
 GMA3_LIVE=1 GMA3_LIVE_EXCLUSIVE=1 node --import tsx --test test/live/patch.live.ts

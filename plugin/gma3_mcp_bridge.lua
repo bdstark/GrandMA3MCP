@@ -3285,17 +3285,34 @@ local function fixtureChildren(c)
 end
 
 -- The DMX ranges a fixture occupies: one per patched break, from its mode's per-break channel count.
+-- Returns ranges, unknown: `unknown` (a reason) when a patched break's range cannot be established (the
+-- break is unreadable or not an address, the mode is unavailable, or the mode has no such break). Callers
+-- treat an unknown range as occupied space they cannot see, never as free.
 local function fixtureRanges(c)
   local ranges = {}
   local mode = fixtureMode(c)
-  if not mode then return ranges end
-  local per = {}
-  for _, b in ipairs(modeInfo(mode).breaks) do per[b["break"]] = b.channels end
-  for b = 1, 8 do
-    local d = parseDmx(displayProp(c, "Break" .. b) or "")
-    if d and per[b] then ranges[#ranges + 1] = { ["break"] = b, first = d.abs, last = d.abs + per[b] - 1 } end
+  local per
+  local function channelsOf(b)
+    if per == nil then
+      per = {}
+      if mode then for _, x in ipairs(modeInfo(mode).breaks) do per[x["break"]] = x.channels end end
+    end
+    return per[b]
   end
-  return ranges
+  for b = 1, 8 do
+    local okB, v = pcall(function() return c:Get("Break" .. b, Enums.Roles.Display) end)
+    if not okB then return ranges, "break " .. b .. " could not be read" end
+    local text = v ~= nil and tostring(v) or ""
+    if text ~= "" then
+      local d = parseDmx(text)
+      if not d then return ranges, "break " .. b .. " reads " .. text .. ", not an address" end
+      if not mode then return ranges, "break " .. b .. " is patched at " .. text .. " but the DMX mode is unavailable" end
+      local n = channelsOf(b)
+      if not n then return ranges, "break " .. b .. " is patched at " .. text .. " but its DMX mode has no such break" end
+      ranges[#ranges + 1] = { ["break"] = b, first = d.abs, last = d.abs + n - 1 }
+    end
+  end
+  return ranges, nil
 end
 
 local function fixtureRow(e)
@@ -3334,13 +3351,18 @@ end
 
 -- Conflicts of `proposed` ranges ({fid, first, last}) with every patched range of `p`, ignoring the
 -- current ranges of the fixtures in `ignore` (they are being moved), and among the proposed ranges.
+-- Returns conflicts, unknown: `unknown` lists the fixtures whose occupied ranges could not be established;
+-- when it is not empty the absence of conflicts proves nothing, and callers refuse.
 local function rangeConflicts(p, proposed, ignore)
   local conflicts = {}
   local occupied = {}
+  local unknown = {}
   for _, e in ipairs(walkFixtures(p)) do
     local fid = numericFid(e.fixture)
     if not (fid and ignore[fid]) then
-      for _, r in ipairs(fixtureRanges(e.fixture)) do occupied[#occupied + 1] = { fid = fid or tostring(safeProp(e.fixture, "FID")), name = tostring(safeProp(e.fixture, "name")), first = r.first, last = r.last } end
+      local ranges, why = fixtureRanges(e.fixture)
+      if why then unknown[#unknown + 1] = { fid = fid or tostring(safeProp(e.fixture, "FID")), name = tostring(safeProp(e.fixture, "name")), reason = why } end
+      for _, r in ipairs(ranges) do occupied[#occupied + 1] = { fid = fid or tostring(safeProp(e.fixture, "FID")), name = tostring(safeProp(e.fixture, "name")), first = r.first, last = r.last } end
     end
   end
   for i, pr in ipairs(proposed) do
@@ -3359,7 +3381,12 @@ local function rangeConflicts(p, proposed, ignore)
       end
     end
   end
-  return emptyArray(conflicts)
+  return emptyArray(conflicts), emptyArray(unknown)
+end
+
+local function occupancyUnknownError(unknown)
+  local first = unknown[1]
+  return { code = "occupancy-unknown", message = "the DMX occupancy of " .. #unknown .. " patched fixture(s) cannot be established (FID " .. tostring(first.fid) .. ": " .. first.reason .. "), so a free range cannot be proven; nothing was changed", occupancyUnknown = unknown }
 end
 
 local function integerArg(v, name, lo, hi)
@@ -3458,10 +3485,10 @@ ops["patch.check"] = function(args)
       if not start then raise("[bad-args] address must be U.AAA (universe 1-1024, address 1-512)") end
       res.address = formatDmx(start.abs)
       res.consoleDmxFree = CheckDMXCollision(mode, res.address, count) == true
-      res.conflicts = rangeConflicts(lp, addRanges(info, start, count, fid), {})
+      res.conflicts, res.occupancyUnknown = rangeConflicts(lp, addRanges(info, start, count, fid), {})
       local crossing = blockCrossing(info, start, count)
       if crossing then table.insert(res.conflicts, 1, crossing) end
-      res.dmxFree = res.consoleDmxFree and #res.conflicts == 0
+      res.dmxFree = res.consoleDmxFree and #res.conflicts == 0 and #res.occupancyUnknown == 0
     end
     if a.findFreeFrom ~= nil then
       local start = parseDmx(a.findFreeFrom)
@@ -3471,7 +3498,9 @@ ops["patch.check"] = function(args)
       if ok and type(best) == "number" and best >= 0 then
         res.suggested = formatDmx(best)
         local s = parseDmx(res.suggested)
-        res.suggestedFree = CheckDMXCollision(mode, res.suggested, count) == true and #rangeConflicts(lp, addRanges(info, s, count, fid), {}) == 0 and blockCrossing(info, s, count) == nil
+        local sc, su = rangeConflicts(lp, addRanges(info, s, count, fid), {})
+        res.suggestedFree = CheckDMXCollision(mode, res.suggested, count) == true and #sc == 0 and #su == 0 and blockCrossing(info, s, count) == nil
+        if #su > 0 then res.occupancyUnknown = su end
       else
         res.suggested = false
       end
@@ -3500,7 +3529,7 @@ ops["patch.check"] = function(args)
       rows[#rows + 1] = row
     end
     res.edits = emptyArray(rows)
-    res.conflicts = rangeConflicts(lp, proposed, moving)
+    res.conflicts, res.occupancyUnknown = rangeConflicts(lp, proposed, moving)
   elseif type(args.fids) == "table" then
     local by = fixturesByFid(lp)
     local rows = {}
@@ -3555,7 +3584,8 @@ ops["patch.add"] = function(args)
     local crossing = blockCrossing(info, start, count)
     if crossing then raise("[crosses-universe] " .. crossing.reason) end
     if CheckDMXCollision(mode, formatDmx(start.abs), count) ~= true then raise("[dmx-taken] " .. formatDmx(start.abs) .. " x" .. count .. " is not free") end
-    local conflicts = rangeConflicts(p, addRanges(info, start, count, fid), {})
+    local conflicts, unknown = rangeConflicts(p, addRanges(info, start, count, fid), {})
+    if #unknown > 0 then raise(occupancyUnknownError(unknown)) end
     if #conflicts > 0 then raise({ code = "dmx-taken", message = "the requested addresses overlap patched fixtures", conflicts = conflicts }) end
   end
   local spec = { mode = mode, amount = count, fid = tostring(fid) }
@@ -3589,10 +3619,13 @@ ops["patch.add"] = function(args)
       local want = formatDmx(start.abs + (i - 1) * (info.footprint or 0))
       local now = displayProp(e.fixture, "Patch") or ""
       if now ~= want then wrong[#wrong + 1] = "FID " .. f .. " at " .. (now == "" and "no address" or now) .. ", not " .. want end
-      for _, r in ipairs(fixtureRanges(e.fixture)) do ranges[#ranges + 1] = { fid = f, first = r.first, last = r.last } end
+      local rs, why = fixtureRanges(e.fixture)
+      if why then wrong[#wrong + 1] = "FID " .. f .. ": " .. why end
+      for _, r in ipairs(rs) do ranges[#ranges + 1] = { fid = f, first = r.first, last = r.last } end
     end
-    local conflicts = rangeConflicts(p, ranges, ignore)
+    local conflicts, unknown = rangeConflicts(p, ranges, ignore)
     if #wrong > 0 then problem = "the created fixtures could not be patched as requested (" .. table.concat(wrong, "; ") .. ")"
+    elseif #unknown > 0 then problem = occupancyUnknownError(unknown).message
     elseif #ranges ~= count or #conflicts > 0 then problem = "the created fixtures overlap other fixtures" end
     created = {}
     for _, e in ipairs(createdEntries) do created[#created + 1] = fixtureRow(e) end
@@ -3660,13 +3693,18 @@ ops["patch.set"] = function(args)
     for _, ed in ipairs(edits) do
       if ed.address ~= nil then
         ignore[ed.fid] = true
-        for _, r in ipairs(fixtureRanges(ed.entry.fixture)) do ranges[#ranges + 1] = { fid = ed.fid, first = r.first, last = r.last } end
+        local rs, why = fixtureRanges(ed.entry.fixture)
+        if why then problem = "FID " .. ed.fid .. ": " .. why end
+        for _, r in ipairs(rs) do ranges[#ranges + 1] = { fid = ed.fid, first = r.first, last = r.last } end
         local now = displayProp(ed.entry.fixture, "Patch") or ""
         if now ~= ed.address then problem = "FID " .. ed.fid .. " reads back patch " .. now .. ", not " .. (ed.address == "" and "unpatched" or ed.address) end
       end
       if ed.name ~= nil and tostring(safeProp(ed.entry.fixture, "name")) ~= ed.name then problem = "FID " .. ed.fid .. " reads back name " .. tostring(safeProp(ed.entry.fixture, "name")) end
     end
-    conflicts = rangeConflicts(p, ranges, ignore)
+    local unknown
+    conflicts, unknown = rangeConflicts(p, ranges, ignore)
+    -- Only new ranges need proven free space: a rename or an unpatch adds none.
+    if not problem and #ranges > 0 and #unknown > 0 then problem = occupancyUnknownError(unknown).message end
     if not problem and #conflicts > 0 then problem = "the new addresses overlap patched fixtures" end
   end
   if problem then

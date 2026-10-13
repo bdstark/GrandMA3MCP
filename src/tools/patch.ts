@@ -109,6 +109,12 @@ function numberOrName(field: string, value: unknown): number | string | undefine
   throw new ValidationError(`${field} must be a number or a name without quotes (got ${describe(value)})`, field);
 }
 
+/** A pre-flight refusal for occupancy that could not be established (never treated as free space). */
+function occupancyMessage(unknown: Array<{ fid: number | string; reason: string }>): string {
+  const first = unknown[0];
+  return `the DMX occupancy of ${unknown.length} patched fixture(s) cannot be established (FID ${first.fid}: ${first.reason}), so free addresses cannot be proven`;
+}
+
 function requireExclusive(v: Validator, exclusive: unknown): void {
   if (exclusive !== true) {
     v.fail(
@@ -363,9 +369,28 @@ async function runSession(ctx: ToolContext, spec: SessionSpec): Promise<Operatio
   });
 }
 
-async function listRange(bridge: Gma3Bridge, from: number, to: number, t: number): Promise<FixtureRow[]> {
-  const res = (await bridge.request("patch.list", { fromFid: from, toFid: to, limit: 2000 }, t)) as { fixtures: FixtureRow[] };
-  return res.fixtures ?? [];
+/**
+ * The rows of the requested FIDs, reading every page of patch.list over their FID range. Throws when the
+ * listing ends before its reported total, so a fixture is never reported absent from an incomplete read.
+ */
+export async function listFids(bridge: Gma3Bridge, fids: number[], t: number): Promise<Map<number, FixtureRow>> {
+  const want = new Set(fids);
+  const found = new Map<number, FixtureRow>();
+  const from = Math.min(...fids);
+  const to = Math.max(...fids);
+  let offset = 0;
+  let total = Number.POSITIVE_INFINITY;
+  while (offset < total) {
+    const res = (await bridge.request("patch.list", { fromFid: from, toFid: to, limit: 2000, offset }, t)) as { total?: number; fixtures?: FixtureRow[] };
+    const rows = res.fixtures ?? [];
+    if (typeof res.total !== "number") throw new Error("patch.list answered without a total; the read-back cannot tell a missing fixture from an incomplete listing");
+    total = res.total;
+    for (const r of rows) if (typeof r.fid === "number" && want.has(r.fid)) found.set(r.fid, r);
+    if (rows.length === 0) break;
+    offset += rows.length;
+  }
+  if (offset < total) throw new Error(`patch.list stopped after ${offset} of ${total} fixtures; the read-back is incomplete`);
+  return found;
 }
 
 // ---------------------------------------------------------------------------
@@ -431,6 +456,7 @@ export async function patchAdd(ctx: ToolContext, raw: AddArgs): Promise<Operatio
           singleBreak: boolean;
           dmxFree?: boolean;
           conflicts?: unknown[];
+          occupancyUnknown?: Array<{ fid: number | string; reason: string }>;
           suggested?: string | false;
           suggestedFree?: boolean;
           mode: { name: string; footprint?: number };
@@ -442,7 +468,8 @@ export async function patchAdd(ctx: ToolContext, raw: AddArgs): Promise<Operatio
         const problems: string[] = [];
         if (!c.singleBreak) problems.push(`DMX mode ${c.mode.name} has more than one DMX break; multi-break modes are not supported`);
         if (!c.fidFree) problems.push(`FID ${fid}${count > 1 ? `..${fid + count - 1}` : ""} is not free`);
-        if (address && !c.dmxFree) problems.push(`${address} for ${count} fixture(s) of ${footprint} channels is not free: ${JSON.stringify(c.conflicts ?? [])}`);
+        if ((address || findFreeFrom) && c.occupancyUnknown?.length) problems.push(occupancyMessage(c.occupancyUnknown));
+        else if (address && !c.dmxFree) problems.push(`${address} for ${count} fixture(s) of ${footprint} channels is not free: ${JSON.stringify(c.conflicts ?? [])}`);
         if (findFreeFrom) {
           if (!c.suggested || !c.suggestedFree) problems.push(`no free block of ${count} x ${footprint} channels was found from ${findFreeFrom} inside one universe`);
           else resolvedAddress = c.suggested;
@@ -460,10 +487,10 @@ export async function patchAdd(ctx: ToolContext, raw: AddArgs): Promise<Operatio
     extra: () => ({ address: resolvedAddress ?? null, footprint, check: checkDetail }),
     readBack: async () => {
       try {
-        const rows = await listRange(ctx.bridge, fid, fid + count - 1, t);
+        const byFid = await listFids(ctx.bridge, fids, t);
+        const rows = fids.map((f) => byFid.get(f)).filter((r): r is FixtureRow => r !== undefined);
         const step: StepResult = asRead({ name: "read_back", status: "succeeded", op: "patch.list", detail: rows });
         const mismatches: string[] = [];
-        const byFid = new Map(rows.map((r) => [r.fid, r]));
         const expected = fids.map((f, i) => ({ fid: f, patch: resolvedAddress ? blockAddress(resolvedAddress, footprint, i) : "", ...(name ? { name } : {}) }));
         for (const e of expected) {
           const r = byFid.get(e.fid);
@@ -538,7 +565,7 @@ export async function patchSet(ctx: ToolContext, raw: SetArgs): Promise<Operatio
     verify,
     preflight: async () => {
       try {
-        const c = (await ctx.bridge.request("patch.check", { edits }, t)) as { edits: Array<{ fid: number; exists: boolean; singleBreak?: boolean; current?: FixtureRow }>; conflicts: unknown[] };
+        const c = (await ctx.bridge.request("patch.check", { edits }, t)) as { edits: Array<{ fid: number; exists: boolean; singleBreak?: boolean; current?: FixtureRow }>; conflicts: unknown[]; occupancyUnknown?: Array<{ fid: number | string; reason: string }> };
         before = c.edits.map((e) => e.current ?? { fid: e.fid, exists: false });
         const problems: string[] = [];
         for (const e of c.edits) {
@@ -546,6 +573,7 @@ export async function patchSet(ctx: ToolContext, raw: SetArgs): Promise<Operatio
           else if (e.singleBreak === false) problems.push(`FID ${e.fid} uses a multi-break mode; readdressing it is not supported`);
         }
         if (c.conflicts.length) problems.push(`the new addresses overlap patched fixtures: ${JSON.stringify(c.conflicts)}`);
+        if (edits.some((e) => e.address !== undefined && e.address !== "") && c.occupancyUnknown?.length) problems.push(occupancyMessage(c.occupancyUnknown));
         if (problems.length) return asRead({ name: "check_edits", status: "failed", op: "patch.check", error: problems.join("; "), detail: c });
         return asRead({ name: "check_edits", status: "succeeded", op: "patch.check", detail: c });
       } catch (err) {
@@ -557,9 +585,7 @@ export async function patchSet(ctx: ToolContext, raw: SetArgs): Promise<Operatio
     extra: () => ({ before }),
     readBack: async () => {
       try {
-        const fids = edits.map((e) => e.fid);
-        const rows = await listRange(ctx.bridge, Math.min(...fids), Math.max(...fids), t);
-        const byFid = new Map(rows.map((r) => [r.fid, r]));
+        const byFid = await listFids(ctx.bridge, edits.map((e) => e.fid), t);
         const mismatches: string[] = [];
         const actual: FixtureRow[] = [];
         for (const e of edits) {
@@ -639,8 +665,7 @@ export async function patchRemove(ctx: ToolContext, raw: RemoveArgs): Promise<Op
     extra: () => ({ removed }),
     readBack: async () => {
       try {
-        const rows = await listRange(ctx.bridge, Math.min(...fids), Math.max(...fids), t);
-        const still = rows.filter((r) => typeof r.fid === "number" && fids.includes(r.fid));
+        const still = [...(await listFids(ctx.bridge, fids, t)).values()];
         const checked = "the removed FIDs are absent from the patch";
         return {
           steps: [asRead({ name: "read_back", status: "succeeded", op: "patch.list", detail: still })],

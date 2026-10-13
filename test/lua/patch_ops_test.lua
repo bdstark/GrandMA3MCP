@@ -141,7 +141,7 @@ local function parse(a) local u, d = a:match("^(%d+)%.(%d+)$"); return (tonumber
 local function occupied(p)
   local r = {}
   for _, f in ipairs(allFixtures(p)) do
-    local fp = tonumber(f.ModeDirect.pv.TOTALFOOTPRINT) or 0
+    local fp = f.ModeDirect and tonumber(f.ModeDirect.pv.TOTALFOOTPRINT) or 0
     if f.pv.PATCH ~= "" and fp > 0 then local s = parse(f.pv.PATCH); r[#r + 1] = { s, s + fp - 1 } end
   end
   return r
@@ -350,6 +350,36 @@ check("a foreign change in the copy (CID of an untouched fixture) changes the fi
 for _, f in ipairs(allFixtures(console.copy)) do if f.FID == 4 then f:Set("CID", "None") end end
 request("patch.commit", X); frame()
 check("the second commit leaves 401/402 swapped, 403 unpatched and renamed, 501/901/902 removed", liveFids() == "4@:Group 4,401@1.009:Par 1,402@1.001:Par 2,403@:Renamed", liveFids())
+
+-- Unreadable occupancy is never free space (PR #34 review): a patched fixture whose mode or break cannot be
+-- read makes every range check incomplete, and add / readdress refuse.
+reset()
+local function liveFx(fid) for _, f in ipairs(allFixtures(console.live)) do if f.FID == fid then return f end end end
+liveFx(401).ModeDirect = nil
+r = request("patch.check", { edits = { { fid = 403, address = "1.001" } } })
+check("patch.check edits: a patched fixture without a readable mode is reported, not treated as free", r.ok and #r.result.conflicts == 0 and #r.result.occupancyUnknown == 1 and r.result.occupancyUnknown[1].fid == 401 and r.result.occupancyUnknown[1].reason:find("mode is unavailable"), J(r))
+r = request("patch.check", { add = { type = 6, mode = 3, fid = 905, address = "2.001", findFreeFrom = "2.001" } })
+check("patch.check add: unknown occupancy makes the block not free and the suggestion unusable", r.ok and r.result.dmxFree == false and #r.result.occupancyUnknown == 1 and r.result.suggestedFree == false, J(r))
+enter()
+r = request("patch.set", with({ edits = { { fid = 403, address = "1.001" } } }))
+local c403
+for _, f in ipairs(allFixtures(console.copy)) do if f.FID == 403 then c403 = f end end
+check("patch.set onto the range of a fixture with an unreadable mode fails and restores", r.ok == false and r.code == "set-failed" and r.error:find("cannot be established") and c403.pv.PATCH == "1.017", J(r))
+r = request("patch.set", with({ edits = { { fid = 402, name = "Renamed 402" }, { fid = 403, address = "" } } }))
+check("a rename and an unpatch need no proven free space and still work", r.ok and r.result.edits[1].after.name == "Renamed 402" and r.result.edits[2].after.patch == "", J(r))
+r = request("patch.set", with({ edits = { { fid = 402, name = "Par 2" }, { fid = 403, address = "1.017" } } }))
+check("(restored; the restore readdresses onto 403's own former range, which needs proven space and fails)", r.ok == false and r.code == "set-failed", J(r))
+for _, f in ipairs(allFixtures(console.copy)) do if f.FID == 402 then f:Set("Name", "Par 2") end if f.FID == 403 then f:Set("Patch", "1.017") end end
+r = request("patch.add", with({ stage = "Stage 1", type = 6, mode = 3, fid = 905, address = "2.001" }))
+check("patch.add refuses while any occupancy is unknown", r.ok == false and r.code == "occupancy-unknown" and r.detail.occupancyUnknown[1].fid == 401, J(r))
+request("patch.commit", X); frame()
+liveFx(401).ModeDirect = MODE8
+liveFx(402):Set("Patch", "somewhere")
+r = request("patch.check", { edits = { { fid = 403, address = "1.030" } } })
+check("patch.check edits: a break that is not an address is reported", r.ok and #r.result.occupancyUnknown == 1 and r.result.occupancyUnknown[1].fid == 402 and r.result.occupancyUnknown[1].reason:find("not an address"), J(r))
+liveFx(402):Set("Patch", "1.009")
+r = request("patch.check", { edits = { { fid = 403, address = "1.030" } } })
+check("with every mode readable again the occupancy is complete", r.ok and #r.result.occupancyUnknown == 0 and #r.result.conflicts == 0, J(r))
 
 r = request("patch.fingerprint", { side = "copy", collection = "Stages" })
 check("patch.fingerprint of the copy outside a session is refused", r.ok == false and r.code == "copy-closed", J(r))

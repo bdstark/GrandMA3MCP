@@ -41,6 +41,10 @@ class PatchWorld {
   neverOpen = false;
   addError: BridgeReplyError | null = null;
   commitSilent = false;
+  /** Rows patch.list claims beyond what it serves (an incomplete listing). */
+  listTotalExtra = 0;
+  /** patch.check reports these fixtures' occupancy as unknown. */
+  occupancyUnknown: Array<{ fid: number; reason: string }> = [];
 
   frame() {
     if (this.delay > 0) {
@@ -98,7 +102,11 @@ class PatchWorld {
         }
         if (a.findFreeFrom) {
           res.suggested = "1.017";
-          res.suggestedFree = true;
+          res.suggestedFree = this.occupancyUnknown.length === 0;
+        }
+        if (this.occupancyUnknown.length) {
+          res.occupancyUnknown = this.occupancyUnknown;
+          if (a.address) res.dmxFree = false;
         }
         return res;
       }
@@ -116,7 +124,7 @@ class PatchWorld {
           const s = abs(e.address);
           for (const [x, y, fid] of occ) if (s <= y && x <= s + FP - 1) conflicts.push({ fid: e.fid, with: fid });
         }
-        return { edits: rows, conflicts };
+        return { edits: rows, conflicts, occupancyUnknown: this.occupancyUnknown };
       }
       const fids = args.fids as number[];
       return { fixtures: fids.map((fid) => { const cur = this.live.find((x) => x.fid === fid); return cur ? { fid, exists: true, current: { ...cur, subfixtures: cur.subfixtures ?? 0 } } : { fid, exists: false }; }) };
@@ -172,8 +180,11 @@ class PatchWorld {
     f.on("patch.list", (args) => {
       const from = args.fromFid as number | undefined;
       const to = args.toFid as number | undefined;
+      const limit = Math.min((args.limit as number) ?? 200, 2000);
+      const offset = (args.offset as number) ?? 0;
       const rows = this.live.filter((x) => (from === undefined || x.fid >= from) && (to === undefined || x.fid <= to)).map((x) => ({ ...x, mode: `3 ${x.mode}` }));
-      return { total: rows.length, offset: 0, count: rows.length, fixtures: rows };
+      const page = rows.slice(offset, offset + limit);
+      return { total: rows.length + this.listTotalExtra, offset, count: page.length, fixtures: page };
     });
     f.on("patch.types", () => ({ count: 2, types: [{ no: 6, name: "Mega Hex Par", manufacturer: "American DJ", shortName: "MHPar06", modes: [] }, { no: 7, name: "Dimmer", manufacturer: "Generic", modes: [] }] }));
   }
@@ -409,6 +420,55 @@ test("gma3_patch_types and gma3_patch_list are plain reads", async () => {
     const l = await h.callJson("gma3_patch_list", { fromFid: 401, toFid: 402 });
     assert.equal(l.result.count, 2);
     assert.deepEqual([...new Set(ops())].sort(), ["patch.list", "patch.types"]);
+  } finally {
+    await h.close();
+  }
+});
+
+test("read-back pages through patch.list: FIDs 1 and 2001 are both found (PR #34 review)", async () => {
+  const { h, w } = await setup();
+  try {
+    w.live = [{ fid: 1, name: "First", patch: "", mode: "Ch08" }];
+    for (let f = 2; f <= 2000; f++) w.live.push({ fid: f, name: `Filler ${f}`, patch: "", mode: "Ch08" });
+    w.live.push({ fid: 2001, name: "Last", patch: "", mode: "Ch08" });
+    const { result } = await h.callJson("gma3_patch_set", { edits: [{ fid: 1, name: "First Renamed" }, { fid: 2001, name: "Last Renamed" }], exclusive: true });
+    assert.equal(result.outcome, "succeeded", result.summary);
+    assert.equal(result.verification.status, "matched", JSON.stringify(result.verification));
+    const pages = h.fake.requests.filter((r) => r.op === "patch.list").map((r) => r.args.offset);
+    assert.deepEqual(pages, [0, 2000], "two pages of 2000 were read");
+  } finally {
+    await h.close();
+  }
+});
+
+test("an incomplete listing makes verification unavailable, never a missing fixture", async () => {
+  const { h, w } = await setup();
+  try {
+    w.listTotalExtra = 5; // patch.list claims more rows than it serves
+    const { result } = await h.callJson("gma3_patch_set", { edits: [{ fid: 401, name: "Renamed" }], exclusive: true });
+    assert.equal(result.outcome, "succeeded", "the change itself was committed");
+    assert.equal(result.verification.status, "unavailable");
+    assert.match(result.verification.detail, /could not be read back/);
+    assert.match(JSON.stringify(result.steps.at(-1)), /read-back is incomplete/);
+  } finally {
+    await h.close();
+  }
+});
+
+test("unknown DMX occupancy refuses an add or a readdress before anything is sent, but not a rename (PR #34 review)", async () => {
+  const { h, w, ops } = await setup();
+  try {
+    w.occupancyUnknown = [{ fid: 401, reason: "break 1 is patched at 1.001 but the DMX mode is unavailable" }];
+    let r = await h.callJson("gma3_patch_set", { edits: [{ fid: 402, address: "1.001" }], exclusive: true });
+    assert.equal(r.result.outcome, "failed");
+    assert.match(r.result.summary, /occupancy of 1 patched fixture\(s\) cannot be established \(FID 401/);
+    r = await h.callJson("gma3_patch_add", { type: 6, mode: 3, fid: 901, address: "3.001", exclusive: true });
+    assert.match(r.result.summary, /cannot be established/);
+    r = await h.callJson("gma3_patch_add", { type: 6, mode: 3, fid: 901, findFreeFrom: "3.001", exclusive: true });
+    assert.match(r.result.summary, /cannot be established/);
+    assert.ok(!ops().includes("patch.enter"), "no session was started");
+    r = await h.callJson("gma3_patch_set", { edits: [{ fid: 402, name: "Renamed" }], exclusive: true });
+    assert.equal(r.result.outcome, "succeeded", "a rename needs no free space");
   } finally {
     await h.close();
   }

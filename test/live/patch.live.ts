@@ -11,7 +11,11 @@
  *     footprint, named "MCP live patch", patched consecutively.
  *   - A second add at FID 990 is refused before anything is sent (taken FID).
  *   - Swaps the two fixtures' addresses and renames 990, then unpatches 991.
- *   - Removes both through the tool; cleanup removes any of 990–993 that is still there.
+ *   - Removes both through the tool. The cleanup is armed only once this run has passed the show guard
+ *     (the body runs only for a disposable show) and proved FIDs 990–991 free, and it then removes only
+ *     those FIDs, and only fixtures whose name starts with "MCP live" (the names this run gives them).
+ *     A skipped run (wrong show, no GMA3_LIVE_EXCLUSIVE) or a run that found the FIDs occupied deletes
+ *     nothing (test/patch-live.test.ts checks both against a fake bridge).
  *   - Every change runs one patch session through the patch edit copy and is committed (no dialog).
  *
  * Procedure (what a reviewer should see in the console): the Patch menu is never opened; fixtures 990
@@ -27,6 +31,7 @@ import { captureTools } from "../helpers/tool-harness.ts";
 import { liveTest, liveEnabled, bridge } from "./live.ts";
 
 const FID = 990;
+const MARK = "MCP live"; // every name this run gives its fixtures starts with this
 const exclusive = process.env.GMA3_LIVE_EXCLUSIVE === "1";
 const ctx: ToolContext = { bridge, mutations: new MutationLock(), requestTimeoutMs: 15000, luaToolAllowed: false };
 const tools = captureTools(registerPatchTools, ctx);
@@ -50,16 +55,23 @@ const ok = (r: { result: any; isError: boolean; text: string }, what: string) =>
   return r.result;
 };
 
-async function present(): Promise<number[]> {
+async function listed(): Promise<Array<{ fid: number; name: string }>> {
   const l = await call("gma3_patch_list", { fromFid: FID, toFid: FID + 3 });
-  return (l.result.fixtures ?? []).map((f: { fid: number }) => f.fid);
+  return l.result.fixtures ?? [];
+}
+async function present(): Promise<number[]> {
+  return (await listed()).map((f) => f.fid);
 }
 
+// Armed only inside the test body after the preflight passed: the body runs only for a disposable show,
+// and arming follows the check that the run's FIDs were free. Until then the cleanup touches nothing.
+const cleanup = { armed: false, fids: [] as number[] };
+
 after(async () => {
-  if (!liveEnabled || !exclusive) return;
+  if (!liveEnabled || !exclusive || !cleanup.armed) return;
   try {
-    const left = await present();
-    if (left.length) await call("gma3_patch_remove", { fids: left, exclusive: true });
+    const mine = (await listed()).filter((f) => cleanup.fids.includes(f.fid) && typeof f.name === "string" && f.name.startsWith(MARK));
+    if (mine.length) await call("gma3_patch_remove", { fids: mine.map((f) => f.fid), exclusive: true });
   } catch {
     // best effort; the test itself reports what failed
   }
@@ -71,6 +83,8 @@ liveTest("KB-26 patch tools: add, refuse a taken FID, swap + rename, unpatch, re
     return;
   }
   assert.deepEqual(await present(), [], `FIDs ${FID}..${FID + 3} must be free in the disposable show`);
+  cleanup.armed = true;
+  cleanup.fids = [FID, FID + 1];
 
   const types = await call("gma3_patch_types", {});
   let pick: { type: number; mode: number; name: string; footprint: number } | undefined;
@@ -79,7 +93,7 @@ liveTest("KB-26 patch tools: add, refuse a taken FID, swap + rename, unpatch, re
   }
   assert.ok(pick, "the show needs a fixture type with a single-break DMX mode");
 
-  const add = ok(await call("gma3_patch_add", { type: pick.type, mode: pick.mode, fid: FID, count: 2, name: "MCP live patch", findFreeFrom: "3.001", exclusive: true }), "add");
+  const add = ok(await call("gma3_patch_add", { type: pick.type, mode: pick.mode, fid: FID, count: 2, name: `${MARK} patch`, findFreeFrom: "3.001", exclusive: true }), "add");
   assert.equal(add.committed, true);
   assert.deepEqual(add.fixtures.map((f: any) => f.fid), [FID, FID + 1]);
   const a0 = add.fixtures[0].patch as string;
@@ -89,12 +103,12 @@ liveTest("KB-26 patch tools: add, refuse a taken FID, swap + rename, unpatch, re
   assert.equal(dup.result.outcome, "failed");
   assert.match(dup.result.summary, /nothing was sent.*not free/);
 
-  ok(await call("gma3_patch_set", { edits: [{ fid: FID, address: a1, name: "MCP live swapped" }, { fid: FID + 1, address: a0 }], exclusive: true }), "swap + rename");
+  ok(await call("gma3_patch_set", { edits: [{ fid: FID, address: a1, name: `${MARK} swapped` }, { fid: FID + 1, address: a0 }], exclusive: true }), "swap + rename");
   ok(await call("gma3_patch_set", { edits: [{ fid: FID + 1, unpatch: true }], exclusive: true }), "unpatch");
   const l = await call("gma3_patch_list", { fromFid: FID, toFid: FID + 1 });
   const by = Object.fromEntries(l.result.fixtures.map((f: any) => [f.fid, f]));
   assert.equal(by[FID].patch, a1);
-  assert.equal(by[FID].name, "MCP live swapped");
+  assert.equal(by[FID].name, `${MARK} swapped`);
   assert.equal(by[FID + 1].patch, "");
 
   ok(await call("gma3_patch_remove", { fids: [FID, FID + 1], exclusive: true }), "remove");
