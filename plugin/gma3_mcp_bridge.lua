@@ -3195,13 +3195,15 @@ local function findMode(ft, m)
   return nil
 end
 
--- A mode's footprint and per-break channel ranges. DMXFootprint reads "first,last" per break (0-based
--- channel offsets, -1 for an unused break): "0,7,-1,-1,..." is one break of 8 channels.
+-- A mode's footprint and per-break channel ranges. DMXFootprint in the display role reads "first,last" per
+-- break (0-based channel offsets, -1 for an unused break): "0,7,-1,-1,..." is one break of 8 channels. Read
+-- raw it is a table (onPC 2.5.1), so only the display role is parsed.
 local function modeInfo(mode)
   local info = { no = safeProp(mode, "no"), name = tostring(safeProp(mode, "name")), breaks = {} }
   local okF, fp = pcall(function() return mode:Get("TotalFootprint") end)
   info.footprint = okF and tonumber(tostring(fp)) or nil
-  local okD, df = pcall(function() return tostring(mode:Get("DMXFootprint")) end)
+  local okD, df = pcall(function() return mode:Get("DMXFootprint", Enums.Roles.Display) end)
+  if okD and type(df) ~= "string" then okD = false end
   if okD and df then
     local nums = {}
     for n in df:gmatch("%-?%d+") do nums[#nums + 1] = tonumber(n) end
@@ -3567,14 +3569,33 @@ ops["patch.add"] = function(args)
   if not okA then problem = "AddFixtures raised: " .. tostring(ret)
   elseif ret ~= true then problem = "AddFixtures did not report success (" .. tostring(ret) .. ")"
   elseif #created ~= count then problem = "AddFixtures created " .. #created .. " of " .. count .. " fixtures at the requested FIDs" end
+  local setByBridge = 0
   if not problem and start then
-    local ranges, ignore = {}, {}
-    for _, e in ipairs(createdEntries) do
+    -- AddFixtures does not always step the address for every fixture of the block: on onPC 2.5.1 a
+    -- two-fixture add of an 18-channel mode at 3.001 patched only the first (KB-26 live, 2026-10-13), where
+    -- an 8-channel add at 2.001 had patched both (KB-25). Every fixture not at its expected address is
+    -- patched explicitly, then each address is verified exactly.
+    table.sort(createdEntries, function(a, b) return numericFid(a.fixture) < numericFid(b.fixture) end)
+    for i, e in ipairs(createdEntries) do
+      local want = formatDmx(start.abs + (i - 1) * (info.footprint or 0))
+      if (displayProp(e.fixture, "Patch") or "") ~= want then
+        local okS = pcall(function() e.fixture:Set("Patch", want) end)
+        if okS then setByBridge = setByBridge + 1 end
+      end
+    end
+    local ranges, ignore, wrong = {}, {}, {}
+    for i, e in ipairs(createdEntries) do
       local f = numericFid(e.fixture); ignore[f] = true
+      local want = formatDmx(start.abs + (i - 1) * (info.footprint or 0))
+      local now = displayProp(e.fixture, "Patch") or ""
+      if now ~= want then wrong[#wrong + 1] = "FID " .. f .. " at " .. (now == "" and "no address" or now) .. ", not " .. want end
       for _, r in ipairs(fixtureRanges(e.fixture)) do ranges[#ranges + 1] = { fid = f, first = r.first, last = r.last } end
     end
     local conflicts = rangeConflicts(p, ranges, ignore)
-    if #ranges ~= count or #conflicts > 0 then problem = "the created fixtures are not patched as requested or overlap other fixtures" end
+    if #wrong > 0 then problem = "the created fixtures could not be patched as requested (" .. table.concat(wrong, "; ") .. ")"
+    elseif #ranges ~= count or #conflicts > 0 then problem = "the created fixtures overlap other fixtures" end
+    created = {}
+    for _, e in ipairs(createdEntries) do created[#created + 1] = fixtureRow(e) end
   end
   if problem then
     -- Undo exactly what this call created (in the copy; nothing is committed here).
@@ -3583,7 +3604,7 @@ ops["patch.add"] = function(args)
     for _, e in ipairs(createdEntries) do if pcall(function() e.holder:Delete(e.index) end) then removed = removed + 1 end end
     raise({ code = "add-failed", message = problem .. "; the " .. removed .. " fixture(s) it created were deleted from the copy again", created = emptyArray(created), removed = removed })
   end
-  return { added = true, ret = tostring(ret), type = { no = safeProp(ft, "no"), name = tostring(safeProp(ft, "name")) }, mode = modeOut(info), created = emptyArray(created) }
+  return { added = true, ret = tostring(ret), type = { no = safeProp(ft, "no"), name = tostring(safeProp(ft, "name")) }, mode = modeOut(info), created = emptyArray(created), patchedByBridge = setByBridge }
 end
 
 -- Readdress, unpatch or rename fixtures in the copy. Every addressed fixture is unpatched first and then

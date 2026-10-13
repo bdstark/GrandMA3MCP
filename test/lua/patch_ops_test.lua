@@ -38,7 +38,13 @@ function Obj:GetClass() return self.class end
 function Obj:Addr() return self.addr or ("obj " .. tostring(self.name)) end
 function Obj:PropertyCount() return #self.pn end
 function Obj:PropertyName(i) return self.pn[i + 1] end
-function Obj:Get(k) local v = self.pv[k:upper()]; if v == nil and k:upper() == "NAME" then return self.name end return v end
+function Obj:Get(k, role)
+  local v = self.pv[k:upper()]
+  if v == nil and k:upper() == "NAME" then return self.name end
+  -- As on onPC 2.5.1: a DMX mode's DMXFootprint is a table unless read in the display role (live 2026-10-13).
+  if k:upper() == "DMXFOOTPRINT" and role == nil and v ~= nil then return { raw = v } end
+  return v
+end
 function Obj:Set(k, v)
   k = k:upper()
   if k == "PATCH" or k == "BREAK1" then self.pv.PATCH = v; self.pv.BREAK1 = v; return end
@@ -170,6 +176,8 @@ AddFixtures = function(spec)
   local amount = console.addMode == "short" and spec.amount - 1 or spec.amount
   for i = 0, amount - 1 do
     local addr = start and string.format("%d.%03d", (start + i * fp) // 512 + 1, (start + i * fp) % 512 + 1) or ""
+    -- "firstOnly": only the first fixture of the block gets an address, as onPC 2.5.1 did live for an 18-channel mode.
+    if console.addMode == "firstOnly" and i > 0 then addr = "" end
     stage.Fixtures.kids[#stage.Fixtures.kids + 1] = fixture(spec.name or ("Added " .. (fid + i)), fid + i, spec.mode, addr)
   end
   return true
@@ -298,9 +306,16 @@ console.addMode = "ok"
 r = request("patch.add", with({ stage = "Stage 1", type = 6, mode = 3, fid = 901, count = 2, address = "2.001", name = "New Par" }))
 check("patch.add creates the fixtures at consecutive FIDs and addresses", r.ok and #r.result.created == 2 and r.result.created[1].fid == 901 and r.result.created[1].patch == "2.001" and r.result.created[2].patch == "2.009", J(r))
 check("the live patch is unchanged until the commit", not liveFids():find("901"), liveFids())
+check("patch.add patched both through AddFixtures (no fix-up needed)", r.ok and r.result.patchedByBridge == 0, J(r))
 check("fingerprints excluding the touched FIDs match after the add", fpOf("copy", { 901, 902 }) == fpOf("live", { 901, 902 }))
 check("fingerprints without the exclusion differ after the add", fpOf("copy") ~= fpOf("live"))
 
+console.addMode = "firstOnly"
+r = request("patch.add", with({ stage = "Stage 1", type = 6, mode = 3, fid = 903, count = 2, address = "2.017" }))
+check("patch.add patches the rest of the block itself when AddFixtures only patched the first", r.ok and r.result.patchedByBridge == 1 and r.result.created[1].patch == "2.017" and r.result.created[2].patch == "2.025", J(r))
+console.addMode = "ok"
+r = request("patch.remove", with({ fids = { 903, 904 } }))
+check("(the fix-up fixtures are removed again before the commit)", r.ok and #r.result.removed == 2, J(r))
 r = request("patch.commit", {})
 check("patch.commit without exclusive is refused", r.ok == false and r.code == "not-exclusive", J(r))
 r = request("patch.commit", X)
