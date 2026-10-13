@@ -241,13 +241,18 @@ export function analyzeContent(input: {
     if (!inScope.some((r) => sfs.includes(r.subfixtureIndex))) problems.push(`fixture ${id} has no programmer value`);
   }
   if (input.mode === "universal" || input.force === "universal") {
+    // Universal data keeps one entry per attribute. Two phasers are equal only if every step and step parameter
+    // matches, which this tool cannot compare yet, so multi-step values are refused rather than risked.
+    const phasers = inScope.filter((r) => (r.stepCount ?? 1) > 1);
+    if (phasers.length) problems.push(`universal data keeps one value per attribute, and multi-step (phaser) values cannot be compared for equivalence yet: ${summarize(phasers)}; store them selective or global`);
     const byAttr = new Map<string, ProgrammerRow[]>();
     for (const r of inScope) byAttr.set(String(r.attribute), [...(byAttr.get(String(r.attribute)) ?? []), r]);
     const divergent = [...byAttr].filter(([, rs]) => rs.some((r) => !sameValue(r, rs[0])));
     if (divergent.length) problems.push(`universal data keeps one value per attribute, but these differ between fixtures: ${divergent.map(([a]) => a).join(", ")}; use selective or global, or give every fixture the same value`);
   }
   const refs = inScope.filter((r) => r.absPreset || r.relPreset);
-  const embeddedSources = [...new Set(refs.map((r) => (r.absPreset ?? r.relPreset)!.addrNative ?? (r.absPreset ?? r.relPreset)!.name ?? "?"))];
+  const refName = (x: { addrNative?: string; name?: string }) => x.addrNative ?? x.name ?? "?";
+  const embeddedSources = [...new Set(refs.flatMap((r) => [...(r.absPreset ? [`${refName(r.absPreset)} (absolute)`] : []), ...(r.relPreset ? [`${refName(r.relPreset)} (relative)`] : [])]))];
   if (input.embed && refs.length === 0) problems.push("embed is true but no programmer value references a preset (call a preset with At Preset first)");
   if (!input.embed && refs.length) warnings.push(`programmer values reference ${embeddedSources.join(", ")}; with embed false they are stored as plain values, not references`);
   if (input.filterGroup) {
@@ -265,7 +270,8 @@ export function analyzeContent(input: {
 
 function sameValue(a: ProgrammerRow, b: ProgrammerRow): boolean {
   const eq = (x: unknown, y: unknown) => (x === null || x === undefined ? y === null || y === undefined : near(x, y));
-  return eq(a.value, b.value) && eq(a.relative, b.relative) && eq(a.phaser?.fade, b.phaser?.fade) && eq(a.phaser?.delay, b.phaser?.delay) && (a.absPreset?.addrNative ?? null) === (b.absPreset?.addrNative ?? null);
+  return (a.stepCount ?? 1) === (b.stepCount ?? 1) && eq(a.value, b.value) && eq(a.relative, b.relative) && eq(a.phaser?.fade, b.phaser?.fade) && eq(a.phaser?.delay, b.phaser?.delay) &&
+    (a.absPreset?.addrNative ?? null) === (b.absPreset?.addrNative ?? null) && (a.relPreset?.addrNative ?? null) === (b.relPreset?.addrNative ?? null);
 }
 
 function summarize(rows: ProgrammerRow[]): string {
@@ -320,7 +326,14 @@ export function verifyStored(input: {
   if (!input.merge) {
     // A new or overwritten preset holds only what was stored now.
     const expected = new Set(input.rows.map((r) => (input.mode === "universal" ? `u|${r.attribute}` : `${r.subfixtureIndex}|${r.attribute}`)));
-    const extra = input.stored.filter((s) => !used.has(s) && !(input.mode === "universal" ? expected.has(`u|${s.attribute}`) : expected.has(`${s.sfIndex}|${s.attribute}`)) && !(input.mode === "global" && s.mode === "global"));
+    // A global holder is expected only for an attribute and fixture type a programmer value has.
+    const expectedGlobal = new Set(input.rows.map((r) => `${input.types[String(r.subfixtureIndex)] ?? "?"}|${r.attribute}`));
+    const allowed = (s: PresetRow) => {
+      if (input.mode === "universal") return expected.has(`u|${s.attribute}`);
+      if (expected.has(`${s.sfIndex}|${s.attribute}`)) return true;
+      return input.mode === "global" && s.mode === "global" && s.fixtureType !== undefined && expectedGlobal.has(`${s.fixtureType}|${s.attribute}`);
+    };
+    const extra = input.stored.filter((s) => !used.has(s) && !allowed(s));
     if (extra.length) out.push(`unexpected stored content: ${extra.slice(0, 6).map((s) => `${s.fixture} ${s.attribute}`).join(", ")}${extra.length > 6 ? ` and ${extra.length - 6} more` : ""}`);
   }
   if (input.forced) {
@@ -338,13 +351,20 @@ function compareRow(r: ProgrammerRow, s: PresetRow, embed: boolean): string[] {
   if (r.relative && !near(r.relative, s.relative)) d.push(`relative ${r.relative} expected, ${s.relative ?? "none"} stored`);
   if (r.phaser?.fade !== null && r.phaser?.fade !== undefined && !near(r.phaser.fade, s.fade)) d.push(`fade ${r.phaser.fade} expected, ${s.fade ?? "none"} stored`);
   if (r.phaser?.delay !== null && r.phaser?.delay !== undefined && !near(r.phaser.delay, s.delay)) d.push(`delay ${r.phaser.delay} expected, ${s.delay ?? "none"} stored`);
-  const src = r.absPreset?.addrNative;
-  if (embed && src) {
-    if (!s.absPreset) d.push(`reference to ${src} expected, a plain value stored`);
-    else if (!s.absPreset.valid) d.push(`the stored reference is invalid`);
-    else if (s.absPreset.addrNative !== src) d.push(`reference to ${src} expected, ${s.absPreset.addrNative} stored`);
+  // Absolute and relative values reference their source separately (abs_preset / rel_preset); both are checked.
+  for (const kind of ["absolute", "relative"] as const) {
+    const want = kind === "absolute" ? r.absPreset : r.relPreset;
+    const got = kind === "absolute" ? s.absPreset : s.relPreset;
+    const src = want?.addrNative ?? want?.name;
+    if (embed && src) {
+      if (!got) d.push(`${kind} reference to ${src} expected, a plain value stored`);
+      else if (!got.valid) d.push(`the stored ${kind} reference is invalid`);
+      else if (got.addrNative !== want?.addrNative) d.push(`${kind} reference to ${src} expected, ${got.addrNative ?? got.name ?? "another preset"} stored`);
+    } else if (embed && got) {
+      d.push(`a ${kind} reference to ${got.addrNative ?? got.name ?? "a preset"} was stored although the programmer value had none`);
+    }
+    if (!embed && got) d.push(`a ${kind} reference to ${got.addrNative ?? got.name ?? "a preset"} was stored although embed is false`);
   }
-  if (!embed && s.absPreset) d.push(`a reference to ${s.absPreset.addrNative ?? "a preset"} was stored although embed is false`);
   return d;
 }
 
@@ -425,6 +445,7 @@ function presentRows(rows: PresetRow[]) {
     ...(r.fade !== undefined && r.fade !== null ? { fade: r.fade } : {}),
     ...(r.delay !== undefined && r.delay !== null ? { delay: r.delay } : {}),
     ...(r.absPreset ? { embeddedFrom: r.absPreset.valid ? depLabel(r.absPreset) : "invalid reference" } : {}),
+    ...(r.relPreset ? { relativeFrom: r.relPreset.valid ? depLabel(r.relPreset) : "invalid reference" } : {}),
     ...(r.fixtureType ? { fixtureType: r.fixtureType } : {}),
   }));
 }

@@ -239,7 +239,7 @@ test("verification checks the stored rows by mode, value, layers, references and
   assert.match(verifyStored({ rows: [prow(63, "D", 50, { phaser: { fade: 2 } })], stored: [srow(63, "D", 50, "selective")], mode: "selective", forced: false, merge: false, embed: false, types }).join(), /fade 2 expected, none stored/);
   const ref = { absPreset: { addrNative: "P.4.1" } };
   assert.match(verifyStored({ rows: [prow(63, "R", 1, ref)], stored: [srow(63, "R", 1, "selective")], mode: "selective", forced: false, merge: false, embed: true, types }).join(), /reference to P\.4\.1 expected, a plain value stored/);
-  assert.match(verifyStored({ rows: [prow(63, "R", 1, ref)], stored: [srow(63, "R", 1, "selective", { absPreset: { valid: false } })], mode: "selective", forced: false, merge: false, embed: true, types }).join(), /stored reference is invalid/);
+  assert.match(verifyStored({ rows: [prow(63, "R", 1, ref)], stored: [srow(63, "R", 1, "selective", { absPreset: { valid: false } })], mode: "selective", forced: false, merge: false, embed: true, types }).join(), /stored absolute reference is invalid/);
   assert.match(verifyStored({ rows: [prow(63, "R", 1)], stored: [srow(63, "R", 1, "selective", { absPreset: { valid: true, addrNative: "x" } })], mode: "selective", forced: false, merge: false, embed: false, types }).join(), /although embed is false/);
   assert.match(verifyStored({ rows: [prow(63, "R", 1)], stored: [srow(63, "R", 1, "global")], mode: "global", forced: true, merge: true, embed: false, types, storedData: "Selective/Global" }).join(), /not only Global data/);
 });
@@ -443,4 +443,53 @@ test("gma3_preset reads content and follows dependencies, reporting invalid and 
   assert.equal((await h.callJson("gma3_preset", { preset: "4.77" })).result.exists, false);
   assert.equal((await h.callJson("gma3_preset", {})).isError, true);
   assert.equal(sent(), 0);
+});
+
+// ---------------------------------------------------------------------------
+// Review round 1
+// ---------------------------------------------------------------------------
+
+test("universal mode refuses multi-step values before the store, also for a forced conversion", () => {
+  const row = (sf: number, steps: number): ProgrammerRow => ({ subfixtureIndex: sf, fid: String(sf), attribute: "Dimmer", value: steps > 1 ? null : 50, stepCount: steps });
+  const scope = new Map([[63, "401"], [64, "402"]]);
+  const scopeFixtures = new Map([["401", [63]], ["402", [64]]]);
+  const base = { scope, scopeFixtures, layers: ["absolute" as const, "phaser" as const], embed: false };
+  for (const extra of [{ mode: "universal" as const }, { force: "universal" as const }]) {
+    const different = analyzeContent({ ...base, ...extra, rows: [row(63, 2), row(64, 3)] }).problems.join();
+    assert.match(different, /multi-step \(phaser\) values cannot be compared/);
+    assert.match(different, /differ between fixtures: Dimmer/, "step counts count as a difference");
+    assert.match(analyzeContent({ ...base, ...extra, rows: [row(63, 2), row(64, 2)] }).problems.join(), /multi-step \(phaser\) values cannot be compared/, "equal step counts prove nothing either");
+  }
+  assert.deepEqual(analyzeContent({ ...base, mode: "global", rows: [row(63, 2), row(64, 3)] }).problems, [], "selective/global keep each fixture's phaser");
+});
+
+test("relative references are verified like absolute ones, and both sources are reported", () => {
+  const prow = (extra: Partial<ProgrammerRow>): ProgrammerRow => ({ subfixtureIndex: 63, fid: "401", attribute: "Pan", value: 50, relative: 10, stepCount: 1, ...extra });
+  const srow = (extra: Partial<PresetRow>): PresetRow => ({ fixture: "401", sfIndex: 63, attribute: "Pan", value: 50, relative: 10, mode: "selective", ...extra });
+  const v = (r: ProgrammerRow, st: PresetRow, embed: boolean) => verifyStored({ rows: [r], stored: [st], mode: "selective", forced: false, merge: false, embed, types: {} }).join();
+  const rel = { relPreset: { addrNative: "P.2.5", name: "Fan" } };
+  assert.match(v(prow(rel), srow({}), true), /relative reference to P\.2\.5 expected, a plain value stored/);
+  assert.match(v(prow(rel), srow({ relPreset: { valid: false } }), true), /stored relative reference is invalid/);
+  assert.match(v(prow(rel), srow({ relPreset: { valid: true, addrNative: "P.2.6" } }), true), /relative reference to P\.2\.5 expected, P\.2\.6 stored/);
+  assert.equal(v(prow(rel), srow({ relPreset: { valid: true, addrNative: "P.2.5" } }), true), "");
+  assert.match(v(prow({}), srow({ relPreset: { valid: true, addrNative: "P.2.5" } }), false), /a relative reference to P\.2\.5 was stored although embed is false/);
+  assert.match(v(prow({ absPreset: { addrNative: "P.2.1" } }), srow({ absPreset: { valid: true, addrNative: "P.2.1" }, relPreset: { valid: true, addrNative: "P.2.9" } }), true), /a relative reference to P\.2\.9 was stored although the programmer value had none/);
+  const scope = new Map([[63, "401"]]);
+  const plan = analyzeContent({ rows: [prow({ absPreset: { addrNative: "P.2.1" }, ...rel })], scope, scopeFixtures: new Map([["401", [63]]]), layers: ["absolute", "relative"], mode: "selective", embed: false });
+  assert.deepEqual(plan.embeddedSources, ["P.2.1 (absolute)", "P.2.5 (relative)"]);
+  assert.match(plan.warnings.join(), /P\.2\.1 \(absolute\), P\.2\.5 \(relative\)/);
+  const relOnly = analyzeContent({ rows: [prow(rel)], scope, scopeFixtures: new Map([["401", [63]]]), layers: ["absolute", "relative"], mode: "selective", embed: true });
+  assert.deepEqual(relOnly.problems, [], "a relative reference alone is something to embed");
+});
+
+test("a global row for another fixture type or attribute is unexpected content", () => {
+  const rows: ProgrammerRow[] = [{ subfixtureIndex: 63, fid: "401", attribute: "ColorRGB_R", value: 100, stepCount: 1 }];
+  const types = { "63": "Par" };
+  const holder: PresetRow = { fixture: "401", sfIndex: 63, attribute: "ColorRGB_R", value: 100, mode: "global", fixtureType: "Par" };
+  const v = (stored: PresetRow[]) => verifyStored({ rows, stored, mode: "global", forced: false, merge: false, embed: false, types }).join();
+  assert.equal(v([holder]), "");
+  assert.match(v([holder, { fixture: "601", sfIndex: 2, attribute: "Pan", value: 40, mode: "global", fixtureType: "Beam" }]), /unexpected stored content: 601 Pan/);
+  assert.match(v([holder, { fixture: "402", sfIndex: 64, attribute: "Pan", value: 40, mode: "global", fixtureType: "Par" }]), /unexpected stored content: 402 Pan/, "same type, other attribute");
+  assert.match(v([holder, { fixture: "701", sfIndex: 5, attribute: "ColorRGB_R", value: 100, mode: "global", fixtureType: "Mover" }]), /unexpected stored content: 701 ColorRGB_R/, "same attribute, other type");
+  assert.match(v([holder, { fixture: "?", attribute: "ColorRGB_R", value: 100, mode: "global" }]), /unexpected stored content/, "a global row without a known type is not exempt");
 });

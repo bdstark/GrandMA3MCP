@@ -30,7 +30,9 @@ The tool only stores. Prepare the programmer first with the fixture tools (`gma3
   - *global*: one row per **fixture type**, held by its lowest FID (a cell type's by a cell), plus selective rows for
     fixtures whose values differ (`StoredData` then reads `Selective/Global`);
   - *universal*: one row per attribute, valid for every fixture that has it (held by one fixture or the Universal
-    fixture). Values that differ between fixtures cannot survive, so the tool refuses them.
+    fixture). Values that differ between fixtures cannot survive, so the tool refuses them. Multi-step (phaser) values
+    are refused in universal mode too, also for a forced conversion: their equivalence (every step and step parameter)
+    cannot be compared yet, and a wrong guess would discard a fixture's phaser.
 - **Feature-group pools filter silently.** With the input filter on (store preference `PresetInputFilter`, or
   `/InputFilter`), pools 1–20 keep only their feature group: Dimmer stored into the Color pool is dropped, the value
   stays active in the programmer, the feedback is "OK". The All pools 21–25 have no filter. The tool predicts the drop
@@ -83,7 +85,8 @@ Requests, in order:
    - a scope fixture without a value, or no values at all;
    - an attribute outside `attributes`, or a requested attribute without a value;
    - a layer outside `layers`;
-   - universal mode with values that differ between fixtures;
+   - universal mode (or a forced universal conversion) with values that differ between fixtures (value, relative,
+     fade, delay, step count, references) or with any multi-step value;
    - `embed` without a preset reference in the programmer;
    - an attribute the pool's input filter would drop.
 
@@ -95,16 +98,20 @@ Requests, in order:
      - selective: a selective row of the same fixture;
      - global: the fixture's own row, or the global row of its fixture type;
      - universal: the universal row of the attribute;
-     - in every mode the same value (±0.05 %), fade/delay, step count and, with `embed`, a valid reference to the same
-       source; without `embed`, no reference.
-   - A new or overwritten preset must not hold anything else (`unexpected stored content`); merge keeps other rows.
+     - in every mode the same value (±0.05 %), fade/delay and step count; the absolute and the relative reference are
+       checked separately: with `embed`, each reference the programmer value had must be stored, valid and to the same
+       source, and none it did not have; without `embed`, no reference of either kind.
+   - A new or overwritten preset must not hold anything else (`unexpected stored content`): only the fixtures'
+     own rows, and in global mode a global holder only for an attribute and fixture type a programmer value has; merge
+     keeps other rows.
    - A forced conversion must leave only Global (or Universal) data.
    - A new preset's mode, the name, dependencies (recursively, see below) and `check_preferences` (the store
      preferences unchanged) are checked too.
 
    Any difference makes `verification` `mismatched`.
 
-Warnings name what is not an error: preset references stored as plain values, a forced conversion's removal, an
+Warnings name what is not an error: preset references stored as plain values (each source listed as absolute or
+relative), a forced conversion's removal, an
 attribute whose feature group is unknown (decided by the read-back), a pool with its own input filter, an incomplete
 dependency inspection.
 
@@ -114,7 +121,7 @@ dependency inspection.
   - **Summary:** `name`, `pool`, `featureGroup`, `presetMode`, `storedData`, `locked`, `hasMAtricks`, `referencedBy`
     (how many objects use the preset).
   - **Rows:** one per fixture and attribute, with `mode`, `value` (percent) or `steps`, `fade`, `delay`, `relative`,
-    `fixtureType`, and `embeddedFrom` for an embedded value.
+    `fixtureType`, and `embeddedFrom` / `relativeFrom` for an embedded absolute / relative value.
   - **Dependencies:** the direct dependencies with validity, and `dependencyInspection`. The inspection follows embedded
     sources recursively (four levels) by address. `complete: false` says why (a source not found, dependencies not
     readable, beyond depth), and `invalid` lists deleted sources.
@@ -134,6 +141,7 @@ dependency inspection.
   - the store preferences unchanged after every store.
 - Not covered:
   - relative values and multi-step phaser data are compared by value and step count only (SB-04 will qualify phasers);
+    relative embedding is verified by the unit tests, not on the console (the live test embeds absolute values);
   - MAgic presets and recipe content are not modelled;
   - a pool's own input filter (a filter or world assigned to the pool) is not predicted; only the read-back catches it.
 - The embedded preset's update is asynchronous; a read in the same frame as the source's change shows the old values.
