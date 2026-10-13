@@ -130,17 +130,23 @@ const LINE_FIELDS = ["Name", "Enabled", "Selection", "Values", "MAtricks", "Filt
 const bool = (v: unknown): boolean | null => (typeof v === "boolean" ? v : typeof v === "string" ? (/^(yes|true|on)$/i.test(v) ? true : /^(no|false|off)$/i.test(v) ? false : null) : null);
 const handle = (v: unknown): Handle | null => (v && typeof v === "object" && !Array.isArray(v) ? (v as Handle) : null);
 
+/** A list read that stopped at its bound: what is beyond it was not seen. */
+export class IncompleteRead extends Error {}
+const listComplete = (r: { total?: number; offset?: number; count?: number; items?: unknown[] } | null | undefined) =>
+  !r || typeof r.total !== "number" || (r.offset ?? 0) + (r.count ?? r.items?.length ?? 0) >= r.total;
+
 const NEEDS_BRIDGE = "the console runs an older bridge plugin (bridge 0.24.0 reads the cooked state of a cue part); update the plugin";
 const notFound = (err: unknown) => err instanceof BridgeError && /no objects? found|no object at address|path not found/i.test(err.message);
 
 export async function readLines(bridge: Gma3Bridge, t: Target, timeout: number): Promise<Line[] | null> {
-  let res: { items?: Array<{ class?: string; index?: number; name?: string; fields?: Record<string, unknown> }> };
+  let res: { total?: number; offset?: number; count?: number; items?: Array<{ class?: string; index?: number; name?: string; fields?: Record<string, unknown> }> };
   try {
     res = (await bridge.request("children", { ref: targetRef(t), fields: LINE_FIELDS, asText: false, limit: 1000 }, timeout)) as typeof res;
   } catch (err) {
     if (notFound(err)) return null;
     throw err;
   }
+  if (!listComplete(res)) throw new IncompleteRead(`${label(t)} has ${res.total} children; only ${res.count ?? res.items?.length ?? 0} were read`);
   const lines: Line[] = [];
   (res.items ?? []).forEach((it, i) => {
     if (it.class !== "StandardRecipe" && it.class !== "PhaserRecipe") return;
@@ -170,6 +176,7 @@ interface GroupInfo {
   exists: boolean;
   members: Array<{ fixture: string; sfIndex: number }>;
   unreadable: number;
+  truncated?: boolean;
 }
 
 async function readGroup(bridge: Gma3Bridge, n: number, t: number, cache: Map<number, GroupInfo>): Promise<GroupInfo> {
@@ -177,8 +184,9 @@ async function readGroup(bridge: Gma3Bridge, n: number, t: number, cache: Map<nu
   if (hit) return hit;
   let info: GroupInfo;
   try {
-    const g = (await bridge.request("group.read", { ref: `Group ${n}` }, t)) as { items: Array<{ fixture?: string | null; sfIndex?: number; unreadable?: boolean }> };
-    info = { exists: true, members: g.items.filter((x) => !x.unreadable && typeof x.sfIndex === "number").map((x) => ({ fixture: x.fixture ?? `#${x.sfIndex}`, sfIndex: x.sfIndex! })), unreadable: g.items.filter((x) => x.unreadable).length };
+    const g = (await bridge.request("group.read", { ref: `Group ${n}` }, t)) as { truncated?: boolean; items: Array<{ fixture?: string | null; sfIndex?: number; unreadable?: boolean }> };
+    const known = g.items.filter((x) => !x.unreadable && typeof x.sfIndex === "number");
+    info = { exists: true, members: known.map((x) => ({ fixture: x.fixture ?? `#${x.sfIndex}`, sfIndex: x.sfIndex! })), unreadable: g.items.length - known.length, truncated: g.truncated === true };
   } catch (err) {
     if (!notFound(err)) throw err;
     info = { exists: false, members: [], unreadable: 0 };
@@ -257,8 +265,11 @@ export async function analyzeLines(bridge: Gma3Bridge, lines: Line[], t: number,
       if (!g.exists) rep.problems.push(`Group ${l.selection.group} does not exist`);
       else if (g.members.length === 0) rep.problems.push(`Group ${l.selection.group} is empty: the line cooks nothing`);
       if (g.unreadable) rep.problems.push(`Group ${l.selection.group} has ${g.unreadable} unreadable item(s)`);
+      if (g.truncated) rep.problems.push(`Group ${l.selection.group} was not read completely`);
       rep.members = g.members.map((m) => m.fixture);
       for (const m of g.members) expected.touched.add(m.sfIndex);
+      // Fixtures the read could not identify are reached too: nothing about the target is known to be safe.
+      if (g.unreadable || g.truncated) { expected.unknownReach = true; expected.unpredicted++; rep.notPredicted = `Group ${l.selection.group} was not read completely; its reach is unknown`; }
     }
     if (l.class !== "StandardRecipe") { unpredictable(`${l.class} lines are listed and kept, not modelled by this release`, g); continue; }
     if (!l.values) { rep.problems.push("no values: the preset is missing (deleted?) or was never assigned"); continue; }
@@ -273,22 +284,31 @@ export async function analyzeLines(bridge: Gma3Bridge, lines: Line[], t: number,
     }
     if (!p) { rep.problems.push(`the values preset ${l.values.name ?? ""} could not be read`); continue; }
     rep.values = { ...l.values, preset: p.pool?.no !== undefined && p.no !== undefined ? `${p.pool.no}.${p.no}` : undefined };
+    if (p.truncated) { unpredictable(`the values preset ${rep.values.preset ?? ""} was not read completely; coverage not predicted`, g); continue; }
     if (p.rows.length === 0) rep.problems.push(`the values preset ${rep.values.preset ?? ""} is empty`);
     if ((p.dependencies ?? []).length) dependencyNotes.push(`line ${l.line}: Preset ${rep.values.preset} embeds other presets; their own recipes are not re-cooked here`);
     if (l.matricks) rep.notPredicted = undefined; // MAtricks spreads values and timing; the fixtures and attributes covered do not change
     const types = p.types ?? {};
+    const hasGlobal = p.rows.some((r) => r.mode === "global");
+    // A member whose prediction rests on a failed or incomplete read is uncertain: the guard applies to it.
+    const uncertainMember = (m: { fixture: string; sfIndex: number }, why: string) => {
+      expected.uncertain.add(m.sfIndex);
+      if (!rep.notPredicted) { rep.notPredicted = why; expected.unpredicted++; }
+      dependencyNotes.push(`line ${l.line}: ${why}`);
+    };
     for (const m of g.members) {
       const own = p.rows.filter((r) => r.sfIndex === m.sfIndex);
       const type = types[String(m.sfIndex)];
+      if (hasGlobal && type === undefined) uncertainMember(m, `the fixture type of ${m.fixture} could not be read, so global values were not predicted for it`);
       const global = p.rows.filter((r) => r.mode === "global" && type !== undefined && r.fixtureType === type);
       const universal = p.rows.filter((r) => r.mode === "universal");
       const attrs = new Set([...own, ...global].map((r) => r.attribute));
       // Universal data reaches every fixture that has the attribute; the fixture's own attribute list decides.
       if (universal.length) {
-        const fa = (await bridge.request("fixtureAttributes", { ref: `Fixture ${m.fixture}`, limit: 500 }, t).catch(() => null)) as { attributes?: Array<{ attribute?: string }> } | null;
+        const fa = (await bridge.request("fixtureAttributes", { ref: `Fixture ${m.fixture}`, limit: 500 }, t).catch(() => null)) as { total?: number; offset?: number; count?: number; attributes?: Array<{ attribute?: string }> } | null;
         const has = new Set((fa?.attributes ?? []).map((a) => String(a.attribute)));
         for (const r of universal) if (has.has(r.attribute)) attrs.add(r.attribute);
-        if (!fa) dependencyNotes.push(`line ${l.line}: the attributes of ${m.fixture} could not be read, so universal values were not predicted for it`);
+        if (!fa || !listComplete({ ...fa, items: fa.attributes })) uncertainMember(m, `the attributes of ${m.fixture} could not be read${fa ? " completely" : ""}, so universal values were not predicted for it`);
       }
       for (const a of attrs) expected.pairs.add(`${m.sfIndex}|${a}`);
     }
@@ -359,7 +379,7 @@ export async function readRecipes(ctx: ToolContext, raw: { target: unknown }): P
     target: label(t),
     exists: true,
     lines: a.reports,
-    coverage: data ? coverageOf(data.rows) : null,
+    coverage: data ? { ...coverageOf(data.rows), ...(data.truncated ? { truncated: true } : {}) } : null,
     expectedPairs: a.expected.pairs.size,
     ...(a.expected.unpredicted ? { unpredictedLines: a.expected.unpredicted } : {}),
     ...(a.dependencyNotes.length ? { dependencyNotes: a.dependencyNotes } : {}),
@@ -575,6 +595,8 @@ export async function editRecipe(ctx: ToolContext, raw: EditArgs): Promise<Opera
     const cb = dataBefore ? coverageOf((dataBefore as PresetRead).rows) : null;
     const ca = dataAfter ? coverageOf((dataAfter as PresetRead).rows) : null;
     const warnings: string[] = [];
+    const partial = (dataBefore as PresetRead | null)?.truncated || (dataAfter as PresetRead | null)?.truncated;
+    if (partial) warnings.push("the target's data was not read completely, so coverage.before / coverage.after (and autoCooked) are partial");
     const changed = cb && ca && JSON.stringify(cb) !== JSON.stringify(ca);
     if (changed) warnings.push("the console re-cooked the target when the line changed (MergeLowPriority); see coverage.before / coverage.after. Use gma3_cook_recipes for another cook option");
     return buildResult({ operation: op, target, steps, verification, warnings, extra: { ...extra, linesAfter: after, coverage: { before: cb, after: ca }, autoCooked: !!changed } });
@@ -605,14 +627,16 @@ async function affectedTargets(bridge: Gma3Bridge, scope: Scope, t: number): Pro
   const cues: string[] = [];
   if (scope.kind === "cue") cues.push(scope.cue);
   else {
-    const res = (await bridge.request("children", { ref: `Sequence ${scope.sequence}`, fields: ["No"], limit: 10000 }, t)) as { items?: Array<{ fields?: Record<string, unknown> }> };
+    const res = (await bridge.request("children", { ref: `Sequence ${scope.sequence}`, fields: ["No"], limit: 10000 }, t)) as { total?: number; count?: number; items?: Array<{ fields?: Record<string, unknown> }> };
+    if (!listComplete(res)) return { targets: [], truncated: true };
     for (const it of res.items ?? []) {
       const no = String(it.fields?.No ?? "").trim();
       if (/^\d+(\.\d+)?$/.test(no) && Number(no) > 0) cues.push(String(Number(no)));
     }
   }
   for (const cue of cues) {
-    const parts = (await bridge.request("children", { ref: `Sequence ${scope.sequence} Cue ${cue}`, fields: ["Part"], limit: 1000 }, t)) as { items?: Array<{ childCount?: number; fields?: Record<string, unknown> }> };
+    const parts = (await bridge.request("children", { ref: `Sequence ${scope.sequence} Cue ${cue}`, fields: ["Part"], limit: 1000 }, t)) as { total?: number; count?: number; items?: Array<{ childCount?: number; fields?: Record<string, unknown> }> };
+    if (!listComplete(parts)) return { targets: out, truncated: true };
     for (const p of parts.items ?? []) {
       const part = Number(String(p.fields?.Part ?? "").trim());
       if (!Number.isInteger(part) || (p.childCount ?? 0) === 0) continue;
@@ -643,6 +667,8 @@ export async function cookRecipes(ctx: ToolContext, raw: CookArgs): Promise<Oper
     type Plan = { target: Target; lines: LineReport[]; expected: Expected; before: PresetRead | null; conflicts: string[]; losses: string[]; notes: string[] };
     const plans: Plan[] = [];
     let truncated = false;
+    /** Reads that stopped at their bound: a mutation would reach what was not inspected. */
+    const incomplete: string[] = [];
     const inspect = await runSteps([
       {
         name: "find_targets",
@@ -651,7 +677,14 @@ export async function cookRecipes(ctx: ToolContext, raw: CookArgs): Promise<Oper
             const a = await affectedTargets(bridge, scope, t);
             truncated = a.truncated;
             for (const tg of a.targets) {
-              const lines = await readLines(bridge, tg, t);
+              let lines: Line[] | null;
+              try {
+                lines = await readLines(bridge, tg, t);
+              } catch (err) {
+                if (!(err instanceof IncompleteRead)) throw err;
+                incomplete.push(err.message);
+                continue;
+              }
               if (!lines) {
                 if (tg === scope) return asRead({ name: "find_targets", status: "failed", error: `${label(tg)} does not exist` });
                 continue;
@@ -665,6 +698,7 @@ export async function cookRecipes(ctx: ToolContext, raw: CookArgs): Promise<Oper
                 if (err instanceof BridgeError && /not-preset|not a preset/.test(err.message)) return asRead({ name: "find_targets", status: "failed", error: NEEDS_BRIDGE });
                 throw err;
               }
+              if (before?.truncated) incomplete.push(`the data of ${label(tg)} was not read completely`);
               const rows = before?.rows ?? [];
               // Merge replaces uncooked values on the recipes' pairs; what unpredicted lines reach is a possible conflict.
               const conflicts = rows
@@ -676,8 +710,9 @@ export async function cookRecipes(ctx: ToolContext, raw: CookArgs): Promise<Oper
           } catch (err) {
             return asRead(stepFromError("find_targets", err, { op: "children" }));
           }
-          if (!plans.length && !truncated) return asRead({ name: "find_targets", status: "failed", error: `no recipe lines in ${label(scope)}; nothing to cook` });
-          return asRead({ name: "find_targets", status: "succeeded", detail: { targets: plans.length, truncated } });
+          if (truncated) incomplete.unshift(`${label(scope)} holds more cue parts with recipes than the ${MAX_TARGETS} inspected (or more cues and parts than could be listed)`);
+          if (!plans.length && !incomplete.length) return asRead({ name: "find_targets", status: "failed", error: `no recipe lines in ${label(scope)}; nothing to cook` });
+          return asRead({ name: "find_targets", status: "succeeded", detail: { targets: plans.length, truncated, incomplete: incomplete.length } });
         },
       },
     ]);
@@ -699,11 +734,12 @@ export async function cookRecipes(ctx: ToolContext, raw: CookArgs): Promise<Oper
         remove: "removes the cooked data and keeps uncooked values",
       }[mode],
       ...(truncated ? { truncated: `only the first ${MAX_TARGETS} cue parts were inspected` } : {}),
+      ...(incomplete.length ? { incomplete } : {}),
     };
     if (inspect.outcome !== "succeeded") return buildResult({ operation: op, target, steps: inspect.steps, summary: `${op} was not performed; nothing was sent: ${inspect.steps.find((s) => s.status !== "succeeded")?.error ?? "inspection failed"}`, extra });
-    if (truncated && !preview) {
-      // The command would cook targets that were not inspected: refuse rather than cook beyond what was checked.
-      const s: StepResult = asRead({ name: "check_scope", status: "failed", error: `${label(scope)} holds more than ${MAX_TARGETS} cue parts with recipes; only ${MAX_TARGETS} were inspected, so the cook would reach unchecked targets. Cook cue by cue` });
+    if (incomplete.length && !preview) {
+      // The command would reach data that was not inspected: refuse rather than cook beyond what was checked.
+      const s: StepResult = asRead({ name: "check_complete", status: "failed", error: `the inspection is incomplete, so the cook would reach unchecked data: ${incomplete.slice(0, 4).join("; ")}${incomplete.length > 4 ? "; ..." : ""}. Cook a smaller scope (cue by cue or part by part)` });
       return buildResult({ operation: op, target, steps: [...inspect.steps, s], summary: `${op} refused, nothing was sent: ${s.error}`, extra });
     }
     const warnings: string[] = [];
@@ -727,6 +763,7 @@ export async function cookRecipes(ctx: ToolContext, raw: CookArgs): Promise<Oper
         for (const p of plans) {
           const after = await readData(bridge, targetRef(p.target), t);
           if (!after) { problems.push(`${label(p.target)} could not be read after the cook`); continue; }
+          if (after.truncated) problems.push(`${label(p.target)}: the read-back was truncated, so the cook cannot be confirmed`);
           const diff = verifyCoverage({ rows: after.rows, expected: p.expected, mode, before: p.before?.rows ?? [] });
           problems.push(...diff.map((d) => `${label(p.target)}: ${d}`));
           results.push({ target: label(p.target), coverage: coverageOf(after.rows) });

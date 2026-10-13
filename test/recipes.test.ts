@@ -97,6 +97,13 @@ class Console {
   ignoreAssign = new Set<string>();
   /** Presets hold global rows (fixture type T1) instead of universal ones. */
   globalPresets = false;
+  /** Incomplete reads: target data (the last row omitted), after the next cook, values presets, groups, line lists, fixture attributes. */
+  truncatedData = new Set<FTarget>();
+  truncateAfterCook = false;
+  truncatedPresets = new Set<string>();
+  truncatedGroups = new Set<number>();
+  truncatedLines = new Set<FTarget>();
+  failAttributes = new Set<string>();
 
   part(seq: number, cue: number, part = 0): FTarget {
     const k = `Sequence ${seq} Cue ${cue} Part ${part}`;
@@ -121,6 +128,7 @@ class Console {
   }
 
   cook(t: FTarget, mode: string): void {
+    if (this.truncateAfterCook) this.truncatedData.add(t);
     if (this.cookNoop) return;
     const out = this.output(t);
     const key = (r: FRow) => `${r.sfIndex}|${r.attribute}`;
@@ -157,6 +165,7 @@ class Console {
       const t = this.targets.get(ref);
       if (!t) throw new Error(`no object found for '${ref}'`);
       return {
+        ...(this.truncatedLines.has(t) ? { total: t.lines.length + 1, offset: 0, count: t.lines.length } : {}),
         items: t.lines.map((l, i) => ({
           class: l.cls, index: i + 1, name: l.name,
           fields: {
@@ -173,23 +182,30 @@ class Console {
       const n = Number(String(args.ref).replace("Group ", ""));
       const g = this.groups.get(n);
       if (!g) throw new Error(`no object found for '${args.ref}'`);
-      return { items: g.map((m) => ({ ...m })) };
+      return { truncated: this.truncatedGroups.has(n), items: g.map((m) => ({ ...m })) };
     });
     h.fake.on("preset.read", (args) => {
       const ref = String(args.ref);
       const t = this.targets.get(ref);
-      if (t) return { ref, class: ref.startsWith("Preset") ? "Preset" : "Part", rows: t.rows.map((r) => ({ ...r })), dependencies: [] };
+      if (t) {
+        const cut = this.truncatedData.has(t);
+        return { ref, class: ref.startsWith("Preset") ? "Preset" : "Part", rows: (cut ? t.rows.slice(0, -1) : t.rows).map((r) => ({ ...r })), dependencies: [], ...(cut ? { truncated: true } : {}) };
+      }
       const entry = [...this.presets.entries()].find(([k, p]) => ref === `Preset ${k}` || ref === p.addr);
       if (!entry) throw new Error(`no object found for '${ref}'`);
       const [k, p] = entry;
       const [pool, no] = k.split(".").map(Number);
+      if (this.truncatedPresets.has(k)) return { ref, class: "Preset", addr: p.addr, pool: { no: pool }, no, rows: [], dependencies: [], types: {}, truncated: true };
       if (this.globalPresets) {
         const typesFor = (args.typesFor as number[] | undefined) ?? [];
         return { ref, class: "Preset", addr: p.addr, pool: { no: pool }, no, rows: p.attrs.map((a) => ({ fixture: "T1", sfIndex: 0, attribute: a, mode: "global", fixtureType: "T1", value: p.value })), dependencies: [], types: Object.fromEntries(typesFor.map((sf) => [String(sf), "T1"])) };
       }
       return { ref, class: "Preset", addr: p.addr, pool: { no: pool }, no, rows: p.attrs.map((a) => ({ fixture: "Generic 1", sfIndex: 0, attribute: a, mode: "universal", value: p.value })), dependencies: [], types: {} };
     });
-    h.fake.on("fixtureAttributes", () => ({ attributes: [{ attribute: "ColorRGB_R" }, { attribute: "Dimmer" }] }));
+    h.fake.on("fixtureAttributes", (args) => {
+      if (this.failAttributes.has(String(args.ref))) throw new Error("unreadable fixture");
+      return { total: 2, offset: 0, count: 2, attributes: [{ attribute: "ColorRGB_R" }, { attribute: "Dimmer" }] };
+    });
     h.fake.on("objects", (args) => {
       const n = Number(String(args.ref).replace("MAtricks ", ""));
       if (!this.matricks.has(n)) throw new Error(`no object found for '${args.ref}'`);
@@ -439,7 +455,7 @@ test("a cook scope with more targets than are inspected is refused", async () =>
   con.part(9061, 201).rows = [{ fixture: "404", sfIndex: 66, attribute: "Dimmer", value: 70, cooked: false }];
   const { result, isError } = await h.callJson("gma3_cook_recipes", { target: { sequence: 9061 }, mode: "overwrite", replace_uncooked: true });
   assert.equal(isError, true);
-  assert.match(stepError(result, "check_scope"), /more than 200 cue parts/);
+  assert.match(stepError(result, "check_complete"), /inspection is incomplete.*more cue parts with recipes than the 200 inspected/);
   assert.equal(con.commands.length, 0);
   assert.ok(con.part(9061, 201).rows.length === 1);
   const pv = await h.callJson("gma3_cook_recipes", { target: { sequence: 9061 }, mode: "merge_low_priority", preview: true });
@@ -481,4 +497,85 @@ test("global preset rows are predicted for the members of every group that uses 
   const real = await h.callJson("gma3_cook_recipes", { target: { sequence: 9060 }, mode: "merge" });
   assert.match(stepError(real.result, "check_uncooked"), /Cue 2 Part 0 \(403 ColorRGB_R\)/);
   assert.equal(con.commands.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Review 2 regressions: incomplete reads
+// ---------------------------------------------------------------------------
+
+/** Cue 1: the line cooks 401/402 R; 401 R is stored uncooked (30) and 404 Dimmer (70) is the last row. */
+function withHardValues(): FTarget {
+  const t = seeded();
+  t.rows = t.rows.filter((r) => !(r.fixture === "401" && r.cooked));
+  t.rows.push({ fixture: "401", sfIndex: 63, attribute: "ColorRGB_R", value: 30, cooked: false }, { fixture: "404", sfIndex: 66, attribute: "Dimmer", value: 70, cooked: false });
+  return t;
+}
+
+test("incomplete target data refuses the cook, even with replace_uncooked", async () => {
+  const t = withHardValues();
+  con.truncatedData.add(t);
+  for (const mode of ["overwrite", "merge", "merge_low_priority"]) {
+    const { result, isError } = await cook({ mode, replace_uncooked: true });
+    assert.equal(isError, true, mode);
+    assert.match(stepError(result, "check_complete"), /data of Sequence 9060 Cue 1 Part 0 was not read completely/, mode);
+  }
+  assert.equal(con.commands.length, 0);
+  assert.ok(t.rows.some((r) => r.fixture === "404"), "the unseen uncooked value is still there");
+  const pv = await cook({ mode: "merge_low_priority", preview: true });
+  assert.equal(pv.isError, false, JSON.stringify(pv.result));
+  assert.match(pv.result.incomplete.join(), /not read completely/);
+});
+
+test("a line list read only in part refuses the cook and the edit", async () => {
+  const t = seeded();
+  con.truncatedLines.add(t);
+  const c = await cook({ mode: "merge_low_priority" });
+  assert.match(stepError(c.result, "check_complete"), /has 2 children; only 1 were read/);
+  const e = await edit({ action: "add", selection: 908, values: "1.11" });
+  assert.match(stepError(e.result, "read_lines"), /only 1 were read/);
+  assert.equal(con.commands.length, 0);
+});
+
+test("a truncated read-back is not a match", async () => {
+  seeded();
+  con.truncateAfterCook = true;
+  const { result, isError } = await cook({ mode: "merge_low_priority" });
+  assert.equal(isError, true);
+  assert.match(result.verification.detail, /read-back was truncated/);
+});
+
+test("a failed attribute read makes the fixture uncertain, so merge needs replace_uncooked", async () => {
+  withHardValues();
+  con.failAttributes.add("Fixture 401");
+  const merge = await cook({ mode: "merge" });
+  assert.match(stepError(merge.result, "check_uncooked"), /401 ColorRGB_R \(possibly/);
+  assert.doesNotMatch(stepError(merge.result, "check_uncooked"), /404/);
+  assert.equal(con.commands.length, 0);
+  assert.match(merge.result.warnings.join(), /attributes of 401 could not be read/);
+  const ok = await cook({ mode: "merge", replace_uncooked: true });
+  assert.equal(ok.result.verification.status, "matched", JSON.stringify(ok.result.verification));
+});
+
+test("an incompletely read group or values preset is never proof of safety", async () => {
+  withHardValues();
+  con.truncatedPresets.add("4.4");
+  const p = await cook({ mode: "merge" });
+  assert.match(stepError(p.result, "check_uncooked"), /401 ColorRGB_R \(possibly/);
+  con.truncatedPresets.clear();
+  con.truncatedGroups.add(908);
+  const g = await cook({ mode: "merge" });
+  assert.match(stepError(g.result, "check_uncooked"), /404 Dimmer \(possibly/, "an unknown reach puts every uncooked value at risk");
+  assert.equal(con.commands.length, 0);
+});
+
+test("global rows without a fixture type for a member make it uncertain", async () => {
+  con.globalPresets = true;
+  withHardValues();
+  h.fake.on("preset.read", (args) => {
+    if (String(args.ref).startsWith("Sequence")) return { ref: args.ref, class: "Part", rows: con.part(9060, 1).rows.map((r) => ({ ...r })), dependencies: [] };
+    return { ref: args.ref, class: "Preset", addr: "14.14.1.5.4.4", pool: { no: 4 }, no: 4, rows: [{ fixture: "T1", sfIndex: 0, attribute: "ColorRGB_R", mode: "global", fixtureType: "T1", value: 100 }], dependencies: [], types: { "64": "T1" } };
+  });
+  const merge = await cook({ mode: "merge" });
+  assert.match(stepError(merge.result, "check_uncooked"), /401 ColorRGB_R \(possibly/);
+  assert.match(merge.result.warnings.join(), /fixture type of 401 could not be read/);
 });

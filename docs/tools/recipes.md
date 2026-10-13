@@ -88,7 +88,9 @@ Before anything is sent:
 `enabled: false` switches a new line off before it gets values, so it never cooks.
 
 Each `set` reply is compared for its property: Enabled by its truth value, SelectionMode, Name and Values as text (an
-unchanged SelectionMode is a failure, not a match). Afterwards the lines are read back and checked:
+unchanged SelectionMode is a failure, not a match). A line list read only in part fails `read_lines` before anything is
+sent, and a partial read of the target's data is named in `warnings` (the coverage and `autoCooked` are then partial).
+Afterwards the lines are read back and checked:
 - add and set: every requested field of the line — selection, values (by the preset's address), MAtricks, Enabled,
   Name, SelectionMode; the other lines unchanged (SelectionMode and filter included);
 - move and remove: exactly the expected order.
@@ -101,8 +103,7 @@ A failed `Assign` can leave an empty line behind on 2.5.1; the line count catche
 `{target: {preset} | {sequence, cue?, part?}, mode, replace_uncooked?, preview?, verify?}`.
 
 1. `find_targets`: the presets or cue parts the scope reaches that hold recipe lines (a sequence: every cue part with
-   lines, at most 200). A sequence with more is refused (`check_scope`): the command would reach parts that were not
-   inspected. Cook it cue by cue; a preview still lists the first 200 and says `truncated`. For each target:
+   lines, at most 200). For each target:
    - the lines with their members and problems;
    - the coverage before;
    - the predicted cooked coverage: each enabled standard line with a group and a preset gives the group's fixtures
@@ -113,10 +114,17 @@ A failed `Assign` can leave an empty line behind on 2.5.1; the line count catche
    - Unknown coverage never counts as safe. A line that is not predicted (filter, phaser line, SelectionFromValue)
      makes every uncooked value on its group's fixtures a possible replacement under merge, marked `(possibly: …)`;
      without a known group (SelectionFromValue, a phaser line without one), every uncooked value of the target.
-2. `check_uncooked`: merge and overwrite are refused while they would replace or delete uncooked values, unless
+   - The same holds for a prediction that rests on a failed or incomplete read: a fixture whose attribute list or
+     fixture type could not be read, a values preset read only in part (its group's fixtures), and a group with
+     unreadable or unread members (every uncooked value of the target). These are named in `warnings`.
+2. `check_complete`: the cook is refused, whatever `replace_uncooked` says, when the inspection did not see everything
+   the command reaches: more than 200 cue parts with recipes, a sequence or cue whose cues or parts could not all be
+   listed, a target whose lines or data were read only in part. The reasons are listed in `incomplete`; cook a smaller
+   scope. A preview still returns the plan.
+3. `check_uncooked`: merge and overwrite are refused while they would replace or delete uncooked values, unless
    `replace_uncooked: true`. `preview: true` stops before this (it returns the plan either way).
-3. `cook`: `Cook <scope> /MergeLowPriority | /Merge | /Overwrite | /Remove`.
-4. verify (default): every target is read back.
+4. `cook`: `Cook <scope> /MergeLowPriority | /Merge | /Overwrite | /Remove`.
+5. verify (default): every target is read back; a truncated read-back is a mismatch, never a match.
    - Every predicted fixture and attribute is cooked; under merge low priority, an uncooked value on the same pair is
      accepted.
    - No cooked value is on a fixture no line selects.
