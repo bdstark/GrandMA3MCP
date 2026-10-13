@@ -189,7 +189,8 @@ So the fingerprint is **best-effort detection**, not a guarantee:
   has `HookObjectChange(callback, handle, plugin_handle[, target])` / `Unhook`. Whether it fires for every edit
   anywhere under the patch (nested objects, the Patch menu, other users) is untested.
 
-The 55/55 report was recorded before the flag existed. The run's patch, import and dialog steps are unchanged.
+The report was re-recorded with `--exclusive` on 2026-10-13, with the operator confirming nobody else used the console:
+55/55 in 81 s, and the run's steps were unchanged.
 
 ## Operator session (2026-10-12, operator at the console)
 
