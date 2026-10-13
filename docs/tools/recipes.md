@@ -51,8 +51,8 @@ extends to cue parts (see [the bridge protocol](../reference.md#cue-part-data-pl
 | Capability | Supported |
 | --- | --- |
 | Standard lines: group selection, preset values, MAtricks reference, Enabled, Name, SelectionMode | read, add, set, move, remove; coverage predicted and verified |
-| Standard lines with a filter or world, SelectionFromValue, the per-line timing columns | read and kept; not edited; coverage not predicted (named in the result) |
-| Phaser recipe lines (PhaserRecipe), shapes | read and kept; not created or edited; coverage not predicted |
+| Standard lines with a filter or world, SelectionFromValue, the per-line timing columns | read and kept; not edited; coverage not predicted (named in the result; a merge treats what they reach as possibly replaced) |
+| Phaser recipe lines (PhaserRecipe), shapes | read and kept; not created or edited; coverage not predicted (likewise) |
 | Targets | presets and cue parts (edit, read); a preset, cue part, cue or whole sequence (cook) |
 | Nested recipe presets (a line's preset embeds others) | noted; their own recipes are not re-cooked by this cook |
 
@@ -87,9 +87,10 @@ Before anything is sent:
 
 `enabled: false` switches a new line off before it gets values, so it never cooks.
 
-Afterwards the lines are read back and checked:
-- add: one more line, with the selection and the values (by the preset's address); the other lines unchanged;
-- set: the changed fields, the other lines unchanged;
+Each `set` reply is compared for its property: Enabled by its truth value, SelectionMode, Name and Values as text (an
+unchanged SelectionMode is a failure, not a match). Afterwards the lines are read back and checked:
+- add and set: every requested field of the line — selection, values (by the preset's address), MAtricks, Enabled,
+  Name, SelectionMode; the other lines unchanged (SelectionMode and filter included);
 - move and remove: exactly the expected order.
 
 A failed `Assign` can leave an empty line behind on 2.5.1; the line count catches it. The result carries `linesBefore`,
@@ -100,14 +101,18 @@ A failed `Assign` can leave an empty line behind on 2.5.1; the line count catche
 `{target: {preset} | {sequence, cue?, part?}, mode, replace_uncooked?, preview?, verify?}`.
 
 1. `find_targets`: the presets or cue parts the scope reaches that hold recipe lines (a sequence: every cue part with
-   lines, at most 200). For each target:
+   lines, at most 200). A sequence with more is refused (`check_scope`): the command would reach parts that were not
+   inspected. Cook it cue by cue; a preview still lists the first 200 and says `truncated`. For each target:
    - the lines with their members and problems;
    - the coverage before;
    - the predicted cooked coverage: each enabled standard line with a group and a preset gives the group's fixtures
      the preset's attributes, through the fixture's own selective row, the global row of its fixture type, or a
-     universal row the fixture has the attribute for;
+     universal row the fixture has the attribute for (the fixture types are read for each group's members);
    - with merge, the uncooked values it would replace (`replacedUncooked`); with overwrite, the uncooked values it
      would delete (`deletedUncooked`).
+   - Unknown coverage never counts as safe. A line that is not predicted (filter, phaser line, SelectionFromValue)
+     makes every uncooked value on its group's fixtures a possible replacement under merge, marked `(possibly: …)`;
+     without a known group (SelectionFromValue, a phaser line without one), every uncooked value of the target.
 2. `check_uncooked`: merge and overwrite are refused while they would replace or delete uncooked values, unless
    `replace_uncooked: true`. `preview: true` stops before this (it returns the plan either way).
 3. `cook`: `Cook <scope> /MergeLowPriority | /Merge | /Overwrite | /Remove`.
@@ -115,14 +120,17 @@ A failed `Assign` can leave an empty line behind on 2.5.1; the line count catche
    - Every predicted fixture and attribute is cooked; under merge low priority, an uncooked value on the same pair is
      accepted.
    - No cooked value is on a fixture no line selects.
-   - Uncooked values are unchanged: always under merge low priority and remove, everywhere except the recipes' own
-     pairs under merge; under overwrite they may be gone.
+   - Uncooked values are unchanged on their full content: value, relative value, steps with their layers, phaser
+     speed, phase, measure and speed master, fade and delay, and preset references; a missing row is reported as
+     disappeared. This holds always under merge low priority and remove, and under merge everywhere except the
+     recipes' own pairs and the acknowledged possible replacements; under overwrite they may be gone.
    - Lines that are not predicted are named, and their fixtures are not reported as stray.
 
 ## What is and is not verified
 
-- Verified live (onPC 2.5.1, `test/live/recipes.live.ts`, 1/1, 4.9 s):
+- Verified live (onPC 2.5.1, `test/live/recipes.live.ts`, 1/1, 5.4 s):
   - two lines on a cue part next to an unrelated stored Dimmer value;
+  - SelectionMode set to Normal and back to Strict, each verified by its reply and the read-back;
   - a group change cooked to the new members with the unrelated value kept;
   - overwrite refused;
   - lines moved and removed;

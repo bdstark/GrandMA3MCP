@@ -223,6 +223,9 @@ interface Expected {
   /** Subfixtures any line may touch, predicted or not (cooked rows outside them are unexpected). */
   touched: Set<number>;
   unpredicted: number;
+  /** Subfixtures lines with unpredicted coverage may write to; `unknownReach` when even that is not known. */
+  uncertain: Set<number>;
+  unknownReach: boolean;
 }
 
 /**
@@ -231,18 +234,24 @@ interface Expected {
  * row). Lines with a filter or a phaser recipe are not predicted.
  */
 export async function analyzeLines(bridge: Gma3Bridge, lines: Line[], t: number, groups: Map<number, GroupInfo>, presetCache: Map<string, PresetRead | null>): Promise<{ reports: LineReport[]; expected: Expected; dependencyNotes: string[] }> {
-  const expected: Expected = { pairs: new Set(), touched: new Set(), unpredicted: 0 };
+  const expected: Expected = { pairs: new Set(), touched: new Set(), unpredicted: 0, uncertain: new Set(), unknownReach: false };
   const dependencyNotes: string[] = [];
   const reports: LineReport[] = [];
   for (const l of lines) {
     const rep: LineReport = { ...l, problems: [] };
     reports.push(rep);
-    if (l.class !== "StandardRecipe") { rep.notPredicted = `${l.class} lines are listed and kept, not modelled by this release`; expected.unpredicted++; continue; }
     if (l.enabled === false) { rep.problems.push("disabled: cooks nothing"); continue; }
+    // A line whose output is not predicted may still write: what it may reach counts as uncertain (never as safe).
+    const unpredictable = (why: string, g: GroupInfo | null) => {
+      rep.notPredicted = why;
+      expected.unpredicted++;
+      if (g?.exists) for (const m of g.members) expected.uncertain.add(m.sfIndex);
+      else expected.unknownReach = true;
+    };
     let g: GroupInfo | null = null;
     if (!l.selection) {
-      if (l.selectionFromValue) { rep.notPredicted = "the selection comes from the values (SelectionFromValue), which is not predicted"; expected.unpredicted++; }
-      else rep.problems.push("no selection: the group is missing (deleted?) or was never assigned");
+      if (l.selectionFromValue || l.class !== "StandardRecipe") { unpredictable(l.class !== "StandardRecipe" ? `${l.class} lines are listed and kept, not modelled by this release` : "the selection comes from the values (SelectionFromValue), which is not predicted", null); continue; }
+      rep.problems.push("no selection: the group is missing (deleted?) or was never assigned");
     } else {
       g = await readGroup(bridge, l.selection.group, t, groups);
       if (!g.exists) rep.problems.push(`Group ${l.selection.group} does not exist`);
@@ -251,10 +260,12 @@ export async function analyzeLines(bridge: Gma3Bridge, lines: Line[], t: number,
       rep.members = g.members.map((m) => m.fixture);
       for (const m of g.members) expected.touched.add(m.sfIndex);
     }
+    if (l.class !== "StandardRecipe") { unpredictable(`${l.class} lines are listed and kept, not modelled by this release`, g); continue; }
     if (!l.values) { rep.problems.push("no values: the preset is missing (deleted?) or was never assigned"); continue; }
-    if (l.filter) { rep.notPredicted = `a filter (${l.filter}) limits the attributes; coverage not predicted`; expected.unpredicted++; continue; }
+    if (l.filter) { unpredictable(`a filter (${l.filter}) limits the attributes; coverage not predicted`, g); continue; }
     if (!g || !g.exists || !g.members.length) continue;
-    const key = l.values.addr ?? l.values.name ?? "?";
+    // The fixture types come with the read, for this group's members: the cache key includes them.
+    const key = `${l.values.addr ?? l.values.name ?? "?"}|${g.members.map((m) => m.sfIndex).sort((a, b) => a - b).join(",")}`;
     let p = presetCache.get(key);
     if (p === undefined) {
       p = l.values.addr ? await readData(bridge, l.values.addr, t, g.members.map((m) => m.sfIndex)) : null;
@@ -285,6 +296,15 @@ export async function analyzeLines(bridge: Gma3Bridge, lines: Line[], t: number,
   return { reports, expected, dependencyNotes };
 }
 
+/** Everything a row stores that the read reports: value, relative, steps with their layers, phaser layers, references. */
+export function rowContent(r: PresetRow): string {
+  return JSON.stringify([
+    r.value ?? null, r.relative ?? null, r.stepCount ?? 1, r.fade ?? null, r.delay ?? null, r.speed ?? null, r.phase ?? null, r.measure ?? null, r.speedMaster ?? null,
+    (r.steps ?? []).map((st) => [st.absolute ?? null, st.relative ?? null, st.accel ?? null, st.decel ?? null, st.trans ?? null, st.width ?? null, st.integrated?.addrNative ?? null]),
+    r.absPreset?.addrNative ?? null, r.relPreset?.addrNative ?? null, r.mode ?? null,
+  ]);
+}
+
 /** The difference between the expected coverage and a target's cooked rows. */
 export function verifyCoverage(input: { rows: Array<PresetRow & { cooked?: boolean }>; expected: Expected; mode: CookMode; before: Array<PresetRow & { cooked?: boolean }> }): string[] {
   const out: string[] = [];
@@ -299,7 +319,7 @@ export function verifyCoverage(input: { rows: Array<PresetRow & { cooked?: boole
     const uncookedKeys = new Set(input.rows.filter((r) => !r.cooked).map(key));
     const realMissing = missing.filter((k) => !(input.mode === "merge_low_priority" && uncookedKeys.has(k)));
     if (realMissing.length) out.push(`expected cooked values missing: ${realMissing.slice(0, 8).join(", ")}${realMissing.length > 8 ? ` and ${realMissing.length - 8} more` : ""} (subfixture|attribute)`);
-    const stray = cooked.filter((r) => typeof r.sfIndex === "number" && !input.expected.touched.has(r.sfIndex));
+    const stray = input.expected.unknownReach ? [] : cooked.filter((r) => typeof r.sfIndex === "number" && !input.expected.touched.has(r.sfIndex));
     if (stray.length) out.push(`cooked values on fixtures no line selects: ${[...new Set(stray.map((r) => r.fixture))].join(", ")}`);
   }
   // Uncooked data: kept by merge_low_priority and remove; merge may replace it only where the recipe writes; overwrite deletes it.
@@ -307,9 +327,12 @@ export function verifyCoverage(input: { rows: Array<PresetRow & { cooked?: boole
   const afterBy = new Map(input.rows.map((r) => [key(r), r]));
   if (input.mode !== "overwrite") {
     for (const r of uncookedBefore) {
-      if (input.mode === "merge" && input.expected.pairs.has(key(r))) continue;
+      // Merge may replace the recipes' own pairs and (acknowledged) anything an unpredicted line may reach.
+      if (input.mode === "merge" && (input.expected.pairs.has(key(r)) || input.expected.unknownReach || (typeof r.sfIndex === "number" && input.expected.uncertain.has(r.sfIndex)))) continue;
       const a = afterBy.get(key(r));
-      if (!a || a.cooked || (typeof r.value === "number" && typeof a.value === "number" && Math.abs(r.value - a.value) > 0.05)) out.push(`uncooked ${r.fixture} ${r.attribute} changed by the cook`);
+      if (!a) out.push(`uncooked ${r.fixture} ${r.attribute} disappeared`);
+      else if (a.cooked) out.push(`uncooked ${r.fixture} ${r.attribute} was replaced by cooked data`);
+      else if (rowContent(a) !== rowContent(r)) out.push(`uncooked ${r.fixture} ${r.attribute} changed by the cook`);
     }
   }
   return out.slice(0, 20);
@@ -365,7 +388,27 @@ interface EditArgs {
 const SELECTION_MODES = { strict: "Strict", normal: "Normal" } as const;
 
 function sameLine(a: Line, b: Line): boolean {
-  return a.class === b.class && (a.selection?.group ?? null) === (b.selection?.group ?? null) && (a.values?.addr ?? null) === (b.values?.addr ?? null) && (a.matricks?.no ?? null) === (b.matricks?.no ?? null) && a.enabled === b.enabled && (a.name ?? "") === (b.name ?? "");
+  return a.class === b.class && (a.selection?.group ?? null) === (b.selection?.group ?? null) && (a.values?.addr ?? null) === (b.values?.addr ?? null) && (a.matricks?.no ?? null) === (b.matricks?.no ?? null) && a.enabled === b.enabled && (a.name ?? "") === (b.name ?? "") && (a.selectionMode ?? "").toLowerCase() === (b.selectionMode ?? "").toLowerCase() && (a.filter ?? null) === (b.filter ?? null);
+}
+
+/** Every requested field of a line, compared per property. */
+export function checkLineFields(l: Line, n: number, f: { selection?: number; valuesAddr?: string | null; matricks?: number; enabled?: boolean; name?: string; selectionMode?: string }): string[] {
+  const out: string[] = [];
+  if (f.selection !== undefined && l.selection?.group !== f.selection) out.push(`line ${n} selection reads ${l.selection ? `Group ${l.selection.group}` : "none"}`);
+  if (f.valuesAddr === null && l.values) out.push(`line ${n} still has values`);
+  if (typeof f.valuesAddr === "string" && l.values?.addr !== f.valuesAddr) out.push(`line ${n} values read ${l.values?.name ?? "none"}`);
+  if (f.matricks !== undefined && l.matricks?.no !== f.matricks) out.push(`line ${n} MAtricks reads ${l.matricks?.no ?? "none"}`);
+  if (f.enabled !== undefined && l.enabled !== f.enabled) out.push(`line ${n} enabled reads ${l.enabled}`);
+  if (f.name !== undefined && (l.name ?? "") !== f.name) out.push(`line ${n} name reads ${JSON.stringify(l.name ?? null)}`);
+  if (f.selectionMode !== undefined && (l.selectionMode ?? "").toLowerCase() !== f.selectionMode.toLowerCase()) out.push(`line ${n} selection mode reads ${JSON.stringify(l.selectionMode ?? null)}`);
+  return out;
+}
+
+/** A set reply compared per property (a boolean property by its truth value, others as text). */
+export function setReplyMatches(property: string, sent: string, got: unknown): boolean {
+  if (property === "Enabled") return bool(got) !== null && bool(got) === bool(sent);
+  if (sent === "") return got === "" || got === null || got === undefined || (typeof got === "object" && !got);
+  return String(got ?? "").trim().toLowerCase() === sent.toLowerCase();
 }
 
 export async function editRecipe(ctx: ToolContext, raw: EditArgs): Promise<OperationResult> {
@@ -492,7 +535,7 @@ export async function editRecipe(ctx: ToolContext, raw: EditArgs): Promise<Opera
             ? commandStep(bridge, c.name, c.command, tm)
             : requestStep(bridge, c.name, "set", { ref, property: c.set!.property, value: c.set!.value }, (res) => {
                 const got = (res as { value?: unknown } | null)?.value;
-                const ok = c.set!.value === "" ? got === "" || got === null || got === undefined || (typeof got === "object" && !got) : String(got ?? "").trim().toLowerCase() === c.set!.value.toLowerCase() || bool(got) === bool(c.set!.value);
+                const ok = setReplyMatches(c.set!.property, c.set!.value, got);
                 return ok ? { name: c.name, status: "succeeded", op: "set" } : { name: c.name, status: "failed", op: "set", detail: { readBack: got }, error: `${c.set!.property} reads ${JSON.stringify(got)} after the write` };
               }, tm),
       })),
@@ -507,35 +550,23 @@ export async function editRecipe(ctx: ToolContext, raw: EditArgs): Promise<Opera
       steps.push(asRead({ name: "read_back", status: "succeeded", op: "children" }));
       const a = after ?? [];
       const problems: string[] = [];
+      const valuesAddr = values ? (await readData(bridge, `Preset ${values.pool}.${values.number}`, tm))?.addr ?? "?" : values === null ? null : undefined;
+      const want = { selection, valuesAddr, matricks, enabled: raw.enabled, name, selectionMode: raw.selection_mode ? SELECTION_MODES[raw.selection_mode] : undefined };
       if (action === "add") {
         if (a.length !== b.length + 1) problems.push(`${a.length} line(s) after adding to ${b.length}`);
         const l = a[n - 1];
-        if (l) {
-          if (l.selection?.group !== selection) problems.push(`line ${n} selection reads ${l.selection ? `Group ${l.selection.group}` : "none"}`);
-          if (values && !l.values) problems.push(`line ${n} has no values`);
-        }
+        if (!l) problems.push(`line ${n} was not created`);
+        else problems.push(...checkLineFields(l, n, want));
         for (let i = 0; i < b.length; i++) if (!a[i] || !sameLine(a[i], b[i])) problems.push(`line ${i + 1} changed`);
       } else if (action === "set") {
         if (a.length !== b.length) problems.push(`${a.length} line(s) after the edit, ${b.length} before`);
         const l = a[n - 1];
         if (!l) problems.push(`line ${n} is gone`);
-        else {
-          if (selection !== undefined && l.selection?.group !== selection) problems.push(`line ${n} selection reads ${l.selection ? `Group ${l.selection.group}` : "none"}`);
-          if (values === null && l.values) problems.push(`line ${n} still has values`);
-          if (values && !l.values) problems.push(`line ${n} has no values`);
-          if (matricks !== undefined && l.matricks?.no !== matricks) problems.push(`line ${n} MAtricks reads ${l.matricks?.no ?? "none"}`);
-          if (raw.enabled !== undefined && l.enabled !== raw.enabled) problems.push(`line ${n} enabled reads ${l.enabled}`);
-          if (name !== undefined && l.name !== name) problems.push(`line ${n} name reads ${JSON.stringify(l.name)}`);
-        }
+        else problems.push(...checkLineFields(l, n, want));
         for (let i = 0; i < b.length; i++) if (i !== n - 1 && (!a[i] || !sameLine(a[i], b[i]))) problems.push(`line ${i + 1} changed`);
       } else {
         if (a.length !== expected.length) problems.push(`${a.length} line(s), ${expected.length} expected`);
         for (let i = 0; i < expected.length; i++) if (!a[i] || !sameLine(a[i], expected[i])) problems.push(`line ${i + 1} is not the expected one`);
-      }
-      // Values of a preset are matched by address: the line reads the preset handle the Assign gave it.
-      if (values && action !== "move" && action !== "remove") {
-        const p = await readData(bridge, `Preset ${values.pool}.${values.number}`, tm);
-        if (p && a[n - 1]?.values?.addr !== p.addr) problems.push(`line ${n} values read ${a[n - 1]?.values?.name ?? "none"}, not Preset ${values.pool}.${values.number}`);
       }
       verification = problems.length ? { status: "mismatched", checked: `the recipe lines of ${label(t)}`, detail: problems.slice(0, 10).join("; ") } : { status: "matched", checked: `the recipe lines of ${label(t)} (the edited line and that the others are unchanged)` };
     } catch (err) {
@@ -635,14 +666,17 @@ export async function cookRecipes(ctx: ToolContext, raw: CookArgs): Promise<Oper
                 throw err;
               }
               const rows = before?.rows ?? [];
-              const conflicts = rows.filter((r) => !(r as { cooked?: boolean }).cooked && an.expected.pairs.has(`${r.sfIndex}|${r.attribute}`)).map((r) => `${r.fixture} ${r.attribute}`);
+              // Merge replaces uncooked values on the recipes' pairs; what unpredicted lines reach is a possible conflict.
+              const conflicts = rows
+                .filter((r) => !(r as { cooked?: boolean }).cooked && (an.expected.pairs.has(`${r.sfIndex}|${r.attribute}`) || an.expected.unknownReach || (typeof r.sfIndex === "number" && an.expected.uncertain.has(r.sfIndex))))
+                .map((r) => `${r.fixture} ${r.attribute}${an.expected.pairs.has(`${r.sfIndex}|${r.attribute}`) ? "" : " (possibly: a line's coverage is not predicted)"}`);
               const losses = rows.filter((r) => !(r as { cooked?: boolean }).cooked).map((r) => `${r.fixture} ${r.attribute}`);
               plans.push({ target: tg, lines: an.reports, expected: an.expected, before, conflicts, losses, notes: an.dependencyNotes });
             }
           } catch (err) {
             return asRead(stepFromError("find_targets", err, { op: "children" }));
           }
-          if (!plans.length) return asRead({ name: "find_targets", status: "failed", error: `no recipe lines in ${label(scope)}; nothing to cook` });
+          if (!plans.length && !truncated) return asRead({ name: "find_targets", status: "failed", error: `no recipe lines in ${label(scope)}; nothing to cook` });
           return asRead({ name: "find_targets", status: "succeeded", detail: { targets: plans.length, truncated } });
         },
       },
@@ -667,6 +701,11 @@ export async function cookRecipes(ctx: ToolContext, raw: CookArgs): Promise<Oper
       ...(truncated ? { truncated: `only the first ${MAX_TARGETS} cue parts were inspected` } : {}),
     };
     if (inspect.outcome !== "succeeded") return buildResult({ operation: op, target, steps: inspect.steps, summary: `${op} was not performed; nothing was sent: ${inspect.steps.find((s) => s.status !== "succeeded")?.error ?? "inspection failed"}`, extra });
+    if (truncated && !preview) {
+      // The command would cook targets that were not inspected: refuse rather than cook beyond what was checked.
+      const s: StepResult = asRead({ name: "check_scope", status: "failed", error: `${label(scope)} holds more than ${MAX_TARGETS} cue parts with recipes; only ${MAX_TARGETS} were inspected, so the cook would reach unchecked targets. Cook cue by cue` });
+      return buildResult({ operation: op, target, steps: [...inspect.steps, s], summary: `${op} refused, nothing was sent: ${s.error}`, extra });
+    }
     const warnings: string[] = [];
     for (const p of plans) for (const l of p.lines) for (const pr of l.problems) warnings.push(`${label(p.target)} line ${l.line}: ${pr}`);
     for (const p of plans) for (const l of p.lines) if (l.notPredicted) warnings.push(`${label(p.target)} line ${l.line}: ${l.notPredicted}`);

@@ -85,6 +85,9 @@ liveTest("SB-05: recipe lines, cooking and coverage (Sequence 906, Groups 910-91
   // 1. Two lines.
   ok(await edit(CUE1, { action: "add", selection: G, values: COLOR, name: "colour" }), "add colour");
   ok(await edit(CUE1, { action: "add", selection: G, values: DIMMER }), "add dimmer");
+  // Every requested field is verified per property (SelectionMode is compared as text, not as a truth value).
+  ok(await edit(CUE1, { action: "set", line: 2, selection_mode: "normal" }), "selection mode normal");
+  ok(await edit(CUE1, { action: "set", line: 2, selection_mode: "strict", enabled: true }), "selection mode strict");
   const r1 = (await call("gma3_recipes", { target: CUE1 })).result;
   t.diagnostic(`cue 1: ${r1.lines.length} lines; cooked ${cookedFixtures(r1).join(",")}; uncooked ${r1.coverage.uncooked.map((u: any) => `${u.fixture} ${u.attributes.join("+")}`).join(",")}`);
   assert.equal(r1.lines.length, 2);

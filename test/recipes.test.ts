@@ -1,7 +1,7 @@
 import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { startHarness, type Harness } from "./helpers/tool-harness.ts";
-import { registerRecipeTools, parseTarget, parseScope, targetRef, lineRef, coverageOf, verifyCoverage } from "../src/tools/recipes.ts";
+import { registerRecipeTools, parseTarget, parseScope, targetRef, lineRef, coverageOf, verifyCoverage, setReplyMatches } from "../src/tools/recipes.ts";
 import { ValidationError } from "../src/validate.ts";
 
 // ---------------------------------------------------------------------------
@@ -30,12 +30,12 @@ test("coverage summarises cooked and uncooked attributes per fixture", () => {
 
 test("coverage verification per cook option", () => {
   const row = (sf: number, attribute: string, cooked: boolean, value = 100) => ({ fixture: String(sf), sfIndex: sf, attribute, value, cooked });
-  const expected = { pairs: new Set(["1|R", "2|R"]), touched: new Set([1, 2]), unpredicted: 0 };
+  const expected = { pairs: new Set(["1|R", "2|R"]), touched: new Set([1, 2]), unpredicted: 0, uncertain: new Set<number>(), unknownReach: false };
   const hard = row(3, "Dimmer", false, 70);
   assert.deepEqual(verifyCoverage({ rows: [row(1, "R", true), row(2, "R", true), hard], expected, mode: "merge_low_priority", before: [hard] }), []);
   assert.match(verifyCoverage({ rows: [row(1, "R", true), hard], expected, mode: "merge_low_priority", before: [hard] }).join(), /expected cooked values missing: 2\|R/);
   assert.match(verifyCoverage({ rows: [row(1, "R", true), row(2, "R", true), row(9, "R", true), hard], expected, mode: "merge_low_priority", before: [hard] }).join(), /cooked values on fixtures no line selects: 9/);
-  assert.match(verifyCoverage({ rows: [row(1, "R", true), row(2, "R", true)], expected, mode: "merge_low_priority", before: [hard] }).join(), /uncooked 3 Dimmer changed by the cook/);
+  assert.match(verifyCoverage({ rows: [row(1, "R", true), row(2, "R", true)], expected, mode: "merge_low_priority", before: [hard] }).join(), /uncooked 3 Dimmer disappeared/);
   // Merge low priority keeps an uncooked value on the recipe's own pair: not a gap.
   const ownHard = row(1, "R", false, 30);
   assert.deepEqual(verifyCoverage({ rows: [ownHard, row(2, "R", true)], expected, mode: "merge_low_priority", before: [ownHard] }), []);
@@ -44,13 +44,41 @@ test("coverage verification per cook option", () => {
   assert.deepEqual(verifyCoverage({ rows: [row(1, "R", true), row(2, "R", true)], expected, mode: "overwrite", before: [ownHard, hard] }), []);
   assert.match(verifyCoverage({ rows: [row(1, "R", true), hard], expected, mode: "remove", before: [hard] }).join(), /1 cooked value\(s\) remain after Remove/);
   assert.deepEqual(verifyCoverage({ rows: [hard], expected, mode: "remove", before: [row(1, "R", true), hard] }), []);
+  // Merge may replace what an unpredicted line reaches (acknowledged before the cook), nothing else.
+  const uncertain = { ...expected, uncertain: new Set([3]) };
+  assert.deepEqual(verifyCoverage({ rows: [row(1, "R", true), row(2, "R", true), row(3, "Dimmer", true)], expected: { ...uncertain, touched: new Set([1, 2, 3]) }, mode: "merge", before: [hard] }), []);
+});
+
+test("uncooked rows that must survive are compared on their full content", () => {
+  const cooked = [1, 2].map((sf) => ({ fixture: String(sf), sfIndex: sf, attribute: "R", value: 100, cooked: true }));
+  const expected = { pairs: new Set(["1|R", "2|R"]), touched: new Set([1, 2]), unpredicted: 0, uncertain: new Set<number>(), unknownReach: false };
+  const hard = { fixture: "3", sfIndex: 3, attribute: "Dimmer", value: 70, cooked: false, relative: 5, stepCount: 2, speed: 1, steps: [{ absolute: 70, relative: 5 }, { absolute: 20, relative: 0 }] };
+  const check = (after: Record<string, unknown>) => verifyCoverage({ rows: [...cooked, { ...hard, ...after }], expected, mode: "merge_low_priority", before: [hard] as never }).join();
+  assert.equal(check({}), "");
+  assert.match(check({ steps: [{ absolute: 70, relative: 9 }, { absolute: 20, relative: 0 }] }), /uncooked 3 Dimmer changed by the cook/);
+  assert.match(check({ speed: 2 }), /changed by the cook/);
+  assert.match(check({ relative: 0 }), /changed by the cook/);
+  assert.match(check({ value: "Open" }), /changed by the cook/);
+  assert.match(check({ cooked: true }), /replaced by cooked data/);
+  assert.match(verifyCoverage({ rows: cooked, expected, mode: "remove", before: [hard] as never }).join(), /uncooked 3 Dimmer disappeared/);
+});
+
+test("set replies are compared per property", () => {
+  assert.equal(setReplyMatches("SelectionMode", "Strict", "Normal"), false);
+  assert.equal(setReplyMatches("SelectionMode", "Normal", "normal"), true);
+  assert.equal(setReplyMatches("Enabled", "Yes", true), true);
+  assert.equal(setReplyMatches("Enabled", "No", true), false);
+  assert.equal(setReplyMatches("Enabled", "Yes", "Strict"), false);
+  assert.equal(setReplyMatches("Name", "a", "b"), false);
+  assert.equal(setReplyMatches("Values", "", ""), true);
+  assert.equal(setReplyMatches("Values", "", "Preset 4.4"), false);
 });
 
 // ---------------------------------------------------------------------------
 // Fake console
 // ---------------------------------------------------------------------------
 
-interface FLine { cls: string; group: number | null; preset: string | null; matricks: number | null; enabled: boolean; name: string; mode: string }
+interface FLine { cls: string; group: number | null; preset: string | null; matricks: number | null; enabled: boolean; name: string; mode: string; filter?: string }
 interface FRow { fixture: string; sfIndex: number; attribute: string; value: number; cooked: boolean }
 interface FTarget { lines: FLine[]; rows: FRow[] }
 
@@ -64,6 +92,11 @@ class Console {
   strayLine = false;
   /** A Cook that answers OK and changes nothing. */
   cookNoop = false;
+  /** Line properties a set answers for and leaves unchanged; Assign kinds that answer OK and do nothing. */
+  ignoreSet = new Set<string>();
+  ignoreAssign = new Set<string>();
+  /** Presets hold global rows (fixture type T1) instead of universal ones. */
+  globalPresets = false;
 
   part(seq: number, cue: number, part = 0): FTarget {
     const k = `Sequence ${seq} Cue ${cue} Part ${part}`;
@@ -131,7 +164,7 @@ class Console {
             Selection: l.group !== null ? { name: `Group ${l.group}`, class: "Group", index: l.group, addr: `g.${l.group}` } : "",
             Values: l.preset ? { name: this.presetOf(l.preset)?.[0] ?? "?", class: "Preset", addr: l.preset } : "",
             MAtricks: l.matricks !== null ? { name: `M${l.matricks}`, class: "MAtrick", index: l.matricks } : "",
-            Filter: "", SelectionMode: l.mode, SelectionFromValue: false, FailedCookedPart: "None", EmptyLastCooking: false,
+            Filter: l.filter ? { name: l.filter, class: "Filter" } : "", SelectionMode: l.mode, SelectionFromValue: false, FailedCookedPart: "None", EmptyLastCooking: false,
           },
         })),
       };
@@ -150,6 +183,10 @@ class Console {
       if (!entry) throw new Error(`no object found for '${ref}'`);
       const [k, p] = entry;
       const [pool, no] = k.split(".").map(Number);
+      if (this.globalPresets) {
+        const typesFor = (args.typesFor as number[] | undefined) ?? [];
+        return { ref, class: "Preset", addr: p.addr, pool: { no: pool }, no, rows: p.attrs.map((a) => ({ fixture: "T1", sfIndex: 0, attribute: a, mode: "global", fixtureType: "T1", value: p.value })), dependencies: [], types: Object.fromEntries(typesFor.map((sf) => [String(sf), "T1"])) };
+      }
       return { ref, class: "Preset", addr: p.addr, pool: { no: pool }, no, rows: p.attrs.map((a) => ({ fixture: "Generic 1", sfIndex: 0, attribute: a, mode: "universal", value: p.value })), dependencies: [], types: {} };
     });
     h.fake.on("fixtureAttributes", () => ({ attributes: [{ attribute: "ColorRGB_R" }, { attribute: "Dimmer" }] }));
@@ -162,6 +199,7 @@ class Console {
       const f = this.find(String(args.ref))!;
       const l = f.t.lines[f.line! - 1];
       const prop = String(args.property);
+      if (this.ignoreSet.has(prop)) return { value: prop === "Enabled" ? l.enabled : prop === "Name" ? l.name : prop === "SelectionMode" ? l.mode : "" };
       if (prop === "Name") l.name = String(args.value);
       if (prop === "Enabled") l.enabled = args.value === "Yes";
       if (prop === "SelectionMode") l.mode = String(args.value);
@@ -178,6 +216,7 @@ class Console {
         if (!f) return { feedback: "Illegal object" };
         let l = f.t.lines[f.line! - 1];
         if (!l) { l = { cls: "StandardRecipe", group: null, preset: null, matricks: null, enabled: true, name: "", mode: "Strict" }; f.t.lines.push(l); if (this.strayLine) f.t.lines.push({ cls: "StandardRecipe", group: null, preset: null, matricks: null, enabled: true, name: "", mode: "Strict" }); }
+        if (this.ignoreAssign.has(m[1])) return { feedback: "OK" };
         if (m[1] === "Group") l.group = Number(m[2]);
         if (m[1] === "Preset") l.preset = this.presets.get(m[2])!.addr;
         if (m[1] === "MAtricks") l.matricks = Number(m[2]);
@@ -376,4 +415,70 @@ test("a cook without a mode is refused before anything is sent", async () => {
   const { result } = await h.callJson("gma3_cook_recipes", { target: T });
   assert.match(String(result.validationErrors?.join() ?? result), /mode|Invalid/);
   assert.equal(h.fake.requests.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Review 1 regressions
+// ---------------------------------------------------------------------------
+
+test("ignored edits are mismatches: a SelectionMode set the console keeps, an add whose MAtricks did not land", async () => {
+  const t = seeded();
+  t.lines[0].mode = "Strict";
+  con.ignoreSet.add("SelectionMode");
+  const set = await edit({ action: "set", line: 1, selection_mode: "normal" });
+  assert.equal(set.isError, true, JSON.stringify(set.result));
+  assert.notEqual(set.result.verification.status, "matched");
+  con.ignoreAssign.add("MAtricks");
+  const add = await edit({ action: "add", selection: 908, values: "1.11", matricks: 12 });
+  assert.equal(add.isError, true, JSON.stringify(add.result));
+  assert.match(add.result.verification.detail, /line 2 MAtricks reads none/);
+});
+
+test("a cook scope with more targets than are inspected is refused", async () => {
+  for (let c = 1; c <= 201; c++) con.part(9061, c).lines = [{ cls: "StandardRecipe", group: 908, preset: "14.14.1.5.4.4", matricks: null, enabled: true, name: "", mode: "Strict" }];
+  con.part(9061, 201).rows = [{ fixture: "404", sfIndex: 66, attribute: "Dimmer", value: 70, cooked: false }];
+  const { result, isError } = await h.callJson("gma3_cook_recipes", { target: { sequence: 9061 }, mode: "overwrite", replace_uncooked: true });
+  assert.equal(isError, true);
+  assert.match(stepError(result, "check_scope"), /more than 200 cue parts/);
+  assert.equal(con.commands.length, 0);
+  assert.ok(con.part(9061, 201).rows.length === 1);
+  const pv = await h.callJson("gma3_cook_recipes", { target: { sequence: 9061 }, mode: "merge_low_priority", preview: true });
+  assert.match(pv.result.truncated, /only the first 200/);
+});
+
+test("lines with unpredicted coverage make what they reach a possible merge conflict", async () => {
+  const t = seeded();
+  t.lines = [
+    { cls: "StandardRecipe", group: 908, preset: "14.14.1.5.4.4", matricks: null, enabled: true, name: "", mode: "Strict", filter: "Color" },
+    { cls: "PhaserRecipe", group: 909, preset: null, matricks: null, enabled: true, name: "", mode: "Strict" },
+  ];
+  t.rows.push({ fixture: "401", sfIndex: 63, attribute: "ColorRGB_R", value: 30, cooked: false });
+  t.rows = t.rows.filter((r) => !(r.fixture === "401" && r.cooked));
+  t.rows.push({ fixture: "404", sfIndex: 66, attribute: "Dimmer", value: 70, cooked: false });
+  const merge = await cook({ mode: "merge" });
+  assert.match(stepError(merge.result, "check_uncooked"), /401 ColorRGB_R \(possibly/);
+  assert.doesNotMatch(stepError(merge.result, "check_uncooked"), /404/);
+  assert.equal(con.commands.length, 0);
+  const ok = await cook({ mode: "merge", replace_uncooked: true });
+  assert.equal(ok.result.verification.status, "matched", JSON.stringify(ok.result.verification));
+  // A line without a known reach (no group) makes every uncooked value a possible conflict.
+  t.lines.push({ cls: "PhaserRecipe", group: null, preset: null, matricks: null, enabled: true, name: "", mode: "Strict" });
+  con.commands = [];
+  const all = await cook({ mode: "merge" });
+  assert.match(stepError(all.result, "check_uncooked"), /404 Dimmer \(possibly/);
+  assert.equal(con.commands.length, 0);
+});
+
+test("global preset rows are predicted for the members of every group that uses the preset", async () => {
+  con.globalPresets = true;
+  seeded();
+  const t2 = con.part(9060, 2);
+  con.groups.set(909, [{ fixture: "403", sfIndex: 65 }]);
+  t2.lines = [{ cls: "StandardRecipe", group: 909, preset: "14.14.1.5.4.4", matricks: null, enabled: true, name: "", mode: "Strict" }];
+  t2.rows = [{ fixture: "403", sfIndex: 65, attribute: "ColorRGB_R", value: 30, cooked: false }];
+  const merge = await h.callJson("gma3_cook_recipes", { target: { sequence: 9060 }, mode: "merge", preview: true });
+  assert.equal(merge.result.affected[1].expectedCooked, 1, JSON.stringify(merge.result.affected));
+  const real = await h.callJson("gma3_cook_recipes", { target: { sequence: 9060 }, mode: "merge" });
+  assert.match(stepError(real.result, "check_uncooked"), /Cue 2 Part 0 \(403 ColorRGB_R\)/);
+  assert.equal(con.commands.length, 0);
 });
