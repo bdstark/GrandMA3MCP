@@ -2,7 +2,7 @@
   "mode": "run",
   "host": "127.0.0.1",
   "port": 9800,
-  "startedAt": "2026-10-12T09:31:24.356Z",
+  "startedAt": "2026-10-13T14:21:53.385Z",
   "config": {
     "fid": 901,
     "universe": 2,
@@ -14,7 +14,8 @@
       "patch",
       "import",
       "dialogs"
-    ]
+    ],
+    "exclusive": true
   },
   "ping": {
     "bridgeVersion": "0.18.0",
@@ -796,7 +797,7 @@
       "name": "run: CmdIndirect of a Store over an existing cue returns at once and the bridge keeps answering while the dialog is open",
       "pass": true,
       "detail": {
-        "answerMs": 16,
+        "answerMs": 13,
         "pong": true
       }
     },
@@ -821,7 +822,7 @@
           "Release",
           "Cancel"
         ],
-        "token": 8
+        "token": 15
       }
     },
     {
@@ -941,8 +942,8 @@
       "name": "run: the reopened Store dialog is inspected and bound under a new token",
       "pass": true,
       "detail": {
-        "token": 9,
-        "firstToken": 8
+        "token": 16,
+        "firstToken": 15
       }
     },
     {
@@ -1132,7 +1133,7 @@
           }
         },
         {
-          "label": "restore the patch (KB25 fixtures, the tracked import, destination Root; never commits foreign changes)",
+          "label": "restore the patch (KB25 fixtures, the tracked import, destination Root; no commit when the fingerprint shows other changes)",
           "ok": true,
           "detail": {
             "ok": true,
@@ -1182,7 +1183,7 @@
       }
     }
   ],
-  "finishedAt": "2026-10-12T09:32:48.074Z",
+  "finishedAt": "2026-10-13T14:23:14.274Z",
   "failed": 0,
   "passed": 55
 }
