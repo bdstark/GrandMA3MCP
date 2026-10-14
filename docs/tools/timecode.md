@@ -89,7 +89,8 @@ Evidence: [the SB-08 probe record](../probes/sb-08-timecode-macos-2.5.1.md).
   `assert_previous_events`.
 - Before anything is sent:
   - every sequence and cue must exist;
-  - a playing or locked show, or one that was not read completely, is refused.
+  - an existing show must have been read as unlocked and as not playing: a lock or playback state that could not be
+    read refuses the change, as do a locked or playing show and one that was not read completely.
 - The steps, in order:
   1. `Store`, or the group deletions;
   2. `set` Name and each setting, each compared;
@@ -123,10 +124,24 @@ Evidence: [the SB-08 probe record](../probes/sb-08-timecode-macos-2.5.1.md).
   - `off` → off;
   - a press → running.
 
-  An expected state is matched to the first later observed change of that sequence, in order. Releases and other
-  actions are listed with `expected: null`, since what they do depends on the state before the press.
-- Verification is `matched` when every predictable event was seen in order, `mismatched` otherwise, and `unavailable`
-  when no event was crossed.
+  Releases and other actions are listed with `expected: null`, since what they do depends on the state before the
+  press.
+- Each sequence is matched on its own, in order. An event's expected state must appear in a change of its own sequence,
+  inside the event's window: from its time minus the read skew, up to the next event on that sequence (plus the skew).
+  The read skew is the slowest sample plus 0.05 s, because each sample reads the cursor before the sequences. So an
+  earlier, unrelated change never verifies a later event. Each event gets a `result`:
+  - `matched`: seen in its window;
+  - `missed`: not seen;
+  - `unchanged`: the sequence was already in that state, so nothing could be seen;
+  - `unpredictable`: no predicted effect;
+  - `superseded`: the next event on the sequence followed within the skew.
+- Across sequences, only the order the samples can resolve is checked. Two events seen in the same sample, or less
+  than the skew apart, are reported as unresolved in the detail, never as wrong. An order the samples do resolve, but
+  observed the wrong way round, is a mismatch.
+- Verification:
+  - `mismatched` when an event was missed or an order is inverted;
+  - `matched` when at least one event matched and nothing was missed;
+  - `unavailable` when nothing was crossed or nothing was observable.
 - `execution` keeps `dispatched` separate from what was `observed`: the samples, the cursor range and the sequences'
   changes.
 

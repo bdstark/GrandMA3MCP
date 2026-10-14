@@ -296,6 +296,9 @@ Timecode events have no command-line address, so two ops reach them (evidence:
     the given order to the range's command subtrack, created on first use. That needs the target to be set in an
     earlier request (`[not-ready]` otherwise). Every event is validated before the first is appended.
 
+  Target and cue references go through the bridge's guarded object lookup, so an executor range is expanded or refused
+  (`[unsafe-range]`) and never reaches `ObjectList`.
+
   Nothing plays, records or selects. Tools: [tools/timecode.md](tools/timecode.md).
 
 ### Owned input sessions (plugin v0.5.0, KB-03)

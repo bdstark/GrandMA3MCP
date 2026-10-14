@@ -1,7 +1,7 @@
 import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { startHarness, type Harness } from "./helpers/tool-harness.ts";
-import { registerTimecodeTools, parseTime, formatTime, toRaw, displaySeconds, orderEvents, pairProblems, parseTrack, tcSlotOf, RAW_PER_SECOND } from "../src/tools/timecode.ts";
+import { registerTimecodeTools, parseTime, formatTime, toRaw, displaySeconds, orderEvents, pairProblems, parseTrack, tcSlotOf, matchEvents, RAW_PER_SECOND } from "../src/tools/timecode.ts";
 import { ValidationError } from "../src/validate.ts";
 
 // ---------------------------------------------------------------------------
@@ -57,6 +57,8 @@ class Console {
   /** A read that loses its events, and a set_target the console drops. */
   dropEvents = false;
   dropTarget = false;
+  /** Fields the read leaves out. */
+  omit = new Set<string>();
 
   seq(n: number, cues = [1, 2, 3]) {
     this.seqs.set(n, { cues, cue: null, active: false });
@@ -103,7 +105,9 @@ class Console {
       if (t.events.length) subtracks.push({ group: gi + 1, track: ti + 1, range: 1, subtrack: 1, class: "CmdSubTrack", count: t.events.length });
       if (!this.dropEvents) t.events.forEach((e, ei) => events.push({ group: gi + 1, track: ti + 1, range: 1, subtrack: 1, index: ei + 1, raw: e.raw, token: e.token, name: e.status === "Off" ? `${e.token}(Release)` : e.token, ...(e.status ? { status: e.status } : {}), cue: e.cue ? { sequence: e.cue.seq, no: e.cue.no * 1000, addr: `cue.${e.cue.seq}.${e.cue.no}` } : null }));
     }));
-    return { no: n, settings: { Name: s.name, Cursor: s.cursor.toFixed(2), RawDuration: Math.round(this.duration(s) * RAW_PER_SECOND), ...s.settings }, playing: !!s.playing, groups: s.groups.map((_, i) => ({ group: i + 1 })), tracks, ranges, subtracks, events, eventCount: events.length, truncated: false };
+    const settings: Record<string, unknown> = { Name: s.name, Cursor: s.cursor.toFixed(2), RawDuration: Math.round(this.duration(s) * RAW_PER_SECOND), ...s.settings };
+    for (const k of this.omit) delete settings[k];
+    return { no: n, settings, ...(this.omit.has("playing") ? {} : { playing: !!s.playing }), groups: s.groups.map((_, i) => ({ group: i + 1 })), tracks, ranges, subtracks, events, eventCount: events.length, truncated: false };
   }
 
   install(h: Harness): void {
@@ -315,4 +319,72 @@ test("a play whose events do not show up is a mismatch", async () => {
   const play = await h.callJson("gma3_timecode_transport", { timecode: 901, action: "play", observe_seconds: 1.4, interval_ms: 20 });
   assert.equal(play.isError, true);
   assert.equal(play.result.verification.status, "mismatched");
+});
+
+// ---------------------------------------------------------------------------
+// Review 1 regressions
+// ---------------------------------------------------------------------------
+
+test("an unknown lock or playback state refuses changing an existing show", async () => {
+  await h.callJson("gma3_build_timecode", { timecode: 901, mode: "create", tracks: [SHOW[0]] });
+  con.commands = [];
+  con.shows.get(901)!.playing = { since: Date.now(), from: 0 };
+  con.omit.add("playing");
+  const p = await h.callJson("gma3_build_timecode", { timecode: 901, mode: "replace", tracks: [SHOW[1]] });
+  assert.match(stepError(p.result, "read_timecode"), /whether Timecode 901 is playing could not be read/);
+  con.omit = new Set(["Lock"]);
+  con.shows.get(901)!.playing = undefined;
+  const l = await h.callJson("gma3_build_timecode", { timecode: 901, mode: "append", tracks: [SHOW[1]] });
+  assert.match(stepError(l.result, "read_timecode"), /the Lock of Timecode 901 could not be read/);
+  assert.deepEqual(con.commands, [], "no group was deleted or added");
+  assert.equal(con.shows.get(901)!.groups.length, 1);
+});
+
+const ev = (seconds: number, sequence: number, action: any, cue?: number) => ({ seconds, time: `${seconds}`, sequence, action, ...(cue !== undefined ? { cue } : {}) });
+const initial = () => new Map([[1, { cue: null, active: false }], [2, { cue: null, active: false }]]);
+const cues = new Map([[1, [1, 2, 3]], [2, [1, 2, 3]]]);
+
+test("events on two sequences seen in the same sample both match; their order is reported as unresolved", () => {
+  const m = matchEvents({
+    events: [ev(0.02, 1, "goto", 2), ev(0.04, 2, "goto", 3)],
+    // One sample saw both: sequence 2's read came after sequence 1's in that sample.
+    changes: [{ ms: 100, cursor: 0.05, sequence: 1, cue: 2, active: true }, { ms: 100, cursor: 0.05, sequence: 2, cue: 3, active: true }],
+    initial: initial(),
+    cues,
+    skew: 0.06,
+  });
+  assert.deepEqual(m.events.map((e) => e.result), ["matched", "matched"]);
+  assert.equal(m.unresolved.length, 1);
+  const v = m.verification("x");
+  assert.equal(v.status, "matched", JSON.stringify(v));
+  assert.match(v.detail!, /order of 1 pair.* not resolved by the sampling/);
+  // Seen in the opposite order by a later sample of sequence 2: still resolved per sequence, not a cross-sequence inversion.
+  const m2 = matchEvents({ events: [ev(0.02, 1, "goto", 2), ev(0.04, 2, "goto", 3)], changes: [{ ms: 90, cursor: 0.04, sequence: 2, cue: 3, active: true }, { ms: 110, cursor: 0.06, sequence: 1, cue: 2, active: true }], initial: initial(), cues, skew: 0.06 });
+  assert.equal(m2.verification("x").status, "matched");
+});
+
+test("an earlier unrelated change cannot verify a later event", () => {
+  const m = matchEvents({ events: [ev(0.3, 1, "goto", 2)], changes: [{ ms: 20, cursor: 0.02, sequence: 1, cue: 2, active: true }], initial: initial(), cues, skew: 0.06 });
+  assert.equal(m.events[0].result, "missed");
+  assert.equal(m.verification("x").status, "mismatched");
+  const later = matchEvents({ events: [ev(0.3, 1, "goto", 2)], changes: [{ ms: 20, cursor: 0.02, sequence: 1, cue: 1, active: true }, { ms: 310, cursor: 0.31, sequence: 1, cue: 2, active: true }], initial: initial(), cues, skew: 0.06 });
+  assert.equal(later.events[0].result, "matched");
+  assert.equal(later.events[0].observed!.cursor, 0.31);
+  // Within the read skew before the event (the cursor is read before the sequence): accepted.
+  const skewed = matchEvents({ events: [ev(0.5, 1, "goto", 2)], changes: [{ ms: 500, cursor: 0.46, sequence: 1, cue: 2, active: true }], initial: initial(), cues, skew: 0.06 });
+  assert.equal(skewed.events[0].result, "matched");
+});
+
+test("a change after the next event's window is not taken; resolvable cross-sequence inversions are mismatches", () => {
+  // Sequence 1: goto 2 at 0.2, goto 3 at 1.0; only cue 2 is seen, at 1.5 (after the next event): goto 2 is missed.
+  const m = matchEvents({ events: [ev(0.2, 1, "goto", 2), ev(1.0, 1, "goto", 3)], changes: [{ ms: 1500, cursor: 1.5, sequence: 1, cue: 2, active: true }], initial: initial(), cues, skew: 0.06 });
+  assert.deepEqual(m.events.map((e) => e.result), ["missed", "missed"]);
+  // Two sequences 1 s apart, observed the wrong way round (both inside their own windows): an inversion.
+  const inv = matchEvents({ events: [ev(0.1, 1, "goto", 2), ev(1.1, 2, "goto", 3)], changes: [{ ms: 1200, cursor: 0.1, sequence: 1, cue: 2, active: true }, { ms: 1150, cursor: 1.1, sequence: 2, cue: 3, active: true }], initial: initial(), cues, skew: 0.06 });
+  assert.equal(inv.inversions.length, 1);
+  assert.equal(inv.verification("x").status, "mismatched");
+  // An event whose sequence is already in the expected state is not observable, and alone is unavailable.
+  const same = matchEvents({ events: [ev(0.2, 1, "off")], changes: [], initial: initial(), cues, skew: 0.06 });
+  assert.equal(same.events[0].result, "unchanged");
+  assert.equal(same.verification("x").status, "unavailable");
 });

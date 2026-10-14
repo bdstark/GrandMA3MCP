@@ -471,8 +471,14 @@ export async function buildTimecode(ctx: ToolContext, raw: BuildArgs): Promise<O
           if (mode === "create" && b) return asRead({ name: "read_timecode", status: "failed", error: `${ref} already exists (${b.groups.length} track group(s), ${b.eventCount} event(s)); use mode replace or append` });
           if (mode !== "create" && !b) return asRead({ name: "read_timecode", status: "failed", error: `${ref} does not exist; use mode create` });
           if (b?.truncated) return asRead({ name: "read_timecode", status: "failed", error: `${ref} was not read completely; nothing is changed` });
-          if (b && /^(yes|ul)$/i.test(String(b.settings.Lock ?? "").trim())) return asRead({ name: "read_timecode", status: "failed", error: `${ref} is locked` });
-          if (b?.playing) return asRead({ name: "read_timecode", status: "failed", error: `${ref} is playing; stop it first (gma3_timecode_transport stop)` });
+          // An existing show is changed only when it was read as unlocked and stopped: unknown is never taken as safe.
+          if (b) {
+            const lock = b.settings.Lock;
+            if (typeof lock !== "string") return asRead({ name: "read_timecode", status: "failed", error: `the Lock of ${ref} could not be read; nothing is changed on a show that may be locked` });
+            if (!/^(no)?$/i.test(lock.trim())) return asRead({ name: "read_timecode", status: "failed", error: `${ref} is locked` });
+            if (typeof b.playing !== "boolean") return asRead({ name: "read_timecode", status: "failed", error: `whether ${ref} is playing could not be read; nothing is changed on a show that may be playing` });
+            if (b.playing) return asRead({ name: "read_timecode", status: "failed", error: `${ref} is playing; stop it first (gma3_timecode_transport stop)` });
+          }
           return asRead({ name: "read_timecode", status: "succeeded", op: "timecode.read", detail: b ? { groups: b.groups.length, events: b.eventCount } : { exists: false } });
         },
       },
@@ -613,6 +619,8 @@ interface SeqState {
 
 interface Sample {
   ms: number;
+  /** How long the sample's reads took: the cursor is read first, so a change can carry a cursor up to this much early. */
+  durMs?: number;
   cursor: number | null;
   playing: boolean | null;
   sequences: Record<number, SeqState>;
@@ -696,6 +704,7 @@ export async function timecodeTransport(ctx: ToolContext, raw: TransportArgs): P
         const cur = item?.fields && !Array.isArray(item.fields) ? (item.fields.CurrentCue as { addr?: string } | undefined) : undefined;
         out.sequences[s] = { cue: !item ? null : cur?.addr ? cueLists.get(s)?.find((c) => c.addr === cur.addr)?.no ?? null : null, active: typeof q?.hasActivePlayback === "boolean" ? q.hasActivePlayback : null };
       }
+      out.durMs = Date.now() - t0 - out.ms;
       return out;
     };
     const t0 = Date.now();
@@ -715,7 +724,7 @@ export async function timecodeTransport(ctx: ToolContext, raw: TransportArgs): P
       }
     }
     // The cue changes seen, per sequence.
-    const changes: Array<{ ms: number; cursor: number | null; sequence: number; cue: number | null; active: boolean | null }> = [];
+    const changes: Change[] = [];
     for (const sq of seqs) {
       let prev = first.sequences[sq];
       for (const x of samples.slice(1)) {
@@ -728,44 +737,18 @@ export async function timecodeTransport(ctx: ToolContext, raw: TransportArgs): P
     // The events the cursor crossed, in time order, with what each should have done.
     const startCursor = samples.find((x) => x.cursor !== null)?.cursor ?? null;
     const endCursor = [...samples].reverse().find((x) => x.cursor !== null)?.cursor ?? null;
-    const crossed: Array<{ seconds: number; time: string; sequence: number | null; action: Action | null; cue?: number | null; expected: SeqState | null; observed?: { ms: number; cursor: number | null } | null }> = [];
+    let crossed: CrossedEvent[] = [];
     let verification: Verification = notRequested();
     if (action === "play" && startCursor !== null && endCursor !== null && endCursor >= startCursor) {
-      const states = new Map(seqs.map((sq) => [sq, { ...first.sequences[sq] }]));
-      const evs = presented.tracks.flatMap((tr) => tr.events.map((e) => ({ ...e, sequence: tr.sequence }))).filter((e) => e.seconds !== null && e.seconds > startCursor - 1e-6 && e.seconds <= endCursor + 1e-6).sort((a, b) => a.seconds! - b.seconds!);
-      let cursorIdx = 0;
-      let unpredictable = 0;
-      let mismatched = 0;
-      for (const e of evs) {
-        const seq = e.sequence;
-        const st = seq !== null ? states.get(seq) : undefined;
-        const expected = st ? predict(e.action, (e.cue as { cue?: number } | undefined)?.cue ?? null, st, (cueLists.get(seq!) ?? []).map((c) => c.no)) : null;
-        let observed: { ms: number; cursor: number | null } | null = null;
-        if (expected && seq !== null) {
-          // The first change of that sequence to the expected state, after the previous match.
-          const k = changes.findIndex((c, i) => i >= cursorIdx && c.sequence === seq && c.cue === expected.cue && c.active === expected.active);
-          if (k >= 0) {
-            observed = { ms: changes[k].ms, cursor: changes[k].cursor };
-            cursorIdx = k + 1;
-          } else if (sameState(st!, expected)) observed = { ms: -1, cursor: null }; // already in that state: nothing to see
-          else mismatched++;
-          states.set(seq, expected);
-        } else if (seq !== null) {
-          unpredictable++;
-          // After an unpredictable event the state is whatever was seen next.
-          const next = changes.find((c, i) => i >= cursorIdx && c.sequence === seq);
-          if (next) states.set(seq, { cue: next.cue, active: next.active });
-        }
-        crossed.push({ seconds: e.seconds!, time: e.time!, sequence: seq, action: e.action, ...(e.cue ? { cue: (e.cue as { cue?: number }).cue ?? null } : {}), expected, observed });
-      }
-      const checked = `the ${evs.length} event(s) between cursor ${startCursor.toFixed(2)} s and ${endCursor.toFixed(2)} s against the target sequences' observed cue and playback changes, in order`;
-      verification = evs.length === 0
-        ? unavailable("no event was crossed while observing", checked)
-        : mismatched
-          ? { status: "mismatched", checked, detail: `${mismatched} event(s) had no matching change in order${unpredictable ? `; ${unpredictable} were not predictable` : ""}` }
-          : unpredictable === evs.length
-            ? unavailable("none of the crossed events has a predictable effect", checked)
-            : { status: "matched", checked, ...(unpredictable ? { detail: `${unpredictable} event(s) with no predictable effect were not checked` } : {}) };
+      const evs = presented.tracks
+        .flatMap((tr) => tr.events.map((e) => ({ seconds: e.seconds!, time: e.time!, sequence: tr.sequence, action: e.action, cue: (e.cue as { cue?: number } | undefined)?.cue ?? null })))
+        .filter((e) => e.seconds !== null && e.seconds > startCursor - 1e-6 && e.seconds <= endCursor + 1e-6);
+      // The read skew: the slowest sample, plus a frame and the cursor's two-decimal text.
+      const skew = Math.max(0, ...samples.map((x) => x.durMs ?? 0)) / 1000 + 0.05;
+      const m = matchEvents({ events: evs, changes, initial: new Map(seqs.map((sq) => [sq, first.sequences[sq]])), cues: new Map([...cueLists].map(([k, v]) => [k, v.map((c) => c.no)])), skew });
+      crossed = m.events;
+      const checked = `the ${evs.length} event(s) between cursor ${startCursor.toFixed(2)} s and ${endCursor.toFixed(2)} s against each target sequence's observed changes in that event's window (its time - ${skew.toFixed(2)} s read skew, up to the sequence's next event), in order per sequence`;
+      verification = m.verification(checked);
     } else if (action === "stop" || action === "rewind" || action === "seek") {
       const last = samples.at(-1)!;
       if (action === "stop") verification = last.playing === false ? { status: "matched", checked: `${ref} is not playing` } : last.playing === null ? unavailable(`the playback state of ${ref} could not be read`) : { status: "mismatched", checked: `${ref} is not playing`, detail: "it is still playing" };
@@ -784,6 +767,103 @@ export async function timecodeTransport(ctx: ToolContext, raw: TransportArgs): P
 }
 
 const sameState = (a: SeqState, b: SeqState) => a.cue === b.cue && a.active === b.active;
+
+export interface Change {
+  ms: number;
+  cursor: number | null;
+  sequence: number;
+  cue: number | null;
+  active: boolean | null;
+}
+
+export interface CrossedEvent {
+  seconds: number;
+  time: string;
+  sequence: number | null;
+  action: Action | null;
+  cue?: number | null;
+  expected: SeqState | null;
+  /**
+   * matched: the expected change was seen in the event's window; unchanged: the sequence was already in that state (not
+   * observable); unpredictable: no predicted effect; superseded: the next event on the sequence followed within the read
+   * skew, so its effect may hide this one's; missed: no matching change in the window.
+   */
+  result: "matched" | "unchanged" | "unpredictable" | "superseded" | "missed";
+  observed: { ms: number; cursor: number | null } | null;
+}
+
+/**
+ * Checks crossed events against the observed changes, per sequence: an event's expected state must appear in a change of
+ * its own sequence whose cursor lies in [event time - skew, next event of that sequence + skew). Across sequences only
+ * the order the samples can resolve is checked: two events seen in the same sample, or less than the skew apart, are
+ * listed as unresolved, never as wrong.
+ */
+export function matchEvents(input: { events: Array<{ seconds: number; time: string; sequence: number | null; action: Action | null; cue?: number | null }>; changes: Change[]; initial: Map<number, SeqState>; cues: Map<number, number[]>; skew: number }) {
+  const { changes, skew } = input;
+  const out: CrossedEvent[] = [];
+  const bySeq = new Map<number | null, typeof input.events>();
+  for (const e of [...input.events].sort((a, b) => a.seconds - b.seconds)) bySeq.set(e.sequence, [...(bySeq.get(e.sequence) ?? []), e]);
+  for (const [seq, evs] of bySeq) {
+    let state: SeqState = seq !== null ? { ...(input.initial.get(seq) ?? { cue: null, active: null }) } : { cue: null, active: null };
+    const own = changes.filter((c) => c.sequence === seq);
+    let idx = 0;
+    evs.forEach((e, i) => {
+      const next = evs[i + 1]?.seconds ?? Infinity;
+      const inWindow = (c: Change) => c.cursor !== null && c.cursor >= e.seconds - skew && c.cursor < next + skew;
+      const expected = seq === null ? null : predict(e.action, e.cue ?? null, state, input.cues.get(seq) ?? []);
+      const base = { seconds: e.seconds, time: e.time, sequence: seq, action: e.action, ...(e.cue !== undefined && e.cue !== null ? { cue: e.cue } : {}), expected };
+      if (!expected) {
+        const seen = own.findIndex((c, k) => k >= idx && inWindow(c));
+        if (seen >= 0) { state = { cue: own[seen].cue, active: own[seen].active }; idx = seen + 1; }
+        out.push({ ...base, result: "unpredictable", observed: seen >= 0 ? { ms: own[seen].ms, cursor: own[seen].cursor } : null });
+        return;
+      }
+      if (sameState(state, expected)) {
+        out.push({ ...base, result: "unchanged", observed: null });
+        return;
+      }
+      // Changes before the window cannot be this event's: skip them.
+      while (idx < own.length && own[idx].cursor !== null && own[idx].cursor! < e.seconds - skew) idx++;
+      const k = own.findIndex((c, j) => j >= idx && inWindow(c) && c.cue === expected.cue && c.active === expected.active);
+      if (k >= 0) {
+        idx = k + 1;
+        state = expected;
+        out.push({ ...base, result: "matched", observed: { ms: own[k].ms, cursor: own[k].cursor } });
+      } else {
+        out.push({ ...base, result: next - e.seconds <= skew ? "superseded" : "missed", observed: null });
+        state = expected;
+      }
+    });
+  }
+  out.sort((a, b) => a.seconds - b.seconds || (a.sequence ?? 0) - (b.sequence ?? 0));
+  // Order across sequences: only where the samples resolve it.
+  const matched = out.filter((e) => e.result === "matched");
+  const inversions: string[] = [];
+  const unresolved: string[] = [];
+  for (let i = 0; i < matched.length; i++)
+    for (let j = i + 1; j < matched.length; j++) {
+      const a = matched[i];
+      const b = matched[j];
+      if (a.sequence === b.sequence) continue;
+      const label = `${a.time} (sequence ${a.sequence}) / ${b.time} (sequence ${b.sequence})`;
+      if (a.observed!.ms === b.observed!.ms || b.seconds - a.seconds < skew) unresolved.push(label);
+      else if (a.observed!.ms > b.observed!.ms) inversions.push(label);
+    }
+  const count = (r: CrossedEvent["result"]) => out.filter((e) => e.result === r).length;
+  const verification = (checked: string): Verification => {
+    const notes = [
+      count("unchanged") ? `${count("unchanged")} event(s) left their sequence in the state it was in (not observable)` : "",
+      count("unpredictable") ? `${count("unpredictable")} event(s) have no predictable effect` : "",
+      count("superseded") ? `${count("superseded")} event(s) were followed within the read skew by the next event on their sequence` : "",
+      unresolved.length ? `the order of ${unresolved.length} pair(s) of events on different sequences is not resolved by the sampling (${unresolved.slice(0, 3).join("; ")})` : "",
+    ].filter(Boolean);
+    if (!out.length) return unavailable("no event was crossed while observing", checked);
+    if (count("missed") || inversions.length) return { status: "mismatched", checked, detail: [count("missed") ? `${count("missed")} event(s) had no matching change in their window` : "", inversions.length ? `observed out of order: ${inversions.slice(0, 3).join("; ")}` : "", ...notes].filter(Boolean).join("; ") };
+    if (!matched.length) return unavailable(notes.join("; ") || "no crossed event had an observable effect", checked);
+    return { status: "matched", checked, ...(notes.length ? { detail: notes.join("; ") } : {}) };
+  };
+  return { events: out, inversions, unresolved, verification };
+}
 
 // ---------------------------------------------------------------------------
 // Registration

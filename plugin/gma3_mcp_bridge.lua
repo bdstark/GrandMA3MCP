@@ -4284,7 +4284,7 @@ GUARDED_OPS["timecode.edit"] = "a timecode change"
 local function tcShow(n)
   n = tonumber(n)
   if not n or n ~= math.floor(n) or n < 1 then raise("[bad-args] timecode must be a positive integer") end
-  local list = ObjectList(string.format("Timecode %d", n))
+  local list = objectList(string.format("Timecode %d", n))
   local h = list and list[1]
   if not isHandle(h) or safeCall(h, "GetClass") ~= "Timecode" then raise(string.format("[not-found] Timecode %d does not exist", n)) end
   return h
@@ -4394,7 +4394,8 @@ ops["timecode.edit"] = function(args)
   local t = tcNth(g, "Track", args.track, "track")
   if action == "set_target" then
     if type(args.target) ~= "string" then raise("[bad-args] target must be an object reference") end
-    local list = ObjectList(args.target)
+    -- Through the guarded helper: an executor range ("Page 1.180 Thru 1.181") would hang onPC in ObjectList.
+    local list = objectList(args.target)
     local h = list and list[1]
     if not isHandle(h) then raise("[not-found] " .. args.target .. " does not exist") end
     if safeCall(h, "GetClass") ~= "Sequence" then raise("[unsupported] only sequences are targets in this release (" .. args.target .. " is a " .. tostring(safeCall(h, "GetClass")) .. ")") end
@@ -4415,7 +4416,7 @@ ops["timecode.edit"] = function(args)
       if ev.status ~= nil and (not TC_STATUS_TOKENS[ev.token] or (ev.status ~= "On" and ev.status ~= "Off")) then raise(string.format("[bad-args] events[%d].status is On or Off, for Flash, Temp and Swap only", i)) end
       local cue
       if ev.cue ~= nil then
-        local list = ObjectList(tostring(ev.cue))
+        local list = objectList(tostring(ev.cue))
         cue = list and list[1]
         if not isHandle(cue) or safeCall(cue, "GetClass") ~= "Cue" then raise(string.format("[not-found] events[%d].cue %s is not a cue", i, tostring(ev.cue))) end
       end

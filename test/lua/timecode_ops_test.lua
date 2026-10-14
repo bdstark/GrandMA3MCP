@@ -127,7 +127,8 @@ local seq = handle(seqDef)
 local cue2 = handle(node("Cue", "Cue 2", { no = 2000, addr = "14.14.1.7.908.3000", parent = seq }))
 local preset = handle(node("Preset", "Red", { no = 4 }))
 local objects = { ["Timecode 901"] = tc, ["Sequence 908"] = seq, ["Sequence 908 Cue 2"] = cue2, ["Preset 4.4"] = preset }
-ObjectList = function(ref) local h = objects[ref]; return h and { h } or nil end
+local nativeCalls = {}
+ObjectList = function(ref) nativeCalls[#nativeCalls + 1] = ref; local h = objects[ref]; return h and { h } or nil end
 IsObjectValid = function() return true end
 -------------------------------------------------------------------------------
 -- Load the plugin
@@ -216,6 +217,21 @@ local t2 = registry[registry[registry[tc].kids[1]].kids[3]]
 t2.targetFrame = frame + 1 -- as if the next request ran in the same frame
 r = request("timecode.edit", { timecode = 901, action = "add_events", group = 1, track = 2, events = { { raw = 0, token = "Go+" } } })
 check("a subtrack that cannot be created yet is not-ready", not r.ok and r.code == "not-ready", J(r))
+
+-- Executor ranges never reach ObjectList: the guarded helper expands or refuses them (the onPC hang).
+nativeCalls = {}
+r = request("timecode.edit", { timecode = 901, action = "set_target", group = 1, track = 1, target = "Page 1.180 Thru 1.181" })
+local rangeCalled = false
+for _, c in ipairs(nativeCalls) do if c:find("Thru", 1, true) then rangeCalled = true end end
+check("an executor-range target never reaches ObjectList", not r.ok and not rangeCalled, J({ r = r, calls = nativeCalls }))
+nativeCalls = {}
+r = request("timecode.edit", { timecode = 901, action = "add_events", group = 1, track = 1, events = { { raw = 0, token = "Goto", cue = "Page 1.180 Thru 1.181" } } })
+rangeCalled = false
+for _, c in ipairs(nativeCalls) do if c:find("Thru", 1, true) then rangeCalled = true end end
+check("an executor-range cue never reaches ObjectList", not r.ok and not rangeCalled and r.error:find("is not a cue", 1, true), J({ r = r, calls = nativeCalls }))
+nativeCalls = {}
+r = request("timecode.edit", { timecode = 901, action = "set_target", group = 1, track = 1, target = "Page 1.* " })
+check("a wildcard executor target is refused unsafe-range", not r.ok and r.code == "unsafe-range" and #nativeCalls <= 1, J({ r = r, calls = nativeCalls }))
 
 r = request("timecode.edit", { timecode = 901, action = "play" })
 check("there is no play action", not r.ok and r.code == "bad-args", J(r))
