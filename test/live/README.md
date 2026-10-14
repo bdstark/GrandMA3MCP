@@ -30,6 +30,7 @@ Guard rails, enforced by `test/live/live.ts`:
 | Sequences 907–909, speed master 14 (state restored) | SB-06 speed tests (fixtures 401–403 by default: `GMA3_LIVE_SPEED_FIXTURES`; `GMA3_LIVE_SPEED_MASTER`) |
 | Fixtures 1–10 (must be patched in the disposable show) | programmer, attribute and output tests |
 | Macro 900 | reserved |
+| Macros 901–903 (and Sequence 907) | SB-07 macro tests |
 | Fixtures with FID 990–993, DMX from the first free block at 3.001 (also needs `GMA3_LIVE_EXCLUSIVE=1`) | patch tests (committed with no undo) |
 
 Each live test file documents the exact objects it creates at the top of the file.

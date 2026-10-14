@@ -20,6 +20,7 @@ import { registerPhaserTools } from "./tools/phasers.js";
 import { registerPresetTools } from "./tools/presets.js";
 import { registerRecipeTools } from "./tools/recipes.js";
 import { registerSpeedTools } from "./tools/speed.js";
+import { registerMacroTools } from "./tools/macros.js";
 import { registerPlaybackTools } from "./tools/playback.js";
 
 const env = process.env;
@@ -592,6 +593,7 @@ registerPresetTools(server, toolContext);
 registerPhaserTools(server, toolContext);
 registerRecipeTools(server, toolContext);
 registerSpeedTools(server, toolContext);
+registerMacroTools(server, toolContext);
 
 server.registerResource(
   "cheatsheet",

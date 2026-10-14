@@ -101,6 +101,10 @@ const WORKFLOW_TOOLS = [
   "gma3_configure_speed_master",
   "gma3_speed_master_action",
   "gma3_observe_tempo",
+  "gma3_macros",
+  "gma3_store_macro",
+  "gma3_edit_macro_line",
+  "gma3_run_macro",
 ];
 
 test("all pre-existing tools are still registered under their original names", async () => {
