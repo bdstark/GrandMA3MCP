@@ -154,7 +154,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.24.0"
+local VERSION      = "0.25.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -4258,6 +4258,187 @@ ops["preset.context"] = function(args)
     end
   end
   return out
+end
+end
+
+-------------------------------------------------------------------------------
+-- Timecode shows (SB-08, bridge 0.25.0)
+-------------------------------------------------------------------------------
+-- A timecode show (class Timecode, "Timecode N") holds TrackGroups; a TrackGroup a MarkerTrack and Tracks, each
+-- with a Target handle; a Track TimeRanges; a TimeRange SubTracks (CmdSubTrack with CmdEvent children, FaderSubTrack
+-- for recorded fader moves). An event has RawTime (seconds * 2^24), Token (the action: Go+, Goto, Flash, ...),
+-- Status (On / Off: the press and release of Flash and Temp), CueDestination (a cue handle) and ExecuteCommand.
+-- Below the track nothing has a command-line address (TimeRange and CmdEvent have no No), so events are created here.
+-- A new TrackGroup brings a MarkerTrack and one Track, a new Track one TimeRange, but only on a later frame (in the
+-- creating chunk those children are not handles), and a subtrack can only be appended once the track's target was set
+-- in an earlier frame: every structural step is its own request. Nothing here plays, records or selects anything
+-- (docs/probes/sb-08-timecode-macos-2.5.1.md).
+
+do -- (a block: the main chunk is at the 200-locals limit)
+local TC_MAX_EVENTS = 5000
+local TC_TOKENS = { ["Go+"] = true, ["Go-"] = true, Goto = true, Load = true, On = true, Off = true, Toggle = true, Top = true,
+  Pause = true, Kill = true, Flash = true, Temp = true, Swap = true, Select = true, ["<<<"] = true, [">>>"] = true }
+local TC_STATUS_TOKENS = { Flash = true, Temp = true, Swap = true }
+GUARDED_OPS["timecode.edit"] = "a timecode change"
+
+local function tcShow(n)
+  n = tonumber(n)
+  if not n or n ~= math.floor(n) or n < 1 then raise("[bad-args] timecode must be a positive integer") end
+  local list = ObjectList(string.format("Timecode %d", n))
+  local h = list and list[1]
+  if not isHandle(h) or safeCall(h, "GetClass") ~= "Timecode" then raise(string.format("[not-found] Timecode %d does not exist", n)) end
+  return h
+end
+
+-- The children of h of one class, in order (a TrackGroup's MarkerTrack is not a Track).
+local function tcChildren(h, class)
+  local out = {}
+  local okC, count = pcall(h.Count, h)
+  for i = 1, (okC and count or 0) do
+    local c = h:Ptr(i)
+    if isHandle(c) and (class == nil or safeCall(c, "GetClass") == class) then out[#out + 1] = c end
+  end
+  return out
+end
+
+local function tcNth(h, class, index, what)
+  local list = tcChildren(h, class)
+  local i = tonumber(index)
+  local c = i and list[i]
+  if not c then raise(string.format("[not-found] %s %s does not exist (there are %d)", what, tostring(index), #list)) end
+  return c
+end
+
+local function tcTarget(h)
+  local t = safeCall(h, "Get", "Target")
+  if not isHandle(t) then return nil end
+  local okV, valid = pcall(IsObjectValid, t)
+  if okV and valid == false then return { invalid = true } end
+  return { class = safeCall(t, "GetClass"), addr = safeCall(t, "Addr"), name = safeProp(t, "name"), no = safeProp(t, "no") }
+end
+
+local function tcCue(e)
+  local c = safeCall(e, "Get", "CueDestination")
+  if not isHandle(c) then return nil end
+  local okV, valid = pcall(IsObjectValid, c)
+  if okV and valid == false then return { invalid = true } end
+  local parent = safeCall(c, "Parent")
+  return { addr = safeCall(c, "Addr"), name = safeProp(c, "name"), no = safeProp(c, "no"), sequence = isHandle(parent) and safeProp(parent, "no") or nil }
+end
+
+local function tcEvent(e, index)
+  local raw = safeCall(e, "Get", "RawTime")
+  return {
+    index = index, raw = tonumber(raw), time = getProp(e, "Time", true), name = safeProp(e, "name"),
+    token = getProp(e, "Token", true), tokenCode = tonumber(safeCall(e, "Get", "Token")), status = getProp(e, "Status", true),
+    cue = tcCue(e), executeCommand = getProp(e, "ExecuteCommand", true), fadeOverride = getProp(e, "FadeOverride", true), note = getProp(e, "Note", true),
+  }
+end
+
+local TC_SHOW_FIELDS = { "Name", "Cursor", "Duration", "LoopMode", "LoopCount", "TCSlot", "OffsetTCSlot", "AutoStart", "AutoStop", "SwitchOff", "Goto",
+  "AssertPrevEvents", "PlaybackAndRecord", "RestartOption", "FrameReadout", "TimeDisplayFormat", "Lock" }
+
+-- Flat lists (the reply encoder nests at most 6 levels): every track, range, subtrack and event names its path.
+ops["timecode.read"] = function(args)
+  local tc = tcShow(args.timecode)
+  local maxEvents = math.min(tonumber(args.maxEvents) or TC_MAX_EVENTS, TC_MAX_EVENTS)
+  local out = { no = safeProp(tc, "no"), addr = safeCall(tc, "Addr"), settings = {}, groups = {}, tracks = {}, ranges = {}, subtracks = {}, events = {}, eventCount = 0, truncated = false }
+  for _, f in ipairs(TC_SHOW_FIELDS) do out.settings[f] = getProp(tc, f, true) end
+  out.settings.RawDuration = tonumber(safeCall(tc, "Get", "RawDuration"))
+  pcall(function() out.playing = tc:HasActivePlayback() end)
+  for gi, g in ipairs(tcChildren(tc, "TrackGroup")) do
+    local markers = 0
+    for _, m in ipairs(tcChildren(g, "MarkerTrack")) do local okM, n = pcall(m.Count, m); markers = markers + (okM and n or 0) end
+    out.groups[#out.groups + 1] = { group = gi, name = safeProp(g, "name"), markers = markers }
+    for ti, t in ipairs(tcChildren(g, "Track")) do
+      out.tracks[#out.tracks + 1] = { group = gi, track = ti, name = safeProp(t, "name"), target = tcTarget(t), play = getProp(t, "Play", true), rec = getProp(t, "Rec", true) }
+      for ri, r in ipairs(tcChildren(t, "TimeRange")) do
+        out.ranges[#out.ranges + 1] = { group = gi, track = ti, range = ri, name = safeProp(r, "name"), rawStart = tonumber(safeCall(r, "Get", "RawStart")), duration = getProp(r, "Duration", true),
+          offset = getProp(r, "Offset", true), speedFactor = getProp(r, "SpeedFactor", true), play = getProp(r, "Play", true), rec = getProp(r, "Rec", true) }
+        for si, st in ipairs(tcChildren(r, nil)) do
+          local okN, n = pcall(st.Count, st)
+          out.subtracks[#out.subtracks + 1] = { group = gi, track = ti, range = ri, subtrack = si, class = safeCall(st, "GetClass"), name = safeProp(st, "name"), count = okN and n or nil }
+          for ei, e in ipairs(tcChildren(st, nil)) do
+            out.eventCount = out.eventCount + 1
+            if #out.events >= maxEvents then out.truncated = true
+            else
+              local ev = tcEvent(e, ei)
+              ev.group, ev.track, ev.range, ev.subtrack = gi, ti, ri, si
+              out.events[#out.events + 1] = ev
+            end
+          end
+        end
+      end
+    end
+  end
+  for _, k in ipairs({ "groups", "tracks", "ranges", "subtracks", "events" }) do out[k] = emptyArray(out[k]) end
+  return out
+end
+
+-- One structural step per request (see above). Every argument is checked before anything is appended.
+ops["timecode.edit"] = function(args)
+  local action = args.action
+  if action ~= "add_group" and action ~= "add_track" and action ~= "set_target" and action ~= "add_events" then raise("[bad-args] action must be add_group, add_track, set_target or add_events") end
+  local tc = tcShow(args.timecode)
+  if action == "add_group" then
+    local g = tc:Append("TrackGroup")
+    if not isHandle(g) then raise("[failed] the track group was not created") end
+    return { action = action, groups = #tcChildren(tc, "TrackGroup") }
+  end
+  local g = tcNth(tc, "TrackGroup", args.group, "track group")
+  if action == "add_track" then
+    local t = g:Append("Track")
+    if not isHandle(t) then raise("[failed] the track was not created") end
+    return { action = action, tracks = #tcChildren(g, "Track") }
+  end
+  local t = tcNth(g, "Track", args.track, "track")
+  if action == "set_target" then
+    if type(args.target) ~= "string" then raise("[bad-args] target must be an object reference") end
+    local list = ObjectList(args.target)
+    local h = list and list[1]
+    if not isHandle(h) then raise("[not-found] " .. args.target .. " does not exist") end
+    if safeCall(h, "GetClass") ~= "Sequence" then raise("[unsupported] only sequences are targets in this release (" .. args.target .. " is a " .. tostring(safeCall(h, "GetClass")) .. ")") end
+    local okS, err = pcall(t.Set, t, "Target", h)
+    if not okS then raise("[failed] the target was not set: " .. tostring(err)) end
+    return { action = action, target = tcTarget(t) }
+  end
+  if action == "add_events" then
+    local r = tcNth(t, "TimeRange", args.range or 1, "time range")
+    if type(args.events) ~= "table" or #args.events == 0 then raise("[bad-args] events must be a non-empty list") end
+    local target = safeCall(t, "Get", "Target")
+    if not isHandle(target) then raise("[no-target] the track has no target; set it first (in an earlier request)") end
+    local plan = {}
+    for i, ev in ipairs(args.events) do
+      local raw = tonumber(ev.raw)
+      if not raw or raw ~= math.floor(raw) or raw < 0 then raise(string.format("[bad-args] events[%d].raw must be a non-negative integer", i)) end
+      if not TC_TOKENS[ev.token] then raise(string.format("[bad-args] events[%d].token %s is not supported", i, tostring(ev.token))) end
+      if ev.status ~= nil and (not TC_STATUS_TOKENS[ev.token] or (ev.status ~= "On" and ev.status ~= "Off")) then raise(string.format("[bad-args] events[%d].status is On or Off, for Flash, Temp and Swap only", i)) end
+      local cue
+      if ev.cue ~= nil then
+        local list = ObjectList(tostring(ev.cue))
+        cue = list and list[1]
+        if not isHandle(cue) or safeCall(cue, "GetClass") ~= "Cue" then raise(string.format("[not-found] events[%d].cue %s is not a cue", i, tostring(ev.cue))) end
+      end
+      plan[i] = { raw = raw, token = ev.token, status = ev.status, cue = cue }
+    end
+    local st
+    for _, c in ipairs(tcChildren(r, "CmdSubTrack")) do st = c; break end
+    if not st then st = r:Append("CmdSubTrack") end
+    if not isHandle(st) then raise("[not-ready] the command subtrack could not be created: the track's target must be set in an earlier request") end
+    local added = {}
+    for i, p in ipairs(plan) do
+      local e = st:Append("CmdEvent")
+      if not isHandle(e) then raise({ code = "partial", message = string.format("event %d of %d was not created", i, #plan), added = i - 1 }) end
+      e:Set("RawTime", p.raw)
+      e:Set("Token", p.token)
+      if p.status then e:Set("Status", p.status) end
+      if p.cue then e:Set("CueDestination", p.cue) end
+      local okC, n = pcall(st.Count, st)
+      added[#added + 1] = tcEvent(e, okC and n or nil)
+    end
+    return { action = action, added = added }
+  end
+  raise("[bad-args] action must be add_group, add_track, set_target or add_events")
 end
 end
 

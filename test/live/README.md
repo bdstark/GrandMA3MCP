@@ -31,6 +31,7 @@ Guard rails, enforced by `test/live/live.ts`:
 | Fixtures 1–10 (must be patched in the disposable show) | programmer, attribute and output tests |
 | Macro 900 | reserved |
 | Macros 901–903 (and Sequence 907) | SB-07 macro tests |
+| Timecode 901, Sequences 908–909 | SB-08 timecode tests (bridge 0.25.0) |
 | Fixtures with FID 990–993, DMX from the first free block at 3.001 (also needs `GMA3_LIVE_EXCLUSIVE=1`) | patch tests (committed with no undo) |
 
 Each live test file documents the exact objects it creates at the top of the file.

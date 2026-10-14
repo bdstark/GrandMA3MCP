@@ -188,6 +188,8 @@ These workflows are not necessarily UI-only. grandMA3 documents command support 
 
 **Lua changes:** Likely for structured access to timecode hierarchy and events. Feasibility-gate writes before committing to full timeline editing.
 
+**Status:** implemented: `gma3_timecodes`, `gma3_build_timecode`, `gma3_timecode_transport` ([docs/tools/timecode.md](docs/tools/timecode.md), probe record [sb-08-timecode-macos-2.5.1.md](docs/probes/sb-08-timecode-macos-2.5.1.md), live test `test/live/timecode.live.ts` 1/1 on macOS onPC 2.5.1). Bridge 0.25.0 adds `timecode.read` and `timecode.edit`: below the track nothing has a command-line address, and the console builds a group's track and a track's range a frame later, so each structural step is its own request. First release: sequence tracks with cue events (go, go_back, goto, on, off, toggle, top, pause, kill, flash and temp press/release pairs); times in seconds, clock text or frames at 24/25/30/60 fps, rounded to 1/16777216 s; events stored in time order with the given order at the same time (the console runs same-time events in storage order). Building never plays or records; the transport tool plays, stops, rewinds or seeks and checks every crossed event against the target sequences' observed cue changes. Configuring a source (tc_slot) is a setting; recording is not offered and its armed state is not readable; whether external timecode is being received is not readable on 2.5.1. Fader automation and recording are not part of this release.
+
 ### Acceptance criteria
 
 - Inspect and create timecode shows, track groups, tracks, time ranges, and qualified event types.
