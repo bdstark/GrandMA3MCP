@@ -28,6 +28,10 @@
  *   - `Assign <function> At Page p.e` clears the unpress function (manual); property writes do not.
  *   - The executors that reference a sequence are found by walking DataPool.Pages with the `children` op and
  *     comparing each executor's Object address (about 0.1 s for 5 pages).
+ *   - SB-06 (docs/probes/sb-06-speed-macos-2.5.1.md): SpeedMaster and RateMaster take a speed master's NAME ("Speed14";
+ *     "14", "3.14" and "Master 3.14" are silently ignored) and read back as the name; RateMaster takes speed masters
+ *     only. SpeedScale and RateScale are Enums.SpeedScale names. A rate master drives the cue timing (60 BPM = 1:1),
+ *     a speed master the phasers.
  */
 import { z } from "zod";
 import type { Gma3Bridge } from "../bridge.js";
@@ -80,7 +84,17 @@ export const EXECUTOR_FUNCTIONS = {
 type FunctionKey = keyof typeof EXECUTOR_FUNCTIONS;
 const FUNCTION_KEYS = Object.keys(EXECUTOR_FUNCTIONS) as FunctionKey[];
 
-type SettingDef = { property: string; kind: "bool" } | { property: string; kind: "enum"; values: Record<string, string> };
+type SettingDef =
+  | { property: string; kind: "bool" }
+  | { property: string; kind: "enum"; values: Record<string, string> }
+  /** A speed master by number (1-16) or "none"; written as the master's name, which is resolved per call. */
+  | { property: string; kind: "master" };
+
+/** Enums.SpeedScale on 2.5.1, keyed by lower case. */
+const SCALE_VALUES: Record<string, string> = Object.fromEntries(
+  [...[256, 128, 64, 32, 16, 8, 4, 2].map((d) => `Div${d}`), "One", ...[2, 4, 8, 16, 32, 64, 128, 256].map((m) => `Mul${m}`)].map((n) => [n.toLowerCase(), n]),
+);
+const MASTER_TOKEN = "#master:";
 
 /** Sequence parameters -> property names and their console values (enum names as on 2.5.1). */
 export const SEQUENCE_SETTINGS: Record<string, SettingDef> = {
@@ -106,6 +120,11 @@ export const SEQUENCE_SETTINGS: Record<string, SettingDef> = {
   include_link_last_go: { property: "IncludeLinkLastGo", kind: "bool" },
   xfade_mode: { property: "XFadeMode", kind: "enum", values: { ab: "AB", split: "Split" } },
   xfade_reload: { property: "XFadeReload", kind: "bool" },
+  speed_master: { property: "SpeedMaster", kind: "master" },
+  rate_master: { property: "RateMaster", kind: "master" },
+  speed_scale: { property: "SpeedScale", kind: "enum", values: SCALE_VALUES },
+  rate_scale: { property: "RateScale", kind: "enum", values: SCALE_VALUES },
+  speed_from_rate: { property: "SpeedFromRate", kind: "bool" },
 };
 const SETTING_KEYS = Object.keys(SEQUENCE_SETTINGS);
 
@@ -132,6 +151,11 @@ function settingValue(field: string, def: SettingDef, value: unknown): string | 
   if (def.kind === "bool") {
     if (typeof value !== "boolean") throw new ValidationError(`${field} must be true or false`, field);
     return value ? "Yes" : "No";
+  }
+  if (def.kind === "master") {
+    if (typeof value === "string" && value.trim().toLowerCase() === "none") return "None";
+    if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > 16) throw new ValidationError(`${field} must be a speed master number 1-16 or "none" (got ${JSON.stringify(value)})`, field);
+    return `${MASTER_TOKEN}${value}`;
   }
   const key = typeof value === "string" ? value.trim().toLowerCase() : "";
   const hit = def.values[key];
@@ -214,6 +238,8 @@ export interface ExecutorReference {
   page: number;
   executor: number;
   ref: string;
+  /** Address of the assigned object. */
+  addr?: string;
 }
 
 export interface References {
@@ -235,6 +261,11 @@ function leadingInt(v: unknown): number | undefined {
  * DataPool.Pages and one per page. Never throws; an incomplete scan says why.
  */
 export async function findReferences(bridge: Gma3Bridge, addr: string, timeoutMs: number): Promise<References> {
+  return findReferencesWhere(bridge, (a) => a === addr, timeoutMs);
+}
+
+/** Every executor in the current data pool whose assigned object's address satisfies `match`. Never throws. */
+export async function findReferencesWhere(bridge: Gma3Bridge, match: (addr: string) => boolean, timeoutMs: number): Promise<References> {
   const out: References = { complete: false, executors: [], pagesScanned: 0, requests: 0 };
   type Listing = { total?: number; items?: ObjectSummary[] };
   try {
@@ -250,7 +281,7 @@ export async function findReferences(bridge: Gma3Bridge, addr: string, timeoutMs
       for (const x of execs?.items ?? []) {
         const obj = toAssigned(x.fields?.Object);
         const execNo = leadingInt(x.fields?.No);
-        if (obj?.addr === addr && pageNo !== undefined && execNo !== undefined) out.executors.push({ page: pageNo, executor: execNo, ref: executorRef(pageNo, execNo) });
+        if (obj?.addr && match(obj.addr) && pageNo !== undefined && execNo !== undefined) out.executors.push({ page: pageNo, executor: execNo, ref: executorRef(pageNo, execNo), addr: obj.addr });
       }
     }
     const total = pages?.total ?? items.length;
@@ -418,6 +449,7 @@ function readSettings(fields: Record<string, unknown>): Record<string, unknown> 
     const def = SEQUENCE_SETTINGS[k];
     const raw = displayOf(fields[def.property]);
     if (def.kind === "bool") out[k] = yesNo(raw);
+    else if (def.kind === "master") out[k] = !raw || raw.toLowerCase() === "none" ? null : raw;
     else out[k] = Object.entries(def.values).find(([, v]) => v.toLowerCase() === raw.toLowerCase())?.[0] ?? (raw || null);
   }
   return out;
@@ -682,6 +714,30 @@ export async function configureExecutor(ctx: ToolContext, raw: ConfigureExecutor
 // gma3_configure_sequence
 // ---------------------------------------------------------------------------
 
+/** Replaces each "#master:N" in `wanted` with speed master N's name (a read step). */
+async function resolveMasterNames(bridge: Gma3Bridge, wanted: Record<string, string>, t: number): Promise<StepResult> {
+  let names: Map<number, string>;
+  try {
+    const r = (await bridge.request("children", { ref: "ShowData.Masters.Speed", fields: ["Name"], limit: 50 }, t)) as { items?: ObjectSummary[] };
+    names = new Map((r.items ?? []).filter((i) => typeof i.index === "number").map((i) => [i.index!, displayOf(i.fields?.Name ?? i.name)]));
+  } catch (err) {
+    return asRead(stepFromError("resolve_masters", err, { op: "children" }));
+  }
+  const resolved: Record<string, string> = {};
+  for (const [k, w] of Object.entries(wanted)) {
+    if (!w.startsWith(MASTER_TOKEN)) continue;
+    const n = Number(w.slice(MASTER_TOKEN.length));
+    const name = names.get(n) ?? "";
+    if (!name) return asRead({ name: "resolve_masters", status: "failed", op: "children", error: `speed master ${n} ${names.has(n) ? "has no name" : "does not exist"}; sequences refer to speed masters by name` });
+    if (name.toLowerCase() === "none") return asRead({ name: "resolve_masters", status: "failed", op: "children", error: `speed master ${n} is named "None", which the console reads as no master` });
+    const shared = [...names].filter(([m, nm]) => m !== n && nm.toLowerCase() === name.toLowerCase()).map(([m]) => m);
+    if (shared.length) return asRead({ name: "resolve_masters", status: "failed", op: "children", error: `speed master ${n} shares its name "${name}" with master(s) ${shared.join(", ")}; sequences refer to masters by name, so the link would be ambiguous. Rename one first` });
+    wanted[k] = name;
+    resolved[k] = `${n} (${name})`;
+  }
+  return asRead({ name: "resolve_masters", status: "succeeded", op: "children", detail: resolved });
+}
+
 interface ConfigureSequenceArgs extends Record<string, unknown> {
   sequence: number;
   lock?: boolean;
@@ -731,6 +787,12 @@ export async function configureSequence(ctx: ToolContext, raw: ConfigureSequence
     ]);
     if (inspect.outcome !== "succeeded") {
       return buildResult({ operation: op, target, steps: inspect.steps, verification: notRequested(), summary: `${op} was not performed; nothing was sent: ${inspect.steps[0]?.error ?? "inspection failed"}` });
+    }
+    // Speed and rate masters are written by name: resolve the numbers now, refusing a missing or shared name.
+    if (Object.values(wanted).some((w) => w.startsWith(MASTER_TOKEN))) {
+      const s = await resolveMasterNames(bridge, wanted, t);
+      inspect.steps.push(s);
+      if (s.status !== "succeeded") return buildResult({ operation: op, target, steps: inspect.steps, verification: notRequested(), summary: `${op} was not performed; nothing was sent: ${s.error}` });
     }
     const refs = addr ? await findReferences(bridge, addr, t) : { complete: false, executors: [], pagesScanned: 0, requests: 0, error: "the sequence address is unknown" };
     const refStep: StepResult = asRead({ name: "find_references", status: "succeeded", op: "children", detail: refs });
@@ -880,7 +942,12 @@ export const registerPlaybackTools: RegisterTools = (server, ctx) => {
   const settingSchema: Record<string, z.ZodTypeAny> = {};
   for (const k of SETTING_KEYS) {
     const def = SEQUENCE_SETTINGS[k];
-    settingSchema[k] = def.kind === "bool" ? z.boolean().optional().describe(`${def.property} (Yes/No).`) : z.string().optional().describe(`${def.property}: ${Object.keys(def.values).join(", ")}.`);
+    settingSchema[k] =
+      def.kind === "bool"
+        ? z.boolean().optional().describe(`${def.property} (Yes/No).`)
+        : def.kind === "master"
+          ? z.union([z.number(), z.literal("none")]).optional().describe(`${def.property}: a speed master 1-16 or "none".`)
+          : z.string().optional().describe(`${def.property}: ${Object.keys(def.values).join(", ")}.`);
   }
 
   server.registerTool(
@@ -890,6 +957,7 @@ export const registerPlaybackTools: RegisterTools = (server, ctx) => {
       description:
         "Set a sequence's playback settings by writing its properties: wrap_around (a chase loops only with Wrap Around on and a trigger on its first cue), priority, restart_mode, release_first_cue, auto_start, auto_stop, master_go_mode, auto_fix, auto_stomp, tracking, soft_ltp, " +
         "off_when_overridden, kill_protect, swap_protect (protection from the Kill/Swap playback actions, not from editing), use_executor_time, include_link_last_go, xfade_mode, xfade_reload. lock: true/false sets the sequence's own Lock. " +
+        "Tempo links (SB-06): rate_master (a speed master 1-16 or \"none\": the cue timing (fades, delays, trigger times) runs at its effective BPM / 60, so 60 BPM is 1:1), speed_master (the phasers in the cues follow it), rate_scale and speed_scale (One, Mul2..Mul256, Div2..Div256), speed_from_rate. Masters are linked by name; a master without a unique name is refused. While a rate master is linked, moving the sequence's rate fader moves the shared master. " +
         "Settings belong to the sequence, so they apply to EVERY executor that references it: the tool scans all pages and lists them (references) and warns when other executors share the sequence. Cue triggers and timing are set with gma3_set_cue_trigger / gma3_set_cue_timing. " +
         COMMON,
       inputSchema: {

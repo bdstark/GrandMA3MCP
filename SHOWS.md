@@ -143,6 +143,8 @@ These workflows are not necessarily UI-only. grandMA3 documents command support 
 
 **Lua changes:** Not expected for basic master configuration if existing master/property operations suffice. New live synchronization feedback may require Lua.
 
+**Status:** implemented without Lua changes: `gma3_speed_masters`, `gma3_configure_speed_master`, `gma3_speed_master_action`, `gma3_observe_tempo`, and `rate_master` / `speed_master` / `rate_scale` / `speed_scale` / `speed_from_rate` in `gma3_configure_sequence` ([docs/tools/speed.md](docs/tools/speed.md), probe record [sb-06-speed-macos-2.5.1.md](docs/probes/sb-06-speed-macos-2.5.1.md), live test `test/live/speed.live.ts` 1/1 on macOS onPC 2.5.1). The existing `children` / `objects` / `getfader` / `set` / `cmd` ops suffice; the tempo is computed from the fader (BPM = 225 · (fader/100)^log2(3.75), times the speed scale). A rate master scales a sequence's cue timing and a speed master its phasers; the live test measures two chases following master 14 (250 ms steps at 120 BPM) while a third stays at 500 ms. Observed tempo comes from sampling the current cue of running chases; phaser output is not observable on onPC, so speed links are reported as configured. Master 16 follows the audio input, but no input level or beat lock is readable, so synchronisation is never claimed. Surface mapping uses the existing control path (an executor holding the master: fader = tempo, a Learn key = tap); no surface change was made.
+
 ### Acceptance criteria
 
 - Inspect and configure supported speed-master assignments, BPM, multipliers, and learn/tap behavior.
