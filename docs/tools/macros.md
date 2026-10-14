@@ -42,7 +42,11 @@ No new bridge op: the tools use `children`, `objects`, `object`, `set` and `cmd`
 - **References are checked, raw lines are allowed.** Before anything is sent, each line is scanned for single
   references written with full keywords: Sequence (with Cue and Part), Macro, Group, Preset, MAtricks, Page, Timecode,
   Appearance, Master, Plugin, Quickey and View. Each one must exist.
-  - A `Store` earlier in the same macro counts as creating its object; storing a cue also creates its sequence.
+  - A `Store` earlier in the same macro counts as creating its object; storing a cue also creates its sequence. The
+    macro's existing lines count too (for `append` and edits), but only lines that run: a disabled line, or one with
+    `execute: false`, creates nothing.
+  - An edit that takes such an object away from a later line (removing, moving, disabling or rewriting the line that
+    stored it) is refused when the object does not exist in the show, unless `allow_unresolved_dependents: true`.
   - References to the macro itself are allowed.
   - Ranges (`Thru`, `+`, `-`) are not checked, and neither are abbreviated keywords or quoted text.
   - A reference that cannot be checked refuses the line (fail closed).
@@ -50,7 +54,10 @@ No new bridge op: the tools use `children`, `objects`, `object`, `set` and `cmd`
 - **A launch is not completion.** A failing line does not stop a macro, and nothing in the console's state shows that
   it failed. `gma3_run_macro` reports what it dispatched and what it observed, never that every line succeeded.
 - **Locked or running macros are not edited.** The console silently ignores edits to a locked macro. A running macro
-  (it shows a current line) is refused: stop it first.
+  (it shows a current line) is refused: stop it first. Only a read LineNo of "" counts as idle; a missing or malformed
+  one is `runState: "unknown"`, and authoring is refused then too.
+- **Waits are verified numerically.** The `set` reply shows a wait as display text ("1h00m00.00"), so every written wait
+  is read back with `asText: false`.
 
 ## `gma3_macros`
 
@@ -108,7 +115,9 @@ Every line is read back and compared with the expected result of the action.
   - `running`: still running when observation ended;
   - `not_observed`: never seen running. It either ended before the first sample or did not start; the two cannot be
     told apart;
-  - `stopped`: idle after `off`.
+  - `stopped`: idle after `off`, read from the console;
+  - `unknown`: no sample could be read (a failed read or a missing LineNo is a gap, never "idle"). After `off` this
+    makes the verification `unavailable`, not `matched`.
 - `execution` has `dispatched` (the command was accepted), `observed` (`state`, `linesSeen` with times,
   `unreadSamples`) and `runningBefore`. A line shorter than the sampling interval may not appear in `linesSeen`.
 - `verification` for `go` is always `unavailable`: the run state does not show that the lines succeeded. Check the

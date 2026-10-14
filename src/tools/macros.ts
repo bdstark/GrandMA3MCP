@@ -68,6 +68,8 @@ export interface MacroRead {
   note?: string;
   locked?: boolean | null;
   cli?: boolean | null;
+  /** idle only when LineNo was read and empty; unknown when it is missing or malformed (never taken as idle). */
+  runState?: "idle" | "running" | "unknown";
   running?: { line: number; name: string | null; command: string } | null;
   lastUser?: string | null;
   lines?: MacroLine[];
@@ -81,20 +83,41 @@ const LINE_FIELDS = ["Name", "Note", "Command", "Wait", "Enabled", "AddToCmdline
 const MACRO_FIELDS = ["Name", "Note", "Lock", "CLI", "LineNo", "LineName", "LineCommand", "User"];
 
 export const macroRef = (n: number) => `Macro ${n}`;
+
+/** The run state in a macro's fields: LineNo "" is idle, a positive integer is the running line, anything else unknown. */
+export function runStateOf(f: Record<string, unknown> | undefined): { state: "idle" } | { state: "running"; line: number } | { state: "unknown" } {
+  const v = f?.LineNo;
+  if (typeof v === "number") return Number.isInteger(v) && v > 0 ? { state: "running", line: v } : { state: "unknown" };
+  if (typeof v !== "string") return { state: "unknown" };
+  const s = v.trim();
+  if (s === "") return { state: "idle" };
+  return /^\d+$/.test(s) && Number(s) > 0 ? { state: "running", line: Number(s) } : { state: "unknown" };
+}
 export const lineRef = (n: number, l: number) => `Macro ${n}.${l}`;
 
 const yesNo = (v: unknown): boolean | null =>
   v === true || /^(yes|on|true)$/i.test(String(v ?? "").trim()) ? true : v === false || /^(no|off|false)$/i.test(String(v ?? "").trim()) ? false : null;
 const text = (v: unknown) => (v === null || v === undefined ? "" : String(v));
 
-/** A Wait as the read reports it (asText: false: seconds, "Go" or "Follow"). */
+/** The console's duration text: "2.00", "1h00m00.00", "1d03h46m40.00", "5m30.00" -> seconds; null when it is not one. */
+export function displaySeconds(s: string): number | null {
+  const m = s.trim().match(/^(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(\d+(?:\.\d+)?)?s?$/);
+  if (!m || !s.trim() || (m[4] === undefined && !m[1] && !m[2] && !m[3])) return null;
+  return Number(m[1] ?? 0) * 86400 + Number(m[2] ?? 0) * 3600 + Number(m[3] ?? 0) * 60 + Number(m[4] ?? 0);
+}
+
+/**
+ * A Wait as read: seconds (asText: false), "Go", "Follow", or the display text of a duration. Anything else is a
+ * wait of NaN seconds, which matches nothing: an unreadable wait is never taken as Follow.
+ */
 export function readWait(v: unknown): Wait {
   if (typeof v === "number" && Number.isFinite(v)) return v > 0 ? { kind: "seconds", seconds: v } : { kind: "follow" };
   const s = text(v).trim();
   if (/^go$/i.test(s)) return { kind: "go" };
-  const n = Number(s);
-  if (s && Number.isFinite(n) && n > 0) return { kind: "seconds", seconds: n };
-  return { kind: "follow" };
+  if (/^follow$/i.test(s)) return { kind: "follow" };
+  const n = displaySeconds(s);
+  if (n !== null) return n > 0 ? { kind: "seconds", seconds: n } : { kind: "follow" };
+  return { kind: "seconds", seconds: NaN };
 }
 
 /** A requested wait: "follow", "go" or seconds (0 = follow). */
@@ -149,7 +172,7 @@ export async function readMacro(bridge: Gma3Bridge, n: number, t: number): Promi
     };
   });
   const total = typeof kids.total === "number" ? kids.total : items.length;
-  const lineNo = Number(text(f.LineNo).trim());
+  const rs = runStateOf(f);
   const name = text(f.Name);
   return {
     macro: n,
@@ -159,7 +182,8 @@ export async function readMacro(bridge: Gma3Bridge, n: number, t: number): Promi
     note: text(f.Note),
     locked: f.Lock === undefined ? null : text(f.Lock).trim() !== "" && !/^no$/i.test(text(f.Lock)),
     cli: yesNo(f.CLI),
-    running: text(f.LineNo).trim() && Number.isInteger(lineNo) ? { line: lineNo, name: text(f.LineName) || null, command: text(f.LineCommand) } : null,
+    runState: rs.state,
+    running: rs.state === "running" ? { line: rs.line, name: text(f.LineName) || null, command: text(f.LineCommand) } : null,
     lastUser: text(f.User) || null,
     lines,
     ...((kids.offset ?? 0) + (kids.items?.length ?? 0) < total ? { incomplete: `only ${items.length} of ${total} lines were read` } : {}),
@@ -247,39 +271,84 @@ export function references(command: string): { refs: Reference[]; skipped: strin
 export interface LineCheck {
   line: number;
   raw: boolean;
-  refs: Array<{ ref: string; status: "exists" | "missing" | "created_earlier" | "this_macro" | "unknown"; error?: string }>;
+  refs: Array<{ ref: string; status: "exists" | "missing" | "stored_here" | "created_earlier" | "this_macro" | "unknown"; error?: string }>;
   skipped: string[];
 }
 
-/** Checks every non-raw line's references in order; a Store earlier in the macro counts as creating its target. */
-export async function checkReferences(bridge: Gma3Bridge, n: number, lines: Array<{ command: string; raw?: boolean }>, firstLine: number): Promise<LineCheck[]> {
-  const cache = new Map<string, Awaited<ReturnType<typeof exists>>>();
+export interface RefLine {
+  command: string;
+  raw?: boolean;
+  enabled?: boolean | null;
+  execute?: boolean | null;
+}
+
+/** Only a line that runs creates anything: enabled and executed (not merely placed on the command line). */
+export const executes = (l: RefLine) => l.enabled !== false && l.execute !== false;
+
+/** The keys a stored reference creates: storing a cue (or part) creates its sequence (and cue) too. */
+function createdKeys(key: string): string[] {
+  const parts = key.split(/ (?=cue |part )/);
+  return parts.map((_, k) => parts.slice(0, k + 1).join(" "));
+}
+
+/** The objects the executable Store statements of `lines` create, in order. */
+export function storedBy(lines: RefLine[]): Set<string> {
   const created = new Set<string>();
+  for (const l of lines) if (executes(l)) for (const r of references(l.command).refs) if (r.stores) for (const k of createdKeys(r.ref.toLowerCase())) created.add(k);
+  return created;
+}
+
+/**
+ * Checks every non-raw line's references in order. Objects stored by an executable line, among `prior` (the macro's
+ * lines before these) or earlier among `lines`, count as created; a disabled or non-executing Store creates nothing.
+ */
+export async function checkReferences(bridge: Gma3Bridge, n: number, lines: RefLine[], firstLine: number, prior: RefLine[] = []): Promise<LineCheck[]> {
+  const cache = new Map<string, Awaited<ReturnType<typeof exists>>>();
+  const created = storedBy(prior);
   const out: LineCheck[] = [];
   for (const [i, l] of lines.entries()) {
     const { refs, skipped } = references(l.command);
     const check: LineCheck = { line: firstLine + i, raw: !!l.raw, refs: [], skipped };
     for (const r of refs) {
       const key = r.ref.toLowerCase();
-      if (l.raw) continue;
-      if (key === `macro ${n}` || key.startsWith(`macro ${n}.`)) {
-        check.refs.push({ ref: r.ref, status: "this_macro" });
-      } else if (created.has(key)) {
-        check.refs.push({ ref: r.ref, status: "created_earlier" });
-      } else if (r.stores) {
-        check.refs.push({ ref: r.ref, status: "created_earlier" });
-      } else {
-        if (!cache.has(key)) cache.set(key, await exists(bridge, r.ref));
-        const e = cache.get(key)!;
-        check.refs.push(e.exists === true ? { ref: r.ref, status: "exists" } : e.exists === false ? { ref: r.ref, status: "missing" } : { ref: r.ref, status: "unknown", error: e.error });
+      if (!l.raw) {
+        if (key === `macro ${n}` || key.startsWith(`macro ${n}.`)) check.refs.push({ ref: r.ref, status: "this_macro" });
+        else if (r.stores) check.refs.push({ ref: r.ref, status: "stored_here" });
+        else if (created.has(key)) check.refs.push({ ref: r.ref, status: "created_earlier" });
+        else {
+          if (!cache.has(key)) cache.set(key, await exists(bridge, r.ref));
+          const e = cache.get(key)!;
+          check.refs.push(e.exists === true ? { ref: r.ref, status: "exists" } : e.exists === false ? { ref: r.ref, status: "missing" } : { ref: r.ref, status: "unknown", error: e.error });
+        }
       }
-      // Storing a cue (or part) creates its sequence (and cue) too.
-      if (r.stores) {
-        const parts = key.split(/ (?=cue |part )/);
-        for (let k = 1; k <= parts.length; k++) created.add(parts.slice(0, k).join(" "));
-      }
+      // A raw line still creates what it stores, when it runs.
+      if (r.stores && executes(l)) for (const k of createdKeys(key)) created.add(k);
     }
     out.push(check);
+  }
+  return out;
+}
+
+/**
+ * Lines of the macro after an edit that use an object an earlier executable line stored before the edit but no longer
+ * does (removed, moved below them, disabled or rewritten), and that does not exist in the show either.
+ */
+export async function brokenDependents(bridge: Gma3Bridge, n: number, beforeLines: RefLine[], afterLines: RefLine[]): Promise<string[]> {
+  const out: string[] = [];
+  const cache = new Map<string, Awaited<ReturnType<typeof exists>>>();
+  for (let j = 0; j < afterLines.length; j++) {
+    const l = afterLines[j];
+    const bi = beforeLines.findIndex((b) => b.command === l.command);
+    if (bi < 0) continue; // a written line: its own references were checked
+    const was = storedBy(beforeLines.slice(0, bi));
+    const now = storedBy(afterLines.slice(0, j));
+    for (const r of references(l.command).refs) {
+      const key = r.ref.toLowerCase();
+      if (r.stores || key === `macro ${n}` || key.startsWith(`macro ${n}.`) || !was.has(key) || now.has(key)) continue;
+      if (!cache.has(key)) cache.set(key, await exists(bridge, r.ref));
+      const e = cache.get(key)!;
+      if (e.exists !== true) out.push(`line ${j + 1} uses ${r.ref}, which no earlier line stores any more and which ${e.exists === false ? "does not exist" : `could not be checked (${e.error})`}`);
+    }
   }
   return out;
 }
@@ -342,6 +411,8 @@ type Stored = Map<number, string>;
 
 /** A `set` of one line property, compared with what the console reads back. Command text may come back rewritten. */
 function setLine(ctx: ToolContext, name: string, ref: string, line: number, property: string, value: string, stored: Stored): { name: string; run: () => Promise<StepResult> } {
+  // The set reply is display text ("1h00m00.00"); a wait is checked against a numeric read instead.
+  if (property === "Wait") return { name, run: () => setWait(ctx, name, ref, value) };
   return {
     name,
     run: () =>
@@ -353,18 +424,35 @@ function setLine(ctx: ToolContext, name: string, ref: string, line: number, prop
           return { name, status: "succeeded", op: "set", detail: { ref, property, sent: value, stored: text(got), ...(text(got) !== value ? { rewritten: true } : {}) } };
         }
         const ok =
-          property === "Wait"
-            ? sameWait(readWait(got), readWait(value))
-            : ["Enabled", "AddToCmdline", "Execute"].includes(property)
+          ["Enabled", "AddToCmdline", "Execute"].includes(property)
               ? yesNo(got) === yesNo(value)
-              : property === "Name" && value === ""
-                ? true
-                : text(got) === value;
+            : property === "Name" && value === ""
+              ? true
+              : text(got) === value;
         return ok
           ? { name, status: "succeeded", op: "set", detail: { ref, property, value: got } }
-          : { name, status: "failed", op: "set", detail: { ref, property, sent: value, readBack: got }, error: `the console did not apply ${property}=${JSON.stringify(value)} on ${ref}: it reads ${JSON.stringify(got)}${property === "Wait" ? " (an invalid wait silently becomes Follow)" : ""}` };
+          : { name, status: "failed", op: "set", detail: { ref, property, sent: value, readBack: got }, error: `the console did not apply ${property}=${JSON.stringify(value)} on ${ref}: it reads ${JSON.stringify(got)}` };
       }, ctx.requestTimeoutMs),
   };
+}
+
+async function setWait(ctx: ToolContext, name: string, ref: string, value: string): Promise<StepResult> {
+  try {
+    await ctx.bridge.request("set", { ref, property: "Wait", value }, ctx.requestTimeoutMs);
+  } catch (err) {
+    return stepFromError(name, err, { op: "set" });
+  }
+  let got: unknown;
+  try {
+    const r = (await ctx.bridge.request("objects", { ref, fields: ["Wait"], asText: false, limit: 1 }, ctx.requestTimeoutMs)) as Listing;
+    got = r.items?.[0]?.fields?.Wait;
+  } catch (err) {
+    return { name, status: "unknown", op: "set", detail: { ref, property: "Wait", sent: value }, error: `the wait was written but could not be read back: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  if (got === undefined) return { name, status: "unknown", op: "set", detail: { ref, property: "Wait", sent: value }, error: "the wait was written but could not be read back" };
+  return sameWait(readWait(got), readWait(value))
+    ? { name, status: "succeeded", op: "set", detail: { ref, property: "Wait", value: got } }
+    : { name, status: "failed", op: "set", detail: { ref, property: "Wait", sent: value, readBack: got }, error: `the console did not apply Wait=${JSON.stringify(value)} on ${ref}: it reads ${JSON.stringify(got)} (an invalid wait silently becomes Follow)` };
 }
 
 function lineSteps(ctx: ToolContext, n: number, line: number, spec: Partial<LineSpec>, stored: Stored) {
@@ -467,6 +555,7 @@ function stateProblem(m: MacroRead, need: "absent" | "present"): string | undefi
   if (m.incomplete) return `${m.ref}: ${m.incomplete}; nothing is changed on a macro that was not read completely`;
   if (m.locked !== false) return m.locked ? `${m.ref} is locked: the console silently ignores edits to it; unlock it first` : `the Lock of ${m.ref} could not be read`;
   if (m.running) return `${m.ref} is running (line ${m.running.line}); stop it first (gma3_run_macro off)`;
+  if (m.runState !== "idle") return `whether ${m.ref} is running could not be read (LineNo missing or malformed); nothing is changed on a macro that may be running`;
   return undefined;
 }
 
@@ -510,7 +599,7 @@ export async function storeMacro(ctx: ToolContext, raw: StoreArgs): Promise<Oper
       {
         name: "check_references",
         run: async () => {
-          checks = await checkReferences(bridge, n, specs, base() + 1);
+          checks = await checkReferences(bridge, n, specs, base() + 1, mode === "append" ? before!.lines : []);
           const problems = refProblems(checks);
           return asRead(problems.length ? { name: "check_references", status: "failed", detail: checks, error: `${problems.join("; ")}. Mark a line raw: true to store it unchecked` } : { name: "check_references", status: "succeeded", detail: checks });
         },
@@ -599,6 +688,7 @@ interface EditArgs {
   note?: unknown;
   raw?: unknown;
   accept_console_form?: boolean;
+  allow_unresolved_dependents?: boolean;
   preview?: boolean;
   verify?: boolean;
 }
@@ -665,7 +755,9 @@ export async function editMacroLine(ctx: ToolContext, raw: EditArgs): Promise<Op
         name: "check_references",
         run: async () => {
           if (fields.command === undefined) return asRead({ name: "check_references", status: "succeeded", detail: "no command written" });
-          checks = await checkReferences(bridge, n, [{ command: fields.command, raw: rawLine }], line);
+          // The lines before this one may store what it uses; it runs enabled / executed as it will be after the edit.
+          const old = action === "set" ? before!.lines![line - 1] : undefined;
+          checks = await checkReferences(bridge, n, [{ command: fields.command, raw: rawLine, enabled: fields.enabled ?? old?.enabled, execute: fields.execute ?? old?.execute }], line, before!.lines!.slice(0, line - 1));
           const problems = refProblems(checks);
           return asRead(problems.length ? { name: "check_references", status: "failed", detail: checks, error: `${problems.join("; ")}. Pass raw: true to store it unchecked` } : { name: "check_references", status: "succeeded", detail: checks });
         },
@@ -700,6 +792,16 @@ export async function editMacroLine(ctx: ToolContext, raw: EditArgs): Promise<Op
     } else {
       plan.push({ name: "remove", run: () => commandStep(bridge, "remove", `Delete ${lineRef(n, line)} /NoConfirmation`, t) });
       expected.splice(line - 1, 1);
+    }
+    // The other lines may depend on what this one stored.
+    const toRef = (x: Partial<LineSpec> | MacroLine): RefLine => ({ command: x.command ?? "", enabled: x.enabled, execute: x.execute });
+    const broken = await brokenDependents(bridge, n, b.map(toRef), expected.map(toRef));
+    if (broken.length) {
+      extra.unresolvedDependents = broken;
+      if (raw.allow_unresolved_dependents !== true) {
+        const s: StepResult = asRead({ name: "check_dependents", status: "failed", error: `${broken.join("; ")}. Pass allow_unresolved_dependents: true to edit anyway` });
+        return buildResult({ operation: op, target, steps: [...inspect.steps, s], summary: `${op} refused, nothing was sent: ${s.error}`, extra });
+      }
     }
     if (preview) return buildResult({ operation: op, target, steps: inspect.steps, summary: `Preview only; nothing was sent (${plan.length} requests planned; the macro is never run).`, extra: { ...extra, preview: true, linesBefore: b.map(presentLine) } });
     const run = await runSteps(plan);
@@ -741,9 +843,11 @@ export interface Observation {
   /**
    * finished: seen running (or running before the command), then idle; paused_at_go: on a line whose wait is Go;
    * running: still running when observing ended; not_observed: never seen running (it finished before the first sample
-   * or did not start: the two cannot be told apart); stopped: idle after Off.
+   * or did not start: the two cannot be told apart); stopped: idle after Off, read; unknown: no sample could be read.
    */
-  state: "finished" | "paused_at_go" | "running" | "not_observed" | "stopped";
+  state: "finished" | "paused_at_go" | "running" | "not_observed" | "stopped" | "unknown";
+  /** A sample that read LineNo "" (idle) was seen. */
+  confirmedIdle: boolean;
   linesSeen: Array<{ ms: number; line: number; name: string | null; command: string }>;
   pausedAt?: number;
   samples: number;
@@ -759,17 +863,23 @@ export async function observeRun(bridge: Gma3Bridge, n: number, lines: MacroLine
   let current: number | null = null;
   let sawRunning = wasRunning;
   let idleAfterRun = false;
+  let confirmedIdle = false;
+  let readOk = 0;
   let sameSince = Date.now();
   while (Date.now() - t0 < seconds * 1000) {
     samples++;
     const r = (await bridge.request("objects", { ref: macroRef(n), fields: ["LineNo", "LineName", "LineCommand"], limit: 1 }, t).catch(() => null)) as Listing | null;
     const f = r?.items?.[0]?.fields;
-    if (!f) {
+    const rs = runStateOf(f);
+    // A failed read or a missing / malformed LineNo is a gap, never "idle".
+    if (!f || rs.state === "unknown") {
       unread++;
       await sleep(intervalMs);
       continue;
     }
-    const no = text(f.LineNo).trim() ? Number(text(f.LineNo)) : null;
+    readOk++;
+    const no = rs.state === "running" ? rs.line : null;
+    if (no === null) confirmedIdle = true;
     if (no !== current) {
       sameSince = Date.now();
       if (no !== null) linesSeen.push({ ms: Date.now() - t0, line: no, name: text(f.LineName) || null, command: text(f.LineCommand) });
@@ -784,8 +894,8 @@ export async function observeRun(bridge: Gma3Bridge, n: number, lines: MacroLine
     if (no !== null && lines[no - 1]?.wait.kind === "go" && Date.now() - sameSince >= 500) break;
     await sleep(intervalMs);
   }
-  const state: Observation["state"] = idleAfterRun ? "finished" : current !== null && lines[current - 1]?.wait.kind === "go" ? "paused_at_go" : current !== null ? "running" : "not_observed";
-  return { state, linesSeen, ...(state === "paused_at_go" ? { pausedAt: current! } : {}), samples, unreadSamples: unread, seconds: Math.round((Date.now() - t0) / 100) / 10 };
+  const state: Observation["state"] = !readOk ? "unknown" : idleAfterRun ? "finished" : current !== null && lines[current - 1]?.wait.kind === "go" ? "paused_at_go" : current !== null ? "running" : "not_observed";
+  return { state, confirmedIdle, linesSeen, ...(state === "paused_at_go" ? { pausedAt: current! } : {}), samples, unreadSamples: unread, seconds: Math.round((Date.now() - t0) / 100) / 10 };
 }
 
 interface RunArgs {
@@ -833,6 +943,7 @@ export async function runMacro(ctx: ToolContext, raw: RunArgs): Promise<Operatio
     const s = await commandStep(bridge, action, command, t);
     const steps = [...inspect.steps, s];
     const warnings: string[] = [];
+    if (b.runState === "unknown") warnings.push(`whether ${ref} was running before could not be read, so a later idle state is not taken as its end`);
     const disabled = b.lines!.filter((l) => l.enabled === false).map((l) => l.line);
     if (disabled.length) warnings.push(`line(s) ${disabled.join(", ")} are disabled and are skipped with their waits`);
     const prompts = b.lines!.filter((l) => l.enabled !== false && /\([^)]*\)/.test(l.command.replace(/"[^"]*"/g, ""))).map((l) => l.line);
@@ -840,22 +951,25 @@ export async function runMacro(ctx: ToolContext, raw: RunArgs): Promise<Operatio
     let observation: Observation | undefined;
     if (s.status === "succeeded" && seconds > 0) {
       // Continuing a paused macro: idle afterwards means it ran to its end.
-      observation = await observeRun(bridge, n, b.lines!, seconds, intervalMs, t, action === "off" || b.running !== null);
-      if (action === "off" && (observation.state === "not_observed" || observation.state === "finished")) observation.state = "stopped";
+      observation = await observeRun(bridge, n, b.lines!, seconds, intervalMs, t, action === "off" || b.runState === "running");
+      // Stopped only on a successfully read idle state.
+      if (action === "off" && observation.confirmedIdle && (observation.state === "not_observed" || observation.state === "finished")) observation.state = "stopped";
     }
     const execution = {
       dispatched: s.status === "succeeded",
       command,
-      runningBefore: b.running,
+      runningBefore: b.runState === "unknown" ? "unknown" : b.running,
       ...(observation ? { observed: observation } : { observed: null }),
     };
     const verification: Verification =
       action === "off"
         ? observation?.state === "stopped"
           ? { status: "matched", checked: `${ref} is idle after Off` }
-          : observation
-            ? { status: "mismatched", checked: `${ref} is idle after Off`, detail: `it is ${observation.state}` }
-            : notRequested()
+          : observation?.state === "unknown"
+            ? unavailable(`no sample of ${ref}'s run state could be read after Off (${observation.unreadSamples} unread)`, `${ref} is idle after Off`)
+            : observation
+              ? { status: "mismatched", checked: `${ref} is idle after Off`, detail: `it is ${observation.state}` }
+              : notRequested()
         : unavailable(
             "a dispatched Go+ and the observed run state do not show that every line succeeded: a failing line does not stop a macro and nothing reports it; check the lines' effects",
             `the run state of ${ref} (observed: ${observation?.state ?? "not observed"})`,
@@ -948,6 +1062,7 @@ export const registerMacroTools: RegisterTools = (server, ctx) => {
         note: z.string().optional(),
         raw: z.boolean().optional(),
         accept_console_form: z.boolean().optional(),
+        allow_unresolved_dependents: z.boolean().optional().describe("Edit even when a later line uses an object this edit stops an earlier line from storing (default false: refuse)."),
         preview: z.boolean().optional(),
         verify: z.boolean().optional(),
       },

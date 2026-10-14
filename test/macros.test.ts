@@ -65,6 +65,9 @@ class Console {
   /** References whose existence check fails. */
   unreadable = new Set<string>();
   lineMs = 40;
+  /** Run-state reads that fail, and macros whose LineNo the read omits. */
+  failRunReads = false;
+  omitLineNo = false;
 
   macro(n: number, lines: Array<Partial<FLine>> = [], name = `Macro ${n}`): FMacro {
     const m: FMacro = { name, note: "", lock: false, cli: true, lines: lines.map((l) => ({ name: "", note: "", command: "", wait: "Follow", enabled: true, add: false, exec: true, ...l })) };
@@ -112,11 +115,16 @@ class Console {
       const ref = String(args.ref);
       if (this.unreadable.has(ref)) throw new Error("read timed out");
       const f = find(ref);
+      if (f && f.line !== undefined) {
+        const l = f.m.lines[f.line - 1];
+        return { items: l ? [{ class: "MacroLine", fields: { Wait: args.asText === false ? l.wait : String(l.wait) } }] : [] };
+      }
       if (f && f.line === undefined) {
+        if (this.failRunReads && ((args.fields as string[]) ?? []).includes("LineNo") && !((args.fields as string[]) ?? []).includes("Lock")) throw new Error("read timed out");
         this.tick(f.m);
         const r = f.m.run;
         const l = r ? f.m.lines[r.line - 1] : undefined;
-        return { items: [{ class: "Macro", name: f.m.name, fields: { Name: f.m.name, Note: f.m.note, Lock: f.m.lock ? "UL" : "", CLI: f.m.cli ? "Yes" : "No", LineNo: r ? String(r.line) : "", LineName: l ? l.name || `MacroLine ${r!.line}` : "", LineCommand: l?.command ?? "", User: "Admin" } }] };
+        return { items: [{ class: "Macro", name: f.m.name, fields: { Name: f.m.name, Note: f.m.note, Lock: f.m.lock ? "UL" : "", CLI: f.m.cli ? "Yes" : "No", ...(this.omitLineNo ? {} : { LineNo: r ? String(r.line) : "" }), LineName: l ? l.name || `MacroLine ${r!.line}` : "", LineCommand: l?.command ?? "", User: "Admin" } }] };
       }
       if (/^Macro \d+$/.test(ref)) throw new Error(`no object found for '${ref}'`);
       return { items: this.objects.has(ref) ? [{ name: ref, fields: {} }] : [] };
@@ -144,7 +152,8 @@ class Console {
         if (prop === "Name") l.name = value;
         if (prop === "Note") l.note = value;
       }
-      const shown: Record<string, unknown> = { Command: l.command, Wait: typeof l.wait === "number" ? l.wait.toFixed(2) : l.wait, Enabled: l.enabled ? "Yes" : "No", AddToCmdline: l.add ? "Yes" : "No", Execute: l.exec ? "Yes" : "No", Name: l.name || `MacroLine ${f.line}`, Note: l.note };
+      const display = (w: FLine["wait"]) => (typeof w !== "number" ? w : w >= 3600 ? `${Math.floor(w / 3600)}h${String(Math.floor((w % 3600) / 60)).padStart(2, "0")}m${(w % 60).toFixed(2).padStart(5, "0")}` : w.toFixed(2));
+      const shown: Record<string, unknown> = { Command: l.command, Wait: display(l.wait), Enabled: l.enabled ? "Yes" : "No", AddToCmdline: l.add ? "Yes" : "No", Execute: l.exec ? "Yes" : "No", Name: l.name || `MacroLine ${f.line}`, Note: l.note };
       return { ref, property: prop, value: shown[prop] };
     });
     h.fake.on("cmd", (args) => {
@@ -234,7 +243,7 @@ test("create stores every line exactly, in order, verifies it and never runs the
   assert.deepEqual(m.lines.map((l) => l.wait), ["Follow", 2, "Go", "Follow"]);
   assert.deepEqual([m.lines[2].name, m.lines[2].note, m.lines[3].enabled, m.lines[3].exec, m.lines[3].add], ["hold", "operator continues", false, false, true]);
   assert.deepEqual([m.name, m.note, m.cli], ["Setup", "SB-07", false]);
-  assert.deepEqual(result.references[0].refs.map((r: any) => r.status), ["created_earlier", "created_earlier"], "the stored cue creates its sequence");
+  assert.deepEqual(result.references[0].refs.map((r: any) => r.status), ["stored_here", "created_earlier"], "the stored cue creates its sequence");
   assert.deepEqual(result.references[1].refs, [{ ref: "Sequence 950", status: "created_earlier" }]);
   assert.deepEqual(result.lines.map((l: any) => l.wait), ["follow", 2, "go", "follow"]);
 });
@@ -275,7 +284,7 @@ test("references are checked before anything is sent; raw lines and earlier Stor
   assert.equal(con.commands.length, 0);
   const ok = await store({ mode: "create", lines: [{ command: "Go+ Sequence 2", raw: true }, { command: "Store Group 77 /NoConfirmation" }, { command: "Group 77 At 50" }, { command: 'Set Macro 901 Property "Note" "x"' }] });
   assert.equal(ok.result.verification.status, "matched", JSON.stringify(ok.result));
-  assert.deepEqual(ok.result.references.map((c: any) => c.refs.map((r: any) => r.status)), [[], ["created_earlier"], ["created_earlier"], ["this_macro"]]);
+  assert.deepEqual(ok.result.references.map((c: any) => c.refs.map((r: any) => r.status)), [[], ["stored_here"], ["created_earlier"], ["this_macro"]]);
 });
 
 test("a command the console rewrites is a mismatch unless its form is accepted; either way it is reported", async () => {
@@ -388,4 +397,83 @@ test("gma3_macros lists the pool and reads one macro exactly, with its reference
   assert.equal(one.result.running, null);
   const missing = await h.callJson("gma3_macros", { macro: 99 });
   assert.equal(missing.result.exists, false);
+});
+
+// ---------------------------------------------------------------------------
+// Review 1 regressions
+// ---------------------------------------------------------------------------
+
+test("Off with every run-state read failing is not a confirmed stop", async () => {
+  con.macro(901, [{ command: "Echo 1", wait: "Go" }]);
+  con.failRunReads = true;
+  const off = await h.callJson("gma3_run_macro", { macro: 901, action: "off", observe_seconds: 0.4, interval_ms: 50 });
+  assert.equal(off.result.execution.observed.state, "unknown", JSON.stringify(off.result.execution));
+  assert.equal(off.result.execution.observed.confirmedIdle, false);
+  assert.equal(off.result.verification.status, "unavailable");
+  assert.match(off.result.verification.detail, /no sample .* could be read/);
+});
+
+test("a missing or malformed LineNo is an unknown run state: authoring is refused", async () => {
+  con.macro(901, [{ command: "Echo a" }]);
+  con.omitLineNo = true;
+  const r = await h.callJson("gma3_store_macro", { macro: 901, mode: "replace", lines: [{ command: "Echo b" }] });
+  assert.match(stepError(r.result, "read_macro"), /whether Macro 901 is running could not be read/);
+  const e = await h.callJson("gma3_edit_macro_line", { macro: 901, action: "remove", line: 1 });
+  assert.match(stepError(e.result, "read_macro"), /could not be read/);
+  assert.equal(con.commands.length, 0);
+  assert.equal(con.macros.get(901)!.lines[0].command, "Echo a");
+  const read = await h.callJson("gma3_macros", { macro: 901 });
+  assert.equal(read.result.runState, "unknown");
+});
+
+test("a valid long wait whose reply is display text is verified numerically and the rest is written", async () => {
+  const r = await store({ mode: "create", lines: [{ command: "Echo a", wait: 3600 }, { command: "Echo b", wait: 100000 }, { command: "Echo c" }] });
+  assert.equal(r.isError, false, JSON.stringify(r.result.steps.filter((x: any) => x.status !== "succeeded")));
+  assert.equal(r.result.verification.status, "matched");
+  assert.deepEqual(con.macros.get(901)!.lines.map((l) => l.wait), [3600, 100000, "Follow"]);
+  assert.deepEqual(r.result.lines.map((l: any) => l.wait), [3600, 100000, "follow"]);
+});
+
+test("append and edit see the macro's earlier executable Store lines", async () => {
+  con.macro(901, [{ command: "Store Sequence 950 Cue 1 /NoConfirmation" }, { command: "Echo x" }]);
+  const a = await store({ mode: "append", lines: [{ command: "Go+ Sequence 950" }] });
+  assert.equal(a.result.verification.status, "matched", JSON.stringify(a.result.steps));
+  assert.deepEqual(a.result.references[0].refs, [{ ref: "Sequence 950", status: "created_earlier" }]);
+  const e = await h.callJson("gma3_edit_macro_line", { macro: 901, action: "set", line: 2, command: "Go+ Sequence 950 Cue 1" });
+  assert.equal(e.result.verification.status, "matched", JSON.stringify(e.result.steps));
+  const before = await h.callJson("gma3_edit_macro_line", { macro: 901, action: "insert", line: 1, command: "Go+ Sequence 950" });
+  assert.match(stepError(before.result, "check_references"), /Sequence 950 does not exist/, "a Store after the line does not help it");
+});
+
+test("a disabled or non-executing Store creates nothing", async () => {
+  for (const off of [{ enabled: false }, { execute: false }]) {
+    con.macros.clear();
+    con.commands = [];
+    const r = await store({ mode: "create", lines: [{ command: "Store Sequence 950 /NoConfirmation", ...off }, { command: "Go+ Sequence 950" }] });
+    assert.match(stepError(r.result, "check_references"), /line 2: Sequence 950 does not exist/, JSON.stringify(off));
+    assert.equal(con.commands.length, 0);
+  }
+  con.macro(901, [{ command: "Store Sequence 950 /NoConfirmation", enabled: false }]);
+  const app = await store({ mode: "append", lines: [{ command: "Go+ Sequence 950" }] });
+  assert.match(stepError(app.result, "check_references"), /Sequence 950 does not exist/);
+  const raw = await h.callJson("gma3_store_macro", { macro: 902, mode: "create", lines: [{ command: "Store Sequence 951 /NoConfirmation", raw: true }, { command: "Go+ Sequence 951" }] });
+  assert.equal(raw.result.verification.status, "matched", "a raw Store that runs still creates its object");
+});
+
+test("an edit that takes away a later line's stored object is refused unless allowed", async () => {
+  con.macro(901, [{ command: "Store Sequence 950 /NoConfirmation" }, { command: "Go+ Sequence 950" }]);
+  const edit = (args: Record<string, unknown>) => h.callJson("gma3_edit_macro_line", { macro: 901, ...args });
+  for (const args of [{ action: "remove", line: 1 }, { action: "move", line: 1, to: 2 }, { action: "set", line: 1, enabled: false }, { action: "set", line: 1, command: "Echo gone" }]) {
+    const r = await edit(args);
+    assert.match(stepError(r.result, "check_dependents"), /line \d uses Sequence 950, which no earlier line stores any more and which does not exist/, JSON.stringify(args));
+  }
+  assert.equal(con.commands.length, 0);
+  con.objects.add("Sequence 950");
+  const exists = await edit({ action: "remove", line: 1 });
+  assert.equal(exists.result.verification.status, "matched", "no refusal when the object exists anyway");
+  con.objects.delete("Sequence 950");
+  con.macro(901, [{ command: "Store Sequence 950 /NoConfirmation" }, { command: "Go+ Sequence 950" }]);
+  const allowed = await edit({ action: "remove", line: 1, allow_unresolved_dependents: true });
+  assert.equal(allowed.result.verification.status, "matched");
+  assert.equal(allowed.result.unresolvedDependents.length, 1);
 });
