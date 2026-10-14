@@ -18,7 +18,7 @@
 
 | Tool | What it does |
 | --- | --- |
-| `gma3_status` | Bridge reachability, software version, show file, user |
+| `gma3_status` | Bridge reachability, software version, show file, user; whether this server build matches its source checkout (`server.build`, [below](#build-staleness)) |
 | `gma3_command` | Execute a command line command, returns OK / Syntax Error / Illegal Command |
 | `gma3_lua` | Evaluate Lua inside onPC and return the result as JSON. Off until the operator [enables it on the console](lua.md); uses a best-effort execution budget |
 | `gma3_lua_api` | Search the live Lua API descriptor (names, arguments, returns) |
@@ -94,6 +94,24 @@ Object references accept command syntax (`Sequence 1 Cue 3`, `Page 1.201`), dott
 `ShowData`, `ShowSettings`, `DataPool`, `MasterPool`, `SelectedSequence`, `CurrentCue`, `Patch`, `Programmer`,
 `Selection`, `CurrentExecPage`. Property names are case-insensitive (`Name`, `TrigType`, `FID`); values come back
 as the display text the editor shows, and object references are resolved to the referenced object's name.
+
+### Build staleness
+
+`npm run build` writes `dist/build-info.json` with a hash of `src/**`, `package-lock.json` and
+`tsconfig.json` (plus the git commit, when available). The server compares that hash with the checkout's
+current source at startup and on every `gma3_status` call, and reports the result as `server.build`:
+
+| `state` | Meaning | `action` |
+| --- | --- | --- |
+| `current` | The running build matches the source, or the server runs from TypeScript source (`npm run dev`) | *(none)* |
+| `stale` | The source changed after the build (for example a `git pull` without a rebuild), so tools added or changed since then are missing or out of date | `npm ci && npm run build` in the checkout, then restart the MCP client |
+| `stale` | `dist` was rebuilt from the current source but the running process still has the old build | Restart the MCP client |
+| `unverified` | `dist/build-info.json` is missing (built with plain `tsc`), or no `src/` sits next to the build (package or container install) | `npm run build` when the stamp is missing; otherwise nothing |
+
+When the build is stale at startup, the server's MCP instructions tell the agent so, and to tell the user
+instead of working around missing tools with `gma3_lua` or `gma3_command`. The startup log line on stderr
+says the same. Changes outside the hashed inputs (docs, the Lua plugin) do not make the build stale. A
+build made before this check existed has no stamp and no check, so it cannot report itself.
 
 ## Workflow tools
 

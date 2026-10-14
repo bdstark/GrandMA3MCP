@@ -7,6 +7,7 @@ import { OscSender } from "./osc.js";
 import { helpDir, helpVersion, listHelpPages, lookupHelp } from "./help.js";
 import { CHEATSHEET } from "./cheatsheet.js";
 import { MutationLock } from "./mutations.js";
+import { serverBuild } from "./buildinfo.js";
 import type { ToolContext } from "./tools/context.js";
 import { registerFixtureTools } from "./tools/fixtures.js";
 import { registerCueTools } from "./tools/cues.js";
@@ -36,7 +37,21 @@ const osc = new OscSender({
   prefix: env.GMA3_OSC_PREFIX?.replace(/^\/+|\/+$/g, "") || undefined,
 });
 
-const server = new McpServer({ name: "gma3-mcp", version: "0.1.0" });
+// A build older than its source checkout (a `git pull` without `npm run build`) serves an older tool
+// set; an agent then has no reason to suspect missing tools and falls back to gma3_lua. Say so in the
+// server instructions, which the client shows the model at connect time.
+const startupBuild = serverBuild.check();
+const server = new McpServer(
+  { name: "gma3-mcp", version: "0.1.0" },
+  startupBuild.state === "stale"
+    ? {
+        instructions:
+          `WARNING: this gma3-mcp server build is out of date: ${startupBuild.reason}. ` +
+          `Tell the user before doing show work, and do not work around a missing tool with gma3_lua or gma3_command. ` +
+          `To fix: ${startupBuild.action}. gma3_status reports the build state.`,
+      }
+    : undefined,
+);
 
 // Arbitrary Lua execution is a separately gated capability. The console-side switch (the plugin's
 // "lua" start argument, off by default) is the enforcement point; GMA3_ALLOW_LUA=0 additionally hides
@@ -100,11 +115,13 @@ server.registerTool(
     title: "grandMA3 connection status",
     description:
       "Check whether the gma3_mcp_bridge plugin inside grandMA3 onPC is reachable and report software version, show file, user, " +
-      "the Lua execution policy (whether gma3_lua is enabled on the console and its per-request time/instruction budget), and the configured OSC fallback.",
+      "the Lua execution policy (whether gma3_lua is enabled on the console and its per-request time/instruction budget), the configured OSC fallback, " +
+      "and whether this server build matches its source checkout (server.build.state 'stale' means tools added or changed since the build are missing or out of date).",
     inputSchema: {},
   },
   async () => {
     const result: Record<string, unknown> = {
+      server: { version: "0.1.0", build: { ...serverBuild.check(), stamp: serverBuild.running } },
       bridge: { address: bridge.description, connected: false },
       osc: { address: osc.description },
       help: { dir: helpDir(), version: helpVersion() },
@@ -614,6 +631,9 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error(`gma3-mcp started (bridge ${bridge.description}, osc ${osc.description}, gma3_lua tool ${allowLuaTool ? "registered" : "disabled by GMA3_ALLOW_LUA"})`);
+  if (startupBuild.state !== "current") {
+    console.error(`gma3-mcp build ${startupBuild.state}: ${startupBuild.reason}${startupBuild.action ? `; ${startupBuild.action}` : ""}`);
+  }
 }
 
 main().catch((err) => {

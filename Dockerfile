@@ -16,6 +16,7 @@ WORKDIR /app
 COPY package.json package-lock.json tsconfig.json ./
 RUN npm ci
 COPY src ./src
+COPY scripts/stamp-build.mjs ./scripts/
 RUN npm run build
 
 FROM node:22-alpine

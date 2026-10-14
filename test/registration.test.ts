@@ -128,6 +128,15 @@ test("every workflow and inspection tool is registered, also with gma3_lua hidde
   }
 });
 
+test("gma3_status reports the server build, and a server run from source carries no stale warning", async () => {
+  fake.on("ping", () => ({ version: "test" }));
+  const res = (await client.callTool({ name: "gma3_status", arguments: {} })) as { content: Array<{ text: string }> };
+  const status = JSON.parse(res.content[0].text);
+  assert.equal(status.server.build.state, "current");
+  assert.equal(status.bridge.connected, true);
+  assert.equal(client.getInstructions(), undefined);
+});
+
 test("gma3_lua is serialised with the other mutations", async () => {
   let inFlight = 0;
   let maxInFlight = 0;

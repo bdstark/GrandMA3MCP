@@ -126,7 +126,9 @@ in your start command; those settings do not carry over from the previous run (o
 release records do, so `input recover` can act on them).
 
 After updating server source, also run `npm ci` and `npm run build` (`npm.cmd` in PowerShell), then
-restart the MCP client to load the new server code.
+restart the MCP client to load the new server code. A server whose build is older than its source
+reports `server.build.state: "stale"` in `gma3_status` and warns the agent when it connects; see
+[build staleness](../reference.md#build-staleness).
 
 ## Troubleshooting
 
