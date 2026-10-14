@@ -694,9 +694,11 @@ export async function timecodeTransport(ctx: ToolContext, raw: TransportArgs): P
       cueLists.set(s, (k?.items ?? []).map((c) => ({ addr: c.addr, no: typeof c.fields?.No === "number" ? (c.fields.No as number) / 1000 : NaN })).filter((c) => c.no > 0));
     }
     const sample = async (t0: number): Promise<Sample> => {
+      // Timed from before the cursor request: the skew is everything between reading the cursor and the last sequence.
+      const start = Date.now();
       const o = (await bridge.request("objects", { ref, fields: ["Cursor"], limit: 1 }, t).catch(() => null)) as Listing | null;
       const p = (await bridge.request("object", { ref, properties: false }, t).catch(() => null)) as { hasActivePlayback?: boolean } | null;
-      const out: Sample = { ms: Date.now() - t0, cursor: displaySeconds(o?.items?.[0]?.fields?.Cursor), playing: typeof p?.hasActivePlayback === "boolean" ? p.hasActivePlayback : null, sequences: {} };
+      const out: Sample = { ms: start - t0, cursor: displaySeconds(o?.items?.[0]?.fields?.Cursor), playing: typeof p?.hasActivePlayback === "boolean" ? p.hasActivePlayback : null, sequences: {} };
       for (const s of seqs) {
         const r = (await bridge.request("objects", { ref: `Sequence ${s}`, fields: ["CurrentCue"], asText: false, limit: 1 }, t).catch(() => null)) as Listing | null;
         const q = (await bridge.request("object", { ref: `Sequence ${s}`, properties: false }, t).catch(() => null)) as { hasActivePlayback?: boolean } | null;
@@ -704,7 +706,7 @@ export async function timecodeTransport(ctx: ToolContext, raw: TransportArgs): P
         const cur = item?.fields && !Array.isArray(item.fields) ? (item.fields.CurrentCue as { addr?: string } | undefined) : undefined;
         out.sequences[s] = { cue: !item ? null : cur?.addr ? cueLists.get(s)?.find((c) => c.addr === cur.addr)?.no ?? null : null, active: typeof q?.hasActivePlayback === "boolean" ? q.hasActivePlayback : null };
       }
-      out.durMs = Date.now() - t0 - out.ms;
+      out.durMs = Date.now() - start;
       return out;
     };
     const t0 = Date.now();
