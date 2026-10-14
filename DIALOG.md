@@ -222,6 +222,14 @@ hooks. Live patch fixtures also accept `Set()` outside patch mode.
     `patchedByBridge`), then verifies every address exactly.
 - **Cost:** the bridge fingerprints one side in about 3.7 s (FixtureTypes 1.7 s, DmxUniverses 1.0 s, AttributeDefinitions
   0.7 s). A change session therefore takes about 8 s, and the four sessions of the live test took 31 s.
+- **A fresh fixture-type import made the copy differ (bridge 0.25.1).** In a new show with five grandMA2 types
+  just imported (2026-10-14), the first `gma3_patch_add` failed its isolation check on FixtureTypes and
+  AttributeDefinitions although nobody else touched the show. A property-by-property diff of the open copy against
+  the live patch found two console-derived differences, and nothing else in 3,765 objects:
+  - 29 imported attributes: `ATTRIBUTEINDEXOLD` unset (`4294967295`) live, numbered (346–374) in the copy.
+  - 7 `FTSubfixture` rows in DMX modes' `SubfixtureOverview`: the copy renumbers the geometry they reference.
+  - Bridge 0.25.1 leaves out that property and the `SubfixtureOverview` class. The geometries themselves stay in
+    the fingerprint.
 
 ## KB-27 — Dialog inspection and control
 

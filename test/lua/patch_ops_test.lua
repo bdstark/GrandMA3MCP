@@ -68,6 +68,9 @@ local MODE1 = mode(1, "Mode 0", 1)
 local MODE2B = mode(1, "Two Breaks", 4, "0,1,0,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1")
 local GROUPMODE = mode(1, "Default", 0, "-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1")
 local function ftype(no, name, modes) local t = obj("FixtureType", name, no, { { "MANUFACTURER", "Test" }, { "SHORTNAME", name:sub(1, 6) }, { "REALUSED", 0 } }, { obj("DMXModes", "DMXModes", 1, {}, modes) }); t.DMXModes = t.kids[1]; return t end
+-- A console-derived subfixture list (on the console it sits in each DMX mode; the mock's modes are shared
+-- between live and copy, so it hangs off the type here). The copy renumbers its geometry references.
+local function overview() return obj("SubfixtureOverview", "SubfixtureOverview", 2, {}, { obj("FTSubfixture", "Instance2", 1, { { "INDEX", 2 } }) }) end
 
 local function fixture(name, fid, m, patch, kids)
   return obj("Fixture", name, fid, { { "FID", fid }, { "CID", "None" }, { "IDTYPE", "IDs 1 'Fixture'" }, { "FIXTURETYPE", "x" }, { "MODE", m.name }, { "PATCH", patch }, { "BREAK1", patch }, { "SUBFIXTUREINDEX", fid } }, kids, { FID = fid, ModeDirect = m })
@@ -75,6 +78,10 @@ end
 
 local function buildLive()
   local types = obj("FixtureTypes", "FixtureTypes", 6, {}, { ftype(1, "Grouping", { GROUPMODE }), ftype(6, "Mega Hex Par", { MODE1, obj("x", "x", 2, {}), MODE8 }), ftype(7, "Dimmer", { MODE1 }), ftype(8, "Two Break", { MODE2B }) })
+  local mhpType = types.kids[2]; mhpType.kids[#mhpType.kids + 1] = overview()
+  -- An attribute a fixture-type import added: ATTRIBUTEINDEXOLD is unset live and numbered in the copy (live 2026-10-14).
+  local attrs = obj("Attributes", "Attributes", 1, {}, { obj("Attribute", "DIM", 1, { { "PRETTY", "Dim" }, { "ATTRIBUTEINDEXOLD", 0 } }), obj("Attribute", "PIXELMASK", 2, { { "PRETTY", "PixelMask" }, { "ATTRIBUTEINDEXOLD", 4294967295 } }) })
+  local attrDefs = obj("AttributeDefinitions", "AttributeDefinitions", 2, {}, { attrs })
   -- DMXModes children by No: the fixture type keeps them in order of No (the x placeholder is mode 2).
   local pars = {}
   for i = 1, 3 do pars[i] = fixture("Par " .. i, 400 + i, MODE8, string.format("1.%03d", 1 + (i - 1) * 8)) end
@@ -83,7 +90,7 @@ local function buildLive()
   local stage = obj("Stage", "Stage 1", 1, {}, { obj("Fixtures", "Fixtures", 1, {}, { group, dim }) })
   stage.Fixtures = stage.kids[1]
   local stages = obj("Stages", "Stages", 7, {}, { stage })
-  local p = obj("Patch", "LivePatch", 9, {}, { obj("DmxCurves", "DmxCurves", 1, {}, {}), types, stages, obj("IDTypes", "IDTypes", 11, {}, { obj("IDs", "Fixture", 1, { { "MAXID", 501 } }) }),
+  local p = obj("Patch", "LivePatch", 9, {}, { obj("DmxCurves", "DmxCurves", 1, {}, {}), attrDefs, types, stages, obj("IDTypes", "IDTypes", 11, {}, { obj("IDs", "Fixture", 1, { { "MAXID", 501 } }) }),
     obj("DmxUniverses", "DmxUniverses", 12, {}, { obj("DmxUniverse", "DmxUniverse 1", 1, { { "USED", 25 } }, { obj("DMX", "DMX 1", 1) }) }), obj("DmxAddresses", "DmxAddresses", 13, {}, {}) })
   p.FixtureTypes = types; p.Stages = stages; p.addr = "14.9"
   return p
@@ -225,7 +232,7 @@ end
 -------------------------------------------------------------------------------
 
 local r = request("ping")
-check("ping reports bridge 0.25.0", r.ok and r.result.bridgeVersion == "0.25.0", J(r))
+check("ping reports bridge 0.25.1", r.ok and r.result.bridgeVersion == "0.25.1", J(r))
 
 r = request("patch.state")
 check("patch.state at Root: copy closed, stages listed", r.ok and r.result.destination == "Root" and r.result.copyOpen == false and r.result.atRoot == true and r.result.stages[1] == "Stage 1" and r.result.modal == false, J(r))
@@ -284,6 +291,15 @@ check("after a frame the copy is open at the stage's Fixtures", r.ok and r.resul
 r = request("patch.enter", X)
 check("patch.enter while the copy is open is refused", r.ok == false and r.code == "copy-open", J(r))
 check("the copy fingerprint equals the live one on entry", fpOf("copy") == fpOf("live"), fpOf("copy") .. " | " .. fpOf("live"))
+-- What the console derives in the copy after a fixture-type import is not a foreign change (bridge 0.25.1).
+local copyAttr = console.copy.kids[2].kids[1].kids[2]
+local copyOverviewRow = console.copy.FixtureTypes.kids[2].kids[2].kids[1]
+copyAttr:Set("ATTRIBUTEINDEXOLD", 351); copyOverviewRow:Set("NAME", "Instance1"); copyOverviewRow:Set("INDEX", 1)
+check("a numbered ATTRIBUTEINDEXOLD and a renumbered SubfixtureOverview leave the fingerprint equal", fpOf("copy") == fpOf("live"), fpOf("copy") .. " | " .. fpOf("live"))
+copyAttr:Set("PRETTY", "Pixel Mask")
+check("a real change to an attribute still changes the fingerprint", fpOf("copy") ~= fpOf("live"))
+copyAttr:Set("PRETTY", "PixelMask")
+check("(the attribute change is undone again)", fpOf("copy") == fpOf("live"))
 
 console.dest = "ShowData.Patch"
 r = request("patch.add", with({ stage = "Stage 1", type = 6, mode = 3, fid = 901, count = 2, address = "2.001" }))

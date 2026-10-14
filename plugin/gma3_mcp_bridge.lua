@@ -154,7 +154,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.25.0"
+local VERSION      = "0.25.1"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -3910,13 +3910,18 @@ end
 -- display role). Fixtures whose FID is in `exclude` (the ones a session touches) are left out with their
 -- sub-fixtures. Left out because the console derives or toggles them itself (each established live): the
 -- DMX address map, UI and RT channels, the fixture-type overview and the Patch menu's filter state; the
--- universes' per-address children; numbering inside DmxCurves (renumbered whenever a copy is made); and the
--- properties below. A read that fails or more than PATCH_FP_LIMIT objects mark it incomplete.
+-- universes' per-address children; numbering inside DmxCurves (renumbered whenever a copy is made); each DMX
+-- mode's SubfixtureOverview (a derived list whose geometry references the copy renumbers); and the
+-- properties below. ATTRIBUTEINDEXOLD is unset (4294967295) in the live patch for attributes a fixture-type
+-- import added and numbered in the copy (onPC 2.5.1, live 2026-10-14: the only differences after importing
+-- five grandMA2 types). A read that fails or more than PATCH_FP_LIMIT objects mark it incomplete.
 local PATCH_FP_SKIP = { DmxAddresses = true, UIChannels = true, RTChannels = true, FixtureTypesOverview = true, PatchFilter = true }
+local PATCH_FP_SKIP_CLASS = { SubfixtureOverview = true }
 local PATCH_FP_SHALLOW = { DmxUniverses = true }
 local PATCH_FP_RENUMBERED = { DmxCurves = true }
 local PATCH_FP_PROP_SKIP = { COUNT = true, NO = true, MEMORYFOOTPRINT = true, USED = true, PATCHINFO = true, COARSEPARAMS = true, PARKEDCOUNT = true, TESTERCOUNT = true,
-  STRUCTURELOCKED = true, IGNORENETWORK = true, REALUSED = true, MAXID = true, GRANTED = true, SUBFIXTUREINDEX = true, OLDSUBFIXTUREINDEX = true }
+  STRUCTURELOCKED = true, IGNORENETWORK = true, REALUSED = true, MAXID = true, GRANTED = true, SUBFIXTUREINDEX = true, OLDSUBFIXTUREINDEX = true,
+  ATTRIBUTEINDEXOLD = true }
 local PATCH_FP_LIMIT = 200000
 
 local function fnv(h, s)
@@ -3953,8 +3958,9 @@ local function patchFingerprint(p, only, exclude)
   local function walk(h, depth, renumbered)
     for _, c in ipairs(h:Children()) do
       if not r.complete then return end
-      local fid = safeCall(c, "GetClass") == "Fixture" and numericFid(c) or nil
-      if not (fid and exclude[fid]) then
+      local class = safeCall(c, "GetClass")
+      local fid = class == "Fixture" and numericFid(c) or nil
+      if not (fid and exclude[fid]) and not PATCH_FP_SKIP_CLASS[class] then
         if not add(c, depth, renumbered) then return end
         walk(c, depth + 1, renumbered)
       end
