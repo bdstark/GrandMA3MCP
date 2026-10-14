@@ -13,7 +13,7 @@
     "scripts"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/stamp-build.mjs",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "test": "node --import tsx --test test/*.test.ts",
