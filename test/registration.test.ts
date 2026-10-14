@@ -105,6 +105,9 @@ const WORKFLOW_TOOLS = [
   "gma3_store_macro",
   "gma3_edit_macro_line",
   "gma3_run_macro",
+  "gma3_timecodes",
+  "gma3_build_timecode",
+  "gma3_timecode_transport",
 ];
 
 test("all pre-existing tools are still registered under their original names", async () => {

@@ -92,7 +92,8 @@ OSC is optional for the normal bridge setup and is not forwarded by an SSH tunne
   [executors](docs/tools/executors.md), [inspection](docs/tools/inspection.md), [console input](docs/tools/input.md),
   [console feedback](docs/tools/feedback.md), [patch](docs/tools/patch.md), [playback configuration](docs/tools/playback.md),
   [groups and MAtricks](docs/tools/groups.md), [presets](docs/tools/presets.md), [phasers](docs/tools/phasers.md),
-  [recipes](docs/tools/recipes.md), [speed masters and tempo](docs/tools/speed.md), [macros](docs/tools/macros.md)
+  [recipes](docs/tools/recipes.md), [speed masters and tempo](docs/tools/speed.md), [macros](docs/tools/macros.md),
+  [timecode shows](docs/tools/timecode.md)
 - [Show-building features (SB-01 .. SB-08)](SHOWS.md)
 - [Hardkey, keyboard and feedback feature requests and evidence](KEYBOARD.md), [console interaction modules](docs/modules.md)
 - [Dialog control and dialog-free patching: plan and evidence](DIALOG.md)

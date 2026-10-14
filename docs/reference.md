@@ -270,6 +270,37 @@ carries `class` (`"Preset"` or `"Part"`), and every row has `cooked` (true when 
 (`asText: false` for their Selection, Values, MAtricks and Filter handles) and `set`. Tools:
 [tools/recipes.md](tools/recipes.md).
 
+### Timecode shows (plugin v0.25.0, SB-08)
+
+Timecode events have no command-line address, so two ops reach them (evidence:
+[sb-08-timecode-macos-2.5.1.md](probes/sb-08-timecode-macos-2.5.1.md)):
+
+- `timecode.read` `{timecode, maxEvents?}` (read-only): `settings` (Name, Cursor, Duration, RawDuration, LoopMode, LoopCount,
+  TCSlot, OffsetTCSlot, AutoStart, AutoStop, SwitchOff, Goto, AssertPrevEvents, PlaybackAndRecord, RestartOption,
+  FrameReadout, TimeDisplayFormat, Lock), `playing`, and flat lists:
+  - `groups`;
+  - `tracks` with `target` (class, addr, name, no);
+  - `ranges`;
+  - `subtracks` with their class;
+  - `events`, each with `group`, `track`, `range`, `subtrack` and `index` (storage order), `raw` (seconds × 2^24),
+    `time`, `token`, `status`, `cue` (addr, no ×1000, sequence) and `executeCommand`.
+
+  `eventCount` and `truncated` (more than `maxEvents`, default and maximum 5000) report completeness. The lists are
+  flat because replies nest at most six levels.
+- `timecode.edit` `{timecode, action, ...}` (mutating, refused with `[busy]` like `cmd`). Each structural step is its
+  own request, because the console creates a group's track and a track's range on the next frame:
+  - `add_group`;
+  - `add_track {group}`;
+  - `set_target {group, track, target: "Sequence N"}` (sequences only in this release);
+  - `add_events {group, track, range?, events: [{raw, token, status?, cue?: "Sequence S Cue C"}]}`. It appends in
+    the given order to the range's command subtrack, created on first use. That needs the target to be set in an
+    earlier request (`[not-ready]` otherwise). Every event is validated before the first is appended.
+
+  Target and cue references go through the bridge's guarded object lookup, so an executor range is expanded or refused
+  (`[unsafe-range]`) and never reaches `ObjectList`.
+
+  Nothing plays, records or selects. Tools: [tools/timecode.md](tools/timecode.md).
+
 ### Owned input sessions (plugin v0.5.0, KB-03)
 
 Owned input is a separate per-start opt-in (`Plugin "gma3_mcp_bridge" "input=keyboard"`, `input=quickey` (v0.10.0,
