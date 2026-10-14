@@ -46,7 +46,9 @@ No new bridge op: the tools use `children`, `objects`, `object`, `set` and `cmd`
     macro's existing lines count too (for `append` and edits), but only lines that run: a disabled line, or one with
     `execute: false`, creates nothing.
   - An edit that takes such an object away from a later line (removing, moving, disabling or rewriting the line that
-    stored it) is refused when the object does not exist in the show, unless `allow_unresolved_dependents: true`.
+    stored it) is refused when the object does not exist in the show, unless `allow_unresolved_dependents: true`. Lines
+    keep their identity through the edit (by position before it, never by matching text), and statements count in
+    order: a Store earlier in the same line satisfies the line's later statements, one after them does not.
   - References to the macro itself are allowed.
   - Ranges (`Thru`, `+`, `-`) are not checked, and neither are abbreviated keywords or quoted text.
   - A reference that cannot be checked refuses the line (fail closed).

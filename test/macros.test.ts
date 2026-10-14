@@ -477,3 +477,28 @@ test("an edit that takes away a later line's stored object is refused unless all
   assert.equal(allowed.result.verification.status, "matched");
   assert.equal(allowed.result.unresolvedDependents.length, 1);
 });
+
+// ---------------------------------------------------------------------------
+// Review 2 regressions
+// ---------------------------------------------------------------------------
+
+test("lines keep their identity through an edit: a duplicate command cannot hide a broken dependency", async () => {
+  con.macro(901, [{ command: "Go+ Sequence 950", enabled: false }, { command: "Store Sequence 950 /NoConfirmation" }, { command: "Go+ Sequence 950" }]);
+  const r = await h.callJson("gma3_edit_macro_line", { macro: 901, action: "remove", line: 2 });
+  assert.match(stepError(r.result, "check_dependents"), /line 2 uses Sequence 950, which no earlier line stores any more/);
+  assert.equal(con.commands.length, 0);
+  // Moving the disabled duplicate around does not trip the guard: its own line never had the Store before it.
+  const mv = await h.callJson("gma3_edit_macro_line", { macro: 901, action: "move", line: 1, to: 3, allow_unresolved_dependents: false });
+  assert.equal(mv.result.verification.status, "matched", JSON.stringify(mv.result.steps));
+});
+
+test("a Store earlier in the same command line satisfies the line's later statements", async () => {
+  con.macro(901, [{ command: "Store Sequence 950 /NoConfirmation" }, { command: "Store Sequence 950 /NoConfirmation; Go+ Sequence 950" }]);
+  const r = await h.callJson("gma3_edit_macro_line", { macro: 901, action: "remove", line: 1 });
+  assert.equal(r.result.verification.status, "matched", JSON.stringify(r.result.steps));
+  assert.equal(r.result.unresolvedDependents, undefined);
+  // Order matters within a line: a Store after the Go does not satisfy it.
+  con.macro(901, [{ command: "Store Sequence 950 /NoConfirmation" }, { command: "Go+ Sequence 950; Store Sequence 950 /NoConfirmation" }]);
+  const order = await h.callJson("gma3_edit_macro_line", { macro: 901, action: "remove", line: 1 });
+  assert.match(stepError(order.result, "check_dependents"), /line 1 uses Sequence 950/, "a Store after the Go in the same line does not satisfy it");
+});

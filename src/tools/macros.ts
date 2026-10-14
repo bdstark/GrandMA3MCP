@@ -329,22 +329,33 @@ export async function checkReferences(bridge: Gma3Bridge, n: number, lines: RefL
   return out;
 }
 
+/** What is stored before reference `k` of line `j` runs: earlier lines' Stores, then earlier statements of the line. */
+function availableAt(lines: RefLine[], j: number, k: number): Set<string> {
+  const out = storedBy(lines.slice(0, j));
+  if (executes(lines[j])) for (const r of references(lines[j].command).refs.slice(0, k)) if (r.stores) for (const key of createdKeys(r.ref.toLowerCase())) out.add(key);
+  return out;
+}
+
+/** A line after an edit: `origin` is its index before the edit (absent for an inserted line), `written` when its command was changed. */
+export type EditedLine = RefLine & { origin?: number; written?: boolean };
+
 /**
- * Lines of the macro after an edit that use an object an earlier executable line stored before the edit but no longer
- * does (removed, moved below them, disabled or rewritten), and that does not exist in the show either.
+ * Lines of the macro after an edit whose references were satisfied by a Store before the edit (an earlier line, or an
+ * earlier statement of the same line) and no longer are (removed, moved below them, disabled or rewritten), for objects
+ * that do not exist in the show either. Lines keep their identity through `origin`, never matched by text.
  */
-export async function brokenDependents(bridge: Gma3Bridge, n: number, beforeLines: RefLine[], afterLines: RefLine[]): Promise<string[]> {
+export async function brokenDependents(bridge: Gma3Bridge, n: number, beforeLines: RefLine[], afterLines: EditedLine[]): Promise<string[]> {
   const out: string[] = [];
   const cache = new Map<string, Awaited<ReturnType<typeof exists>>>();
   for (let j = 0; j < afterLines.length; j++) {
     const l = afterLines[j];
-    const bi = beforeLines.findIndex((b) => b.command === l.command);
-    if (bi < 0) continue; // a written line: its own references were checked
-    const was = storedBy(beforeLines.slice(0, bi));
-    const now = storedBy(afterLines.slice(0, j));
-    for (const r of references(l.command).refs) {
+    // An inserted or rewritten line: its own references were checked against the lines before it.
+    if (l.origin === undefined || l.written) continue;
+    const refs = references(l.command).refs;
+    for (const [k, r] of refs.entries()) {
       const key = r.ref.toLowerCase();
-      if (r.stores || key === `macro ${n}` || key.startsWith(`macro ${n}.`) || !was.has(key) || now.has(key)) continue;
+      if (r.stores || key === `macro ${n}` || key.startsWith(`macro ${n}.`)) continue;
+      if (!availableAt(beforeLines, l.origin, k).has(key) || availableAt(afterLines, j, k).has(key)) continue;
       if (!cache.has(key)) cache.set(key, await exists(bridge, r.ref));
       const e = cache.get(key)!;
       if (e.exists !== true) out.push(`line ${j + 1} uses ${r.ref}, which no earlier line stores any more and which ${e.exists === false ? "does not exist" : `could not be checked (${e.error})`}`);
@@ -769,7 +780,8 @@ export async function editMacroLine(ctx: ToolContext, raw: EditArgs): Promise<Op
     const stored: Stored = new Map();
     const plan: Array<{ name: string; run: () => Promise<StepResult> }> = [];
     // The expected lines afterwards, as specs.
-    let expected: Array<Partial<LineSpec>> = b.map(asSpec);
+    // Each expected line keeps its index before the edit (origin), so identical commands stay distinct.
+    const expected: Array<Partial<LineSpec> & { origin?: number; written?: boolean }> = b.map((l, i) => ({ ...asSpec(l), origin: i }));
     let edited: number | undefined;
     if (action === "insert") {
       plan.push(line === b.length + 1
@@ -780,7 +792,7 @@ export async function editMacroLine(ctx: ToolContext, raw: EditArgs): Promise<Op
       edited = line;
     } else if (action === "set") {
       plan.push(...lineSteps(ctx, n, line, fields, stored));
-      expected[line - 1] = { ...expected[line - 1], ...Object.fromEntries(Object.entries(fields).filter(([, x]) => x !== undefined)) };
+      expected[line - 1] = { ...expected[line - 1], ...Object.fromEntries(Object.entries(fields).filter(([, x]) => x !== undefined)), ...(fields.command !== undefined && fields.command !== b[line - 1].command ? { written: true } : {}) };
       edited = line;
     } else if (action === "move") {
       const moves: Array<[number, number]> = [];
@@ -795,7 +807,7 @@ export async function editMacroLine(ctx: ToolContext, raw: EditArgs): Promise<Op
     }
     // The other lines may depend on what this one stored.
     const toRef = (x: Partial<LineSpec> | MacroLine): RefLine => ({ command: x.command ?? "", enabled: x.enabled, execute: x.execute });
-    const broken = await brokenDependents(bridge, n, b.map(toRef), expected.map(toRef));
+    const broken = await brokenDependents(bridge, n, b.map(toRef), expected.map((x) => ({ ...toRef(x), origin: x.origin, written: x.written })));
     if (broken.length) {
       extra.unresolvedDependents = broken;
       if (raw.allow_unresolved_dependents !== true) {
