@@ -166,6 +166,8 @@ These workflows are not necessarily UI-only. grandMA3 documents command support 
 
 **Lua changes:** Not expected if macro-line creation and properties are accessible through existing operations.
 
+**Status:** implemented without Lua changes: `gma3_macros`, `gma3_store_macro`, `gma3_edit_macro_line`, `gma3_run_macro` ([docs/tools/macros.md](docs/tools/macros.md), probe record [sb-07-macros-macos-2.5.1.md](docs/probes/sb-07-macros-macos-2.5.1.md), live test `test/live/macros.live.ts` 1/1 on macOS onPC 2.5.1). Lines are created with `Store Macro N.L` / `Insert` and written with `set`; authoring never sends Go, Call or Off. The console rewrites command text outside quotes (trims, collapses spaces, expands abbreviated keywords), so every line is read back exactly and a rewritten one is reported and fails verification unless the console form is accepted. References written with full keywords are checked before anything is sent (a Store earlier in the macro counts as creating its object); `raw` lines are stored unchecked. Execution reports dispatched and the observed run state (the macro's running line: finished, paused at a Go wait, running, not observed) and never infers that every line succeeded, because a failing line does not stop a macro.
+
 ### Acceptance criteria
 
 - Create, read, and edit ordered macro lines, commands, waits, and supported execution properties.
