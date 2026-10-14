@@ -28,6 +28,7 @@ import { captureTools } from "../helpers/tool-harness.ts";
 import { MutationLock } from "../../src/mutations.ts";
 import type { ToolContext } from "../../src/tools/context.ts";
 import { registerRecipeTools } from "../../src/tools/recipes.ts";
+import { exists } from "../../src/tools/common.ts";
 
 const env = process.env;
 const FIX = (env.GMA3_LIVE_RECIPE_FIXTURES ?? "401,402,403,404").split(",").map((s) => s.trim());
@@ -67,8 +68,10 @@ liveTest("SB-05: recipe lines, cooking and coverage (Sequence 906, Groups 910-91
 
   // Preconditions.
   for (const ref of [`Sequence ${SEQ}`, `Group ${G}`, `Group ${G_EMPTY}`, `Preset ${P_RECIPE}`, `Preset ${P_GONE}`]) {
-    const r = (await bridge.request("objects", { ref, fields: [], limit: 1 }).catch(() => null)) as { items?: unknown[] } | null;
-    assert.ok(!r?.items?.length, `${ref} already exists`);
+    // A failed check is not "absent": the cleanup deletes these objects.
+    const e = await exists(bridge, ref);
+    assert.notEqual(e.exists, "unknown", `could not check ${ref}: ${"error" in e ? e.error : ""}`);
+    assert.equal(e.exists, false, `${ref} already exists`);
   }
   const prog = (await bridge.request("programmer", {})) as { rows?: unknown[]; coverage?: { complete?: boolean } };
   if (prog.coverage?.complete !== true || (prog.rows ?? []).length) {

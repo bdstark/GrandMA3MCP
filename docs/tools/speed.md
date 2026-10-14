@@ -80,7 +80,12 @@ Returns:
    `Master 3.N At BPM <x>`. The tempo is the **effective** tempo under the final scale, so the scale goes first. Hz is
    × 60, seconds is 60 / s. 0 stops the master.
 3. verify (default): the master is read back until the scale, the learn mode and the effective tempo (from the fader)
-   match, for up to about a second (commands land a frame later).
+   match, for up to about a second (commands land a frame later). The expectation is computed at full precision
+   (1.004 BPM at Mul256 is 257.024); only the reported values are rounded.
+
+A read-back that contradicts itself is never a match: when the console's tempo text disagrees with the fader and scale
+(by more than 1 BPM or 1 %), or a part could not be read, the verification is `mismatched` and the contradiction is kept
+in `after.problems`. The same holds for `gma3_speed_master_action`.
 
 `speed_scale` takes One, Mul2..Mul256, Div2..Div256 or a power-of-two factor (2, 0.5). Changing only the scale keeps
 the fader, so the effective tempo changes with it. Master 16 carries a warning: the sound input moves it again.
@@ -110,6 +115,10 @@ starts nothing.
   with the same trigger time (otherwise `notPredicted` says why).
 - Observed: the sequence's `CurrentCue` is read every `interval_ms`; each change is listed with its time and cue, with
   `meanStepMs`, `stepsPerMinute` and `deviationFromPredicted`. `resolutionMs` is the sampling granularity.
+- A failed read is a gap, never a state: it is counted in `unreadSamples` and leaves the last known cue in place. A
+  change seen after a gap is listed with `afterGap: true`, and every interval that touches one (`intervalsExcluded`) is
+  left out of the mean, so only intervals between two precisely timed changes (`intervalsUsed`) measure the step. A
+  read that succeeds without a current cue (a sequence that never ran) is a state of its own.
 
 ## What is and is not verified
 

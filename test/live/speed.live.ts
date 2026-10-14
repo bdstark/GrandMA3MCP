@@ -29,6 +29,7 @@ import { MutationLock } from "../../src/mutations.ts";
 import type { ToolContext } from "../../src/tools/context.ts";
 import { registerSpeedTools } from "../../src/tools/speed.ts";
 import { registerPlaybackTools } from "../../src/tools/playback.ts";
+import { exists } from "../../src/tools/common.ts";
 
 const env = process.env;
 const FIX = (env.GMA3_LIVE_SPEED_FIXTURES ?? "401,402,403").split(",").map((s) => s.trim());
@@ -58,9 +59,12 @@ liveTest(`SB-06: two chases follow speed master ${M} by rate, a third does not (
   const run = async (...commands: string[]) => {
     for (const c of commands) assert.equal(await cmd(c), "OK", c);
   };
+  // Only a confirmed empty read or a not-found answer is "absent"; any other failure aborts the test, because a wrong
+  // "absent" would reuse an existing object and delete it at the end.
   const absent = async (ref: string) => {
-    const r = (await bridge.request("objects", { ref, fields: [], limit: 1 }).catch(() => null)) as { items?: unknown[] } | null;
-    return !r?.items?.length;
+    const e = await exists(bridge, ref);
+    assert.notEqual(e.exists, "unknown", `could not check ${ref}: ${"error" in e ? e.error : ""}`);
+    return e.exists === false;
   };
 
   // Preconditions.
@@ -138,6 +142,7 @@ liveTest(`SB-06: two chases follow speed master ${M} by rate, a third does not (
 
   // 3. Followers, the executor and the sound input.
   if (!pageExisted) {
+    assert.ok(await absent(`Page ${PAGE}`), `Page ${PAGE} appeared during the test`);
     await run(`Store Page ${PAGE} /NoConfirmation`);
     createdPage = true;
   }

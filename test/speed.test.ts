@@ -66,6 +66,10 @@ class Console {
   ignore = new Set<string>();
   audio = { device: "Mic", devices: ["Default <Mic>", "Mic"], soundIn: 100 };
   executors: Array<{ page: number; no: number; master: number }> = [];
+  /** A fader text that contradicts the fader (per master number). */
+  textOverride = new Map<number, string>();
+  /** Current-cue reads that fail (called per read). */
+  sampleFails: () => boolean = () => false;
 
   master(n: number) {
     return this.masters[n - 1];
@@ -115,7 +119,7 @@ class Console {
     h.fake.on("getfader", (args) => {
       const ref = String(args.ref);
       const m = masterOf(ref);
-      if (m) return { ref, faders: { FaderMaster: { value: m.fader, text: this.fmtText(m) } } };
+      if (m) return { ref, faders: { FaderMaster: { value: m.fader, text: this.textOverride.get(this.masters.indexOf(m) + 1) ?? this.fmtText(m) } } };
       if (ref === "Master 2.SoundIn") return { ref, faders: { FaderMaster: { value: this.audio.soundIn, text: `${this.audio.soundIn}%` } } };
       const sm = ref.match(/^Sequence (\d+)$/);
       if (sm) return { ref, faders: { FaderRate: { value: 50, text: "50%" } } };
@@ -130,6 +134,7 @@ class Console {
       const sm = ref.match(/^Sequence (\d+)$/);
       const s = sm ? this.seqs.get(Number(sm[1])) : undefined;
       if (!s) return { items: [] };
+      if (((args.fields as string[]) ?? []).includes("CurrentCue") && this.sampleFails()) throw new Error("read timed out");
       const cur = this.currentCue(s);
       const fields: Record<string, unknown> = {
         Name: s.name, SpeedMaster: s.speedMaster, RateMaster: s.rateMaster, SpeedScale: s.speedScale, RateScale: s.rateScale, SpeedFromRate: s.speedFromRate ? "Yes" : "No", WrapAround: "Yes",
@@ -392,4 +397,72 @@ test("observe_tempo measures linked and independent chases against their predict
   assert.ok(by(907).observed.changes.every((x: any) => typeof x.cue === "number"));
   const missing = await h.callJson("gma3_observe_tempo", { sequences: [999], seconds: 1 });
   assert.match(missing.text, /Sequence 999 does not exist/);
+});
+
+// ---------------------------------------------------------------------------
+// Review 1 regressions
+// ---------------------------------------------------------------------------
+
+test("failed samples are gaps, not cue changes: a stationary sequence with alternating failures shows no tempo", async () => {
+  con.seq(907);
+  let n = 0;
+  con.sampleFails = () => n++ % 2 === 1;
+  const { result } = await h.callJson("gma3_observe_tempo", { sequences: [907], seconds: 1, interval_ms: 20 });
+  const o = result.sequences[0].observed;
+  assert.equal(o.cueChanges, 0, JSON.stringify(o));
+  assert.equal(o.meanStepMs, null);
+  assert.equal(o.stepsPerMinute, null);
+  assert.ok(o.unreadSamples > 5, JSON.stringify(o));
+  assert.match(o.gapNote, /could not be read/);
+});
+
+test("intervals spanning a gap are excluded; precise ones still measure the step", async () => {
+  const s = con.seq(907, 4, 0.2);
+  s.startedAt = Date.now();
+  let n = 0;
+  con.sampleFails = () => n++ % 40 === 10;
+  const { result } = await h.callJson("gma3_observe_tempo", { sequences: [907], seconds: 2, interval_ms: 20 });
+  const o = result.sequences[0].observed;
+  assert.ok(o.unreadSamples > 0);
+  assert.ok(o.intervalsExcluded > 0, JSON.stringify(o));
+  assert.equal(o.intervalsUsed + o.intervalsExcluded, o.cueChanges - 1);
+  assert.ok(Math.abs(o.meanStepMs - 200) < 40, JSON.stringify(o));
+  assert.ok(o.changes.some((c: any) => c.afterGap));
+});
+
+test("expected tempo keeps full precision: 1.004 BPM at Mul256 is 257.024", async () => {
+  con.master(14).fader = bpmToFader(1.004);
+  const { result, isError } = await h.callJson("gma3_configure_speed_master", { master: 14, speed_scale: "Mul256" });
+  assert.equal(isError, false, JSON.stringify(result));
+  assert.equal(result.verification.status, "matched", JSON.stringify(result.verification));
+  assert.equal(result.expected.effectiveBpm, 257.024);
+  assert.equal(result.before.baseBpm, 1, "presentation still rounds");
+});
+
+test("a read-back that contradicts itself is never a match and keeps its diagnostics", async () => {
+  // The scale and fader land, but the console's text says 30 BPM.
+  h.fake.on("cmd", (args) => {
+    const c = String(args.command);
+    con.commands.push(c);
+    con.master(14).fader = bpmToFader(120);
+    con.textOverride.set(14, "30 B");
+    return { feedback: "OK" };
+  });
+  const { result, isError } = await h.callJson("gma3_configure_speed_master", { master: 14, bpm: 120 });
+  assert.equal(isError, true);
+  assert.equal(result.verification.status, "mismatched");
+  assert.match(result.verification.detail, /inconsistent: the console shows 30 B but the fader and scale give 120 BPM/);
+  assert.match(result.after.problems.join(), /30 B/);
+  con.textOverride.clear();
+  con.install(h);
+  con.textOverride.set(14, "Fast");
+  const d = await h.callJson("gma3_speed_master_action", { master: 14, action: "reset" });
+  assert.match(stepError(d.result, "read_master"), /is not a tempo/);
+  con.textOverride.clear();
+  const one = await h.callJson("gma3_speed_master_action", { master: 14, action: "learn" });
+  assert.equal(one.result.verification.status, "unavailable");
+  const sent = con.commands.length;
+  h.fake.on("getfader", (args) => ({ ref: args.ref, faders: { FaderMaster: { value: 50, text: String(args.ref) === "Master 3.14" && con.commands.length > sent ? "90 B" : "60 B" } } }));
+  const two = await h.callJson("gma3_speed_master_action", { master: 14, action: "learn" });
+  assert.equal(two.result.verification.status, "mismatched", "a single tap with an inconsistent read-back is reported, not unavailable");
 });

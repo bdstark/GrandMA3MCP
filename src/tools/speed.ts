@@ -141,7 +141,7 @@ export interface MasterState {
   name: string;
   addr?: string;
   kind: "speed" | "bpm";
-  /** Fader position 0-100 (the base tempo). */
+  /** Fader position 0-100 (the base tempo). Full precision here; presentMaster() rounds for output. */
   fader: number | null;
   baseBpm: number | null;
   speedScale: { name: string; factor: number | null };
@@ -194,6 +194,7 @@ export async function readMasters(bridge: Gma3Bridge, numbers: number[], t: numb
     const shown = parseFaderText(text);
     // The console's whole-BPM text is a cross-check of the model, not a second source.
     if (effective !== null && shown.bpm !== null && Math.abs(shown.bpm - effective) > Math.max(1, effective * 0.01)) problems.push(`the console shows ${text} but the fader and scale give ${round(effective)} BPM`);
+    if (effective !== null && text !== null && shown.bpm === null) problems.push(`the console's tempo text ${JSON.stringify(text)} is not a tempo`);
     const lock = f.Lock === undefined ? null : String(f.Lock ?? "").trim() !== "" && !/^no$/i.test(String(f.Lock));
     masters.push({
       master: n,
@@ -201,10 +202,10 @@ export async function readMasters(bridge: Gma3Bridge, numbers: number[], t: numb
       name: names.get(n) ?? "",
       addr: it?.addr,
       kind: n === BPM_MASTER ? "bpm" : "speed",
-      fader: fader === null ? null : round(fader, 4),
-      baseBpm: base === null ? null : round(base),
+      fader,
+      baseBpm: base,
       speedScale: { name: exp === undefined ? String(f.SpeedScale ?? "") : scaleName(exp)!, factor: exp === undefined ? null : 2 ** exp },
-      effectiveBpm: effective === null ? null : round(effective),
+      effectiveBpm: effective,
       consoleText: text,
       learnMode: learnKeyOf(f.LearnMode) ?? (f.LearnMode === undefined ? null : String(f.LearnMode)),
       faderEnable: f.FaderEnable === undefined ? null : String(f.FaderEnable),
@@ -213,6 +214,13 @@ export async function readMasters(bridge: Gma3Bridge, numbers: number[], t: numb
     });
   }
   return { masters, names };
+}
+
+const roundOrNull = (x: number | null, d = 2) => (x === null ? null : round(x, d));
+
+/** A master for output: tempi rounded for presentation (calculations use the full-precision state). */
+export function presentMaster(m: MasterState) {
+  return { ...m, fader: roundOrNull(m.fader, 4), baseBpm: roundOrNull(m.baseBpm), effectiveBpm: roundOrNull(m.effectiveBpm) };
 }
 
 /** The master numbers carrying a name; more than one means the name (how sequences refer to it) is ambiguous. */
@@ -385,7 +393,7 @@ export async function speedMasters(ctx: ToolContext, raw: { masters?: unknown; u
         // Phasers in these sequences' cues follow the master (unless a cue part or attribute names another).
         speedOf: speed.map((s) => ({ sequence: s.sequence, name: s.name, speedScale: s.speedScale })),
         // Cue timing (fades, delays, trigger times) of these sequences runs at the master's tempo / 60.
-        rateOf: rate.map((s) => ({ sequence: s.sequence, name: s.name, rateScale: s.rateScale, rate: m.effectiveBpm === null ? null : round(linkedRate(m.effectiveBpm, s.rateScale) ?? NaN, 4), speedFromRate: s.speedFromRate })),
+        rateOf: rate.map((s) => ({ sequence: s.sequence, name: s.name, rateScale: s.rateScale, rate: m.effectiveBpm === null || m.problems.length ? null : roundOrNull(linkedRate(m.effectiveBpm, s.rateScale), 4), speedFromRate: s.speedFromRate })),
         executors: (execs?.executors ?? []).filter((e) => e.addr === m.addr).map((e) => e.ref),
       };
     });
@@ -393,11 +401,11 @@ export async function speedMasters(ctx: ToolContext, raw: { masters?: unknown; u
     if (unresolved.size) warnings.push(`sequences name masters that are not speed masters of this show: ${[...unresolved].join(", ")}`);
   }
   const m16 = masters.find((m) => m.master === BPM_MASTER);
-  if (raw.sound !== false) out.sound = await readSound(bridge, m16?.effectiveBpm ?? null, t);
+  if (raw.sound !== false) out.sound = await readSound(bridge, roundOrNull(m16?.effectiveBpm ?? null), t);
   if (observe > 0) out.observed = await observeMasters(bridge, raw.masters === undefined ? [BPM_MASTER] : numbers, observe, 100, t);
   return {
     masters: masters.map((m) => ({
-      ...m,
+      ...presentMaster(m),
       capabilities: {
         manual_tempo: "gma3_configure_speed_master (bpm, hz or seconds)",
         tap_tempo: "gma3_speed_master_action learn: the console times the taps",
@@ -426,6 +434,16 @@ async function readBack(bridge: Gma3Bridge, n: number, t: number, ok: (m: Master
 }
 
 const within = (a: number | null, b: number, tol: number) => a !== null && Math.abs(a - b) <= tol;
+
+/**
+ * The verification of a read-back master. A read-back that contradicts itself (the fader and scale against the
+ * console's tempo text, an unreadable part) is never a match, whatever `check` says, and its problems are kept.
+ */
+function masterVerification(after: MasterState, check: (m: MasterState) => boolean, checked: string, expected: unknown, mismatchNote: string): Verification {
+  const actual = describeMaster(after);
+  if (after.problems.length) return { status: "mismatched", checked, expected, actual, detail: `the read-back is inconsistent: ${after.problems.join("; ")}` };
+  return check(after) ? { status: "matched", checked, expected, actual } : { status: "mismatched", checked, expected, actual, detail: mismatchNote };
+}
 const bpmTolerance = (bpm: number) => Math.max(0.05, bpm * 0.0005);
 
 /** The followers of a master, for the warnings of a change. */
@@ -450,8 +468,8 @@ function setStep(ctx: ToolContext, name: string, ref: string, property: string, 
 }
 
 function describeMaster(m: MasterState) {
-  const { master, name, fader, baseBpm, speedScale, effectiveBpm, consoleText, learnMode, locked } = m;
-  return { master, name, fader, baseBpm, speedScale, effectiveBpm, consoleText, learnMode, locked };
+  const { master, name, fader, baseBpm, speedScale, effectiveBpm, consoleText, learnMode, locked, problems } = presentMaster(m);
+  return { master, name, fader, baseBpm, speedScale, effectiveBpm, consoleText, learnMode, locked, ...(problems.length ? { problems } : {}) };
 }
 
 interface ConfigureArgs {
@@ -523,10 +541,11 @@ export async function configureSpeedMaster(ctx: ToolContext, raw: ConfigureArgs)
     const finalExp = SCALES[scale ?? b.speedScale.name];
     const expected = {
       speedScale: scaleName(finalExp),
-      effectiveBpm: bpm !== undefined ? round(bpm, 3) : b.baseBpm === null ? null : round(b.baseBpm * 2 ** finalExp, 3),
+      effectiveBpm: bpm !== undefined ? bpm : b.baseBpm === null ? null : b.baseBpm * 2 ** finalExp,
       ...(learn ? { learnMode: learn } : {}),
     };
-    const extra = { before: describeMaster(b), expected, ...(command ? { command } : {}) };
+    const expectedOut = { ...expected, effectiveBpm: roundOrNull(expected.effectiveBpm, 3) };
+    const extra = { before: describeMaster(b), expected: expectedOut, ...(command ? { command } : {}) };
     if (raw.preview === true) return buildResult({ operation: op, target, steps: inspect.steps, summary: `Preview only; nothing was sent. ${plan.map((p) => p.name).join(", ") || "nothing to change"}.`, warnings, extra: { ...extra, preview: true } });
     if (!plan.length) return buildResult({ operation: op, target, steps: inspect.steps, summary: `${ref} already has the requested settings; nothing was sent.`, warnings, extra: { ...extra, noop: true } });
     const run = await runSteps(plan);
@@ -535,14 +554,13 @@ export async function configureSpeedMaster(ctx: ToolContext, raw: ConfigureArgs)
     let after: MasterState | undefined;
     if (raw.verify !== false && run.outcome !== "failed") {
       const ok = (m: MasterState) =>
+        m.problems.length === 0 &&
         m.speedScale.name === expected.speedScale && (expected.effectiveBpm === null || within(m.fader === null || m.speedScale.factor === null ? null : faderToBpm(m.fader) * m.speedScale.factor, expected.effectiveBpm, bpmTolerance(expected.effectiveBpm))) && (!learn || m.learnMode === learn);
       try {
         after = await readBack(bridge, n, t, ok);
         steps.push(asRead({ name: "read_back", status: "succeeded", op: "getfader", detail: describeMaster(after) }));
         const checked = `the SpeedScale, effective tempo (fader and scale)${learn ? " and LearnMode" : ""} of ${ref}`;
-        verification = ok(after)
-          ? { status: "matched", checked, expected, actual: describeMaster(after) }
-          : { status: "mismatched", checked, expected, actual: describeMaster(after), detail: n === BPM_MASTER ? "master 16 follows the sound input, which may have moved it" : "the console did not end up with the requested settings" };
+        verification = masterVerification(after, ok, checked, expectedOut, n === BPM_MASTER ? "master 16 follows the sound input, which may have moved it" : "the console did not end up with the requested settings");
       } catch (err) {
         steps.push(asRead(stepFromError("read_back", err, { op: "getfader" })));
         verification = unavailable("the master could not be read back");
@@ -613,7 +631,7 @@ export async function speedMasterAction(ctx: ToolContext, raw: ActionArgs): Prom
     let expectation: { check: (m: MasterState) => boolean; describe: Record<string, unknown> } | null = null;
     if (action === "double" || action === "half") {
       const e = scaleName(exp + (action === "double" ? 1 : -1))!;
-      expectation = { check: (m) => m.speedScale.name === e && within(m.fader, b.fader!, 0.01), describe: { speedScale: e, baseBpm: b.baseBpm } };
+      expectation = { check: (m) => m.speedScale.name === e && within(m.fader, b.fader!, 0.01), describe: { speedScale: e, baseBpm: roundOrNull(b.baseBpm) } };
     } else if (action === "reset") {
       expectation = { check: (m) => m.speedScale.name === "One" && within(m.baseBpm, 60, 0.05), describe: { speedScale: "One", baseBpm: 60 } };
     }
@@ -645,13 +663,11 @@ export async function speedMasterAction(ctx: ToolContext, raw: ActionArgs): Prom
     const failed = steps.some((s) => s.status !== "succeeded");
     if (raw.verify !== false && !failed) {
       try {
-        after = await readBack(bridge, n, t, expectation?.check ?? (() => false));
+        after = await readBack(bridge, n, t, (m) => m.problems.length === 0 && (expectation?.check(m) ?? false));
         steps.push(asRead({ name: "read_back", status: "succeeded", op: "getfader", detail: describeMaster(after) }));
-        if (!expectation) verification = unavailable("one tap gives the console no interval: the tempo is learned from the time between taps (tap again, or pass taps and interval_ms)", `the tempo of ${ref}`);
-        else {
-          const checked = `the tempo and SpeedScale of ${ref}`;
-          verification = expectation.check(after) ? { status: "matched", checked, expected: expectation.describe, actual: describeMaster(after) } : { status: "mismatched", checked, expected: expectation.describe, actual: describeMaster(after) };
-        }
+        if (!expectation && after.problems.length) verification = masterVerification(after, () => false, `the tempo of ${ref}`, null, "");
+        else if (!expectation) verification = unavailable("one tap gives the console no interval: the tempo is learned from the time between taps (tap again, or pass taps and interval_ms)", `the tempo of ${ref}`);
+        else verification = masterVerification(after, expectation.check, `the tempo and SpeedScale of ${ref}`, expectation.describe, "the console did not end up with the expected tempo or scale");
       } catch (err) {
         steps.push(asRead(stepFromError("read_back", err, { op: "getfader" })));
         verification = unavailable("the master could not be read back");
@@ -732,8 +748,9 @@ export async function observeTempo(ctx: ToolContext, raw: { sequences: unknown; 
     let rateSource: Record<string, unknown>;
     if (rateMaster) {
       if (!rm) notes.push(`its rate master "${rateMaster}" does not resolve to exactly one speed master`);
-      rate = rm?.effectiveBpm === null || !rm ? null : linkedRate(rm.effectiveBpm, String(f.RateScale ?? "One"));
-      rateSource = { kind: "speed master", master: rm?.master ?? null, name: rateMaster, effectiveBpm: rm?.effectiveBpm ?? null };
+      else if (rm.problems.length) notes.push(`its rate master ${rm.ref} reads inconsistently, so the rate is not predicted: ${rm.problems.join("; ")}`);
+      rate = !rm || rm.effectiveBpm === null || rm.problems.length ? null : linkedRate(rm.effectiveBpm, String(f.RateScale ?? "One"));
+      rateSource = { kind: "speed master", master: rm?.master ?? null, name: rateMaster, effectiveBpm: roundOrNull(rm?.effectiveBpm ?? null) };
     } else {
       const g = (await bridge.request("getfader", { ref, tokens: ["FaderRate"] }, t).catch(() => null)) as { faders?: Record<string, { value?: unknown }> } | null;
       const fv = g?.faders?.FaderRate?.value;
@@ -757,15 +774,20 @@ export async function observeTempo(ctx: ToolContext, raw: { sequences: unknown; 
         rate: rate === null ? null : round(rate, 4),
         rateSource,
         rateScale: f.RateScale ?? null,
-        speedMaster: speedMaster ? { name: speedMaster, master: sm?.master ?? null, effectiveBpm: sm?.effectiveBpm ?? null, observable: false, note: "phasers in its cues follow this master; their output is not observable over the bridge" } : null,
+        speedMaster: speedMaster ? { name: speedMaster, master: sm?.master ?? null, effectiveBpm: roundOrNull(sm?.effectiveBpm ?? null), observable: false, note: "phasers in its cues follow this master; their output is not observable over the bridge" } : null,
         speedFromRate: yes(f.SpeedFromRate),
       },
     });
   }
 
   // Sampling: the current cue of each sequence, one request per sequence per tick.
-  const changes = new Map<number, Array<{ ms: number; cue: number | string | null }>>(seqs.map((s) => [s, []]));
+  // A failed read is a gap, never a state: it leaves the last known cue in place, and a change seen after a gap (or
+  // an interval with a gap inside it) has no precise time, so it is listed but not used for the step interval.
+  type Change = { ms: number; cue: number | string | null; afterGap: boolean };
+  const changes = new Map<number, Change[]>(seqs.map((s) => [s, []]));
   const last = new Map<number, string>();
+  const unread = new Map<number, number>(seqs.map((s) => [s, 0]));
+  const gapSinceChange = new Map<number, boolean>(seqs.map((s) => [s, false]));
   const t0 = Date.now();
   let ticks = 0;
   let maxTickMs = 0;
@@ -773,11 +795,20 @@ export async function observeTempo(ctx: ToolContext, raw: { sequences: unknown; 
     const tick0 = Date.now();
     for (const w of watched) {
       const r = (await bridge.request("objects", { ref: w.ref, fields: ["CurrentCue"], asText: false, limit: 1 }, t).catch(() => null)) as Listing | null;
-      const cur = r?.items?.[0]?.fields?.CurrentCue as { addr?: string; name?: string } | undefined;
-      const key = cur && typeof cur === "object" ? `${cur.addr ?? ""}|${cur.name ?? ""}` : "none";
+      const item = r?.items?.[0];
+      // Unread: the request failed or returned no object. A read without CurrentCue (nil: no current cue) is a state.
+      if (!item) {
+        unread.set(w.sequence, unread.get(w.sequence)! + 1);
+        gapSinceChange.set(w.sequence, true);
+        continue;
+      }
+      const cur = (item.fields && !Array.isArray(item.fields) ? item.fields.CurrentCue : undefined) as { addr?: string; name?: string } | null | undefined;
+      // No current cue (the sequence is off) is a state of its own, distinct from an unread sample.
+      const key = cur && typeof cur === "object" ? `${cur.addr ?? ""}|${cur.name ?? ""}` : "off";
       if (last.has(w.sequence) && last.get(w.sequence) !== key) {
         const cue = cur && typeof cur === "object" ? w.cues.find((c) => c.addr === cur.addr)?.no ?? cur.name ?? null : null;
-        changes.get(w.sequence)!.push({ ms: Date.now() - t0, cue });
+        changes.get(w.sequence)!.push({ ms: Date.now() - t0, cue, afterGap: gapSinceChange.get(w.sequence)! });
+        gapSinceChange.set(w.sequence, false);
       }
       last.set(w.sequence, key);
     }
@@ -792,19 +823,26 @@ export async function observeTempo(ctx: ToolContext, raw: { sequences: unknown; 
     resolutionMs: round(intervalMs + maxTickMs, 0),
     sequences: watched.map((w) => {
       const c = changes.get(w.sequence)!;
-      const gaps = c.slice(1).map((x, i) => x.ms - c[i].ms);
+      // Only intervals between two precisely timed changes with no unread sample between them.
+      const gaps = c.slice(1).flatMap((x, i) => (x.afterGap || c[i].afterGap ? [] : [x.ms - c[i].ms]));
+      const excluded = Math.max(0, c.length - 1 - gaps.length);
       const mean = gaps.length ? gaps.reduce((a, b) => a + b, 0) / gaps.length : null;
+      const missed = unread.get(w.sequence)!;
       const deviation = mean !== null && w.predicted.ms !== null ? round(mean / w.predicted.ms - 1, 3) : null;
       return {
         sequence: w.sequence,
         configured: { ...w.config, predictedStepMs: w.predicted.ms, ...(w.predicted.reason ? { notPredicted: w.predicted.reason } : {}) },
         observed: {
           cueChanges: c.length,
+          intervalsUsed: gaps.length,
+          ...(excluded ? { intervalsExcluded: excluded } : {}),
+          unreadSamples: missed,
+          ...(missed ? { gapNote: `${missed} of ${ticks} samples could not be read; changes seen after a gap are listed but not timed` } : {}),
           meanStepMs: mean === null ? null : round(mean, 1),
           stepsPerMinute: mean ? round(60000 / mean, 2) : null,
           ...(deviation !== null ? { deviationFromPredicted: deviation } : {}),
           changes: c.slice(0, 40),
-          ...(c.length === 0 ? { note: "no cue change was seen: the sequence is not running, not advancing, or slower than the window" } : c.length === 1 ? { note: "one cue change: an interval needs at least two" } : {}),
+          ...(missed === ticks ? { note: "no sample could be read: nothing was observed" } : c.length === 0 ? { note: "no cue change was seen: the sequence is not running, not advancing, or slower than the window" } : !gaps.length ? { note: "no interval between two precisely timed cue changes: the step interval was not observed" } : {}),
         },
         ...(w.notes.length ? { notes: w.notes } : {}),
       };
