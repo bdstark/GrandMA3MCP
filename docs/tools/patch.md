@@ -20,7 +20,8 @@ for its ~10 seconds.
 
 **Isolation check: best-effort detection.** Before committing, the tool fingerprints the copy and the live patch:
 every object and property of every patch collection, leaving out the FIDs the call touches and the data the console
-derives itself (listed in the KB-25 record). It compares the two, one collection per request. Anything else that
+derives itself (listed in the KB-25 and KB-26 records; bridge 0.25.1 adds what a fresh fixture-type import leaves
+different). It compares the two, one collection per request. Anything else that
 differs means someone changed the show during the session: nothing is committed and the copy is left open.
 
 The check is read over several seconds, so it is **not a consistent snapshot**. An edit landing in a collection
