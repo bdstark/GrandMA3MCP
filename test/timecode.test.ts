@@ -59,6 +59,8 @@ class Console {
   dropTarget = false;
   /** Fields the read leaves out. */
   omit = new Set<string>();
+  /** A delay on the show's playback-status read (ms). */
+  statusDelayMs = 0;
 
   seq(n: number, cues = [1, 2, 3]) {
     this.seqs.set(n, { cues, cue: null, active: false });
@@ -151,10 +153,15 @@ class Console {
       if ((m = ref.match(/^Sequence (\d+) Cue ([\d.]+)$/))) return { items: this.seqs.get(Number(m[1]))?.cues.includes(Number(m[2])) ? [{ name: ref }] : [] };
       return { items: [] };
     });
-    h.fake.on("object", (args) => {
+    h.fake.on("object", async (args) => {
       const ref = String(args.ref);
       let m: RegExpMatchArray | null;
-      if ((m = ref.match(/^Timecode (\d+)$/))) { const s = this.shows.get(Number(m[1]))!; this.tick(s); return { hasActivePlayback: !!s.playing }; }
+      if ((m = ref.match(/^Timecode (\d+)$/))) {
+        if (this.statusDelayMs) await new Promise((r) => setTimeout(r, this.statusDelayMs));
+        const s = this.shows.get(Number(m[1]))!;
+        this.tick(s);
+        return { hasActivePlayback: !!s.playing };
+      }
       if ((m = ref.match(/^Sequence (\d+)$/))) return { hasActivePlayback: this.seqs.get(Number(m[1]))?.active ?? false };
       return {};
     });
@@ -387,4 +394,19 @@ test("a change after the next event's window is not taken; resolvable cross-sequ
   const same = matchEvents({ events: [ev(0.2, 1, "off")], changes: [], initial: initial(), cues, skew: 0.06 });
   assert.equal(same.events[0].result, "unchanged");
   assert.equal(same.verification("x").status, "unavailable");
+});
+
+// ---------------------------------------------------------------------------
+// Review 2 regression
+// ---------------------------------------------------------------------------
+
+test("the read skew covers the whole sample: a slow playback-status read does not push a correct event out of its window", async () => {
+  await h.callJson("gma3_build_timecode", { timecode: 901, mode: "create", settings: { loop_mode: "off" }, tracks: [{ sequence: 908, events: [{ at: 0.09, action: "goto", cue: 2 }, { at: 0.9, action: "off" }] }] });
+  con.statusDelayMs = 160;
+  const play = await h.callJson("gma3_timecode_transport", { timecode: 901, action: "play", observe_seconds: 1.5, interval_ms: 20 });
+  const go = play.result.events.find((e: any) => e.action === "goto");
+  assert.equal(go.result, "matched", JSON.stringify(play.result.events));
+  assert.ok(go.observed.cursor < 0.09 - 0.05, `the change carried a cursor read ~160 ms earlier (${go.observed.cursor})`);
+  assert.equal(play.result.verification.status, "matched", JSON.stringify(play.result.verification));
+  assert.match(play.result.verification.checked, /- 0\.(1[6-9]|[2-9]\d) s read skew/, "the skew includes the slow read");
 });

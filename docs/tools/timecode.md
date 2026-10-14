@@ -128,7 +128,8 @@ Evidence: [the SB-08 probe record](../probes/sb-08-timecode-macos-2.5.1.md).
   press.
 - Each sequence is matched on its own, in order. An event's expected state must appear in a change of its own sequence,
   inside the event's window: from its time minus the read skew, up to the next event on that sequence (plus the skew).
-  The read skew is the slowest sample plus 0.05 s, because each sample reads the cursor before the sequences. So an
+  The read skew is the slowest sample's full duration, timed from before its cursor request to after its last sequence
+  read, plus 0.05 s: each sample reads the cursor first, so a change can carry a cursor up to that much early. So an
   earlier, unrelated change never verifies a later event. Each event gets a `result`:
   - `matched`: seen in its window;
   - `missed`: not seen;
