@@ -59,3 +59,10 @@ not that the value still equals it.
 - Every command answers `OK` whether or not it changed anything: only the programmer read-back tells.
 - The preset must be checked to exist, and the selection to be non-empty, before `At Preset`.
 - The programmer op needs the channel-level `abs_preset` / `rel_preset` to verify a recall (a read-only addition).
+
+## The tools, live (bridge 0.27.0)
+
+`test/live/programmer-looks.live.ts` 1/1 (1.4 s) on fixtures 101 and 102: intensity and two colour values in one call;
+a colour preset stored for the run, recalled onto both and verified by its links (the preset's blue replaced the
+look's); a missing preset refused; R and G released from 101 only with 102 unchanged; every value of 102 released
+with `Off Selection`. The preset was deleted and the programmer cleared afterwards.

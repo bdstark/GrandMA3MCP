@@ -206,9 +206,15 @@ established).
 
 **Repository:** GrandMA3MCP.
 
-**Lua changes:** No.
+**Lua changes:** No (one read-only addition to the programmer op: a recalled preset's link per row).
 
-**Status:** proposed.
+**Status:** implemented in bridge 0.27.0: `gma3_set_attributes`, `gma3_apply_preset`, `gma3_release_attributes`
+([docs/tools/fixtures.md](docs/tools/fixtures.md), probe record
+[su-05-programmer-macos-2.5.1.md](docs/probes/su-05-programmer-macos-2.5.1.md), live test
+`test/live/programmer-looks.live.ts` 1/1 on macOS onPC 2.5.1). Every command answers `OK` whatever it changed, so the
+read-back decides: a recall is verified by the channel's preset link (`abs_preset`, which the programmer op now
+reports), and a missing preset or an empty target is refused before sending. `Off Attribute` with nothing selected
+releases from every fixture, so release needs an established target and is verified against the whole programmer.
 
 **Evidence:** `gma3_set_attribute` takes one attribute, so the agent zeroed white, amber and UV in a Lua loop, set
 the beams' Pan, Tilt, Color1, Gobo1 and Shutter through `Cmd()`, sent `At 100` and `Attribute "…" At Absolute
