@@ -85,8 +85,8 @@ and that class. Verified read-only against the same open copy: all nine collecti
 
 **Lua changes:** Yes: the bridge's `patch.add`.
 
-**Status:** worked around in bridge 0.25.2: `patch.add` calls `AddFixtures` once per fixture, amount 1, each with its
-own FID and address. Reproduced without the bridge on an empty show and reported to MA Lighting (2026-10-14); the
+**Status:** done in bridge 0.25.2 (PR GrandMA3MCP#47, merged): `patch.add` calls `AddFixtures` once per fixture,
+amount 1, each with its own FID and address. Reproduced without the bridge on an empty show and reported to MA Lighting (2026-10-14); the
 reproduction plugin and report are in [docs/probes/addfixtures-crash](docs/probes/addfixtures-crash/README.md).
 
 **What happened:** `gma3_patch_add` for 4 wall washers (52-channel mode, 12 cells each) at 1.097 crashed onPC
