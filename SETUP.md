@@ -266,7 +266,12 @@ another, and the sequences and cues named through Lua.
 
 **Lua changes:** Likely: a read-only op over the type's modes, geometry and models.
 
-**Status:** proposed.
+**Status:** implemented in bridge 0.28.0: `gma3_patch_type_structure`, and cell counts in `gma3_patch_types` and
+`gma3_patch_list` ([docs/tools/patch.md](docs/tools/patch.md), probe record
+[su-07-type-structure-macos-2.5.1.md](docs/probes/su-07-type-structure-macos-2.5.1.md), live test
+`test/live/type-structure.live.ts` 1/1 on macOS onPC 2.5.1). A mode's DMX channels are templates repeated per cell at
+the cell's break offset; the expansion covers every address of every mode of the show's five types. Cells are the
+geometry references under a mode's root geometry, which a patched fixture gets as SubFixture children.
 
 **Evidence:** ten `gma3_lua` calls read a mode's DMX channels, the cell count (`SubfixtureOverview`), the geometry tree,
 and the wall washer's model size (1.04 m, needed to space a pair 1 ft apart).

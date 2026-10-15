@@ -948,8 +948,8 @@ export const registerPatchTools: RegisterTools = (server, ctx) => {
     {
       title: "List fixture types and DMX modes in the show",
       description:
-        "Read-only. Lists the fixture types imported into the show with their DMX modes: number, name, manufacturer, short name, source, and per mode the DMX footprint, the number of DMX breaks and the channels per break. " +
-        "Use the type and mode numbers or names with gma3_patch_add. Only the show's own types are listed: find a fixture in the console's library with gma3_patch_library and add it to the show with gma3_patch_import.",
+        "Read-only. Lists the fixture types imported into the show with their DMX modes: number, name, manufacturer, short name, source, and per mode the DMX footprint, the number of DMX breaks, the channels per break and the number of cells (bridge 0.28.0; null on older plugins; a mode with cells patches fixtures whose cells are selectable sub-fixtures). " +
+        "gma3_patch_type_structure lists a mode's channels, cells and geometry. Use the type and mode numbers or names with gma3_patch_add. Only the show's own types are listed: find a fixture in the console's library with gma3_patch_library and add it to the show with gma3_patch_import.",
       inputSchema: {
         search: z.string().optional().describe("Optional case-insensitive substring filter on type name, short name or manufacturer."),
       },
@@ -967,7 +967,7 @@ export const registerPatchTools: RegisterTools = (server, ctx) => {
     {
       title: "List patched fixtures",
       description:
-        "Read-only. Lists the show's fixtures from the live patch, every stage, sub-fixtures included, in patch order. Each fixture has FID, CID, ID type, name, fixture type, mode, patch address, DMX breaks, stage, depth, parent FID and sub-fixture count. " +
+        "Read-only. Lists the show's fixtures from the live patch, every stage, sub-fixtures included, in patch order. Each fixture has FID, CID, ID type, name, fixture type, mode, patch address, DMX breaks, stage, depth, parent FID, subfixtures (child fixtures of a grouping fixture) and cells (the fixture's own cells, e.g. 12 on a 12-cell wall washer; bridge 0.28.0). " +
         "Filter by FID range (fromFid/toFid; fixtures without a numeric FID are omitted when a range is given); paginated (limit default 200, max 2000).",
       inputSchema: {
         fromFid: z.number().optional().describe("Lowest FID to include."),
