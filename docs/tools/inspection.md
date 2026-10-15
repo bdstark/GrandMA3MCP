@@ -149,6 +149,10 @@ If `GetDMXValue` returns nil (universe not granted on this onPC: `DmxUniverse.Gr
 `source: "dmx output"`. Not available: per-attribute cooked output (no API in 2.5.1); programmer values (use
 `gma3_programmer`). An unpatched fixture has no RT channels and says so.
 
+**Unreadable output (SU-09).** When channels have no value, `gma3_fixture_output` and `gma3_dmx` add `outputState`:
+the state of each such universe, with its explanation (`not_granted`, or granted but sent by no protocol). It comes
+from `gma3_dmx_output` ([dmx-output.md](dmx-output.md)), so the result says why instead of returning nothing.
+
 ## gma3_dmx
 
 Raw universe read.

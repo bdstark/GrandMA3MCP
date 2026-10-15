@@ -22,6 +22,7 @@ import { BridgeError } from "../bridge.js";
 import { json, type RegisterTools, type ToolContext } from "./context.js";
 import type { ToolResult } from "../results.js";
 import { Validator, ValidationError, cueNumber, describe, finiteNumber, objectNumber, oneOf, partNumber, safeRef } from "../validate.js";
+import { explainUniverses } from "./dmxoutput.js";
 
 // ---------------------------------------------------------------------------
 // Local helpers
@@ -263,7 +264,7 @@ export const registerInspectionTools: RegisterTools = (server, ctx: ToolContext)
         "derived percent, and where the fixture type's channel function is known a physical value (`conversion: \"linear from channel function\"`) and the active channel set. " +
         WORKS_WITHOUT_LUA +
         "Source is \"dmx output\": these are output levels, NOT programmer values. Not available: per-attribute cooked output (the API has none), " +
-        "values on a universe that is not granted on this onPC (value null plus a limitation). `nonzero_only` is an explicit filter (default false). Paginated.",
+        "values on a universe that is not granted on this onPC (value null plus a limitation, and outputState explains each such universe: not granted, or not sent by any protocol; gma3_dmx_output has the whole picture). `nonzero_only` is an explicit filter (default false). Paginated.",
       inputSchema: {
         fixture: z.union([z.number(), z.string()]).describe('Fixture ID (101), subfixture ("501.3") or command reference ("Fixture 501.3").'),
         nonzero_only: z.boolean().optional().describe("Only return channels whose raw value is not zero (default false; channels with unknown value are kept)."),
@@ -278,9 +279,13 @@ export const registerInspectionTools: RegisterTools = (server, ctx: ToolContext)
         if (!v.ok || !ref) return validationError("gma3_fixture_output", v.errors);
         const nonzeroOnly = args.nonzero_only === true;
         const res = await op(bridge, "fixtureOutput", { ref, nonzeroOnly, limit, offset }, timeoutMs);
+        // SU-09: a channel without a value is explained by its universe's state (not granted, no output) instead of left blank.
+        const unread = [...new Set(asArray(res.channels).filter((c) => (c as { value?: unknown }).value === null || (c as { value?: unknown }).value === undefined).map((c) => Number((c as { universe?: unknown }).universe)).filter((u) => Number.isInteger(u) && u > 0))];
+        const outputState = unread.length ? await explainUniverses(bridge, unread, timeoutMs) : undefined;
         return {
           tool: "gma3_fixture_output",
           ref,
+          ...(outputState ? { outputState } : unread.length ? { outputState: "the universes' state could not be read (needs bridge 0.30.0; see gma3_dmx_output)" } : {}),
           ...res,
           source: res.source ?? "dmx output",
           nonzeroOnly,
@@ -304,7 +309,7 @@ export const registerInspectionTools: RegisterTools = (server, ctx: ToolContext)
       description:
         "Raw DMX output for an explicit universe and channel range (channels 1..512; universe 1..1024, further bounded by the console's universe count). `unit` is explicit: \"raw8\" (0..255 per address) or \"percent\" (0..100 as the console converts it). " +
         WORKS_WITHOUT_LUA +
-        "Source is \"dmx output\": output levels, NOT programmer values. A universe that is not granted on this onPC returns no values with `granted: false` and a limitation (never zeros). " +
+        "Source is \"dmx output\": output levels, NOT programmer values. A universe that is not granted on this onPC returns no values with `granted: false`, a limitation (never zeros) and outputState explaining why (gma3_dmx_output has the whole picture). " +
         "`nonzero_only` is an explicit filter. `patched: true` additionally maps each returned address to its fixture/channel through the RT channels (bounded; stated in limitations when skipped). 16-bit attributes appear as two separate 8-bit addresses.",
       inputSchema: {
         universe: z.number().int().describe("DMX universe number (1..1024)."),
@@ -327,8 +332,10 @@ export const registerInspectionTools: RegisterTools = (server, ctx: ToolContext)
         const nonzeroOnly = args.nonzero_only === true;
         const patched = args.patched === true;
         const res = await op(bridge, "dmx", { universe, from, to, nonzeroOnly, percent: unit === "percent", patched }, timeoutMs);
+        const outputState = res.granted === false ? await explainUniverses(bridge, [universe], timeoutMs) : undefined;
         return {
           tool: "gma3_dmx",
+          ...(outputState ? { outputState: outputState[0] } : {}),
           ...res,
           source: res.source ?? "dmx output",
           unit: res.unit ?? unit,

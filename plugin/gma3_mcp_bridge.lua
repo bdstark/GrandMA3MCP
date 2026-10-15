@@ -154,7 +154,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.29.0"
+local VERSION      = "0.30.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -4918,6 +4918,156 @@ end
     if not to then raise("[no-type] no fixture type " .. tostring(args.type) .. " in the copy") end
     local list = fixturesArg(p, args, nil)
     return { type = { no = safeProp(to, "no"), name = tostring(to.name) }, retyped = emptyArray(retypeAll(list, to)) }
+  end
+end)()
+
+-------------------------------------------------------------------------------
+-- SU-09: DMX universes and protocol output (bridge 0.30.0; SETUP.md SU-09, docs/probes/su-09-dmx-output-macos-2.5.1.md).
+--   dmx.output       read-only: the universes (grant, request, ports, use) and which Art-Net / sACN entries send them
+--   dmx.set          one whitelisted property of a protocol, a protocol entry or a universe, read back at once
+--   dmx.addEntry     appends a protocol data entry (disabled, as the console creates it)
+--   dmx.removeEntry  removes one protocol data entry
+-- The protocols live in Root().DeviceConfigurations.DMXProtocols; the universes in the live patch. Every value is
+-- read in the display role (as the console shows it). In its own function scope: the main chunk is at Lua's
+-- local-variable limit.
+-------------------------------------------------------------------------------
+;(function()
+  local function D(o, k)
+    local ok, v = pcall(function() return o:Get(k, Enums.Roles.Display) end)
+    if ok and v ~= nil then return tostring(v) end
+    return nil
+  end
+  local function num(o, k) return tonumber((D(o, k) or ""):match("^%s*(%-?[%d%.]+)")) end
+  local function yes(o, k) local v = D(o, k); if v == nil then return nil end return v == "Yes" or v == "On" end
+  local function protocols()
+    local ok, p = pcall(function() return Root().DeviceConfigurations.DMXProtocols end)
+    if not ok or not p then raise("[no-protocols] the DMX protocol configuration (Root.DeviceConfigurations.DMXProtocols) cannot be read") end
+    return p
+  end
+  local KINDS = {
+    artnet = { node = "ArtNet", collect = "ArtNetDataCollect", universe = "Art-NetAbsolute" },
+    sacn = { node = "sACN", collect = "sACNDataCollect", universe = "sACNUniverse" },
+  }
+  -- Writable properties per target (anything else is refused): what the tools configure, nothing more.
+  local WRITABLE = {
+    protocol = { Out = true, In = true },
+    artnetEntry = { Enabled = true, LocalUniverse = true, Amount = true, ["Art-NetAbsolute"] = true, Mode = true },
+    sacnEntry = { Enabled = true, LocalUniverse = true, Amount = true, sACNUniverse = true, Mode = true, Priority = true },
+    universe = { Request = true },
+  }
+  local function protocolNode(kind)
+    local k = KINDS[kind]
+    if not k then raise("[bad-args] protocol must be artnet or sacn") end
+    local node = protocols()[k.node]
+    if not node then raise("[no-protocols] no " .. k.node .. " protocol in the configuration") end
+    return node, node[k.collect], k
+  end
+  local function entryRow(kind, i, e)
+    local k = KINDS[kind]
+    local row = { index = i, name = tostring(safeProp(e, "name")), enabled = yes(e, "Enabled"), mode = D(e, "Mode"), localUniverse = num(e, "LocalUniverse"), amount = num(e, "Amount"), universe = num(e, k.universe) }
+    if kind == "artnet" then row.net, row.subnet, row.artnetUniverse = num(e, "Net"), num(e, "Art-NetSub-Net"), num(e, "Universe"); row.rdm = yes(e, "EnableRDM"); row.subscribedNodes = num(e, "SubscribedNodes")
+    else row.priority, row.ttl, row.previewOnly = num(e, "Priority"), num(e, "TTL"), yes(e, "PreviewOnly") end
+    return row
+  end
+  local function protocolRow(kind)
+    local node, col = protocolNode(kind)
+    local entries = {}
+    for i, e in ipairs(col and col:Children() or {}) do entries[#entries + 1] = entryRow(kind, i, e) end
+    return { out = yes(node, "Out"), ["in"] = yes(node, "In"), interface = D(node, "Interface"), preferredIp = D(node, "PreferredIP"), setupMode = yes(node, "SetupMode"), outputDelay = D(node, "OutputDelay"), entries = entries }
+  end
+  local function universeRow(i, u)
+    return { no = i, name = tostring(safeProp(u, "name")), fixtures = num(u, "Used") or 0, granted = yes(u, "Granted"), request = D(u, "Request"), portOut = yes(u, "PortOut"), portIn = yes(u, "PortIn"), portRdm = yes(u, "PortRDM"), mergeMode = D(u, "MergeMode"), parked = num(u, "ParkedCount") or 0, tester = num(u, "TesterCount") or 0 }
+  end
+
+  -- args: { universes? = [n, ...], all? }. Default: the universes in use or set to output, plus the ones asked for.
+  ops["dmx.output"] = function(args)
+    local res = { protocols = { artnet = protocolRow("artnet"), sacn = protocolRow("sacn") } }
+    local want = {}
+    if type(args.universes) == "table" then for _, n in ipairs(args.universes) do want[integerArg(n, "universe", 1, 1024)] = true end end
+    local list, totals = {}, { universes = 0, used = 0, outputWanted = 0, grantedOfWanted = 0 }
+    for i, u in ipairs(ShowData().LivePatch.DmxUniverses:Children()) do
+      totals.universes = totals.universes + 1
+      local row = universeRow(i, u)
+      -- USED counts the fixtures patched into the universe (8 for three pars, four washers and a beam, live).
+      local wanted = row.fixtures > 0 or row.portOut == true or row.request == "On"
+      if row.fixtures > 0 then totals.used = totals.used + 1 end
+      if wanted then totals.outputWanted = totals.outputWanted + 1; if row.granted then totals.grantedOfWanted = totals.grantedOfWanted + 1 end end
+      if args.all == true or want[i] or wanted then
+        -- Which protocol entries cover this universe, and the protocol universe they send it as.
+        local outs = {}
+        for kind, p in pairs(res.protocols) do
+          for _, e in ipairs(p.entries) do
+            if e.localUniverse and e.amount and i >= e.localUniverse and i < e.localUniverse + e.amount then
+              outs[#outs + 1] = { protocol = kind, entry = e.index, enabled = e.enabled, mode = e.mode, protocolOut = p.out, as = e.universe and (e.universe + i - e.localUniverse) or nil }
+            end
+          end
+        end
+        row.outputs = emptyArray(outs)
+        list[#list + 1] = row
+      end
+    end
+    res.universes = emptyArray(list)
+    res.totals = totals
+    local st = {}
+    pcall(function()
+      for _, group in ipairs(Root().DeviceConfigurations.OutputStations:Children()) do
+        for _, s in ipairs(group:Children()) do st[#st + 1] = { group = tostring(safeProp(group, "name")), name = tostring(safeProp(s, "name")), ip = D(s, "IP"), type = D(s, "Type"), artnetInterface = D(s, "Art-NetInterface"), sacnInterface = D(s, "sACNInterface") } end
+      end
+    end)
+    res.stations = emptyArray(st)
+    return res
+  end
+
+  local function target(args)
+    local t = args.target
+    if t == "protocol" then return (protocolNode(args.protocol)), WRITABLE.protocol end
+    if t == "entry" then
+      local _, col = protocolNode(args.protocol)
+      local i = integerArg(args.index, "index", 1, 100000)
+      local e = col and col:Children()[i]
+      if not e then raise("[no-entry] " .. tostring(args.protocol) .. " has no data entry " .. i) end
+      return e, WRITABLE[args.protocol .. "Entry"]
+    end
+    if t == "universe" then
+      local i = integerArg(args.universe, "universe", 1, 1024)
+      return ShowData().LivePatch.DmxUniverses:Children()[i], WRITABLE.universe
+    end
+    raise("[bad-args] target must be protocol, entry or universe")
+  end
+
+  -- args: { target = protocol|entry|universe, protocol?, index?, universe?, property, value, exclusive }
+  ops["dmx.set"] = function(args)
+    requireExclusive(args, "dmx.set")
+    local o, allowed = target(args)
+    local prop = args.property
+    if type(prop) ~= "string" or not allowed[prop] then raise("[bad-property] " .. tostring(prop) .. " is not a configurable property of a " .. tostring(args.target)) end
+    if args.value == nil then raise("[bad-args] value is required") end
+    local before = D(o, prop)
+    local ok, err = pcall(function() o:Set(prop, tostring(args.value)) end)
+    if not ok then raise("[set-failed] " .. prop .. " could not be written: " .. tostring(err)) end
+    return { property = prop, before = before, value = D(o, prop) }
+  end
+
+  -- args: { protocol, exclusive }
+  ops["dmx.addEntry"] = function(args)
+    requireExclusive(args, "dmx.addEntry")
+    local _, col = protocolNode(args.protocol)
+    local n = col:Count()
+    local e = col:Append()
+    if not e or col:Count() ~= n + 1 then raise("[add-failed] no data entry was appended") end
+    return { index = n + 1, entry = entryRow(args.protocol, n + 1, e) }
+  end
+
+  -- args: { protocol, index, exclusive }
+  ops["dmx.removeEntry"] = function(args)
+    requireExclusive(args, "dmx.removeEntry")
+    local _, col = protocolNode(args.protocol)
+    local i = integerArg(args.index, "index", 1, 100000)
+    local e = col:Children()[i]
+    if not e then raise("[no-entry] " .. tostring(args.protocol) .. " has no data entry " .. i) end
+    local row = entryRow(args.protocol, i, e)
+    col:Remove(i)
+    return { removed = row, count = col:Count() }
   end
 end)()
 

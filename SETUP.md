@@ -329,7 +329,14 @@ the Festoon 2 RGB type's geometry, which moves every Festoon of that type, and m
 
 **Lua changes:** Possibly, for readback of universe settings.
 
-**Status:** proposed.
+**Status:** implemented in bridge 0.30.0: `gma3_dmx_output`, `gma3_configure_dmx_output`, and `outputState` in
+`gma3_fixture_output` / `gma3_dmx` ([docs/tools/dmx-output.md](docs/tools/dmx-output.md), probe record
+[su-09-dmx-output-macos-2.5.1.md](docs/probes/su-09-dmx-output-macos-2.5.1.md), live test
+`test/live/dmx-output.live.ts` 1/1 on macOS onPC 2.5.1).
+
+On this onPC the two universes in use are not granted (no MA hardware), which is why output could not be read; the
+tools now say so. Changes are validated (the console silently ignores or clamps bad values), previewed and read
+back. A change that would send DMX onto the network needs `network: true`.
 
 **Evidence:** `gma3_fixture_output` could not read DMX: universe 1 is not granted on this onPC, so it sends nothing.
 No tool shows or configures universes, protocol output (Art-Net, sACN) or the grant.

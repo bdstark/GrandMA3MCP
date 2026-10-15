@@ -87,6 +87,9 @@ const WORKFLOW_TOOLS = [
   // SU-08 cell layouts
   "gma3_layout_cells",
   "gma3_assign_cell_layout",
+  // SU-09 DMX output
+  "gma3_dmx_output",
+  "gma3_configure_dmx_output",
   // SU-04 fixture positions
   "gma3_fixture_positions",
   "gma3_place_fixtures",
