@@ -57,6 +57,8 @@ Structured inspection tools (read-only; work with Lua execution disabled; need p
 | `gma3_programmer` | Active programmer values (all fixtures, current selection, or given fixtures) with masks, timing and every phaser step; reports incomplete coverage instead of claiming an empty programmer ([docs](tools/inspection.md)) |
 | `gma3_fixture_output` | DMX output per channel of a fixture: raw 8/16-bit values, percent, and a physical value where the channel function allows a conversion ([docs](tools/inspection.md)) |
 | `gma3_dmx` | Raw or percent DMX values of a universe and channel range, with `granted` and optional patch lookup ([docs](tools/inspection.md)) |
+| `gma3_dmx_output` | Read-only: universes in use with grant, request and ports, the Art-Net / sACN entries that send each one, the protocols and output stations; each universe explained (not granted, not sent, sent as) (bridge 0.30.0, [docs](tools/dmx-output.md)) |
+| `gma3_configure_dmx_output` | Art-Net / sACN output on or off, data entries added, edited or removed, universes' grant request; validated, previewed, read back; `network: true` required before DMX goes onto the network (bridge 0.30.0, [docs](tools/dmx-output.md)) |
 | `gma3_cue_contents` | Stored cue and part data without Goto or Load: timing, command, recipes and preset references (optionally expanded); hard fixture values are reported as a documented limitation on 2.5.1 ([docs](tools/inspection.md)) |
 
 Structured input tools (KB-05; need plugin v0.7.0 and the operator's `Plugin "gma3_mcp_bridge" "input=keyboard"`;
