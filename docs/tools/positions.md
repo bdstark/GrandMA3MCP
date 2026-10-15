@@ -69,7 +69,9 @@ Pre-flight (read-only; nothing is sent on failure):
 Changes: per fixture, one `set` per position axis, one `ROTDIRECT` for the rotation, and `MESHMIRRORX` `1` / `0`
 (the console ignores `false` and `No`). Each write is its own step (`101.POSX`, `101.ROTDIRECT`, ...); the first
 failure stops the rest, which are reported as skipped. A fixture changed only in part makes the outcome `partial`, and
-the summary names it and what was written.
+the summary names it and what was written. A write that got no reply may have executed: the outcome is `unknown`, the summary reports
+that fixture's state as unknown (never "not changed"), and the read-back reports what the console now holds for that
+property in `uncertainWrites` (`applied` true, false or null when unreadable).
 
 Read-back, a frame after the writes, of exactly the properties that were written: positions within 0.1 mm, rotations
 by quaternion, `mirror_mesh` exactly. A write the console ignores is a mismatch, never a success; a value that cannot be

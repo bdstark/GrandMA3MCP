@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { startHarness, type Harness } from "./helpers/tool-harness.js";
-import { BridgeReplyError } from "./helpers/fake-bridge.js";
+import { BridgeReplyError, SILENT } from "./helpers/fake-bridge.js";
 import { registerPositionTools, quatFromEuler, quatEquivalent, mirrorAcrossCentre, expandPlan, type Quat, type Vec3 } from "../src/tools/positions.js";
 import { Validator } from "../src/validate.js";
 
@@ -123,6 +123,8 @@ class Stage {
   ignore = new Set<string>();
   /** A property whose write the bridge refuses. */
   failSet?: string;
+  /** A property whose write executes but whose reply is lost. */
+  silentSet?: string;
   /** Fixtures whose POSX reads as garbage (raw). */
   garbled = new Set<number>();
   /** Garble every written fixture's POSX from the next read on. */
@@ -153,6 +155,7 @@ class Stage {
       const p = String(args.property);
       if (p === this.failSet) throw new BridgeReplyError(`[set-failed] ${p} refused`, "set-failed");
       if (this.garbleWritten) this.garbled.add(x.fid);
+      const silent = p === this.silentSet;
       if (!this.ignore.has(p)) {
         if (p.startsWith("POS")) x.pos[p.slice(3).toLowerCase() as "x"] = Number(args.value);
         if (p === "ROTDIRECT") {
@@ -166,6 +169,7 @@ class Stage {
         }
         if (p === "MESHMIRRORX") x.mirror = args.value === "1";
       }
+      if (silent) return SILENT;
       return { ref: args.ref, property: p, value: "ok" };
     });
   }
@@ -347,6 +351,24 @@ test("review P2: chained mirror pairs resolve in dependency order; a cycle is re
     const r = await h.callJson("gma3_place_fixtures", { layouts: [{ kind: "mirror", pairs: [[101, 102], [102, 101]] }] });
     assert.equal(r.result.outcome, "failed");
     assert.match(r.result.validationErrors.join(" "), /mirror pairs form a cycle \(FID (101 -> 102 -> 101|102 -> 101 -> 102)\)/);
+  } finally {
+    await h.close();
+  }
+});
+
+test("review round 2: a write that executed without a reply is state unknown, never 'not changed'", async () => {
+  const { h, s } = await setup();
+  try {
+    s.silentSet = "POSX";
+    const { result, isError } = await h.callJson("gma3_place_fixtures", { placements: [{ fid: 101, position: { x: 2 } }, { fid: 102, position: { y: 1 } }] });
+    assert.equal(isError, true);
+    assert.equal(result.outcome, "unknown");
+    assert.equal(s.fixtures.get(101)!.pos.x, 2, "(the console executed the write)");
+    assert.deepEqual(result.steps.filter((x: any) => x.op === "set").map((x: any) => `${x.name}:${x.status}`), ["101.POSX:unknown", "102.POSY:skipped"]);
+    assert.match(result.summary, /0 of 2 fixture\(s\) placed; state unknown: FID 101 \(POSX got no reply; read back: applied\); 1 not changed/);
+    assert.doesNotMatch(result.summary, /2 not changed/);
+    assert.deepEqual(result.uncertainWrites, [{ fid: 101, property: "POSX", applied: true, observed: 2 }]);
+    assert.equal(result.verification.status, "unavailable", "no write was confirmed");
   } finally {
     await h.close();
   }

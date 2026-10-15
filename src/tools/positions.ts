@@ -472,6 +472,8 @@ export async function placeFixtures(ctx: ToolContext, raw: PlaceArgs): Promise<O
       return { f, sets };
     });
     const written = new Map<number, Set<string>>();
+    // A write whose reply was lost may have executed: its fixture's state is unknown, never "not changed".
+    const uncertain = new Map<number, string>();
     let stopped: string | undefined;
     for (const { f, sets } of writes) {
       for (const [property, value] of sets) {
@@ -486,19 +488,41 @@ export async function placeFixtures(ctx: ToolContext, raw: PlaceArgs): Promise<O
           if (!written.has(f.fid)) written.set(f.fid, new Set());
           written.get(f.fid)?.add(property);
         } catch (err) {
-          steps.push(stepFromError(name, err, { op: "set", detail: { value } }));
-          stopped = `${name} ${steps[steps.length - 1].status === "unknown" ? "got no reply" : "failed"}`;
+          const st = stepFromError(name, err, { op: "set", detail: { value } });
+          steps.push(st);
+          if (st.status === "unknown") uncertain.set(f.fid, property);
+          stopped = `${name} ${st.status === "unknown" ? "got no reply (it may have been written)" : "failed"}`;
         }
       }
     }
 
-    // Read-back of exactly what was written, including a fixture changed only in part.
+    // Read-back of exactly what was written, including a fixture changed only in part; a write without a reply is
+    // read back too, to report what the console holds now (it does not count towards the verification).
     let verification: Verification = notRequested();
     let after: Map<number, FixturePose> | undefined;
-    if (verify && written.size) {
+    const uncertainWrites: Array<{ fid: number; property: string; applied: boolean | null; observed: unknown }> = [];
+    if (verify && (written.size || uncertain.size)) {
       await sleep(FRAME_WAIT_MS);
       try {
-        after = await readPoses(bridge, [...written.keys()], t);
+        after = await readPoses(bridge, [...new Set([...written.keys(), ...uncertain.keys()])], t);
+        for (const [fid, property] of uncertain) {
+          const f = finals.get(fid) as Final;
+          const a = after.get(fid);
+          let applied: boolean | null = null;
+          let observed: unknown = null;
+          if (a && property.startsWith("POS")) {
+            const k = property.slice(3).toLowerCase() as "x" | "y" | "z";
+            observed = Number.isFinite(a.position[k]) ? round(a.position[k] / s, 4) : null;
+            if (observed !== null) applied = Math.abs(a.position[k] - f.position[k]) <= POS_TOL_M;
+          } else if (a && property === "ROTDIRECT" && f.writeRotation) {
+            observed = a.quaternion;
+            if (a.quaternion) applied = quatEquivalent(quatFromEuler(f.writeRotation), a.quaternion);
+          } else if (a && property === "MESHMIRRORX" && f.mirrorMesh !== undefined && !a.unreadable.includes("MESHMIRRORX")) {
+            observed = a.mirrorMesh;
+            applied = a.mirrorMesh === f.mirrorMesh;
+          }
+          uncertainWrites.push({ fid, property, applied, observed });
+        }
         const mismatches: string[] = [];
         const unreadable: string[] = [];
         const actual: unknown[] = [];
@@ -525,7 +549,8 @@ export async function placeFixtures(ctx: ToolContext, raw: PlaceArgs): Promise<O
           }
         }
         const checked = `the properties that were written: positions within ${POS_TOL_M * 1000} mm, rotations by quaternion (the console renormalizes the angles), mirror_mesh; read a frame after the writes`;
-        if (mismatches.length) verification = { status: "mismatched", checked, actual, detail: [...mismatches, ...unreadable.map((u) => `${u} unreadable`)].join("; ") };
+        if (written.size === 0) verification = unavailable("no write was confirmed (see uncertainWrites for what the console holds now)", checked);
+        else if (mismatches.length) verification = { status: "mismatched", checked, actual, detail: [...mismatches, ...unreadable.map((u) => `${u} unreadable`)].join("; ") };
         else if (unreadable.length) verification = unavailable(`could not be read back as values: ${unreadable.join("; ")}`, checked);
         else verification = { status: "matched", checked, actual };
       } catch (err) {
@@ -534,12 +559,23 @@ export async function placeFixtures(ctx: ToolContext, raw: PlaceArgs): Promise<O
       }
     }
 
-    const complete = writes.filter(({ f, sets }) => sets.every(([p]) => written.get(f.fid)?.has(p))).length;
-    const partly = writes.filter(({ f, sets }) => (written.get(f.fid)?.size ?? 0) > 0 && !sets.every(([p]) => written.get(f.fid)?.has(p))).map(({ f }) => `FID ${f.fid} (written: ${[...(written.get(f.fid) ?? [])].join(", ")})`);
-    const untouched = writes.length - complete - partly.length;
+    const writtenList = (fid: number) => [...(written.get(fid) ?? [])].join(", ");
+    const isComplete = ({ f, sets }: (typeof writes)[number]) => !uncertain.has(f.fid) && sets.every(([p]) => written.get(f.fid)?.has(p));
+    const complete = writes.filter(isComplete).length;
+    const unknownState = writes
+      .filter(({ f }) => uncertain.has(f.fid))
+      .map(({ f }) => {
+        const prop = uncertain.get(f.fid) as string;
+        const seen = uncertainWrites.find((u) => u.fid === f.fid);
+        const readBack = !seen ? "not read back" : seen.applied === true ? "read back: applied" : seen.applied === false ? "read back: not applied" : "read back: unreadable";
+        return `FID ${f.fid} (${prop} got no reply; ${readBack}${written.get(f.fid)?.size ? `; written before it: ${writtenList(f.fid)}` : ""})`;
+      });
+    const partly = writes.filter((w) => !isComplete(w) && !uncertain.has(w.f.fid) && (written.get(w.f.fid)?.size ?? 0) > 0).map(({ f }) => `FID ${f.fid} (written: ${writtenList(f.fid)})`);
+    const untouched = writes.length - complete - unknownState.length - partly.length;
     const what = verification.status === "matched" ? " Read-back of the written values matched." : verification.status === "mismatched" ? ` Read-back MISMATCHED: ${verification.detail}` : verification.status === "unavailable" ? ` Read-back unavailable: ${verification.detail}` : "";
     const summary =
       `${complete} of ${writes.length} fixture(s) placed` +
+      (unknownState.length ? `; state unknown: ${unknownState.join("; ")}` : "") +
       (partly.length ? `; changed only in part: ${partly.join("; ")}` : "") +
       (untouched ? `; ${untouched} not changed` : "") +
       (stopped ? `; stopped at ${stopped}` : "") +
@@ -547,6 +583,7 @@ export async function placeFixtures(ctx: ToolContext, raw: PlaceArgs): Promise<O
     return done(summary, verification, {
       fixtures: planOut.map((p) => ({ ...p, ...(after?.get(p.fid) ? { after: poseOut(after.get(p.fid) as FixturePose, unit) } : {}) })),
       restore,
+      ...(uncertain.size ? { uncertainWrites: uncertainWrites.length ? uncertainWrites : [...uncertain].map(([fid, property]) => ({ fid, property, applied: null, observed: null })) } : {}),
     });
   });
 }
