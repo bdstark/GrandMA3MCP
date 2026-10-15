@@ -290,6 +290,7 @@ export async function layoutCells(ctx: ToolContext, raw: Record<string, unknown>
   // Own: copy the type and move the fixtures to it in one patch session, then lay out the copy.
   let session: OperationResult | undefined;
   let layoutType = before.type;
+  const sourceGuid = before.type.guid;
   if (scope === "own") {
     session = await runSession(ctx, {
       operation: "layout_copy",
@@ -339,6 +340,15 @@ export async function layoutCells(ctx: ToolContext, raw: Record<string, unknown>
       steps.push(asRead({ name: "check_own", status: "failed", error: `the new type is used by FIDs ${fidList(before.affected).join(", ")}, expected ${ownFids.join(", ")}; no cell was moved` }));
       return buildResult({ operation: op, target, steps, verification: unavailable("no cell was moved") });
     }
+    // The console gives a copied type its own GUID on the commit (a copy reads all zeros before it, live 2026-10-15).
+    // Types are told apart by GUID (fixture-type identity, gma3_patch_remove_type), so a copy without its own stops here.
+    const guid = before.type.guid ?? "";
+    const guidProblem = !guid || /^[0\s]+$/.test(guid) ? `the new type ${before.type.name} has no GUID of its own after the commit (${guid ? `"${guid}"` : "none"})` : guid === sourceGuid ? `the new type ${before.type.name} has the same GUID as ${layoutType.name} (${guid})` : undefined;
+    if (guidProblem) {
+      steps.push(asRead({ name: "check_own_guid", status: "failed", error: `${guidProblem}; no cell was moved. The fixtures are on the new type: move them back with gma3_assign_cell_layout and remove it with gma3_patch_remove_type` }));
+      return buildResult({ operation: op, target, steps, verification: { status: "mismatched", checked: "the new type's GUID is its own after the commit", detail: guidProblem }, extra: { own: { name: ownName, fixtures: ownFids }, type: before.type, sourceType: layoutType } });
+    }
+    steps.push(asRead({ name: "check_own_guid", status: "succeeded", detail: { guid, source: sourceGuid } }));
     layoutType = before.type;
   }
 

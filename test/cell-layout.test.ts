@@ -50,6 +50,7 @@ test("planCells: axes the path does not use keep each cell's value unless the or
 interface Type {
   no: number;
   name: string;
+  guid: string;
   cells: Array<{ index: number; name: string; posX: number; posY: number; posZ: number }>;
 }
 interface Fx {
@@ -58,11 +59,13 @@ interface Fx {
 }
 
 class World {
-  types: Type[] = [{ no: 2, name: "Festoon 2 RGB", cells: [1, 2, 3, 4].map((i) => ({ index: i, name: `I${i}`, posX: 0, posY: 0, posZ: -0.24 })) }];
+  types: Type[] = [{ no: 2, name: "Festoon 2 RGB", guid: "2E E3 8A D1 1A 91", cells: [1, 2, 3, 4].map((i) => ({ index: i, name: `I${i}`, posX: 0, posY: 0, posZ: -0.24 })) }];
   live: Fx[] = [{ fid: 401, type: 2 }, { fid: 402, type: 2 }, { fid: 403, type: 2 }];
   copy: { fx: Fx[]; types: Type[] } | null = null;
   pending: string[] = [];
   dest = "Root";
+  /** The GUID a committed copy gets: its own (default), all zeros, or the source's. */
+  copyGuid: "own" | "zero" | "source" = "own";
   /** The write leaves this cell index unchanged (a write the console ignores). */
   ignoreCell?: number;
   writes: unknown[] = [];
@@ -88,7 +91,7 @@ class World {
     const f = this.live.find((x) => x.fid === fid);
     if (!f) throw new BridgeReplyError(`[no-fixture] no fixture with FID ${fid}`, "no-fixture");
     const t = this.typeOf(f.type);
-    return { type: { no: t.no, name: t.name }, mode: { no: 5, name: "Pixel Mode - 2 string" }, rootGeometry: "Body#4", cells: t.cells.map((c) => ({ ...c, parent: "Body#4" })), affected: this.live.filter((x) => x.type === t.no).map((x) => ({ fid: x.fid, name: "Festoon", mode: "Pixel Mode - 2 string" })), copyOpen: this.copy !== null };
+    return { type: { no: t.no, name: t.name, guid: t.guid }, mode: { no: 5, name: "Pixel Mode - 2 string" }, rootGeometry: "Body#4", cells: t.cells.map((c) => ({ ...c, parent: "Body#4" })), affected: this.live.filter((x) => x.type === t.no).map((x) => ({ fid: x.fid, name: "Festoon", mode: "Pixel Mode - 2 string" })), copyOpen: this.copy !== null };
   }
   install(h: Harness) {
     const f = h.fake;
@@ -138,7 +141,9 @@ class World {
     f.on("patch.layoutCopy", (args) => {
       if (!this.copy) throw new BridgeReplyError("[copy-closed] closed", "copy-closed");
       const src = this.typeOf(args.type as number, this.copy.types);
-      const nt: Type = { no: this.copy.types.length + 10, name: args.name as string, cells: src.cells.map((c) => ({ ...c })) };
+      const no = this.copy.types.length + 10;
+      const guid = this.copyGuid === "own" ? `2E E3 8A D1 00 ${no}` : this.copyGuid === "zero" ? "00 00 00 00 00 00" : src.guid;
+      const nt: Type = { no, name: args.name as string, guid, cells: src.cells.map((c) => ({ ...c })) };
       this.copy.types.push(nt);
       for (const fid of args.fids as number[]) this.copy.fx.find((x) => x.fid === fid)!.type = nt.no;
       return { type: { no: nt.no, name: nt.name }, retyped: (args.fids as number[]).map((fid) => ({ fid })) };
@@ -246,5 +251,22 @@ test("assign_cell_layout: moves fixtures to another layout type in a session and
     assert.match(r.result.steps.map((s: any) => s.error ?? "").join(" "), /no fixture type "Nope"/);
   } finally {
     await h.close();
+  }
+});
+
+test("layout_cells own: a copy without a GUID of its own after the commit stops before any cell is moved", async () => {
+  for (const kind of ["zero", "source"] as const) {
+    const { h, w } = await setup();
+    try {
+      w.copyGuid = kind;
+      const { result, isError } = await h.callJson("gma3_layout_cells", { fixture: 402, scope: "own", own: { name: `Festoon ${kind}` }, path: square, unit: "ft", exclusive: true });
+      assert.equal(isError, true);
+      assert.equal(result.verification.status, "mismatched");
+      assert.match(result.verification.detail, kind === "zero" ? /has no GUID of its own after the commit/ : /has the same GUID as Festoon 2 RGB/);
+      assert.match(result.steps.map((s: any) => s.error ?? "").join(" "), /move them back with gma3_assign_cell_layout/);
+      assert.equal(w.writes.length, 0, "no cell was written");
+    } finally {
+      await h.close();
+    }
   }
 });

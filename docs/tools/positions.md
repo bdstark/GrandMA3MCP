@@ -124,7 +124,9 @@ unless `affects` names exactly those. The bridge checks the set again when it wr
 **Own** first runs one patch session (`exclusive`, isolation-checked like the patch tools):
 1. `patch.layoutCopy` appends a copy of the type under `own.name` and moves `own.fixtures` to the copy's mode of
    the same name. Their FID, address, cells, group membership and preset values are kept (checked live).
-2. The session is committed, and the copy then gets its own GUID.
+2. The session is committed, and the console gives the copy its own GUID. The tool checks that GUID: one that is all
+   zeros or equal to the source type's stops the call before any cell is moved (the fixtures are then on the copy,
+   and the result says how to move them back).
 
 Then the copy's cells are laid out. The other fixtures of the original type keep theirs. Fixtures that already are
 the only users of their layout are refused (use `shared`).

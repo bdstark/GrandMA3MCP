@@ -38,7 +38,7 @@ const ok = (r: { result: any; isError: boolean; text: string }, what: string) =>
   return r.result;
 };
 interface Layout {
-  type: { no: number; name: string };
+  type: { no: number; name: string; guid?: string };
   cells: Array<{ index: number; posX: number; posY: number; posZ: number }>;
   affected: Array<{ fid: number }>;
 }
@@ -94,6 +94,7 @@ liveTest("SU-08 cell layouts: shared (guarded, restored), own (a type copy for o
   const own = ok(await call("gma3_layout_cells", { fixture: B, scope: "own", own: { name: OWN }, path: { shape: "square_wave", spacing: 2, leg_length: 6, origin: { x: 1, z: 0 } }, unit: "ft", exclusive: true }), "own layout");
   assert.equal(own.type.name, OWN);
   assert.deepEqual(own.affected, [B]);
+  assert.ok(own.type.guid && !/^[0\s]+$/.test(own.type.guid) && own.type.guid !== before.type.guid, `the copy has a GUID of its own after the commit (${own.type.guid}, source ${before.type.guid})`);
   const bOwn = await layout(B);
   assert.equal(bOwn.type.name, OWN);
   assert.ok(Math.abs(bOwn.cells[3].posY - -6 * 0.3048) < 1e-4, "the fourth cell ends the first leg at -6 ft");
