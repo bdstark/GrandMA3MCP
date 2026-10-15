@@ -82,6 +82,8 @@ require `exclusive: true` and have no undo; details in [`tools/patch.md`](tools/
 | `gma3_patch_library` | Read-only: search the fixture-type library (grandMA3, grandMA2, user, WorldServer) by manufacturer and model; modes when readable; which show types match (bridge 0.26.0) |
 | `gma3_patch_import` | Import one library file into the show: duplicate check, wait for exactly one new type, committed, read back with its modes (bridge 0.26.0) |
 | `gma3_patch_remove_type` | Delete a fixture type no fixture uses; reports the renumbered types; its attributes stay (bridge 0.26.0) |
+| `gma3_fixture_positions` | Read-only: position, rotation (with its quaternion) and mesh mirroring of fixtures, in m, cm, mm, ft or in, with the axes' meaning |
+| `gma3_place_fixtures` | Place fixtures in 3D: positions, rotations (written as one quaternion), mesh mirroring; line, arc and mirror-pair layouts; preview; read back by quaternion; returns a restore list (no undo) |
 
 Console feedback (KB-06; needs plugin v0.8.0; read-only, works with Lua and input disabled and while another client
 owns input; details in [`tools/feedback.md`](tools/feedback.md)):
