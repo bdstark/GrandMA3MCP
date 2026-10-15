@@ -79,6 +79,9 @@ require `exclusive: true` and have no undo; details in [`tools/patch.md`](tools/
 | `gma3_patch_add` | Add fixtures of one type/mode at consecutive FIDs, patched from an address or the first free block; pre-checked, committed, read back |
 | `gma3_patch_set` | Readdress (swaps and moves across a fixture's own range work), unpatch or rename fixtures |
 | `gma3_patch_remove` | Delete fixtures (not ones with sub-fixtures) |
+| `gma3_patch_library` | Read-only: search the fixture-type library (grandMA3, grandMA2, user, WorldServer) by manufacturer and model; modes when readable; which show types match (bridge 0.26.0) |
+| `gma3_patch_import` | Import one library file into the show: duplicate check, wait for exactly one new type, committed, read back with its modes (bridge 0.26.0) |
+| `gma3_patch_remove_type` | Delete a fixture type no fixture uses; reports the renumbered types; its attributes stay (bridge 0.26.0) |
 
 Console feedback (KB-06; needs plugin v0.8.0; read-only, works with Lua and input disabled and while another client
 owns input; details in [`tools/feedback.md`](tools/feedback.md)):

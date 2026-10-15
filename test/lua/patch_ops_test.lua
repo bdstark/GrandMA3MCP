@@ -18,8 +18,37 @@ package.preload["socket"] = function()
 end
 Echo = function() end
 ErrEcho = Echo; Printf = Echo; ErrPrintf = Echo
-GetPath = function() return nil end
-Enums = { PathType = { Temp = 1 }, Roles = { Display = 1 }, VirtualKeyCode = {}, KeyboardCodes = {} }
+Enums = { PathType = { Temp = 1, GrandMA3Library = 2, GrandMA2Library = 3, UserFixtures = 4, WorldServerLibrary = 5 }, Roles = { Display = 1 }, VirtualKeyCode = {}, KeyboardCodes = {} }
+-- SU-03: a fixture-type library in a temp folder. The grandMA3 / user .xml files exist on disk (the bridge reads
+-- their header); the rest exist only in the DirList listing, like the encrypted .pxml files.
+local LIBDIR = os.tmpname(); os.remove(LIBDIR); os.execute('mkdir -p "' .. LIBDIR .. '/ma3" "' .. LIBDIR .. '/ma2" "' .. LIBDIR .. '/user" "' .. LIBDIR .. '/ws"')
+local LIBPATHS = { [2] = LIBDIR .. "/ma3", [3] = LIBDIR .. "/ma2", [4] = LIBDIR .. "/user", [5] = LIBDIR .. "/ws" }
+local LIBFILES = {
+  [2] = { "acme@spot one.xml", "set@truss a.xml", "custom.xml" },
+  [3] = { "test@mega hex par.pxml", "generic@dimmer.pxml", "acme@wash two.pxml" },
+  [4] = { "acme@spot one.xml", "solo@user only@rev2.gdtf" },
+  [5] = {},
+}
+local SPOT_XML = '<?xml version="1.0" encoding="UTF-8"?>\n<GMA3 DataVersion="1.5.0.0">\n  <FixtureType Name="Spot One" Guid="AA" Manufacturer="Acme" ShortName="Spot1" Description="Acme &amp; Co spot">\n'
+  .. '    <DMXModes>\n      <DMXMode Name="Standard" Geometry="Base">\n      </DMXMode>\n      <DMXMode Name="Extended (16 ch)" Geometry="Base">\n      </DMXMode>\n    </DMXModes>\n  </FixtureType>\n</GMA3>\n'
+for _, d in ipairs({ "ma3", "user" }) do local f = assert(io.open(LIBDIR .. "/" .. d .. "/acme@spot one.xml", "wb")); f:write(SPOT_XML); f:close() end
+local f0 = assert(io.open(LIBDIR .. "/ma3/set@truss a.xml", "wb")); f0:write('<GMA3><FixtureType Name="Truss A" Manufacturer="Set"></FixtureType></GMA3>'); f0:close()
+-- A file whose name says nothing about its fixture: only the header names the manufacturer (review of PR #48).
+local f1 = assert(io.open(LIBDIR .. "/ma3/custom.xml", "wb")); f1:write('<GMA3><FixtureType Name="Custom Thing" Manufacturer="HeaderOnly" ShortName="CThing"><DMXMode Name="Basic"></DMXMode></FixtureType></GMA3>'); f1:close()
+GetPath = function(pt) return LIBPATHS[pt] end
+DirList = function(path, filter)
+  local ext = filter and filter:match("^%*%.(.+)$")
+  for pt, base in pairs(LIBPATHS) do
+    if base == path then
+      local out = {}
+      for _, n in ipairs(LIBFILES[pt]) do if not ext or n:sub(-#ext - 1) == "." .. ext then out[#out + 1] = { name = n, size = 100, time = 0 } end end
+      return out
+    end
+  end
+  return {}
+end
+-- What an Import Library of each file creates (manufacturer, name), as the console names it.
+local LIBTYPES = { ["test@mega hex par.pxml"] = { "Test", "Mega Hex Par" }, ["generic@dimmer.pxml"] = { "Generic", "Dimmer" }, ["acme@wash two.pxml"] = { "Acme", "Wash Two" } }
 Keyboard = function() end
 CurrentProfile = function() return { name = "Default", KeyboardShortCuts = { Get = function() return "true" end, Count = function() return 0 end } } end
 GetDisplayByIndex = function() return nil end
@@ -31,7 +60,14 @@ CurrentUser = function() return nil end
 -- The mock console
 -------------------------------------------------------------------------------
 
-local Obj = {}; Obj.__index = Obj
+local Obj = {}
+-- A child is reachable by name (p.AttributeDefinitions, LivePatch[collection]), as on the console.
+Obj.__index = function(t, k)
+  local v = Obj[k]
+  if v ~= nil then return v end
+  for _, c in ipairs(rawget(t, "kids") or {}) do if rawget(c, "name") == k then return c end end
+  return nil
+end
 function Obj:Children() return self.kids end
 function Obj:Count() return #self.kids end
 function Obj:GetClass() return self.class end
@@ -39,6 +75,18 @@ function Obj:Addr() return self.addr or ("obj " .. tostring(self.name)) end
 function Obj:PropertyCount() return #self.pn end
 function Obj:PropertyName(i) return self.pn[i + 1] end
 function Obj:Get(k, role)
+  -- A fixture's FixtureType is a reference: the type object raw, "<no> <name>" in the display role (SU-03).
+  if k:upper() == "FIXTURETYPE" and rawget(self, "TypeRef") then
+    local t = rawget(self, "TypeRef")
+    if role == nil then return t end
+    return tostring(t.no) .. " " .. tostring(t.name)
+  end
+  -- Display texts that carry the type's number, as on the console (live 2026-10-15).
+  if k:upper() == "MODEDIRECT" and role ~= nil and rawget(self, "TypeRef") and rawget(self, "ModeDirect") then
+    local t, m = rawget(self, "TypeRef"), rawget(self, "ModeDirect")
+    return "FixtureType " .. tostring(t.no) .. " '" .. tostring(t.name) .. "'.DMXModes.DMXMode " .. tostring(m.no) .. " '" .. tostring(m.name) .. "'"
+  end
+  if k:upper() == "NAME" and role ~= nil and self.class == "FixtureType" then return "FixtureType " .. tostring(self.no) .. " '" .. tostring(self.name) .. "'" end
   local v = self.pv[k:upper()]
   if v == nil and k:upper() == "NAME" then return self.name end
   -- As on onPC 2.5.1: a DMX mode's DMXFootprint is a table unless read in the display role (live 2026-10-13).
@@ -52,7 +100,11 @@ function Obj:Set(k, v)
   if self.pv[k] == nil then self.pn[#self.pn + 1] = k end
   self.pv[k] = v
 end
-function Obj:Delete(i) table.remove(self.kids, i) end
+function Obj:Delete(i)
+  table.remove(self.kids, i)
+  -- Deleting a fixture type renumbers the ones after it (live 2026-10-15).
+  if self.class == "FixtureTypes" then for j = i, #self.kids do self.kids[j].no = self.kids[j].no - 1 end end
+end
 local function obj(class, name, no, props, kids, extra)
   local o = setmetatable({ class = class, name = name, no = no, pn = { "NAME" }, pv = { NAME = name }, kids = kids or {} }, Obj)
   for _, kv in ipairs(props or {}) do o.pn[#o.pn + 1] = kv[1]; o.pv[kv[1]] = kv[2] end
@@ -67,26 +119,28 @@ local MODE8 = mode(3, "Ch08", 8)
 local MODE1 = mode(1, "Mode 0", 1)
 local MODE2B = mode(1, "Two Breaks", 4, "0,1,0,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1")
 local GROUPMODE = mode(1, "Default", 0, "-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1")
-local function ftype(no, name, modes) local t = obj("FixtureType", name, no, { { "MANUFACTURER", "Test" }, { "SHORTNAME", name:sub(1, 6) }, { "REALUSED", 0 } }, { obj("DMXModes", "DMXModes", 1, {}, modes) }); t.DMXModes = t.kids[1]; return t end
+local function ftype(no, name, modes, manufacturer) local t = obj("FixtureType", name, no, { { "MANUFACTURER", manufacturer or "Test" }, { "SHORTNAME", name:sub(1, 6) }, { "REALUSED", 0 }, { "GUID", "G-" .. name .. "-" .. no } }, { obj("DMXModes", "DMXModes", 1, {}, modes) }); t.DMXModes = t.kids[1]; return t end
 -- A console-derived subfixture list (on the console it sits in each DMX mode; the mock's modes are shared
 -- between live and copy, so it hangs off the type here). The copy renumbers its geometry references.
 local function overview() return obj("SubfixtureOverview", "SubfixtureOverview", 2, {}, { obj("FTSubfixture", "Instance2", 1, { { "INDEX", 2 } }) }) end
 
 local function fixture(name, fid, m, patch, kids)
-  return obj("Fixture", name, fid, { { "FID", fid }, { "CID", "None" }, { "IDTYPE", "IDs 1 'Fixture'" }, { "FIXTURETYPE", "x" }, { "MODE", m.name }, { "PATCH", patch }, { "BREAK1", patch }, { "SUBFIXTUREINDEX", fid } }, kids, { FID = fid, ModeDirect = m })
+  return obj("Fixture", name, fid, { { "FID", fid }, { "CID", "None" }, { "IDTYPE", "IDs 1 'Fixture'" }, { "FIXTURETYPE", "x" }, { "MODEDIRECT", "x" }, { "MODE", m.name }, { "PATCH", patch }, { "BREAK1", patch }, { "SUBFIXTUREINDEX", fid } }, kids, { FID = fid, ModeDirect = m })
 end
 
 local function buildLive()
-  local types = obj("FixtureTypes", "FixtureTypes", 6, {}, { ftype(1, "Grouping", { GROUPMODE }), ftype(6, "Mega Hex Par", { MODE1, obj("x", "x", 2, {}), MODE8 }), ftype(7, "Dimmer", { MODE1 }), ftype(8, "Two Break", { MODE2B }) })
-  local mhpType = types.kids[2]; mhpType.kids[#mhpType.kids + 1] = overview()
+  local types = obj("FixtureTypes", "FixtureTypes", 6, {}, { ftype(1, "Grouping", { GROUPMODE }), ftype(2, "Spare", { MODE1 }), ftype(6, "Mega Hex Par", { MODE1, obj("x", "x", 2, {}), MODE8 }), ftype(7, "Dimmer", { MODE1 }), ftype(8, "Two Break", { MODE2B }) })
+  local mhpType = types.kids[3]; mhpType.kids[#mhpType.kids + 1] = overview()
   -- An attribute a fixture-type import added: ATTRIBUTEINDEXOLD is unset live and numbered in the copy (live 2026-10-14).
   local attrs = obj("Attributes", "Attributes", 1, {}, { obj("Attribute", "DIM", 1, { { "PRETTY", "Dim" }, { "ATTRIBUTEINDEXOLD", 0 } }), obj("Attribute", "PIXELMASK", 2, { { "PRETTY", "PixelMask" }, { "ATTRIBUTEINDEXOLD", 4294967295 } }) })
-  local attrDefs = obj("AttributeDefinitions", "AttributeDefinitions", 2, {}, { attrs })
+  -- A feature counts its attributes (ATTRIBCOUNT), which an import raises (live 2026-10-15).
+  local features = obj("FeatureGroups", "FeatureGroups", 2, {}, { obj("FeatureGroup", "Control", 1, {}, { obj("Feature", "Control", 1, { { "ATTRIBCOUNT", 3 } }) }) })
+  local attrDefs = obj("AttributeDefinitions", "AttributeDefinitions", 2, {}, { attrs, features })
   -- DMXModes children by No: the fixture type keeps them in order of No (the x placeholder is mode 2).
   local pars = {}
-  for i = 1, 3 do pars[i] = fixture("Par " .. i, 400 + i, MODE8, string.format("1.%03d", 1 + (i - 1) * 8)) end
-  local group = fixture("Group 4", 4, GROUPMODE, "", pars)
-  local dim = fixture("Dim 1", 501, MODE1, "1.100")
+  for i = 1, 3 do pars[i] = fixture("Par " .. i, 400 + i, MODE8, string.format("1.%03d", 1 + (i - 1) * 8)); pars[i].TypeRef = mhpType end
+  local group = fixture("Group 4", 4, GROUPMODE, "", pars); group.TypeRef = types.kids[1]
+  local dim = fixture("Dim 1", 501, MODE1, "1.100"); dim.TypeRef = types.kids[4]
   local stage = obj("Stage", "Stage 1", 1, {}, { obj("Fixtures", "Fixtures", 1, {}, { group, dim }) })
   stage.Fixtures = stage.kids[1]
   local stages = obj("Stages", "Stages", 7, {}, { stage })
@@ -130,11 +184,29 @@ local function frame()
       console.copy = c; console.copyOpen = true; console.dest = "ShowData.Patch"
     elseif cmd:match('^ChangeDestination "Stages"%."(.-)"%."Fixtures"$') then
       console.dest = cmd:match('^ChangeDestination "Stages"%."(.-)"%."Fixtures"$') .. ".Fixtures"
+    elseif cmd == 'ChangeDestination "FixtureTypes"' and console.copyOpen then
+      console.dest = "FixtureTypes"
+    elseif cmd:match('^Import Library "(.-)"$') then
+      local file = cmd:match('^Import Library "(.-)"$')
+      local spec = LIBTYPES[file]
+      if console.dest ~= "FixtureTypes" or not spec then console.last = "Error: Object not found"; goto continue end
+      local ft = console.copy.FixtureTypes
+      local t = ftype(#ft.kids + 1, spec[2], { MODE1 }, spec[1])
+      t.pv.GUID = "G-imported-" .. file .. "-" .. (#ft.kids + 1)
+      ft.kids[#ft.kids + 1] = t
+      -- An import appends the attributes the show lacks (live 2026-10-15).
+      local attrs = console.copy.AttributeDefinitions.kids[1]
+      attrs.kids[#attrs.kids + 1] = obj("Attribute", "NEW" .. #attrs.kids, #attrs.kids + 1, { { "PRETTY", "New" }, { "ATTRIBUTEINDEXOLD", 4294967295 } })
+      -- ... raises an existing feature's attribute count and appends a feature to its group.
+      local group = console.copy.AttributeDefinitions.kids[2].kids[1]
+      group.kids[1].pv.ATTRIBCOUNT = group.kids[1].pv.ATTRIBCOUNT + 1
+      group.kids[#group.kids + 1] = obj("Feature", "FIXTURE", #group.kids + 1, { { "ATTRIBCOUNT", 1 } })
     elseif cmd == "ChangeDestination Root" then
       if console.copyOpen then local l = deepcopy(console.copy); l.addr = "14.9"; l.name = "LivePatch"; console.live = l end
       console.copy = obj("Patch", "Patch", 10, {}, {}); console.copy.addr = "14.10"; console.copyOpen = false; console.dest = "Root"
     end
     console.last = "OK: " .. cmd
+    ::continue::
   end
 end
 
@@ -235,7 +307,7 @@ end
 -------------------------------------------------------------------------------
 
 local r = request("ping")
-check("ping reports bridge 0.25.2", r.ok and r.result.bridgeVersion == "0.25.2", J(r))
+check("ping reports bridge 0.26.0", r.ok and r.result.bridgeVersion == "0.26.0", J(r))
 
 r = request("patch.state")
 check("patch.state at Root: copy closed, stages listed", r.ok and r.result.destination == "Root" and r.result.copyOpen == false and r.result.atRoot == true and r.result.stages[1] == "Stage 1" and r.result.modal == false, J(r))
@@ -296,7 +368,7 @@ check("patch.enter while the copy is open is refused", r.ok == false and r.code 
 check("the copy fingerprint equals the live one on entry", fpOf("copy") == fpOf("live"), fpOf("copy") .. " | " .. fpOf("live"))
 -- What the console derives in the copy after a fixture-type import is not a foreign change (bridge 0.25.1).
 local copyAttr = console.copy.kids[2].kids[1].kids[2]
-local copyOverviewRow = console.copy.FixtureTypes.kids[2].kids[2].kids[1]
+local copyOverviewRow = console.copy.FixtureTypes.kids[3].kids[2].kids[1]
 copyAttr:Set("ATTRIBUTEINDEXOLD", 351); copyOverviewRow:Set("NAME", "Instance1"); copyOverviewRow:Set("INDEX", 1)
 check("a numbered ATTRIBUTEINDEXOLD and a renumbered SubfixtureOverview leave the fingerprint equal", fpOf("copy") == fpOf("live"), fpOf("copy") .. " | " .. fpOf("live"))
 copyAttr:Set("PRETTY", "Pixel Mask")
@@ -405,6 +477,130 @@ check("with every mode readable again the occupancy is complete", r.ok and #r.re
 
 r = request("patch.fingerprint", { side = "copy", collection = "Stages" })
 check("patch.fingerprint of the copy outside a session is refused", r.ok == false and r.code == "copy-closed", J(r))
+
+-------------------------------------------------------------------------------
+-- SU-03: library search, import, removal
+-------------------------------------------------------------------------------
+
+reset()
+local function fpAll(side, extra)
+  local cols = request("patch.collections", {}).result
+  local parts = {}
+  for _, c in ipairs(cols[side]) do
+    local a = { side = side, collection = c, excludeFids = {} }
+    for k, v in pairs(extra or {}) do a[k] = v end
+    local res = request("patch.fingerprint", a)
+    parts[#parts + 1] = c .. ":" .. tostring(res.ok and res.result.objects) .. ":" .. tostring(res.ok and res.result.hash) .. ":" .. tostring(res.ok and res.result.complete)
+  end
+  return table.concat(parts, ",")
+end
+
+r = request("patch.library", { query = "mega" })
+local e1 = r.ok and r.result.entries[1]
+check("patch.library finds a grandMA2 file by a word of its name, with the matching show type", r.ok and r.result.total == 1 and e1.source == "grandma2" and e1.file == "test@mega hex par.pxml"
+  and e1.manufacturer == "test" and e1.model == "mega hex par" and e1.modesKnown == false and e1.verified == true and #e1.inShow == 1 and e1.inShow[1].name == "Mega Hex Par" and e1.inShow[1].guid ~= nil, J(r))
+r = request("patch.library", { query = "spot" })
+local spot = r.ok and r.result.entries[1]
+check("patch.library reads a grandMA3 file's header: name, manufacturer, description and mode names",
+  r.ok and r.result.total == 2 and spot.source == "grandma3" and spot.name == "Spot One" and spot.manufacturer == "Acme" and spot.description == "Acme & Co spot"
+  and spot.modesKnown and spot.modes[1] == "Standard" and spot.modes[2] == "Extended (16 ch)" and #spot.inShow == 0, J(r))
+check("a user-library copy of the same file is listed and marked unverified", r.ok and r.result.entries[2].source == "user" and r.result.entries[2].verified == false, J(r))
+r = request("patch.library", {})
+local hasSet = false
+if r.ok then for _, e in ipairs(r.result.entries) do if e.file:find("^set@") then hasSet = true end end end
+check("scenery (set@) is left out by default", r.ok and not hasSet and r.result.total == 7, J(r))
+r = request("patch.library", { query = "headeronly" })
+check("an .xml file is found by a manufacturer only its header names", r.ok and r.result.total == 1 and r.result.entries[1].file == "custom.xml" and r.result.entries[1].manufacturer == "HeaderOnly" and r.result.entries[1].name == "Custom Thing" and r.result.entries[1].modes[1] == "Basic", J(r))
+r = request("patch.library", { query = "custom thing" })
+check("an .xml file is found by its header name", r.ok and r.result.total == 1 and r.result.entries[1].file == "custom.xml", J(r))
+r = request("patch.library", { query = "cthing" })
+check("an .xml file is found by its header short name", r.ok and r.result.total == 1, J(r))
+r = request("patch.library", { includeSets = true, query = "truss" })
+check("includeSets lists scenery", r.ok and r.result.total == 1 and r.result.entries[1].set == true, J(r))
+r = request("patch.library", { sources = { "user" } })
+local gdtf = r.ok and r.result.entries[2]
+check("a GDTF file name gives manufacturer, model and revision", r.ok and r.result.total == 2 and gdtf.format == "gdtf" and gdtf.manufacturer == "solo" and gdtf.model == "user only" and gdtf.revision == "rev2", J(r))
+r = request("patch.library", { file = "generic@dimmer.pxml" })
+check("patch.library file is an exact lookup", r.ok and r.result.total == 1 and r.result.entries[1].file == "generic@dimmer.pxml", J(r))
+r = request("patch.library", { sources = { "nowhere" } })
+check("an unknown library source is refused", r.ok == false and r.code == "bad-args", J(r))
+
+r = request("patch.import", with({ file = "generic@dimmer.pxml" }))
+check("patch.import outside a session is refused", r.ok == false and r.code == "copy-closed", J(r))
+r = request("patch.enter", { exclusive = true, target = "fixturetypes" })
+check("patch.enter target fixturetypes queues the copy and its fixture-type pool", r.ok and r.result.expectDestination == "FixtureTypes" and console.queue[1] == 'ChangeDestination "ShowData"."Patch"' and console.queue[2] == 'ChangeDestination "FixtureTypes"', J(r))
+frame()
+r = request("patch.state")
+check("after a frame the copy is open at FixtureTypes", r.ok and r.result.copyOpen and r.result.destination == "FixtureTypes", J(r))
+r = request("patch.import", { file = "generic@dimmer.pxml" })
+check("patch.import without exclusive is refused", r.ok == false and r.code == "not-exclusive", J(r))
+r = request("patch.import", with({ file = "nothing@here.pxml" }))
+check("an unknown file is refused", r.ok == false and r.code == "no-file", J(r))
+r = request("patch.import", with({ file = 'bad"name.pxml' }))
+check("a file name with a quote is refused", r.ok == false and r.code == "bad-file", J(r))
+r = request("patch.import", with({ file = "acme@spot one.xml", source = "grandma3" }))
+check("a file name in two libraries is refused (Import Library names the file only)", r.ok == false and r.code == "ambiguous-file" and #console.queue == 0, J(r))
+r = request("patch.import", with({ file = "generic@dimmer.pxml" }))
+check("patch.import queues Import Library and reports the counts before", r.ok and r.result.typesBefore == 5 and r.result.attributesBefore == 2 and console.queue[1] == 'Import Library "generic@dimmer.pxml"' and r.result.source == "grandma2", J(r))
+local beforeTypes = r.ok and r.result.typesBefore
+r = request("patch.importState", { typesBefore = beforeTypes })
+check("before the frame nothing was added", r.ok and #r.result.added == 0 and r.result.types == 5, J(r))
+frame()
+r = request("patch.importState", { typesBefore = beforeTypes })
+local imported = r.ok and r.result.added[1]
+check("after the frame the new type is reported with GUID and modes", r.ok and #r.result.added == 1 and imported.name == "Dimmer" and imported.manufacturer == "Generic" and imported.guid ~= nil
+  and imported.modes[1].footprint == 1 and r.result.attributes == 3 and r.result.lastCommand:find("Import Library"), J(r))
+check("the copy differs from the live patch after the import", fpAll("copy") ~= fpAll("live"))
+check("the copy guided by the live patch (prefixOfLive) hashes like the live patch", fpAll("copy", { prefixOfLive = true }) == fpAll("live"), fpAll("copy", { prefixOfLive = true }) .. " | " .. fpAll("live"))
+r = request("patch.fingerprint", { side = "live", collection = "FixtureTypes", prefixOfLive = true })
+check("prefixOfLive on the live side is refused", r.ok == false and r.code == "bad-args", J(r))
+local mhpCopy = console.copy.FixtureTypes.kids[3]
+mhpCopy:Set("SHORTNAME", "Changed")
+check("a foreign change to a type the live patch has is still seen with prefixOfLive", fpAll("copy", { prefixOfLive = true }) ~= fpAll("live"))
+mhpCopy:Set("SHORTNAME", "Mega H")
+-- Review of PR #48: only the import's own appends are left out; an unrelated addition is still a difference.
+local copyFixtures = console.copy.Stages.kids[1].Fixtures
+copyFixtures.kids[#copyFixtures.kids + 1] = fixture("Foreign", 950, MODE1, "3.001")
+check("an unrelated fixture appended to the copy is seen with prefixOfLive", fpAll("copy", { prefixOfLive = true }) ~= fpAll("live"))
+table.remove(copyFixtures.kids)
+local mhpModes = mhpCopy.DMXModes
+mhpModes.kids[#mhpModes.kids + 1] = mode(9, "Foreign mode", 4)
+check("a mode appended to an existing type in the copy is seen with prefixOfLive", fpAll("copy", { prefixOfLive = true }) ~= fpAll("live"))
+table.remove(mhpModes.kids)
+check("(back to only the import's appends: equal again)", fpAll("copy", { prefixOfLive = true }) == fpAll("live"))
+request("patch.commit", X); frame()
+r = request("patch.types")
+check("after the commit the imported type is live", r.ok and r.result.count == 6 and r.result.types[6].name == "Dimmer" and r.result.types[6].guid == imported.guid, J(r))
+
+r = request("patch.typeInfo", { type = "Spare" })
+local spare = r.ok and r.result.type
+check("patch.typeInfo: an unused type, with its GUID and position", r.ok and #spare.usedBy == 0 and spare.index == 2 and spare.guid ~= nil, J(r))
+r = request("patch.typeInfo", { type = "Mega Hex Par" })
+check("patch.typeInfo: the fixtures using a type", r.ok and #r.result.type.usedBy == 3 and r.result.type.usedBy[1] == 401, J(r))
+local mhpGuid = r.ok and r.result.type.guid
+enter()
+r = request("patch.removeType", with({ type = "Spare", guid = "wrong" }))
+check("patch.removeType with another GUID is refused", r.ok == false and r.code == "guid-mismatch" and console.copy.FixtureTypes:Count() == 6, J(r))
+r = request("patch.removeType", with({ type = "Mega Hex Par", guid = mhpGuid }))
+check("patch.removeType refuses a type fixtures use", r.ok == false and r.code == "type-in-use" and #r.detail.usedBy == 3, J(r))
+r = request("patch.removeType", { type = "Spare", guid = spare.guid })
+check("patch.removeType without exclusive is refused", r.ok == false and r.code == "not-exclusive", J(r))
+r = request("patch.removeType", with({ type = "Spare", guid = spare.guid }))
+local ren = {}
+if r.ok then for _, x in ipairs(r.result.renumbered) do ren[x.name] = x.from .. ">" .. x.to end end
+check("patch.removeType deletes an unused type and reports the renumbered ones", r.ok and r.result.removed.name == "Spare" and r.result.types == 5 and ren["Mega Hex Par"] == "6>5" and ren["Dimmer"] ~= nil, J(r))
+local parCopy
+for _, f in ipairs(allFixtures(console.copy)) do if f.FID == 401 then parCopy = f end end
+check("(the fixtures of a renumbered type display the new number in the copy)", parCopy:Get("FixtureType", 1) == "5 Mega Hex Par")
+check("without excluding the removed type the fingerprints differ", fpAll("copy") ~= fpAll("live"))
+check("with the removed type left out of the live side the fingerprints match despite the renumbering (types by identity)",
+  fpAll("copy") == fpAll("live", { excludeGuids = { spare.guid } }), fpAll("copy") .. " | " .. fpAll("live", { excludeGuids = { spare.guid } }))
+request("patch.commit", X); frame()
+r = request("patch.types")
+local names = {}
+if r.ok then for _, t in ipairs(r.result.types) do names[#names + 1] = t.no .. ":" .. t.name end end
+local listed = table.concat(names, ",")
+check("after the commit the type is gone and the ones after it renumbered", r.ok and r.result.count == 5 and not listed:find("Spare") and listed:find("5:Mega Hex Par"), listed)
 
 print(string.format("%d passed, %d failed", passes, failures))
 if failures > 0 then print("FAILED"); os.exit(1) end

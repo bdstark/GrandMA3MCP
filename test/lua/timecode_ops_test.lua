@@ -160,7 +160,7 @@ end
 
 
 local r = request("ping")
-check("ping reports bridge 0.25.2", r.ok and r.result.bridgeVersion == "0.25.2", J(r))
+check("ping reports bridge 0.26.0", r.ok and r.result.bridgeVersion == "0.26.0", J(r))
 
 r = request("timecode.read", { timecode = 902 })
 check("a missing show is not found", not r.ok and r.code == "not-found", J(r))
