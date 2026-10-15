@@ -62,7 +62,7 @@ local function channel(name, geometry, coarse, attrs, extra)
   local fns = {}
   for i, a in ipairs(attrs) do fns[i] = obj("ChannelFunction", a .. " " .. i, { Attribute = a }) end
   local props = { Coarse = coarse == nil and "None" or coarse, DMXBreak = 1, Default = "<000000>" }
-  for k, v in pairs(extra or {}) do props[k] = v end
+  for k, v in pairs(extra or {}) do if v == false then props[k] = nil else props[k] = v end end
   -- A DMXChannel answers Geometry by plain index.
   return obj("DMXChannel", name, props, { obj("LogicalChannel", name, {}, fns) }, { Geometry = geometry })
 end
@@ -110,7 +110,22 @@ local function par()
   return t
 end
 
-local WASHER, MOVER = washer(), par()
+-- Review of PR #52: a mode whose offsets skip an address and run past the footprint, and a channel without a
+-- readable break.
+local function odd()
+  local body = obj("Geometry", "Body", { PosX = 0, PosY = 0, PosZ = 0 }, {})
+  local fp3 = "0,2,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1"
+  local gappy = obj("DMXMode", "Gappy", { TotalFootprint = 3, DMXFootprint = fp3 }, { obj("DMXChannels", "DMXChannels", {}, { channel("A", body, 1, { "Dimmer" }), channel("B", body, 2, { "Pan" }), channel("C", body, 4, { "Tilt" }) }) }, { GeometryDirect = body })
+  gappy.no = 1
+  local nobreak = obj("DMXMode", "No break", { TotalFootprint = 3, DMXFootprint = fp3 }, { obj("DMXChannels", "DMXChannels", {}, { channel("A", body, 1, { "Dimmer" }), channel("B", body, 2, { "Pan" }), channel("C", body, 3, { "Tilt" }, { DMXBreak = false }) }) }, { GeometryDirect = body })
+  nobreak.no = 2
+  local t = obj("FixtureType", "Odd", { Manufacturer = "Test" }, { obj("DMXModes", "DMXModes", {}, { gappy, nobreak }), obj("Geometries", "Geometries", {}, { body }), obj("Models", "Models", {}, {}) })
+  t.no = 3
+  t.DMXModes, t.Geometries, t.Models = t.kids[1], t.kids[2], t.kids[3]
+  return t
+end
+
+local WASHER, MOVER, ODD = washer(), par(), odd()
 local function fixture(fid, t, m, kids)
   local f = obj("Fixture", "Fx " .. fid, { FID = fid, FixtureType = t.no .. " " .. t.name, Mode = m.name, Patch = "1.001", Break1 = "1.001" }, kids, { ModeDirect = m, FID = fid })
   return f
@@ -119,7 +134,7 @@ local wf = fixture(201, WASHER, WASHER.DMXModes.kids[1], { obj("SubFixture", "[I
 local mf = fixture(301, MOVER, MOVER.DMXModes.kids[1])
 local stage = obj("Stage", "Stage 1", {}, { obj("Fixtures", "Fixtures", {}, { wf, mf }) })
 stage.Fixtures = stage.kids[1]
-local LIVE = obj("Patch", "LivePatch", {}, { obj("FixtureTypes", "FixtureTypes", {}, { WASHER, MOVER }), obj("Stages", "Stages", {}, { stage }) })
+local LIVE = obj("Patch", "LivePatch", {}, { obj("FixtureTypes", "FixtureTypes", {}, { WASHER, MOVER, ODD }), obj("Stages", "Stages", {}, { stage }) })
 LIVE.FixtureTypes, LIVE.Stages = LIVE.kids[1], LIVE.kids[2]
 ShowData = function() return { LivePatch = LIVE, Patch = obj("Patch", "Patch", {}, {}) } end
 Patch = function() return LIVE end
@@ -188,6 +203,15 @@ r = request("patch.typeStructure", { type = "Nope" })
 check("an unknown type is refused", r.ok == false and r.code == "no-type", J(r))
 r = request("patch.typeStructure", { type = 1, mode = "Nope" })
 check("an unknown mode is refused", r.ok == false and r.code == "no-mode", J(r))
+
+r = request("patch.typeStructure", { type = "Odd", mode = "Gappy", geometry = false })
+lim = r.ok and table.concat(r.result.limitations, " | ") or ""
+check("an address past its break's range is not counted as coverage: 2 of 3, address 3 unused, address 4 outside", r.ok and r.result.modes[1].addressesUsed == 2 and lim:find("no channel uses break 1: 3", 1, true) ~= nil and lim:find("C at break 1 address 4 (the break has 3)", 1, true) ~= nil, lim)
+r = request("patch.typeStructure", { type = "Odd", mode = "No break", geometry = false })
+lim = r.ok and table.concat(r.result.limitations, " | ") or ""
+local c3
+for _, c in ipairs(r.ok and r.result.modes[1].channels or {}) do if c.channel == "C" then c3 = c end end
+check("a channel whose break cannot be read keeps no guessed break or address, and says so", c3 and c3["break"] == nil and c3.offset == nil and c3.addressUnknown == true and lim:find("the DMX break of channel C could not be read", 1, true) ~= nil and lim:find("no channel uses break 1: 3", 1, true) ~= nil, J(c3) .. " " .. lim)
 
 r = request("patch.types")
 local cellsOf = {}

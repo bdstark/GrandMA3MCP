@@ -218,8 +218,10 @@ Per mode:
 Each row has the channel name, `attribute` (and `attributes` when its functions use several), `break`, `offset`
 (1-based within the break), `fine` / `ultra` when present, `cell`, `virtual` and the default.
 
-`addressesUsed` counts the footprint's addresses the rows cover. When it differs from the footprint, or two channels
-share an address, or a cell lacks an offset for a channel's break, `limitations` says so; no address is guessed.
+`addressesUsed` counts the addresses the rows cover inside each break's declared range (1 to its channel count). The
+`limitations` name every gap: the addresses of a break no channel uses, an address outside its break's range or in a
+break the mode does not have, two channels on one address, a cell without an offset for a channel's break, and a
+channel whose break cannot be read (listed with `addressUnknown: true` and no break). No address is guessed.
 
 **Geometry.** The tree comes as flat nodes: name, class, parent, depth, position, rotation, model, and for a
 reference the template it points to and its break offsets. With a mode, only the geometry that mode uses is listed

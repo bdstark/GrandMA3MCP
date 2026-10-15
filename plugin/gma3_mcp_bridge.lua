@@ -4381,7 +4381,11 @@ do
   -- and its DMX channels expanded per cell: a channel on a referenced (template) geometry repeats in every cell at
   -- the cell's break offset + its own offset - 1; a channel on a geometry inside the root is at its own offset.
   local function modeStructure(m, limitations, channelLimit)
-    local info = modeOut(modeInfo(m))
+    local mi = modeInfo(m)
+    local info = modeOut(mi)
+    -- Declared channels per break (DMXFootprint): every address must fall inside its break's range.
+    local breakSize = {}
+    for _, b in ipairs(mi.breaks) do breakSize[b["break"]] = b.channels end
     local root = handleOf(m, "GeometryDirect")
     info.rootGeometry = root and tostring(safeProp(root, "name")) or nil
     local rootModel = root and handleOf(root, "Model") or nil
@@ -4426,7 +4430,8 @@ do
     for _, c in ipairs(m.DMXChannels:Children()) do
       local g = handleOf(c, "Geometry")
       local coarse, fine, ultra = displayNumber(c, "Coarse"), displayNumber(c, "Fine"), displayNumber(c, "Ultra")
-      local brk = displayNumber(c, "DMXBreak") or 1
+      -- No guessed break: a channel whose break cannot be read is listed without an address.
+      local brk = displayNumber(c, "DMXBreak")
       local attrs = channelAttribute(c)
       local base = { channel = tostring(safeProp(c, "name")), attribute = attrs[1], attributes = #attrs > 1 and table.concat(attrs, ",") or nil, ["break"] = brk, default = displayProp(c, "Default") }
       local inCells = {}
@@ -4438,7 +4443,11 @@ do
         out.geometry = g and tostring(safeProp(g, "name")) or nil
         return out
       end
-      if coarse == nil then
+      if coarse ~= nil and brk == nil then
+        limitations[#limitations + 1] = "mode " .. info.name .. ": the DMX break of channel " .. base.channel .. " could not be read; it is listed without an address"
+        if #inCells > 0 then for _, r in ipairs(inCells) do add(row({ cell = r.name, cellIndex = r.index, addressUnknown = true })) end
+        else add(row({ addressUnknown = true })) end
+      elseif coarse == nil then
         virtual = virtual + 1
         if #inCells > 0 then for _, r in ipairs(inCells) do add(row({ cell = r.name, cellIndex = r.index, virtual = true })) end
         else add(row({ virtual = true })) end
@@ -4459,23 +4468,51 @@ do
     end
     table.sort(rows, function(a, b)
       if (a.offset == nil) ~= (b.offset == nil) then return a.offset ~= nil end
-      if a["break"] ~= b["break"] then return a["break"] < b["break"] end
+      if a["break"] ~= b["break"] then return (a["break"] or 0) < (b["break"] or 0) end
       if a.offset ~= b.offset then return (a.offset or 0) < (b.offset or 0) end
       return (a.cellIndex or 0) < (b.cellIndex or 0)
     end)
-    -- Every DMX address of every break must be one channel's coarse, fine or ultra.
-    local used, dup = {}, 0
+    -- Every address of every break (1..its declared channels) must be exactly one channel's coarse, fine or ultra;
+    -- an address outside its break's range is reported, not counted.
+    local used, dup, outside = {}, 0, {}
     for _, r in ipairs(rows) do
       for _, k in ipairs({ "offset", "fine", "ultra" }) do
-        if r[k] then local key = r["break"] .. ":" .. r[k]; if used[key] then dup = dup + 1 end; used[key] = true end
+        local a, b = r[k], r["break"]
+        if a and b then
+          local size = breakSize[b]
+          if not size or a < 1 or a > size then outside[#outside + 1] = r.channel .. (r.cell and (" (" .. r.cell .. ")") or "") .. " at break " .. b .. " address " .. a .. (size and (" (the break has " .. size .. ")") or " (the mode has no such break)")
+          else
+            used[b] = used[b] or {}
+            if used[b][a] then dup = dup + 1 end
+            used[b][a] = true
+          end
+        end
       end
     end
-    local covered = 0
-    for _ in pairs(used) do covered = covered + 1 end
+    -- "3, 7-9": the addresses of a break no channel uses.
+    local function ranges(list)
+      local out, i = {}, 1
+      while i <= #list do
+        local j = i
+        while j < #list and list[j + 1] == list[j] + 1 do j = j + 1 end
+        out[#out + 1] = (i == j) and tostring(list[i]) or (list[i] .. "-" .. list[j])
+        i = j + 1
+      end
+      return table.concat(out, ", ")
+    end
+    local covered, missing = 0, {}
+    for _, b in ipairs(mi.breaks) do
+      local gaps = {}
+      for a = 1, b.channels do
+        if used[b["break"]] and used[b["break"]][a] then covered = covered + 1 else gaps[#gaps + 1] = a end
+      end
+      if #gaps > 0 then missing[#missing + 1] = "break " .. b["break"] .. ": " .. ranges(gaps) end
+    end
     info.addressesUsed = covered
     info.virtualChannels = virtual
     if truncated then limitations[#limitations + 1] = "mode " .. info.name .. ": more than " .. channelLimit .. " channel rows; the list is truncated"
-    elseif info.footprint and covered ~= info.footprint then limitations[#limitations + 1] = "mode " .. info.name .. ": the channels cover " .. covered .. " of " .. info.footprint .. " DMX addresses" end
+    elseif #missing > 0 then limitations[#limitations + 1] = "mode " .. info.name .. ": the channels cover " .. covered .. " of " .. (info.footprint or covered) .. " DMX addresses; no channel uses " .. table.concat(missing, "; ") end
+    if #outside > 0 then limitations[#limitations + 1] = "mode " .. info.name .. ": " .. #outside .. " address(es) lie outside their break: " .. table.concat(outside, "; ", 1, math.min(#outside, 10)) .. (#outside > 10 and "; ..." or "") end
     if dup > 0 then limitations[#limitations + 1] = "mode " .. info.name .. ": " .. dup .. " DMX address(es) are used by more than one channel" end
     info.channels = emptyArray(rows)
     info.channelsTruncated = truncated
