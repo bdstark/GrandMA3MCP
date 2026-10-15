@@ -154,7 +154,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.25.2"
+local VERSION      = "0.26.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -3595,7 +3595,7 @@ ops["patch.types"] = function(args)
   for _, t in ipairs(p.FixtureTypes:Children()) do
     local modes = {}
     for _, m in ipairs(t.DMXModes:Children()) do modes[#modes + 1] = modeOut(modeInfo(m)) end
-    types[#types + 1] = { no = safeProp(t, "no"), name = tostring(safeProp(t, "name")), shortName = displayProp(t, "ShortName"), manufacturer = displayProp(t, "Manufacturer"), source = displayProp(t, "Source"), modes = emptyArray(modes) }
+    types[#types + 1] = { no = safeProp(t, "no"), name = tostring(safeProp(t, "name")), shortName = displayProp(t, "ShortName"), manufacturer = displayProp(t, "Manufacturer"), source = displayProp(t, "Source"), guid = displayProp(t, "Guid"), modes = emptyArray(modes) }
   end
   return { side = args.side or "live", count = #types, types = emptyArray(types) }
 end
@@ -3702,6 +3702,14 @@ ops["patch.enter"] = function(args)
   if d ~= "Root" then raise("[not-root] the command line destination is " .. tostring(d) .. ", not Root; ChangeDestination Root at the console first") end
   local m = patchModal()
   if m then raise({ code = "modal-open", message = "a modal is open (" .. tostring(m.name) .. "); close it at the console first", modal = m }) end
+  if args.target == "fixturetypes" then
+    -- SU-03: the fixture-type pool of the copy, one level per ChangeDestination (a combined path does not land).
+    CmdIndirect('ChangeDestination "ShowData"."Patch"')
+    CmdIndirect('ChangeDestination "FixtureTypes"')
+    return { queued = true, target = "fixturetypes", expectDestination = "FixtureTypes" }
+  elseif args.target ~= nil and args.target ~= "stage" then
+    raise("[bad-args] target must be stage (default) or fixturetypes")
+  end
   local stage = stageOf(ShowData().LivePatch, args.stage)
   local stageName = tostring(stage.name)
   if stageName:find('"') then raise("[bad-stage] the stage name contains a quote and cannot be addressed") end
@@ -3922,14 +3930,27 @@ end
 -- mode's SubfixtureOverview (a derived list whose geometry references the copy renumbers); and the
 -- properties below. ATTRIBUTEINDEXOLD is unset (4294967295) in the live patch for attributes a fixture-type
 -- import added and numbered in the copy (onPC 2.5.1, live 2026-10-14: the only differences after importing
--- five grandMA2 types). A read that fails or more than PATCH_FP_LIMIT objects mark it incomplete.
+-- five grandMA2 types). LOGCHANNELS and CHANNELFUNCTIONS count the type channels using an attribute or feature
+-- and rise with an import (SU-03, live 2026-10-15). A read that fails or more than PATCH_FP_LIMIT objects mark
+-- it incomplete.
+--
+-- Fixture types are compared by identity, not by number: deleting a type renumbers the ones after it, and a
+-- fixture's FixtureType then displays a new number (SU-03, live 2026-10-15). So a type's INDEX is left out and a
+-- FIXTURETYPE property is hashed as the referenced type's name and GUID.
+--
+-- opts (SU-03):
+--   excludeGuids  types (by GUID) left out with their subtree: the type a removal deletes, on the live side
+--   guide         a node of the other side: every container hashes only as many children as the guide's
+--                 matching container has, so objects appended after the guide's are left out. An import
+--                 appends its type, attributes and features (live 2026-10-15), so the copy guided by the live
+--                 patch must hash exactly like the live patch.
 local PATCH_FP_SKIP = { DmxAddresses = true, UIChannels = true, RTChannels = true, FixtureTypesOverview = true, PatchFilter = true }
 local PATCH_FP_SKIP_CLASS = { SubfixtureOverview = true }
 local PATCH_FP_SHALLOW = { DmxUniverses = true }
 local PATCH_FP_RENUMBERED = { DmxCurves = true }
 local PATCH_FP_PROP_SKIP = { COUNT = true, NO = true, MEMORYFOOTPRINT = true, USED = true, PATCHINFO = true, COARSEPARAMS = true, PARKEDCOUNT = true, TESTERCOUNT = true,
   STRUCTURELOCKED = true, IGNORENETWORK = true, REALUSED = true, MAXID = true, GRANTED = true, SUBFIXTUREINDEX = true, OLDSUBFIXTUREINDEX = true,
-  ATTRIBUTEINDEXOLD = true }
+  ATTRIBUTEINDEXOLD = true, LOGCHANNELS = true, CHANNELFUNCTIONS = true }
 local PATCH_FP_LIMIT = 200000
 
 local function fnv(h, s)
@@ -3937,10 +3958,19 @@ local function fnv(h, s)
   return h
 end
 
-local function patchFingerprint(p, only, exclude)
+local function patchFingerprint(p, only, exclude, opts)
+  opts = opts or {}
+  local excludeGuids = opts.excludeGuids or {}
   local r = { objects = 0, hash = 2166136261, complete = true }
   local names = {}
-  local function add(h, depth, renumbered)
+  local function guidOf(h) local ok, g = pcall(function() return h:Get("Guid", Enums.Roles.Display) end); return ok and g ~= nil and tostring(g) or "" end
+  -- (A table with Get is accepted too: the harness's mock objects. On the console a handle is userdata.)
+  local function typeIdentity(h)
+    local ok, t = pcall(function() return h:Get("FixtureType") end)
+    if ok and (isHandle(t) or (type(t) == "table" and type(t.Get) == "function")) then return tostring(safeProp(t, "name")) .. "#" .. guidOf(t) end
+    return nil
+  end
+  local function add(h, depth, renumbered, isType)
     if r.objects >= PATCH_FP_LIMIT then r.complete = false; r.reason = "more than " .. PATCH_FP_LIMIT .. " objects"; return false end
     local okc, n = pcall(function() return h:PropertyCount() end)
     if not okc or type(n) ~= "number" then r.complete = false; r.reason = "PropertyCount failed on " .. tostring(safeProp(h, "name")); return false end
@@ -3951,26 +3981,36 @@ local function patchFingerprint(p, only, exclude)
       if not okn then r.complete = false; r.reason = "PropertyName failed on " .. tostring(safeProp(h, "name")); return false end
       pn = list; names[key] = list
     end
-    local parts = { tostring(depth), tostring(safeCall(h, "GetClass")), renumbered and "" or tostring(safeProp(h, "no")) }
+    local parts = { tostring(depth), tostring(safeCall(h, "GetClass")), (renumbered or isType) and "" or tostring(safeProp(h, "no")) }
     for _, k in ipairs(pn) do
-      if not PATCH_FP_PROP_SKIP[k] and not (renumbered and k == "INDEX") then
-        local okv, v = pcall(function() return h:Get(k, Enums.Roles.Display) end)
-        if not okv then r.complete = false; r.reason = "property " .. tostring(k) .. " of " .. tostring(safeProp(h, "name")) .. " could not be read"; return false end
-        parts[#parts + 1] = k .. "=" .. tostring(v)
+      if not PATCH_FP_PROP_SKIP[k] and not ((renumbered or isType) and k == "INDEX") then
+        local v = k == "FIXTURETYPE" and typeIdentity(h) or nil
+        if v == nil then
+          local okv, dv = pcall(function() return h:Get(k, Enums.Roles.Display) end)
+          if not okv then r.complete = false; r.reason = "property " .. tostring(k) .. " of " .. tostring(safeProp(h, "name")) .. " could not be read"; return false end
+          v = tostring(dv)
+        end
+        parts[#parts + 1] = k .. "=" .. v
       end
     end
     r.objects = r.objects + 1
     r.hash = fnv(r.hash, table.concat(parts, "\31") .. "\n")
     return true
   end
-  local function walk(h, depth, renumbered)
-    for _, c in ipairs(h:Children()) do
+  local function walk(h, depth, renumbered, guide, typeList)
+    local kids = h:Children()
+    local gkids = guide and guide:Children() or nil
+    local n = gkids and math.min(#kids, #gkids) or #kids
+    if gkids and #kids < #gkids then r.complete = false; r.reason = "the guided side has fewer children than its guide under " .. tostring(safeProp(h, "name")); return end
+    for i = 1, n do
       if not r.complete then return end
+      local c = kids[i]
       local class = safeCall(c, "GetClass")
       local fid = class == "Fixture" and numericFid(c) or nil
-      if not (fid and exclude[fid]) and not PATCH_FP_SKIP_CLASS[class] then
-        if not add(c, depth, renumbered) then return end
-        walk(c, depth + 1, renumbered)
+      local skipType = typeList and excludeGuids[guidOf(c)]
+      if not (fid and exclude[fid]) and not PATCH_FP_SKIP_CLASS[class] and not skipType then
+        if not add(c, depth, renumbered, typeList) then return end
+        walk(c, depth + 1, renumbered, gkids and gkids[i] or nil, false)
       end
     end
   end
@@ -3981,7 +4021,9 @@ local function patchFingerprint(p, only, exclude)
       if PATCH_FP_SHALLOW[cname] then
         for _, u in ipairs(c:Children()) do if not add(u, 1) then break end end
       else
-        walk(c, 1, PATCH_FP_RENUMBERED[cname])
+        local guide = opts.guide and opts.guide[cname] or nil
+        if opts.guide and not guide then r.complete = false; r.reason = "the guide has no collection " .. cname; break end
+        walk(c, 1, PATCH_FP_RENUMBERED[cname], guide, cname == "FixtureTypes")
       end
     end
   end
@@ -3995,18 +4037,308 @@ ops["patch.collections"] = function()
   return { copyOpen = open, live = names(sd.LivePatch), copy = open and names(sd.Patch) or false }
 end
 
--- args: { side = "live" | "copy", collection = <name>, excludeFids = [ ... ] }
+-- args: { side = "live" | "copy", collection = <name>, excludeFids = [ ... ],
+--         excludeGuids = [ type GUID, ... ], prefixOfLive = true (copy side only: hash only what the live patch
+--         has in every container, leaving out what an import appended) }
 ops["patch.fingerprint"] = function(args)
   if type(args.collection) ~= "string" then raise("[bad-args] collection (string) is required; patch.collections lists them") end
   local exclude = {}
   if type(args.excludeFids) == "table" then for _, f in ipairs(args.excludeFids) do local n = tonumber(f); if n then exclude[n] = true end end end
+  local opts = { excludeGuids = {} }
+  if type(args.excludeGuids) == "table" then for _, g in ipairs(args.excludeGuids) do opts.excludeGuids[tostring(g)] = true end end
   local p = patchSide(args.side or "live")
+  if args.prefixOfLive == true then
+    if args.side ~= "copy" then raise("[bad-args] prefixOfLive applies to the copy side only") end
+    opts.guide = ShowData().LivePatch
+  end
   local started = now()
-  local fp = patchFingerprint(p, args.collection, exclude)
+  local fp = patchFingerprint(p, args.collection, exclude, opts)
   fp.collection = args.collection
   fp.side = args.side or "live"
   fp.ms = math.floor((now() - started) * 1000 + 0.5)
   return fp
+end
+
+-------------------------------------------------------------------------------
+-- SU-03: fixture-type library, import and removal (bridge 0.26.0; SETUP.md SU-03,
+-- docs/probes/su-03-import-macos-2.5.1.md). In a do block: the main chunk is at Lua's local-variable limit.
+--   patch.library     read-only: the library files (DirList over the console's own library paths), parsed
+--                     from the file name (grandMA2 .pxml, GDTF) or the XML header (grandMA3 / user .xml)
+--   patch.typeInfo    read-only: one show type, its GUID and which fixtures use it
+--   patch.import      queues Import Library "<file>" in the copy's FixtureTypes (CmdIndirect: it lands on a
+--                     later frame); the client polls patch.importState for the new type
+--   patch.removeType  deletes an unused type from the copy; the types after it are renumbered
+-------------------------------------------------------------------------------
+do
+  -- source -> path type and extensions. grandMA3 and grandMA2 imports are verified live; user-library and
+  -- WorldServer files (.xml, .gdtf) go through the same command but are unverified (no such file was available).
+  local LIB_SOURCES = {
+    { id = "grandma3", path = "GrandMA3Library", exts = { "xml" }, verified = true },
+    { id = "grandma2", path = "GrandMA2Library", exts = { "pxml" }, verified = true },
+    { id = "user", path = "UserFixtures", exts = { "xml", "gdtf" }, verified = false },
+    { id = "worldserver", path = "WorldServerLibrary", exts = { "xml", "gdtf" }, verified = false },
+  }
+  local LIB_MAX_LIMIT = 500
+  local XML_READ_MAX = 4 * 1024 * 1024
+
+  local function sourcePath(src)
+    local pt = Enums.PathType and Enums.PathType[src.path]
+    if pt == nil then return nil end
+    local ok, p = pcall(GetPath, pt)
+    if ok and type(p) == "string" and p ~= "" then return p end
+    return nil
+  end
+
+  local function decodeXml(v)
+    return (v:gsub("&quot;", '"'):gsub("&apos;", "'"):gsub("&lt;", "<"):gsub("&gt;", ">"):gsub("&amp;", "&"))
+  end
+
+  -- manufacturer@model[@revision].ext; the grandMA2 names are lower case.
+  local function parseFileName(file)
+    local stem, ext = file:match("^(.*)%.([%w]+)$")
+    stem = stem or file
+    local parts = {}
+    for part in (stem .. "@"):gmatch("(.-)@") do parts[#parts + 1] = part end
+    if #parts >= 2 then return parts[1], parts[2], parts[3], (ext or ""):lower() end
+    return nil, stem, nil, (ext or ""):lower()
+  end
+
+  -- The FixtureType element's attributes and the DMX mode names of a grandMA3-format XML file.
+  local function readXmlHeader(path)
+    local f = io.open(path, "rb")
+    if not f then return nil, "cannot be opened" end
+    local text = f:read(XML_READ_MAX) or ""
+    f:close()
+    local attrs = text:match("<FixtureType%s+([^>]*)>")
+    if not attrs then return nil, "no FixtureType element" end
+    local h = {}
+    for k, v in attrs:gmatch('([%w_]+)="([^"]*)"') do h[k] = decodeXml(v) end
+    local modes = {}
+    for mattrs in text:gmatch("<DMXMode%s+([^>]*)>") do
+      local n = mattrs:match('Name="([^"]*)"')
+      if n then modes[#modes + 1] = decodeXml(n) end
+    end
+    return { name = h.Name, manufacturer = h.Manufacturer, shortName = h.ShortName, description = h.Description, modes = modes }
+  end
+
+  local function lower(v) return v and tostring(v):lower() or nil end
+
+  -- Every library file of the requested sources, without reading their contents.
+  local function listLibrary(wanted)
+    local entries, paths = {}, {}
+    for _, src in ipairs(LIB_SOURCES) do
+      if wanted == nil or wanted[src.id] then
+        local base = sourcePath(src)
+        paths[src.id] = base or false
+        if base then
+          for _, ext in ipairs(src.exts) do
+            local ok, list = pcall(DirList, base, "*." .. ext)
+            if ok and type(list) == "table" then
+              for _, e in ipairs(list) do
+                local name = e.name
+                if type(name) == "string" and name:lower():sub(-#ext - 1) == "." .. ext then
+                  local manufacturer, model, revision, fext = parseFileName(name)
+                  entries[#entries + 1] = { source = src.id, file = name, path = base .. "/" .. name, size = e.size, format = fext,
+                    manufacturer = manufacturer, model = model, revision = revision, verified = src.verified }
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+    table.sort(entries, function(a, b) if a.source ~= b.source then return a.source < b.source end return a.file:lower() < b.file:lower() end)
+    return entries, paths
+  end
+
+  -- Show types matching a library entry by manufacturer and name, ignoring case (a .pxml file name carries
+  -- both in lower case: "generic@dimmer" is "Dimmer" by "Generic", live 2026-10-15).
+  local function typesMatching(p, manufacturer, name)
+    local out = {}
+    if not name then return out end
+    for _, t in ipairs(p.FixtureTypes:Children()) do
+      if lower(safeProp(t, "name")) == lower(name) and (manufacturer == nil or lower(displayProp(t, "Manufacturer")) == lower(manufacturer)) then
+        out[#out + 1] = { no = safeProp(t, "no"), name = tostring(safeProp(t, "name")), manufacturer = displayProp(t, "Manufacturer"), guid = displayProp(t, "Guid") }
+      end
+    end
+    return out
+  end
+
+  local function entryOut(e, p, withHeader)
+    local out = { source = e.source, file = e.file, format = e.format, size = e.size, manufacturer = e.manufacturer, model = e.model, revision = e.revision,
+      verified = e.verified, set = lower(e.manufacturer) == "set" }
+    if withHeader and e.format == "xml" then
+      local h, why = readXmlHeader(e.path)
+      if h then
+        out.name = h.name; out.manufacturer = h.manufacturer or out.manufacturer; out.shortName = h.shortName; out.description = h.description
+        out.modes = emptyArray(h.modes)
+      else
+        out.headerError = why
+      end
+    end
+    out.modesKnown = out.modes ~= nil
+    local inShow = typesMatching(p, out.manufacturer, out.name or out.model)
+    out.inShow = emptyArray(inShow)
+    return out
+  end
+
+  local function sourcesArg(v)
+    if v == nil then return nil end
+    if type(v) ~= "table" then raise("[bad-args] sources must be a list of grandma3, grandma2, user, worldserver") end
+    local w = {}
+    for _, s in ipairs(v) do
+      local ok = false
+      for _, src in ipairs(LIB_SOURCES) do if src.id == s then ok = true end end
+      if not ok then raise("[bad-args] unknown source " .. tostring(s) .. " (grandma3, grandma2, user, worldserver)") end
+      w[s] = true
+    end
+    return w
+  end
+
+  -- args: { query?, sources?, includeSets?, file?, limit?, offset? }. Every word of the query must occur in
+  -- "manufacturer model file" (case-insensitive). file = an exact file name instead of a query.
+  ops["patch.library"] = function(args)
+    local wanted = sourcesArg(args.sources)
+    local all, paths = listLibrary(wanted)
+    local words = {}
+    if args.query ~= nil then
+      if type(args.query) ~= "string" then raise("[bad-args] query must be a string") end
+      for w in args.query:lower():gmatch("%S+") do words[#words + 1] = w end
+    end
+    local exact = args.file
+    if exact ~= nil and type(exact) ~= "string" then raise("[bad-args] file must be a string") end
+    local rows = {}
+    for _, e in ipairs(all) do
+      local keep
+      if exact then
+        keep = e.file == exact
+      else
+        keep = args.includeSets == true or lower(e.manufacturer) ~= "set"
+        if keep and #words > 0 then
+          local hay = ((e.manufacturer or "") .. " " .. (e.model or "") .. " " .. e.file):lower()
+          for _, w in ipairs(words) do if not hay:find(w, 1, true) then keep = false; break end end
+        end
+      end
+      if keep then rows[#rows + 1] = e end
+    end
+    local limit, offset = pageArgs(args, 50, LIB_MAX_LIMIT)
+    local page = paginate(rows, limit, offset)
+    local live = ShowData().LivePatch
+    local items = {}
+    for _, e in ipairs(page.items) do items[#items + 1] = entryOut(e, live, true) end
+    return { total = page.total, offset = page.offset, count = page.count, entries = emptyArray(items), paths = paths, scanned = #all }
+  end
+
+  local function typeRow(t)
+    local modes = {}
+    for _, m in ipairs(t.DMXModes:Children()) do modes[#modes + 1] = modeOut(modeInfo(m)) end
+    return { no = safeProp(t, "no"), name = tostring(safeProp(t, "name")), shortName = displayProp(t, "ShortName"), manufacturer = displayProp(t, "Manufacturer"),
+      source = displayProp(t, "Source"), guid = displayProp(t, "Guid"), modes = emptyArray(modes) }
+  end
+
+  local function typeArg(p, ref)
+    if type(ref) ~= "number" and type(ref) ~= "string" then raise("[bad-args] type (number or name) is required") end
+    local t = findType(p, ref)
+    if not t then raise("[no-type] no fixture type " .. tostring(ref) .. " in the " .. (p == ShowData().LivePatch and "show" or "copy")) end
+    return t
+  end
+
+  local function typeUsers(p, t)
+    local guid = displayProp(t, "Guid")
+    local users = {}
+    for _, e in ipairs(walkFixtures(p)) do
+      local ok, ft = pcall(function() return e.fixture:Get("FixtureType") end)
+      if ok and (isHandle(ft) or (type(ft) == "table" and type(ft.Get) == "function")) and displayProp(ft, "Guid") == guid then users[#users + 1] = numericFid(e.fixture) or tostring(safeProp(e.fixture, "name")) end
+    end
+    return users
+  end
+
+  -- args: { type, side? }
+  ops["patch.typeInfo"] = function(args)
+    local p = patchSide(args.side)
+    local t = typeArg(p, args.type)
+    local users = typeUsers(p, t)
+    local row = typeRow(t)
+    row.usedBy = emptyArray(users)
+    row.used = tonumber(displayProp(t, "Used")) or 0
+    row.realUsed = tonumber(displayProp(t, "RealUsed")) or 0
+    row.index = nil
+    for i, c in ipairs(p.FixtureTypes:Children()) do if c == t then row.index = i end end
+    return { side = args.side or "live", type = row, count = p.FixtureTypes:Count() }
+  end
+
+  local function resolveFile(source, file)
+    if type(file) ~= "string" or file == "" then raise("[bad-args] file (a library file name, as patch.library lists it) is required") end
+    if file:find('"') or file:find("[%c]") then raise("[bad-file] the file name contains a quote or a control character and cannot be imported by command") end
+    local matches = {}
+    for _, e in ipairs((listLibrary(nil))) do if e.file == file then matches[#matches + 1] = e end end
+    if #matches == 0 then raise("[no-file] " .. file .. " is not in the fixture-type library") end
+    local chosen
+    for _, e in ipairs(matches) do if source == nil or e.source == source then chosen = chosen or e end end
+    if not chosen then raise("[no-file] " .. file .. " is not in the " .. tostring(source) .. " library") end
+    -- Import Library names a file only, so a name in two libraries cannot be told apart.
+    if #matches > 1 then
+      local where = {}
+      for _, e in ipairs(matches) do where[#where + 1] = e.source end
+      raise({ code = "ambiguous-file", message = file .. " is in more than one library (" .. table.concat(where, ", ") .. "); Import Library cannot choose between them", sources = emptyArray(where) })
+    end
+    return chosen
+  end
+
+  -- args: { source?, file, exclusive }. The copy must be open at FixtureTypes (patch.enter target fixturetypes).
+  ops["patch.import"] = function(args)
+    requireExclusive(args, "patch.import")
+    local p = requireCopy("FixtureTypes")
+    local e = resolveFile(args.source, args.file)
+    local before = p.FixtureTypes:Count()
+    local attrs = p.AttributeDefinitions and p.AttributeDefinitions.Attributes and p.AttributeDefinitions.Attributes:Count() or nil
+    local command = 'Import Library "' .. e.file .. '"'
+    CmdIndirect(command)
+    return { queued = true, command = command, source = e.source, file = e.file, verified = e.verified, typesBefore = before, attributesBefore = attrs }
+  end
+
+  -- args: { typesBefore }. The types appended to the copy since patch.import, and the console's last command.
+  ops["patch.importState"] = function(args)
+    local p = requireCopy(nil)
+    local before = integerArg(args.typesBefore, "typesBefore", 0, 100000)
+    local kids = p.FixtureTypes:Children()
+    local added = {}
+    for i = before + 1, #kids do added[#added + 1] = typeRow(kids[i]) end
+    local res = { destination = patchDestination(), types = #kids, added = emptyArray(added) }
+    pcall(function() res.attributes = p.AttributeDefinitions.Attributes:Count() end)
+    pcall(function() res.lastCommand = tostring(CmdObj():Get("LastCommand")) end)
+    return res
+  end
+
+  -- args: { type, guid, exclusive }. Deletes an unused type from the copy. guid must be the type's (patch.typeInfo
+  -- reports it), so a renumbered type is never deleted by its old number.
+  ops["patch.removeType"] = function(args)
+    requireExclusive(args, "patch.removeType")
+    local p = requireCopy(nil)
+    local t = typeArg(p, args.type)
+    local guid = displayProp(t, "Guid")
+    if type(args.guid) ~= "string" or args.guid ~= guid then raise("[guid-mismatch] fixture type " .. tostring(args.type) .. " in the copy has GUID " .. tostring(guid) .. ", not " .. tostring(args.guid) .. "; nothing was removed") end
+    local users = typeUsers(p, t)
+    local realUsed = tonumber(displayProp(t, "RealUsed")) or 0
+    if #users > 0 or realUsed > 0 then raise({ code = "type-in-use", message = "fixture type " .. tostring(safeProp(t, "name")) .. " is used by " .. (#users > 0 and #users or realUsed) .. " fixture(s); nothing was removed", usedBy = emptyArray(users) }) end
+    local kids = p.FixtureTypes:Children()
+    local index, after = nil, {}
+    for i, c in ipairs(kids) do
+      if c == t then index = i elseif index then after[#after + 1] = { guid = displayProp(c, "Guid"), name = tostring(safeProp(c, "name")), from = safeProp(c, "no") } end
+    end
+    if not index then raise("[no-type] the type was not found among the copy's fixture types") end
+    local removed = typeRow(t)
+    local okD, err = pcall(function() p.FixtureTypes:Delete(index) end)
+    if not okD then raise("[remove-failed] deleting the type raised: " .. tostring(err)) end
+    for _, c in ipairs(p.FixtureTypes:Children()) do if displayProp(c, "Guid") == guid then raise("[remove-failed] the type is still in the copy after Delete") end end
+    local renumbered = {}
+    for _, a in ipairs(after) do
+      for _, c in ipairs(p.FixtureTypes:Children()) do
+        if displayProp(c, "Guid") == a.guid then renumbered[#renumbered + 1] = { name = a.name, from = a.from, to = safeProp(c, "no") } end
+      end
+    end
+    return { removed = removed, renumbered = emptyArray(renumbered), types = p.FixtureTypes:Count() }
+  end
 end
 
 -------------------------------------------------------------------------------
