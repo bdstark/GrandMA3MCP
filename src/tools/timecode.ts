@@ -920,7 +920,7 @@ export const registerTimecodeTools: RegisterTools = (server, ctx) => {
     {
       title: "Play, stop, rewind or seek a timecode show and observe it",
       description:
-        "PLAYS when asked: play sends Go Timecode N (from the cursor, internal time; with a timecode slot the time comes from the slot), stop sends Off (playbacks it started keep running unless switch_off is off), rewind sends Top, seek writes the cursor (to: a time as in gma3_build_timecode). Recording is not offered. " +
+        "PLAYS when asked and OBSERVES OVER TIME on the server side (no Lua loop needed): play sends Go Timecode N (from the cursor, internal time; with a timecode slot the time comes from the slot), stop sends Off (playbacks it started keep running unless switch_off is off), rewind sends Top, seek writes the cursor (to: a time as in gma3_build_timecode). Recording is not offered. " +
         "Then samples the cursor and the target sequences for observe_seconds (play: default 5) and, for play, checks every event the cursor crossed against the sequences' observed cue changes in order (goto -> that cue, go -> the next cue, off -> off, presses -> running; others are listed as not predictable). The result separates dispatched from observed.",
       inputSchema: { timecode: z.number(), action: z.enum(["play", "stop", "rewind", "seek"]), to: timeSchema.optional(), fps: z.number().optional(), observe_seconds: z.number().optional(), interval_ms: z.number().optional() },
     },

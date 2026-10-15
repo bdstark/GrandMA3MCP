@@ -32,6 +32,17 @@ the live test procedure on a disposable show.
 `AGENT-RULES.md` records the implementation rules every area follows (bridge-only, no retries, shared
 validation and result helpers, serialised mutations, documentation and test requirements).
 
+## Tool discovery (SU-10)
+
+The server sends instructions on every start (`src/discovery.ts`). They give:
+- a short map from setup and show tasks to these tools;
+- the tools that watch the console over time on the server side (`gma3_observe_tempo`, `gma3_build_chase`,
+  `gma3_run_macro`, `gma3_timecode_transport`), so no Lua waiting loop is written against the 5 s Lua budget;
+- `gma3_command` and `gma3_lua` as fallbacks only.
+
+A stale build's warning (PR #45) comes first. The descriptions of `gma3_lua` and `gma3_command` start with the same
+pointer to the structured tools. `test/discovery.test.ts` keeps the map and the registered tools in step.
+
 ## Serialisation caveat (applies to every mutating tool)
 
 Mutations issued by this MCP server run one at a time through a single lock, so a multi-command workflow is

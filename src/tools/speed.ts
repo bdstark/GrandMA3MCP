@@ -957,7 +957,7 @@ export const registerSpeedTools: RegisterTools = (server, ctx) => {
     {
       title: "Measure how fast running sequences advance",
       description:
-        "Read-only. Samples the current cue of 1-8 running sequences for `seconds` (1-30, default 6) every interval_ms (default 40) and reports the observed step interval next to the configured one: the rate (rate master's effective BPM / 60 x RateScale, or the sequence's own rate fader) and, for chases whose cues are all Time-triggered with one trigger time, the predicted step interval. " +
+        "OBSERVES OVER TIME on the server side (use it instead of a Lua waiting loop). Read-only. Samples the current cue of 1-8 running sequences for `seconds` (1-30, default 6) every interval_ms (default 40) and reports the observed step interval next to the configured one: the rate (rate master's effective BPM / 60 x RateScale, or the sequence's own rate fader) and, for chases whose cues are all Time-triggered with one trigger time, the predicted step interval. " +
         "It starts nothing: run the sequences first. The phaser tempo (speed master) is reported as configured only; phaser output is not observable over the bridge.",
       inputSchema: {
         sequences: z.array(z.number()),

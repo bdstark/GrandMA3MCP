@@ -350,7 +350,16 @@ No tool shows or configures universes, protocol output (Art-Net, sACN) or the gr
 
 **Lua changes:** No.
 
-**Status:** partly done: PR GrandMA3MCP#45 adds MCP server instructions when the build is stale.
+**Status:** implemented, no bridge change. The server sends instructions on every start (`src/discovery.ts`):
+- a map from setup tasks to the structured tools;
+- the tools that observe over time;
+- `gma3_command` and `gma3_lua` as fallbacks.
+
+A stale build's warning (PR GrandMA3MCP#45) comes first. The `gma3_lua` and `gma3_command` descriptions start by
+naming the structured tools for patch, groups, presets, phasers, looks, cues and playback. `gma3_observe_tempo`,
+`gma3_build_chase`, `gma3_run_macro` and `gma3_timecode_transport` say they observe over time with no Lua loop.
+`test/discovery.test.ts` fails for an unregistered name in the map or an unmapped new tool
+([docs/tools/README.md](docs/tools/README.md#tool-discovery-su-10)).
 
 **Evidence:** the first chat session, on a stale build that lacked 30 tools, used Lua for everything. In the field
 test the agent wrote a waiting loop to watch the chase and hit the 5 s Lua budget; `gma3_observe_tempo` does that and

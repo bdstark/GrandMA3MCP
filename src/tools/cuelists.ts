@@ -1070,7 +1070,7 @@ export const registerCueListTools: RegisterTools = (server, ctx) => {
       description:
         "Build a chase into an empty or new sequence: one cue per step (steps: each a look or looks with an optional name; or presets: one cue per preset on fixtures), every cue Time-triggered after step_seconds (or cycle_seconds / number of steps) with an optional crossfade, and Wrap Around on, so the last cue is followed by the first. " +
         BUILD_NOTE +
-        " Then, unless observe: false, PLAYS the chase (Goto cue 1, live output) and samples its current cue to verify one cycle: the cue order through the wrap and each step against step_seconds / the sequence's rate. A cycle longer than observe_max_seconds (default 45, at most 120; keep it under your client's request timeout) is observed from a late cue through the wrap instead. The chase is switched off afterwards unless leave_running: true.",
+        " Then, unless observe: false, PLAYS the chase (Goto cue 1, live output) and OBSERVES it over time on the server side (no Lua loop needed), sampling its current cue to verify one cycle: the cue order through the wrap and each step against step_seconds / the sequence's rate. A cycle longer than observe_max_seconds (default 45, at most 120; keep it under your client's request timeout) is observed from a late cue through the wrap instead. The chase is switched off afterwards unless leave_running: true.",
       inputSchema: {
         sequence: z.number().describe("An empty or new sequence."),
         name: z.string().optional().describe("Sequence name."),
