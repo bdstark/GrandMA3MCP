@@ -82,6 +82,8 @@ const WORKFLOW_TOOLS = [
   "gma3_patch_library",
   "gma3_patch_import",
   "gma3_patch_remove_type",
+  // SU-07 fixture-type structure
+  "gma3_patch_type_structure",
   // SU-04 fixture positions
   "gma3_fixture_positions",
   "gma3_place_fixtures",

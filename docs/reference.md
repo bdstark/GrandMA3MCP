@@ -82,6 +82,7 @@ require `exclusive: true` and have no undo; details in [`tools/patch.md`](tools/
 | `gma3_patch_library` | Read-only: search the fixture-type library (grandMA3, grandMA2, user, WorldServer) by manufacturer and model; modes when readable; which show types match (bridge 0.26.0) |
 | `gma3_patch_import` | Import one library file into the show: duplicate check, wait for exactly one new type, committed, read back with its modes (bridge 0.26.0) |
 | `gma3_patch_remove_type` | Delete a fixture type no fixture uses; reports the renumbered types; its attributes stay (bridge 0.26.0) |
+| `gma3_patch_type_structure` | Read-only: a fixture type's modes with cells, every DMX channel expanded per cell with its attribute, the geometry tree with positions and the model dimensions, in m, cm, mm, ft or in (bridge 0.28.0) |
 | `gma3_set_attributes` | Intensity and several attributes on one target in one call, read back per fixture and cell |
 | `gma3_apply_preset` | `At Preset` on a target (by number or name); refused for a missing preset or an empty target; read back by the programmer's preset link (bridge 0.27.0) |
 | `gma3_release_attributes` | `Off Attribute` (`Off Attribute Thru` for every value) on an established target; read back by comparing the whole programmer, collateral included |

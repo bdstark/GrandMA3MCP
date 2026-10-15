@@ -84,7 +84,9 @@ the console: Menu › Patch, then **Discard and Exit** (drops everything in the 
 ## gma3_patch_types
 
 Read-only (`patch.types`). The show's fixture types with number, name, short name, manufacturer and source, and per
-DMX mode its number, name, `footprint`, `breaks` (number of DMX breaks) and `breakChannels`. `search` filters on
+DMX mode its number, name, `footprint`, `breaks` (number of DMX breaks), `breakChannels` and `cells` (bridge 0.28.0,
+`null` before: the geometry references under the mode's root geometry, which a patched fixture of that mode gets as
+its selectable cells). `search` filters on
 name, short name and manufacturer. Each type also has its `guid`. A type that is not in the show yet comes from the
 library: `gma3_patch_library` finds it and `gma3_patch_import` adds it.
 
@@ -94,7 +96,9 @@ Read-only (`patch.list`). Fixtures of the live patch, every stage, sub-fixtures 
 tools' read-back reads every page of their FID range. A listing that ends before its reported total makes the
 verification `unavailable`; it never reports a fixture missing. Each row has
 `fid`, `cid`, `idType`, `name`, `type`, `mode`, `patch`, `breaks` (`[{break, address}]`), `stage`, `depth`,
-`parentFid` and `subfixtures`. `fromFid` / `toFid` filter numeric FIDs; `limit` (default 200, max 2000) / `offset`
+`parentFid`, `subfixtures` and `cells`. `subfixtures` counts child fixtures (a grouping fixture's members); `cells`
+counts the fixture's own cells, its SubFixture children (12 on a 12-cell wall washer, 40 on a 40-cell Festoon, whose
+`subfixtures` is 0; bridge 0.28.0). `fromFid` / `toFid` filter numeric FIDs; `limit` (default 200, max 2000) / `offset`
 paginate.
 
 ## gma3_patch_add
@@ -185,6 +189,42 @@ down one number; fixtures keep their type and only the displayed number changes.
 `{name, from, to}`. Read-back checks the GUID is gone. **The attributes the type brought stay in the show**, unused: the
 console keeps them, and they cannot be told apart from its own unused attributes.
 
+## gma3_patch_type_structure (SU-07)
+
+Read-only (`patch.typeStructure`, bridge 0.28.0). One fixture type of the show, by number or name. Evidence: the
+[SU-07 record](../probes/su-07-type-structure-macos-2.5.1.md).
+
+| Param | Notes |
+| --- | --- |
+| `type` | number or name, as `gma3_patch_types` lists it |
+| `mode` | number or name; without it every mode is summarised |
+| `channels` | list the DMX channels (default: true with a mode, false without) |
+| `geometry` | the geometry tree and models (default: true with a mode, false without) |
+| `unit` | lengths in `m` (default), `cm`, `mm`, `ft` or `in`; angles are degrees |
+| `channel_limit` | most channel rows per mode (default 2000; `channelsTruncated` says when it cut) |
+
+Per mode:
+- `footprint`, `breaks`, `breakChannels`;
+- `rootGeometry` and `size`, the root geometry's model with its length, width and height;
+- `cells` and `cellList`: each cell's name, the template it references, its position and rotation, and its break
+  offsets;
+- `channels`, `addressesUsed` and `virtualChannels`.
+
+**How channels are expanded.** A mode's DMX channels are templates:
+- a channel on a geometry the cells reference repeats in every cell, at the cell's break offset + its own offset − 1;
+- a channel on a geometry inside the mode's root is at its own offset;
+- a channel without a coarse offset is virtual: it has no DMX address (an RGB fixture's dimmer).
+
+Each row has the channel name, `attribute` (and `attributes` when its functions use several), `break`, `offset`
+(1-based within the break), `fine` / `ultra` when present, `cell`, `virtual` and the default.
+
+`addressesUsed` counts the footprint's addresses the rows cover. When it differs from the footprint, or two channels
+share an address, or a cell lacks an offset for a channel's break, `limitations` says so; no address is guessed.
+
+**Geometry.** The tree comes as flat nodes: name, class, parent, depth, position, rotation, model, and for a
+reference the template it points to and its break offsets. With a mode, only the geometry that mode uses is listed
+(its root's tree and the templates its cells reference), together with the models those nodes use.
+
 ## Live test procedure
 
 `test/live/patch.live.ts`, with `GMA3_LIVE=1` **and** `GMA3_LIVE_EXCLUSIVE=1` (patch changes are committed with no
@@ -198,6 +238,11 @@ The cleanup is armed only after the run has passed the show guard and proved FID
 those FIDs, and only fixtures whose name starts with "MCP live". A skipped run (a show that is not disposable, no
 `GMA3_LIVE_EXCLUSIVE`) or a run that finds the FIDs occupied deletes nothing. `test/patch-live.test.ts` runs the live
 file against a fake bridge in both cases and checks that no patch change is sent.
+
+`test/live/type-structure.live.ts` (SU-07, read-only, any show with a fixture with cells) checks every mode of every
+type: its channels cover its footprint with no limitation, every addressed channel lies inside the footprint and names
+its attribute, and `gma3_patch_types` reports the same cell count. Every patched fixture's `cells` must equal its
+mode's. One mode with cells is then read narrowed, in feet.
 
 ```bash
 GMA3_LIVE=1 GMA3_LIVE_EXCLUSIVE=1 node --import tsx --test test/live/patch.live.ts

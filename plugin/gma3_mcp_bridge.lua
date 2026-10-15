@@ -154,7 +154,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.27.0"
+local VERSION      = "0.28.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -3491,6 +3491,13 @@ local function fixtureRow(e)
     depth = e.depth,
     parentFid = e.parent and (numericFid(e.parent) or tostring(safeProp(e.parent, "FID"))) or nil,
     subfixtures = fixtureChildren(c),
+    -- Cells (SU-07): SubFixture children, from the mode's geometry references (a 12-cell washer: 12). Child
+    -- fixtures of a grouping fixture are `subfixtures`.
+    cells = (function()
+      local n = 0
+      for _, k in ipairs(c:Children()) do if safeCall(k, "GetClass") == "SubFixture" then n = n + 1 end end
+      return n
+    end)(),
   }
 end
 
@@ -3595,10 +3602,24 @@ end
 
 ops["patch.types"] = function(args)
   local p = patchSide(args.side)
+  -- A mode's cells (SU-07): the GeometryReferences under its root geometry, which become the patched
+  -- fixture's SubFixture children. nil when the root geometry cannot be read.
+  local function cellCount(m)
+    local okR, root = pcall(function() return m.GeometryDirect end)
+    if not okR or not root then return nil end
+    local n = 0
+    local function walk(o) for _, c in ipairs(o:Children()) do if safeCall(c, "GetClass") == "GeometryReference" then n = n + 1 end walk(c) end end
+    walk(root)
+    return n
+  end
   local types = {}
   for _, t in ipairs(p.FixtureTypes:Children()) do
     local modes = {}
-    for _, m in ipairs(t.DMXModes:Children()) do modes[#modes + 1] = modeOut(modeInfo(m)) end
+    for _, m in ipairs(t.DMXModes:Children()) do
+      local out = modeOut(modeInfo(m))
+      out.cells = cellCount(m)
+      modes[#modes + 1] = out
+    end
     types[#types + 1] = { no = safeProp(t, "no"), name = tostring(safeProp(t, "name")), shortName = displayProp(t, "ShortName"), manufacturer = displayProp(t, "Manufacturer"), source = displayProp(t, "Source"), guid = displayProp(t, "Guid"), modes = emptyArray(modes) }
   end
   return { side = args.side or "live", count = #types, types = emptyArray(types) }
@@ -4303,6 +4324,212 @@ do
     for i, c in ipairs(p.FixtureTypes:Children()) do if c == t then row.index = i end end
     return { side = args.side or "live", type = row, count = p.FixtureTypes:Count() }
   end
+
+  -- SU-07 (bridge 0.28.0): a type's structure. Lengths raw, in metres; angles in degrees. In its own function
+  -- scope: the main chunk is at Lua's local-variable limit.
+  ops["patch.typeStructure"] = (function()
+  local function rawNumber(o, k)
+    local ok, v = pcall(function() return o:Get(k) end)
+    if ok and type(v) == "number" then return v end
+    return nil
+  end
+  local function handleOf(o, k)
+    local isH = function(v) return isHandle(v) or (type(v) == "table" and type(v.Get) == "function") end
+    -- A property by index, its Direct form, or Get(): which one answers differs per class (a GeometryReference
+    -- answers only GeometryDirect / Get, a DMXChannel the plain index).
+    for _, f in ipairs({ function() return o[k] end, function() return o[k .. "Direct"] end, function() return o:Get(k) end }) do
+      local ok, v = pcall(f)
+      if ok and isH(v) then return v end
+    end
+    return nil
+  end
+  -- "1" -> 1, "None" / "" -> nil (a channel offset or break as displayed).
+  local function displayNumber(o, k)
+    local v = displayProp(o, k)
+    return v and tonumber((v:match("^%s*(%-?%d+)"))) or nil
+  end
+  local function isWithin(g, anc)
+    local cur, guard = g, 0
+    while cur and guard < 32 do
+      if cur == anc then return true end
+      local ok, par = pcall(function() return cur:Parent() end)
+      cur = ok and par or nil
+      guard = guard + 1
+    end
+    return false
+  end
+  local function channelAttribute(c)
+    local attrs, seen = {}, {}
+    for _, lc in ipairs(c:Children()) do
+      for _, cf in ipairs(lc:Children()) do
+        local a = displayProp(cf, "Attribute")
+        if a and a ~= "" and not seen[a] then seen[a] = true; attrs[#attrs + 1] = a end
+      end
+    end
+    return attrs
+  end
+  local function modelRow(md)
+    return { name = tostring(safeProp(md, "name")), length = rawNumber(md, "Length"), width = rawNumber(md, "Width"), height = rawNumber(md, "Height"), file = displayProp(md, "File") }
+  end
+  local function placement(o, row)
+    row.posX, row.posY, row.posZ = rawNumber(o, "PosX"), rawNumber(o, "PosY"), rawNumber(o, "PosZ")
+    row.rotX, row.rotY, row.rotZ = rawNumber(o, "RotX"), rawNumber(o, "RotY"), rawNumber(o, "RotZ")
+    return row
+  end
+
+  -- One mode: footprint, breaks, root geometry, cells (the geometry references under the root, in tree order)
+  -- and its DMX channels expanded per cell: a channel on a referenced (template) geometry repeats in every cell at
+  -- the cell's break offset + its own offset - 1; a channel on a geometry inside the root is at its own offset.
+  local function modeStructure(m, limitations, channelLimit)
+    local info = modeOut(modeInfo(m))
+    local root = handleOf(m, "GeometryDirect")
+    info.rootGeometry = root and tostring(safeProp(root, "name")) or nil
+    local rootModel = root and handleOf(root, "Model") or nil
+    if rootModel then info.size = modelRow(rootModel) end
+    local refs = {}
+    if root then
+      local function walk(o)
+        for _, c in ipairs(o:Children()) do
+          if safeCall(c, "GetClass") == "GeometryReference" then
+            local offsets = {}
+            for _, b in ipairs(c:Children()) do
+              if safeCall(b, "GetClass") == "Break" then
+                local br, at = displayNumber(b, "DMXBreak"), displayNumber(b, "DMXPatch")
+                if br and at then offsets[br] = at end
+              end
+            end
+            refs[#refs + 1] = { ref = c, index = #refs + 1, name = tostring(safeProp(c, "name")), template = handleOf(c, "Geometry"), offsets = offsets }
+          end
+          walk(c)
+        end
+      end
+      walk(root)
+    else
+      limitations[#limitations + 1] = "mode " .. info.name .. ": its root geometry could not be read; channels are listed at their own offsets"
+    end
+    local cells = {}
+    for i, r in ipairs(refs) do
+      local row = placement(r.ref, { index = i, name = r.name, template = r.template and tostring(safeProp(r.template, "name")) or nil })
+      local br = {}
+      for b, at in pairs(r.offsets) do br[#br + 1] = b .. ":" .. at end
+      table.sort(br)
+      row.breakOffsets = table.concat(br, ",")
+      cells[#cells + 1] = row
+    end
+    info.cells = #refs
+    info.cellList = emptyArray(cells)
+    local rows, virtual, truncated = {}, 0, false
+    local function add(row)
+      if #rows >= channelLimit then truncated = true return end
+      rows[#rows + 1] = row
+    end
+    for _, c in ipairs(m.DMXChannels:Children()) do
+      local g = handleOf(c, "Geometry")
+      local coarse, fine, ultra = displayNumber(c, "Coarse"), displayNumber(c, "Fine"), displayNumber(c, "Ultra")
+      local brk = displayNumber(c, "DMXBreak") or 1
+      local attrs = channelAttribute(c)
+      local base = { channel = tostring(safeProp(c, "name")), attribute = attrs[1], attributes = #attrs > 1 and table.concat(attrs, ",") or nil, ["break"] = brk, default = displayProp(c, "Default") }
+      local inCells = {}
+      if g then for _, r in ipairs(refs) do if r.template and isWithin(g, r.template) then inCells[#inCells + 1] = r end end end
+      local function row(extra)
+        local out = {}
+        for k, v in pairs(base) do out[k] = v end
+        for k, v in pairs(extra) do out[k] = v end
+        out.geometry = g and tostring(safeProp(g, "name")) or nil
+        return out
+      end
+      if coarse == nil then
+        virtual = virtual + 1
+        if #inCells > 0 then for _, r in ipairs(inCells) do add(row({ cell = r.name, cellIndex = r.index, virtual = true })) end
+        else add(row({ virtual = true })) end
+      elseif #inCells > 0 then
+        for _, r in ipairs(inCells) do
+          local at = r.offsets[brk]
+          if not at then
+            limitations[#limitations + 1] = "mode " .. info.name .. ", cell " .. r.name .. ": no offset for break " .. brk .. "; channel " .. base.channel .. " is listed without an address"
+            add(row({ cell = r.name, cellIndex = r.index }))
+          else
+            add(row({ cell = r.name, cellIndex = r.index, offset = at + coarse - 1, fine = fine and (at + fine - 1) or nil, ultra = ultra and (at + ultra - 1) or nil }))
+          end
+        end
+      else
+        if g and root and not isWithin(g, root) then limitations[#limitations + 1] = "mode " .. info.name .. ": channel " .. base.channel .. " is on a geometry outside the mode's root and no cell references it" end
+        add(row({ offset = coarse, fine = fine, ultra = ultra }))
+      end
+    end
+    table.sort(rows, function(a, b)
+      if (a.offset == nil) ~= (b.offset == nil) then return a.offset ~= nil end
+      if a["break"] ~= b["break"] then return a["break"] < b["break"] end
+      if a.offset ~= b.offset then return (a.offset or 0) < (b.offset or 0) end
+      return (a.cellIndex or 0) < (b.cellIndex or 0)
+    end)
+    -- Every DMX address of every break must be one channel's coarse, fine or ultra.
+    local used, dup = {}, 0
+    for _, r in ipairs(rows) do
+      for _, k in ipairs({ "offset", "fine", "ultra" }) do
+        if r[k] then local key = r["break"] .. ":" .. r[k]; if used[key] then dup = dup + 1 end; used[key] = true end
+      end
+    end
+    local covered = 0
+    for _ in pairs(used) do covered = covered + 1 end
+    info.addressesUsed = covered
+    info.virtualChannels = virtual
+    if truncated then limitations[#limitations + 1] = "mode " .. info.name .. ": more than " .. channelLimit .. " channel rows; the list is truncated"
+    elseif info.footprint and covered ~= info.footprint then limitations[#limitations + 1] = "mode " .. info.name .. ": the channels cover " .. covered .. " of " .. info.footprint .. " DMX addresses" end
+    if dup > 0 then limitations[#limitations + 1] = "mode " .. info.name .. ": " .. dup .. " DMX address(es) are used by more than one channel" end
+    info.channels = emptyArray(rows)
+    info.channelsTruncated = truncated
+    return info
+  end
+
+  -- args: { type, mode?, side?, geometry? (default true), channelLimit? }
+  return function(args)
+    local p = patchSide(args.side)
+    local t = typeArg(p, args.type)
+    local limitations = {}
+    local channelLimit = integerArg(args.channelLimit or 2000, "channelLimit", 1, 10000)
+    local modes = {}
+    if args.mode ~= nil then
+      local m = findMode(t, args.mode)
+      if not m then raise("[no-mode] fixture type " .. tostring(t.name) .. " has no DMX mode " .. tostring(args.mode)) end
+      modes[1] = modeStructure(m, limitations, channelLimit)
+    else
+      for _, m in ipairs(t.DMXModes:Children()) do modes[#modes + 1] = modeStructure(m, limitations, channelLimit) end
+    end
+    local res = { side = args.side or "live", type = { no = safeProp(t, "no"), name = tostring(safeProp(t, "name")), manufacturer = displayProp(t, "Manufacturer"), shortName = displayProp(t, "ShortName"), source = displayProp(t, "Source") }, modes = emptyArray(modes) }
+    if args.geometry ~= false then
+      local nodes = {}
+      local function walk(o, depth, parent)
+        for _, c in ipairs(o:Children()) do
+          local cls = safeCall(c, "GetClass")
+          if cls ~= "Break" then
+            if #nodes >= 5000 then limitations[#limitations + 1] = "more than 5000 geometry nodes; the tree is truncated" return end
+            local model = handleOf(c, "Model")
+            local row = placement(c, { index = #nodes + 1, name = tostring(safeProp(c, "name")), class = cls, depth = depth, parent = parent, model = model and tostring(safeProp(model, "name")) or nil })
+            if cls == "GeometryReference" then
+              local tpl = handleOf(c, "Geometry")
+              row.references = tpl and tostring(safeProp(tpl, "name")) or nil
+              local br = {}
+              for _, b in ipairs(c:Children()) do
+                if safeCall(b, "GetClass") == "Break" then br[#br + 1] = tostring(displayNumber(b, "DMXBreak")) .. ":" .. tostring(displayNumber(b, "DMXPatch")) end
+              end
+              row.breakOffsets = table.concat(br, ",")
+            end
+            nodes[#nodes + 1] = row
+            walk(c, depth + 1, row.name)
+          end
+        end
+      end
+      walk(t.Geometries, 0, nil)
+      res.geometry = emptyArray(nodes)
+      local models = {}
+      for _, md in ipairs(t.Models:Children()) do models[#models + 1] = modelRow(md) end
+      res.models = emptyArray(models)
+    end
+    res.limitations = emptyArray(limitations)
+    return res
+  end
+  end)()
 
   local function resolveFile(source, file)
     if type(file) ~= "string" or file == "" then raise("[bad-args] file (a library file name, as patch.library lists it) is required") end
