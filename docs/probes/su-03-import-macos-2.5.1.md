@@ -8,8 +8,8 @@ Evidence for [SU-03 in SETUP.md](../../SETUP.md#su-03--find-and-import-fixture-t
 - **Method:** a manual pass through `gma3_lua`: reads first, then each change queued with `CmdIndirect` and read
   back in a later request (a queued command lands a frame later), with `GetTopModal` after each step: no dialog
   appeared. Copy-against-live comparisons through the bridge's own `patch.fingerprint` and a property-by-property
-  diff. The show ended with 4 types and 10 fixtures (one beam patched for the renumbering check), the command line
-  at Root and the copy closed.
+  diff. The show ended with 5 types, 395 attributes and 10 fixtures (one beam patched for the renumbering check), the
+  command line at Root and the copy closed.
 
 ## Where the libraries are
 
@@ -65,8 +65,13 @@ Evidence for [SU-03 in SETUP.md](../../SETUP.md#su-03--find-and-import-fixture-t
 | DmxCurves, Layers, Classes, PsrExtraData, Stages, IDTypes, DmxUniverses | equal |
 
 `LOGCHANNELS` and `CHANNELFUNCTIONS` count the fixture-type channels using an attribute: console-derived, like the
-counters the fingerprint already skips. A type that brings attributes the show lacks appends them to
-`AttributeDefinitions.Attributes`.
+counters the fingerprint already skips.
+
+**New attributes and features are appended.** Importing the Martin Mac Aura XB (a type with attributes the show
+lacked) grew `Attributes` from 375 to 395, the first 375 unchanged and in order, and gave the `Control` feature group a
+second feature (`Control`, then `FIXTURE`). `DeactivationGroups` (2), `ActivationGroups` (20) and the other feature
+groups were unchanged. The live objects are therefore a prefix of the copy's in every list, which is what an import
+session's isolation check can compare.
 
 ## Removing
 
