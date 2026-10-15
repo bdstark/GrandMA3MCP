@@ -84,6 +84,9 @@ const WORKFLOW_TOOLS = [
   "gma3_patch_remove_type",
   // SU-07 fixture-type structure
   "gma3_patch_type_structure",
+  // SU-08 cell layouts
+  "gma3_layout_cells",
+  "gma3_assign_cell_layout",
   // SU-04 fixture positions
   "gma3_fixture_positions",
   "gma3_place_fixtures",

@@ -27,6 +27,7 @@ import { registerPlaybackTools } from "./tools/playback.js";
 import { registerPositionTools } from "./tools/positions.js";
 import { registerCueListTools } from "./tools/cuelists.js";
 import { registerTypeStructureTools } from "./tools/typestructure.js";
+import { registerCellLayoutTools } from "./tools/celllayout.js";
 
 const env = process.env;
 const bridge = new Gma3Bridge({
@@ -619,6 +620,7 @@ registerTimecodeTools(server, toolContext);
 registerPositionTools(server, toolContext);
 registerCueListTools(server, toolContext);
 registerTypeStructureTools(server, toolContext);
+registerCellLayoutTools(server, toolContext);
 
 server.registerResource(
   "cheatsheet",

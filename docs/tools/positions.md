@@ -82,6 +82,81 @@ Not offered: scale. The console ignores `SCALEX/Y/Z` writes without an error.
 **No undo.** `Oops` does not revert positions. The result's `restore` is every placed fixture's previous pose in the
 same format as `placements`; passing it back restores them.
 
+## Cell layouts (SU-08)
+
+`gma3_layout_cells`, `gma3_assign_cell_layout`. Bridge 0.29.0 (`patch.cellLayout`, `patch.cellLayoutWrite`,
+`patch.layoutCopy`, `patch.retype`). Evidence: the [SU-08 record](../probes/su-08-cell-layout-macos-2.5.1.md).
+
+A cell (a SubFixture: a festoon's bulb, a pixel bar's pixel) has no position of its own. Its place is its geometry
+reference in the fixture type, under the DMX mode's root geometry. So **a cell layout belongs to every fixture whose
+mode uses that root**, all modes sharing it included. Each fixture can still be placed, rotated and mirrored as a whole
+with `gma3_place_fixtures`; moving the cells of one fixture alone needs a layout of its own.
+
+### gma3_layout_cells
+
+| Param | Notes |
+| --- | --- |
+| `fixture` | FID of a fixture with cells; its type and mode define the layout |
+| `path` | `shape` and its parameters (below), in `unit` |
+| `unit` | `m` (default), `cm`, `mm`, `ft`, `in` |
+| `count`, `rest` | place only the first `count` cells; the rest `keep` their positions (default) or stack at the `last` placed one |
+| `scope` | `shared` (default) or `own` |
+| `affects` | shared: every FID that uses the layout, exactly (`preview` lists them) |
+| `own` | own: `name` of the new type, `fixtures` that get it (default: the fixture) |
+| `preview`, `exclusive`, `verify` | `exclusive` required unless `preview` |
+
+**Paths.** Cells are placed every `spacing` along the path, from `origin`:
+- `line`: along `direction` (default `+x`).
+- `square_wave`: legs of `leg_length` along `leg_direction` (default `-y`), alternating; between legs a step of
+  `leg_step` (default `spacing`) along `advance` (default `+x`). With `leg_step` = `spacing` the cells continue along
+  the step, which is how a festoon strung back and forth hangs: 2 ft spacing and 10 ft legs give 6 bulbs per leg.
+- `zigzag`: diagonal legs, each advancing `leg_step` along `advance` while alternating between the origin line and
+  `leg_length` along `leg_direction`.
+- `points`: one `{x, y, z}` per cell, in order.
+
+Axes the path does not use keep each cell's own value unless `origin` sets them (a horizontal layout keeps the
+bulbs' drop). Positions are relative to the cells' parent geometry in the fixture type; the fixture's position,
+rotation and mirroring then apply.
+
+**Shared** writes the type's layout. The tool reads which fixtures use it and refuses, before writing anything,
+unless `affects` names exactly those. When it writes, the bridge checks the set again, and checks that the layout
+still belongs to the planned type (its GUID) with the planned number of cells.
+
+The whole call, from the first read through an own layout's patch session to the write and its read-back, holds
+this server's mutation lock, so no other tool call from this server can retype the fixtures in between.
+
+**Own** first runs one patch session (`exclusive`, isolation-checked like the patch tools):
+1. `patch.layoutCopy` appends a copy of the type under `own.name` and moves `own.fixtures` to the copy's mode of
+   the same name. Their FID, address, cells, group membership and preset values are kept (checked live).
+2. The session is committed, and the console gives the copy its own GUID. The tool checks that GUID: one that is all
+   zeros or equal to the source type's stops the call before any cell is moved (the fixtures are then on the copy,
+   and the result says how to move them back).
+
+Then the copy's cells are laid out. The other fixtures of the original type keep theirs. Fixtures that already are
+the only users of their layout are refused (use `shared`).
+
+Both are **refused while the patch copy is open**, since its commit would overwrite the positions. There is **no
+undo**: `previous` holds every planned cell's position before the call, ready to pass back as `points`. Read-back
+compares every written cell within 0.1 mm.
+
+A write that stops part-way (a cell the console refuses) is `partial`. `writeState` gives:
+- `written`: the cells known to be written;
+- `uncertain`: the cell that may be partly written;
+- `changedAfter`: the cells the read-back found moved.
+
+A lost reply leaves every planned cell uncertain, and the read-back says which moved.
+
+Positions are computed from each cell's arc length, so the work is one step per cell, whatever the legs.
+
+### gma3_assign_cell_layout
+
+Moves fixtures to another layout type of their fixture, so several fixtures share one layout: a copy made by
+`scope: "own"`, or back to the original. The target type must have a DMX mode of the same name with the same expanded
+DMX addressing, otherwise it is refused. That means every channel (name, coarse, fine, ultra, break, in order) at the
+same address in every cell, with the same cells (names and break offsets). Only the cells' positions may differ. One patch session
+(`patch.retype`), committed with no undo, then a read-back of the fixtures' type. An unused copy is removed with
+`gma3_patch_remove_type`.
+
 ## Live test procedure
 
 `test/live/positions.live.ts`, with `GMA3_LIVE=1`, on a disposable show. It uses the two top-level fixtures in
@@ -96,3 +171,9 @@ The after hook restores the starting poses if the run stops early. 1/1 on macOS 
 ```bash
 GMA3_LIVE=1 GMA3_LIVE_POSITION_FIDS=201,202 node --import tsx --test test/live/positions.live.ts
 ```
+
+`test/live/cell-layout.live.ts` (SU-08, `GMA3_LIVE=1` and `GMA3_LIVE_EXCLUSIVE=1`, two fixtures with cells sharing a
+layout from `GMA3_LIVE_CELL_FIDS`):
+1. a shared layout refused without every sharing fixture, then laid out as a line and restored from `previous`;
+2. an own layout (a square wave in feet) for the second fixture, while the first keeps its layout;
+3. the second fixture assigned back and the copy removed.

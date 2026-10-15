@@ -17,6 +17,8 @@ interface Fx {
   patch: string;
   mode: string;
   subfixtures?: number;
+  type?: string;
+  cells?: number;
 }
 
 const FP = 8;
@@ -45,6 +47,8 @@ class PatchWorld {
   listTotalExtra = 0;
   /** patch.check reports these fixtures' occupancy as unknown. */
   occupancyUnknown: Array<{ fid: number; reason: string }> = [];
+  /** Extra fields of the fixtures patch.add creates (type and cells, SU-08). */
+  addExtra: Partial<Fx> = {};
 
   frame() {
     if (this.delay > 0) {
@@ -142,7 +146,7 @@ class PatchWorld {
       const created: Fx[] = [];
       for (let i = 0; i < count; i++) {
         const addr = args.address ? blockAddress(args.address as string, FP, i) : "";
-        const fx = { fid: (args.fid as number) + i, name: (args.name as string) ?? `MHPar06 ${i + 1}`, patch: addr, mode: "Ch08" };
+        const fx = { fid: (args.fid as number) + i, name: (args.name as string) ?? `MHPar06 ${i + 1}`, patch: addr, mode: "Ch08", ...this.addExtra };
         this.copy.push(fx);
         created.push(fx);
       }
@@ -469,6 +473,27 @@ test("unknown DMX occupancy refuses an add or a readdress before anything is sen
     assert.ok(!ops().includes("patch.enter"), "no session was started");
     r = await h.callJson("gma3_patch_set", { edits: [{ fid: 402, name: "Renamed" }], exclusive: true });
     assert.equal(r.result.outcome, "succeeded", "a rename needs no free space");
+  } finally {
+    await h.close();
+  }
+});
+
+test("patch_add: fixtures with cells say their layout is shared, and string lights ask whether each needs its own (SU-08)", async () => {
+  const { h, w } = await setup();
+  try {
+    w.addExtra = { type: "2 Festoon 2 RGB", cells: 40 };
+    let r = await h.callJson("gma3_patch_add", { type: 6, mode: 3, fid: 601, address: "3.001", exclusive: true });
+    assert.equal(r.result.outcome, "succeeded", JSON.stringify(r.result, null, 2));
+    assert.equal(r.result.cellLayout.cells, 40);
+    assert.match(r.result.cellLayout.shared, /every fixture of that type and mode shares one cell layout/);
+    assert.match(r.result.cellLayout.ask, /Ask the user: should these fixtures share one cell layout/);
+    w.addExtra = { type: "1 36PCS 4in1 LED Wall Washer", cells: 12 };
+    r = await h.callJson("gma3_patch_add", { type: 6, mode: 3, fid: 611, address: "3.101", exclusive: true });
+    assert.equal(r.result.cellLayout.cells, 12);
+    assert.equal(r.result.cellLayout.ask, undefined, "a wash with cells is not asked about");
+    w.addExtra = {};
+    r = await h.callJson("gma3_patch_add", { type: 6, mode: 3, fid: 621, address: "3.201", exclusive: true });
+    assert.equal(r.result.cellLayout, undefined);
   } finally {
     await h.close();
   }

@@ -294,7 +294,19 @@ and the wall washer's model size (1.04 m, needed to space a pair 1 ft apart).
 
 **Lua changes:** Likely.
 
-**Status:** proposed; needs a design decision.
+**Status:** implemented in bridge 0.29.0: `gma3_layout_cells`, `gma3_assign_cell_layout`, and a cell note in
+`gma3_patch_add` ([docs/tools/positions.md](docs/tools/positions.md#cell-layouts-su-08), probe record
+[su-08-cell-layout-macos-2.5.1.md](docs/probes/su-08-cell-layout-macos-2.5.1.md), live test
+`test/live/cell-layout.live.ts` 1/1 on macOS onPC 2.5.1).
+
+**Decision (2026-10-15):** both mechanisms. A cell has no position of its own; its place is in the fixture type. So:
+- **shared** edits the type's layout in place, and `affects` must name every fixture that moves;
+- **own** copies the type for chosen fixtures and moves them to it (retyping keeps FID, address, cells, groups and
+  preset values, checked live), so strands of one fixture can hang differently;
+- `gma3_assign_cell_layout` moves fixtures between such layouts.
+
+Most fixtures with cells share their type's layout. At insert time, `gma3_patch_add` says so, and for string-light
+style types it asks the agent to ask the user whether each fixture needs its own layout.
 
 **Evidence:** the Festoon bulbs have no position of their own. The agent wrote the 40 `GeometryReference` positions of
 the Festoon 2 RGB type's geometry, which moves every Festoon of that type, and mirrored the second Festoon with
