@@ -189,7 +189,8 @@ test("gma3_patch_import: the whole session, committed and read back with the new
     const imp = h.fake.requests.find((r) => r.op === "patch.import")!;
     assert.deepEqual(imp.args, { exclusive: true, file: "oppsk@36pcs 4in1 led wall washer.pxml" });
     const fps = h.fake.requests.filter((r) => r.op === "patch.fingerprint");
-    assert.ok(fps.filter((r) => r.args.side === "copy").every((r) => r.args.prefixOfLive === true), "the copy is compared as a prefix of the live patch");
+    const copyFps = fps.filter((r) => r.args.side === "copy");
+    assert.ok(copyFps.every((r) => r.args.prefixOfLive === (r.args.collection === "FixtureTypes" || r.args.collection === "AttributeDefinitions")), "prefixOfLive only where an import appends");
     assert.ok(fps.filter((r) => r.args.side === "live").every((r) => r.args.excludeGuids === undefined));
     assert.equal(w.live.length, 4);
   } finally {

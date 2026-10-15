@@ -170,8 +170,9 @@ async function waitStep(bridge: Gma3Bridge, name: string, t: number, pred: (s: P
 
 /**
  * What a session's isolation check leaves out. excludeFids: the fixtures the call touches (both sides).
- * prefixOfLive: the copy is hashed only as far as the live patch has objects in every container, which leaves
- * out what an import appended (its type, attributes and features; SU-03). excludeGuidsLive: fixture types left
+ * prefixOfLive: in FixtureTypes and AttributeDefinitions the copy's appended types, attributes and features (what an
+ * import adds, SU-03) are left out; the bridge compares every other container and collection in full, so an
+ * unrelated addition still differs. excludeGuidsLive: fixture types left
  * out of the live side, the type a removal deletes (fixture types are compared by identity, so the renumbering
  * that follows is not a difference).
  */
@@ -180,6 +181,9 @@ interface IsolationSpec {
   prefixOfLive?: boolean;
   excludeGuidsLive?: string[];
 }
+
+/** Collections an import appends to (the bridge applies prefixOfLive only there either way). */
+const PREFIX_COLLECTIONS = new Set(["FixtureTypes", "AttributeDefinitions"]);
 
 async function fingerprints(bridge: Gma3Bridge, iso: IsolationSpec, t: number): Promise<{ equal: boolean; complete: boolean; mismatched: string[]; detail: Record<string, unknown> }> {
   const { excludeFids } = iso;
@@ -192,7 +196,8 @@ async function fingerprints(bridge: Gma3Bridge, iso: IsolationSpec, t: number): 
   if (JSON.stringify(cols.live) !== JSON.stringify(cols.copy)) mismatched.push(`collections differ: live ${cols.live.join(", ")} / copy ${cols.copy.join(", ")}`);
   for (const collection of cols.live) {
     const live = (await bridge.request("patch.fingerprint", { side: "live", collection, excludeFids, ...(iso.excludeGuidsLive?.length ? { excludeGuids: iso.excludeGuidsLive } : {}) }, ft)) as Fingerprint;
-    const copy = (await bridge.request("patch.fingerprint", { side: "copy", collection, excludeFids, ...(iso.prefixOfLive ? { prefixOfLive: true } : {}) }, ft)) as Fingerprint;
+    const prefix = iso.prefixOfLive && PREFIX_COLLECTIONS.has(collection);
+    const copy = (await bridge.request("patch.fingerprint", { side: "copy", collection, excludeFids, ...(prefix ? { prefixOfLive: true } : {}) }, ft)) as Fingerprint;
     if (!live.complete || !copy.complete) {
       complete = false;
       reasons.push(`${collection}: ${live.reason ?? copy.reason ?? "incomplete"}`);

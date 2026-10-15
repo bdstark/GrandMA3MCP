@@ -70,8 +70,11 @@ counters the fingerprint already skips.
 **New attributes and features are appended.** Importing the Martin Mac Aura XB (a type with attributes the show
 lacked) grew `Attributes` from 375 to 395, the first 375 unchanged and in order, and gave the `Control` feature group a
 second feature (`Control`, then `FIXTURE`). `DeactivationGroups` (2), `ActivationGroups` (20) and the other feature
-groups were unchanged. The live objects are therefore a prefix of the copy's in every list, which is what an import
-session's isolation check can compare.
+groups were unchanged. The live objects are therefore a prefix of the copy's in those lists, which is what an import
+session's isolation check compares there; every other container is compared in full (review of PR #48: truncating
+every container would have let an unrelated fixture added to the copy through). An import that brings attributes also raises `ATTRIBCOUNT`, a feature's attribute count (Clay Paky Sharpy: Beam 72 → 74,
+Control 103 → 113); the fingerprint skips it with the other counters. With that, the Ayrton Ghibli import (14 new
+attributes) passed the narrowed check, committed and read back, and was removed again.
 
 ## Removing
 

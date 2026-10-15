@@ -26,9 +26,10 @@ different). It compares the two, one collection per request. Anything else that
 differs means someone changed the show during the session: nothing is committed and the copy is left open.
 
 Fixture types are compared by identity, not by number (bridge 0.26.0): deleting a type renumbers the ones after it,
-and every display text naming a type carries its number. An import session compares the copy as a prefix of the
-live patch, because an import appends its type, attributes and features; a type removal leaves the removed type out of
-the live side.
+and every display text naming a type carries its number. An import session leaves out what an import appends: the
+new type at the end of the fixture-type list, and new attributes and features at the end of the attribute-definition
+lists. Every other container (fixture lists, the inside of existing types) and every other collection is compared in
+full, so an unrelated addition still fails the check. A type removal leaves the removed type out of the live side.
 
 The check is read over several seconds, so it is **not a consistent snapshot**. An edit landing in a collection
 after that collection was read is missed, and would be committed with the session. That is why exclusive use is
@@ -145,7 +146,8 @@ Read-back checks the FIDs are gone. The result's `removed` lists the fixtures as
 Read-only (`patch.library`). The fixture-type files the console can import, from its own library paths
 (`GetPath`): the grandMA3 library (a few fixtures and scenery), the grandMA2 library (about 11 500 fixtures), the user
 library and WorldServer downloads. Every word of `query` must occur in the manufacturer, model or file name, ignoring
-case. `sources` limits the libraries; scenery (`set@` files) is left out unless `include_sets`; `limit` (default 50,
+case; for an `.xml` file also in its header's name, manufacturer, short name or description (read from the first
+16 KB before filtering, cached by path, size and time). `sources` limits the libraries; scenery (`set@` files) is left out unless `include_sets`; `limit` (default 50,
 max 500) / `offset` paginate.
 
 Each entry has `source`, `file` (the name to import), `format`, `manufacturer` and `model` (from the file name,
@@ -169,7 +171,7 @@ pool:
 | `enter` | `patch.enter` with target `fixturetypes`: the copy, then its `FixtureTypes` |
 | `import` | `Import Library "<file>"` with `CmdIndirect` (no dialog) |
 | `wait_import` | Poll until exactly one type is appended. Claimed only when its name or manufacturer matches the file; two new types, or an error answer from the console, fail the step |
-| `isolation_check` | The copy as a prefix of the live patch |
+| `isolation_check` | Everything compared in full except the import's appends (the new type; new attributes and features) |
 | `commit`, read-back | The type in the live patch by GUID, with the same modes |
 
 The result has `type` (number, name, manufacturer, GUID, and the DMX modes with footprints and breaks),

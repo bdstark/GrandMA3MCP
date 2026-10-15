@@ -3931,8 +3931,8 @@ end
 -- mode's SubfixtureOverview (a derived list whose geometry references the copy renumbers); and the
 -- properties below. ATTRIBUTEINDEXOLD is unset (4294967295) in the live patch for attributes a fixture-type
 -- import added and numbered in the copy (onPC 2.5.1, live 2026-10-14: the only differences after importing
--- five grandMA2 types). LOGCHANNELS and CHANNELFUNCTIONS count the type channels using an attribute or feature
--- and rise with an import (SU-03, live 2026-10-15). A read that fails or more than PATCH_FP_LIMIT objects mark
+-- five grandMA2 types). LOGCHANNELS and CHANNELFUNCTIONS count the type channels using an attribute or feature,
+-- and ATTRIBCOUNT a feature's attributes; all three rise with an import (SU-03, live 2026-10-15). A read that fails or more than PATCH_FP_LIMIT objects mark
 -- it incomplete.
 --
 -- Fixture types are compared by identity, not by number: deleting a type renumbers the ones after it, and every
@@ -3943,18 +3943,24 @@ end
 --
 -- opts (SU-03):
 --   excludeGuids  types (by GUID) left out with their subtree: the type a removal deletes, on the live side
---   guide         a node of the other side: every container hashes only as many children as the guide's
---                 matching container has, so objects appended after the guide's are left out. An import
---                 appends its type, attributes and features (live 2026-10-15), so the copy guided by the live
---                 patch must hash exactly like the live patch.
+--   guide         the live patch, for the copy of an import session. An import appends its type to the
+--                 fixture-type list and its attributes and features to the attribute-definition lists (live
+--                 2026-10-15), so at exactly those levels (PATCH_FP_APPEND below) a container hashes only as many
+--                 children as the guide's matching container has. Every other container, the inside of every
+--                 existing type and every other collection are compared in full: an unrelated addition (a
+--                 fixture, a mode in an existing type) still differs.
 local PATCH_FP_SKIP = { DmxAddresses = true, UIChannels = true, RTChannels = true, FixtureTypesOverview = true, PatchFilter = true }
 local PATCH_FP_SKIP_CLASS = { SubfixtureOverview = true }
 local PATCH_FP_SHALLOW = { DmxUniverses = true }
 local PATCH_FP_RENUMBERED = { DmxCurves = true }
 local PATCH_FP_PROP_SKIP = { COUNT = true, NO = true, MEMORYFOOTPRINT = true, USED = true, PATCHINFO = true, COARSEPARAMS = true, PARKEDCOUNT = true, TESTERCOUNT = true,
   STRUCTURELOCKED = true, IGNORENETWORK = true, REALUSED = true, MAXID = true, GRANTED = true, SUBFIXTUREINDEX = true, OLDSUBFIXTUREINDEX = true,
-  ATTRIBUTEINDEXOLD = true, LOGCHANNELS = true, CHANNELFUNCTIONS = true }
+  ATTRIBUTEINDEXOLD = true, LOGCHANNELS = true, CHANNELFUNCTIONS = true, ATTRIBCOUNT = true }
 local PATCH_FP_LIMIT = 200000
+-- Where an import appends (collection -> walk depths whose children may extend the guide's): the type list of
+-- FixtureTypes; the items of AttributeDefinitions' containers (attributes, feature groups, activation groups)
+-- and the features of each feature group. The probe (2026-10-15) saw nothing else change.
+local PATCH_FP_APPEND = { FixtureTypes = { [1] = true }, AttributeDefinitions = { [2] = true, [3] = true } }
 
 local function fnv(h, s)
   for i = 1, #s do h = ((h ~ s:byte(i)) * 16777619) & 0xffffffff end
@@ -4007,11 +4013,11 @@ local function patchFingerprint(p, only, exclude, opts)
     r.hash = fnv(r.hash, table.concat(parts, "\31") .. "\n")
     return true
   end
-  local function walk(h, depth, renumbered, guide, typeList)
+  local function walk(h, depth, renumbered, guide, typeList, append)
     local kids = h:Children()
     local gkids = guide and guide:Children() or nil
-    local n = gkids and math.min(#kids, #gkids) or #kids
-    if gkids and #kids < #gkids then r.complete = false; r.reason = "the guided side has fewer children than its guide under " .. tostring(safeProp(h, "name")); return end
+    -- Truncate to the guide only where an import appends; elsewhere every child is hashed (so an extra one differs).
+    local n = (gkids and append and append[depth]) and math.min(#kids, #gkids) or #kids
     for i = 1, n do
       if not r.complete then return end
       local c = kids[i]
@@ -4020,7 +4026,7 @@ local function patchFingerprint(p, only, exclude, opts)
       local skipType = typeList and excludeGuids[guidOf(c)]
       if not (fid and exclude[fid]) and not PATCH_FP_SKIP_CLASS[class] and not skipType then
         if not add(c, depth, renumbered, typeList) then return end
-        walk(c, depth + 1, renumbered, gkids and gkids[i] or nil, false)
+        walk(c, depth + 1, renumbered, gkids and gkids[i] or nil, false, append)
       end
     end
   end
@@ -4031,9 +4037,10 @@ local function patchFingerprint(p, only, exclude, opts)
       if PATCH_FP_SHALLOW[cname] then
         for _, u in ipairs(c:Children()) do if not add(u, 1) then break end end
       else
-        local guide = opts.guide and opts.guide[cname] or nil
-        if opts.guide and not guide then r.complete = false; r.reason = "the guide has no collection " .. cname; break end
-        walk(c, 1, PATCH_FP_RENUMBERED[cname], guide, cname == "FixtureTypes")
+        local append = opts.guide and PATCH_FP_APPEND[cname] or nil
+        local guide = append and opts.guide[cname] or nil
+        if append and not guide then r.complete = false; r.reason = "the guide has no collection " .. cname; break end
+        walk(c, 1, PATCH_FP_RENUMBERED[cname], guide, cname == "FixtureTypes", append)
       end
     end
   end
@@ -4090,6 +4097,10 @@ do
   }
   local LIB_MAX_LIMIT = 500
   local XML_READ_MAX = 4 * 1024 * 1024
+  -- The FixtureType element sits at the top of the file (byte 72 in the shipped files), so the searchable header
+  -- is read from the first part only, before filtering; the mode names (the whole file) only for the returned page.
+  local XML_HEADER_READ = 16 * 1024
+  local headerCache = {}
 
   local function sourcePath(src)
     local pt = Enums.PathType and Enums.PathType[src.path]
@@ -4113,22 +4124,31 @@ do
     return nil, stem, nil, (ext or ""):lower()
   end
 
-  -- The FixtureType element's attributes and the DMX mode names of a grandMA3-format XML file.
-  local function readXmlHeader(path)
-    local f = io.open(path, "rb")
-    if not f then return nil, "cannot be opened" end
-    local text = f:read(XML_READ_MAX) or ""
+  -- The FixtureType element's attributes of a grandMA3-format XML file and, with withModes, its DMX mode names.
+  -- Headers are cached by path, size and time, so a repeated search reads no file again.
+  local function readXmlHeader(e, withModes)
+    local key = e.path .. "|" .. tostring(e.size) .. "|" .. tostring(e.time)
+    local cached = headerCache[key]
+    if cached and (cached.modes or not withModes) then return cached.header, cached.why end
+    local f = io.open(e.path, "rb")
+    if not f then headerCache[key] = { why = "cannot be opened" }; return nil, "cannot be opened" end
+    local text = f:read(withModes and XML_READ_MAX or XML_HEADER_READ) or ""
     f:close()
     local attrs = text:match("<FixtureType%s+([^>]*)>")
-    if not attrs then return nil, "no FixtureType element" end
+    if not attrs then headerCache[key] = { why = "no FixtureType element", modes = withModes or nil }; return nil, "no FixtureType element" end
     local h = {}
     for k, v in attrs:gmatch('([%w_]+)="([^"]*)"') do h[k] = decodeXml(v) end
-    local modes = {}
-    for mattrs in text:gmatch("<DMXMode%s+([^>]*)>") do
-      local n = mattrs:match('Name="([^"]*)"')
-      if n then modes[#modes + 1] = decodeXml(n) end
+    local header = { name = h.Name, manufacturer = h.Manufacturer, shortName = h.ShortName, description = h.Description }
+    if withModes then
+      local modes = {}
+      for mattrs in text:gmatch("<DMXMode%s+([^>]*)>") do
+        local n = mattrs:match('Name="([^"]*)"')
+        if n then modes[#modes + 1] = decodeXml(n) end
+      end
+      header.modes = modes
     end
-    return { name = h.Name, manufacturer = h.Manufacturer, shortName = h.ShortName, description = h.Description, modes = modes }
+    headerCache[key] = { header = header, modes = withModes or nil }
+    return header
   end
 
   local function lower(v) return v and tostring(v):lower() or nil end
@@ -4148,7 +4168,7 @@ do
                 local name = e.name
                 if type(name) == "string" and name:lower():sub(-#ext - 1) == "." .. ext then
                   local manufacturer, model, revision, fext = parseFileName(name)
-                  entries[#entries + 1] = { source = src.id, file = name, path = base .. "/" .. name, size = e.size, format = fext,
+                  entries[#entries + 1] = { source = src.id, file = name, path = base .. "/" .. name, size = e.size, time = e.time, format = fext,
                     manufacturer = manufacturer, model = model, revision = revision, verified = src.verified }
                 end
               end
@@ -4178,7 +4198,7 @@ do
     local out = { source = e.source, file = e.file, format = e.format, size = e.size, manufacturer = e.manufacturer, model = e.model, revision = e.revision,
       verified = e.verified, set = lower(e.manufacturer) == "set" }
     if withHeader and e.format == "xml" then
-      local h, why = readXmlHeader(e.path)
+      local h, why = readXmlHeader(e, true)
       if h then
         out.name = h.name; out.manufacturer = h.manufacturer or out.manufacturer; out.shortName = h.shortName; out.description = h.description
         out.modes = emptyArray(h.modes)
@@ -4186,6 +4206,7 @@ do
         out.headerError = why
       end
     end
+    out.set = out.set or lower(out.manufacturer) == "set"
     out.modesKnown = out.modes ~= nil
     local inShow = typesMatching(p, out.manufacturer, out.name or out.model)
     out.inShow = emptyArray(inShow)
@@ -4223,9 +4244,12 @@ do
       if exact then
         keep = e.file == exact
       else
-        keep = args.includeSets == true or lower(e.manufacturer) ~= "set"
+        -- An .xml file is searched by its header too (a file name need not name the manufacturer).
+        local h = e.format == "xml" and readXmlHeader(e, false) or nil
+        local manufacturer = (h and h.manufacturer) or e.manufacturer
+        keep = args.includeSets == true or (lower(e.manufacturer) ~= "set" and lower(manufacturer) ~= "set")
         if keep and #words > 0 then
-          local hay = ((e.manufacturer or "") .. " " .. (e.model or "") .. " " .. e.file):lower()
+          local hay = table.concat({ e.manufacturer or "", e.model or "", e.file, h and h.manufacturer or "", h and h.name or "", h and h.shortName or "", h and h.description or "" }, " "):lower()
           for _, w in ipairs(words) do if not hay:find(w, 1, true) then keep = false; break end end
         end
       end

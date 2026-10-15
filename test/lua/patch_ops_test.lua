@@ -24,7 +24,7 @@ Enums = { PathType = { Temp = 1, GrandMA3Library = 2, GrandMA2Library = 3, UserF
 local LIBDIR = os.tmpname(); os.remove(LIBDIR); os.execute('mkdir -p "' .. LIBDIR .. '/ma3" "' .. LIBDIR .. '/ma2" "' .. LIBDIR .. '/user" "' .. LIBDIR .. '/ws"')
 local LIBPATHS = { [2] = LIBDIR .. "/ma3", [3] = LIBDIR .. "/ma2", [4] = LIBDIR .. "/user", [5] = LIBDIR .. "/ws" }
 local LIBFILES = {
-  [2] = { "acme@spot one.xml", "set@truss a.xml" },
+  [2] = { "acme@spot one.xml", "set@truss a.xml", "custom.xml" },
   [3] = { "test@mega hex par.pxml", "generic@dimmer.pxml", "acme@wash two.pxml" },
   [4] = { "acme@spot one.xml", "solo@user only@rev2.gdtf" },
   [5] = {},
@@ -33,6 +33,8 @@ local SPOT_XML = '<?xml version="1.0" encoding="UTF-8"?>\n<GMA3 DataVersion="1.5
   .. '    <DMXModes>\n      <DMXMode Name="Standard" Geometry="Base">\n      </DMXMode>\n      <DMXMode Name="Extended (16 ch)" Geometry="Base">\n      </DMXMode>\n    </DMXModes>\n  </FixtureType>\n</GMA3>\n'
 for _, d in ipairs({ "ma3", "user" }) do local f = assert(io.open(LIBDIR .. "/" .. d .. "/acme@spot one.xml", "wb")); f:write(SPOT_XML); f:close() end
 local f0 = assert(io.open(LIBDIR .. "/ma3/set@truss a.xml", "wb")); f0:write('<GMA3><FixtureType Name="Truss A" Manufacturer="Set"></FixtureType></GMA3>'); f0:close()
+-- A file whose name says nothing about its fixture: only the header names the manufacturer (review of PR #48).
+local f1 = assert(io.open(LIBDIR .. "/ma3/custom.xml", "wb")); f1:write('<GMA3><FixtureType Name="Custom Thing" Manufacturer="HeaderOnly" ShortName="CThing"><DMXMode Name="Basic"></DMXMode></FixtureType></GMA3>'); f1:close()
 GetPath = function(pt) return LIBPATHS[pt] end
 DirList = function(path, filter)
   local ext = filter and filter:match("^%*%.(.+)$")
@@ -131,7 +133,9 @@ local function buildLive()
   local mhpType = types.kids[3]; mhpType.kids[#mhpType.kids + 1] = overview()
   -- An attribute a fixture-type import added: ATTRIBUTEINDEXOLD is unset live and numbered in the copy (live 2026-10-14).
   local attrs = obj("Attributes", "Attributes", 1, {}, { obj("Attribute", "DIM", 1, { { "PRETTY", "Dim" }, { "ATTRIBUTEINDEXOLD", 0 } }), obj("Attribute", "PIXELMASK", 2, { { "PRETTY", "PixelMask" }, { "ATTRIBUTEINDEXOLD", 4294967295 } }) })
-  local attrDefs = obj("AttributeDefinitions", "AttributeDefinitions", 2, {}, { attrs })
+  -- A feature counts its attributes (ATTRIBCOUNT), which an import raises (live 2026-10-15).
+  local features = obj("FeatureGroups", "FeatureGroups", 2, {}, { obj("FeatureGroup", "Control", 1, {}, { obj("Feature", "Control", 1, { { "ATTRIBCOUNT", 3 } }) }) })
+  local attrDefs = obj("AttributeDefinitions", "AttributeDefinitions", 2, {}, { attrs, features })
   -- DMXModes children by No: the fixture type keeps them in order of No (the x placeholder is mode 2).
   local pars = {}
   for i = 1, 3 do pars[i] = fixture("Par " .. i, 400 + i, MODE8, string.format("1.%03d", 1 + (i - 1) * 8)); pars[i].TypeRef = mhpType end
@@ -193,6 +197,10 @@ local function frame()
       -- An import appends the attributes the show lacks (live 2026-10-15).
       local attrs = console.copy.AttributeDefinitions.kids[1]
       attrs.kids[#attrs.kids + 1] = obj("Attribute", "NEW" .. #attrs.kids, #attrs.kids + 1, { { "PRETTY", "New" }, { "ATTRIBUTEINDEXOLD", 4294967295 } })
+      -- ... raises an existing feature's attribute count and appends a feature to its group.
+      local group = console.copy.AttributeDefinitions.kids[2].kids[1]
+      group.kids[1].pv.ATTRIBCOUNT = group.kids[1].pv.ATTRIBCOUNT + 1
+      group.kids[#group.kids + 1] = obj("Feature", "FIXTURE", #group.kids + 1, { { "ATTRIBCOUNT", 1 } })
     elseif cmd == "ChangeDestination Root" then
       if console.copyOpen then local l = deepcopy(console.copy); l.addr = "14.9"; l.name = "LivePatch"; console.live = l end
       console.copy = obj("Patch", "Patch", 10, {}, {}); console.copy.addr = "14.10"; console.copyOpen = false; console.dest = "Root"
@@ -500,7 +508,13 @@ check("a user-library copy of the same file is listed and marked unverified", r.
 r = request("patch.library", {})
 local hasSet = false
 if r.ok then for _, e in ipairs(r.result.entries) do if e.file:find("^set@") then hasSet = true end end end
-check("scenery (set@) is left out by default", r.ok and not hasSet and r.result.total == 6, J(r))
+check("scenery (set@) is left out by default", r.ok and not hasSet and r.result.total == 7, J(r))
+r = request("patch.library", { query = "headeronly" })
+check("an .xml file is found by a manufacturer only its header names", r.ok and r.result.total == 1 and r.result.entries[1].file == "custom.xml" and r.result.entries[1].manufacturer == "HeaderOnly" and r.result.entries[1].name == "Custom Thing" and r.result.entries[1].modes[1] == "Basic", J(r))
+r = request("patch.library", { query = "custom thing" })
+check("an .xml file is found by its header name", r.ok and r.result.total == 1 and r.result.entries[1].file == "custom.xml", J(r))
+r = request("patch.library", { query = "cthing" })
+check("an .xml file is found by its header short name", r.ok and r.result.total == 1, J(r))
 r = request("patch.library", { includeSets = true, query = "truss" })
 check("includeSets lists scenery", r.ok and r.result.total == 1 and r.result.entries[1].set == true, J(r))
 r = request("patch.library", { sources = { "user" } })
@@ -544,6 +558,16 @@ local mhpCopy = console.copy.FixtureTypes.kids[3]
 mhpCopy:Set("SHORTNAME", "Changed")
 check("a foreign change to a type the live patch has is still seen with prefixOfLive", fpAll("copy", { prefixOfLive = true }) ~= fpAll("live"))
 mhpCopy:Set("SHORTNAME", "Mega H")
+-- Review of PR #48: only the import's own appends are left out; an unrelated addition is still a difference.
+local copyFixtures = console.copy.Stages.kids[1].Fixtures
+copyFixtures.kids[#copyFixtures.kids + 1] = fixture("Foreign", 950, MODE1, "3.001")
+check("an unrelated fixture appended to the copy is seen with prefixOfLive", fpAll("copy", { prefixOfLive = true }) ~= fpAll("live"))
+table.remove(copyFixtures.kids)
+local mhpModes = mhpCopy.DMXModes
+mhpModes.kids[#mhpModes.kids + 1] = mode(9, "Foreign mode", 4)
+check("a mode appended to an existing type in the copy is seen with prefixOfLive", fpAll("copy", { prefixOfLive = true }) ~= fpAll("live"))
+table.remove(mhpModes.kids)
+check("(back to only the import's appends: equal again)", fpAll("copy", { prefixOfLive = true }) == fpAll("live"))
 request("patch.commit", X); frame()
 r = request("patch.types")
 check("after the commit the imported type is live", r.ok and r.result.count == 6 and r.result.types[6].name == "Dimmer" and r.result.types[6].guid == imported.guid, J(r))
