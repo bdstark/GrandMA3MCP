@@ -6,6 +6,9 @@
  *   gma3_set_color         set ColorRGB_R/G/B (0..100 %) on an explicit target
  *   gma3_set_position      set Pan/Tilt in explicit units on an explicit target
  *   gma3_clear_programmer  ClearSelection / ClearActive / ClearAll, explicitly
+ *   gma3_set_attributes    several attributes and/or intensity on one target in one call (SU-05)
+ *   gma3_apply_preset      At Preset on an explicit target, verified by the programmer's preset link (SU-05)
+ *   gma3_release_attributes  Off Attribute / Off Selection on an explicit target, verified for collateral (SU-05)
  *
  * Only the existing bridge ops are used: `cmd` for every mutation and `objects` for read-only
  * checks and read-back. No Lua is generated.
@@ -329,6 +332,8 @@ interface ProgrammerRow {
   physicalTo?: number | null;
   readout?: string | null;
   physicalUnit?: string | null;
+  /** The preset a recall linked the channel to (bridge 0.27.0). */
+  absPreset?: { name?: string | null; addrNative?: string | null } | null;
 }
 
 interface ProgrammerResult {
@@ -725,6 +730,151 @@ async function readBackValues(bridge: Gma3Bridge, verify: boolean, steps: StepRe
 /** Did any mutation (cmd step) actually succeed? */
 const anySucceeded = (steps: StepResult[], names: string[]): boolean => steps.some((s) => names.includes(s.name) && s.status === "succeeded");
 
+
+// ---------------------------------------------------------------------------
+// SU-05: preset links and release read-back (docs/probes/su-05-programmer-macos-2.5.1.md)
+// ---------------------------------------------------------------------------
+
+/** Top-level fixture of a scanned (sub)fixture: its root FID, or its own FID. */
+const rootOf = (e: ScannedFixture): string | null => (e.rootFid && e.rootFid !== "None" ? e.rootFid : e.fid && e.fid !== "None" ? e.fid : null);
+
+/**
+ * After `At Preset`: every selected fixture, or its cells, must hold at least one programmer value linked to the
+ * preset (the channel's abs_preset, bridge 0.27.0). A fixture whose scanned entry holds none gets one follow-up scan of
+ * itself and its cells (a compound fixture's values live on its cells). The link proves the recall reached the
+ * channel; it also survives a later manual value, so the check belongs right after the recall.
+ */
+async function verifyPresetLink(bridge: Gma3Bridge, preset: { addrNative: string; label: string }, steps: StepResult[]): Promise<{ verification: Verification; summary: Record<string, unknown> }> {
+  const checked = `every selected fixture (or its cells) holds programmer values linked to ${preset.label}`;
+  const linkedRows = (rows: ProgrammerRow[]) => rows.filter((r) => r.absPreset?.addrNative === preset.addrNative);
+  let primary: ProgrammerResult;
+  try {
+    const read = await readProgrammerPages(bridge, { scope: "selection" });
+    if ("reason" in read) {
+      steps.push({ name: "read_programmer", kind: "read", status: "failed", op: "programmer", error: read.reason });
+      return { verification: unavailable(read.reason, checked), summary: { performed: true, complete: false } };
+    }
+    primary = read.result;
+    steps.push({ name: "read_programmer", kind: "read", status: "succeeded", op: "programmer", detail: { rows: primary.total, coverage: primary.coverage } });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    steps.push({ name: "read_programmer", kind: "read", status: "failed", op: "programmer", error: message });
+    return { verification: unavailable(`programmer read-back failed: ${message}`, checked), summary: { performed: false } };
+  }
+  const rows = primary.rows ?? [];
+  if (rows.length && rows.every((r) => r.absPreset === undefined)) {
+    return { verification: unavailable("the bridge plugin does not report preset links (needs bridge 0.27.0); re-import it to verify a recall", checked), summary: { performed: true } };
+  }
+  const problems: string[] = [];
+  const unavailableReasons: string[] = [];
+  const perFixture: Array<{ fixture: string; linkedValues: number; attributes: string[] }> = [];
+  if (primary.coverage?.complete === false || primary.fixturesTruncated) unavailableReasons.push("the programmer scan of the selection was incomplete");
+  const scanned = primary.scannedFixtures ?? [];
+  if (scanned.length === 0) unavailableReasons.push("the selection was empty when the programmer was read");
+  let followUps = 0;
+  for (const f of scanned) {
+    if (typeof f.subfixtureIndex !== "number") continue;
+    const label = `${f.name ?? "fixture"}${f.fid && f.fid !== "None" ? ` (Fixture ${f.fid})` : ""}`;
+    let linked = linkedRows(rows.filter((r) => r.subfixtureIndex === f.subfixtureIndex));
+    if (linked.length === 0 && f.fid && f.fid !== "None") {
+      if (followUps >= MAX_FOLLOWUP_SCANS) {
+        unavailableReasons.push(`${label}: not re-scanned (more than ${MAX_FOLLOWUP_SCANS} fixtures needed a follow-up scan)`);
+        continue;
+      }
+      followUps++;
+      const sub = await readProgrammerPages(bridge, { scope: "fixtures", fixtures: `Fixture ${f.fid}` }).catch((err: unknown) => ({ reason: err instanceof Error ? err.message : String(err) }));
+      if ("reason" in sub) {
+        unavailableReasons.push(`${label}: ${sub.reason}`);
+        continue;
+      }
+      steps.push({ name: "read_programmer_fixture", kind: "read", status: "succeeded", op: "programmer", detail: { fixture: f.fid, rows: sub.result.total } });
+      linked = linkedRows(sub.result.rows ?? []);
+    }
+    if (linked.length === 0) problems.push(`${label}: no programmer value is linked to ${preset.label} (the preset holds no value this fixture takes, or the recall did not reach it)`);
+    else perFixture.push({ fixture: label, linkedValues: linked.length, attributes: [...new Set(linked.map((r) => r.attribute ?? "?"))] });
+  }
+  const summary = { performed: true, fixturesChecked: perFixture.length + problems.length, followUpScans: followUps, fixtures: perFixture };
+  if (problems.length) return { verification: { status: "mismatched", checked, detail: problems.join("; ") }, summary };
+  if (unavailableReasons.length) return { verification: unavailable(unavailableReasons.join("; "), checked), summary };
+  return { verification: { status: "matched", checked, actual: perFixture }, summary };
+}
+
+interface ProgrammerSnapshot {
+  /** Root FID of every (sub)fixture index in the show's scan. */
+  rootByIndex: Map<number, string | null>;
+  /** "index|attribute" -> value text, for every programmer row. */
+  values: Map<string, string>;
+  complete: boolean;
+  reason?: string;
+}
+
+async function snapshotProgrammer(bridge: Gma3Bridge): Promise<ProgrammerSnapshot> {
+  const read = await readProgrammerPages(bridge, { scope: "all" });
+  if ("reason" in read) return { rootByIndex: new Map(), values: new Map(), complete: false, reason: read.reason };
+  const r = read.result;
+  const rootByIndex = new Map<number, string | null>();
+  for (const e of r.scannedFixtures ?? []) if (typeof e.subfixtureIndex === "number") rootByIndex.set(e.subfixtureIndex, rootOf(e));
+  const values = new Map<string, string>();
+  for (const row of r.rows ?? []) if (typeof row.subfixtureIndex === "number") values.set(`${row.subfixtureIndex}|${row.attribute ?? "?"}`, JSON.stringify(row.value ?? null));
+  const complete = r.coverage?.complete !== false && !r.fixturesTruncated;
+  return { rootByIndex, values, complete, ...(complete ? {} : { reason: "the programmer scan was incomplete" }) };
+}
+
+/** Root FIDs of the current selection (after the target steps: exactly the target). */
+async function selectedRoots(bridge: Gma3Bridge): Promise<{ roots: Set<string> } | { reason: string }> {
+  const read = await readProgrammerPages(bridge, { scope: "selection" });
+  if ("reason" in read) return { reason: read.reason };
+  const roots = new Set<string>();
+  for (const e of read.result.scannedFixtures ?? []) {
+    const r = rootOf(e);
+    if (r) roots.add(r);
+  }
+  if (roots.size === 0) return { reason: "the selection holds no fixture with a FID" };
+  return { roots };
+}
+
+/**
+ * After a release: no value of the released attributes (every value, for all) remains on the target fixtures or
+ * their cells, and every other fixture's values are unchanged (Off Attribute with an empty selection would hit every
+ * fixture, so collateral is checked, not assumed).
+ */
+function judgeRelease(before: ProgrammerSnapshot, after: ProgrammerSnapshot, roots: Set<string>, attributes: string[] | null): { verification: Verification; summary: Record<string, unknown> } {
+  const checked = `${attributes ? attributes.join(", ") : "every value"} removed from the target fixtures (and their cells); every other fixture's programmer values unchanged`;
+  if (!before.complete || !after.complete) return { verification: unavailable(before.reason ?? after.reason ?? "incomplete programmer scan", checked), summary: { performed: true } };
+  const isTarget = (idx: number) => {
+    const r = after.rootByIndex.get(idx) ?? before.rootByIndex.get(idx);
+    return r !== null && r !== undefined && roots.has(r);
+  };
+  const wanted = attributes ? new Set(attributes.map((a) => a.toLowerCase())) : null;
+  const remaining: string[] = [];
+  const collateral: string[] = [];
+  let released = 0;
+  for (const [key, val] of before.values) {
+    const [idxText, attr] = key.split("|");
+    const idx = Number(idxText);
+    if (isTarget(idx)) {
+      const releasedHere = wanted === null || wanted.has(attr.toLowerCase());
+      if (releasedHere) {
+        if (after.values.has(key)) remaining.push(`index ${idx} ${attr}`);
+        else released++;
+      } else if (after.values.get(key) !== val) collateral.push(`target index ${idx} ${attr} (not released) changed`);
+    } else if (after.values.get(key) !== val) {
+      collateral.push(`index ${idx} (Fixture ${before.rootByIndex.get(idx) ?? "?"}) ${attr} ${after.values.has(key) ? "changed" : "was removed"}`);
+    }
+  }
+  const summary = { performed: true, valuesReleased: released, targets: [...roots] };
+  const problems = [...remaining.map((r) => `${r} is still in the programmer`), ...collateral];
+  if (problems.length) return { verification: { status: "mismatched", checked, detail: problems.slice(0, 20).join("; ") + (problems.length > 20 ? `; ... ${problems.length - 20} more` : "") }, summary };
+  return { verification: { status: "matched", checked, actual: summary }, summary };
+}
+
+/** `Preset 4.12` / `Preset 4."Name"` from a pool number and a preset number or name. */
+export function presetRef(pool: number, preset: number | string): string {
+  return typeof preset === "number" ? `Preset ${pool}.${preset}` : `Preset ${pool}."${preset}"`;
+}
+
+const MAX_ATTRIBUTES = 32;
+
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
@@ -1064,6 +1214,239 @@ export const registerFixtureTools: RegisterTools = (server, ctx: ToolContext) =>
           });
           result.steps.push(...readBack);
           return result;
+        });
+      }),
+  );
+  // -------------------------------------------------------------------------
+  // SU-05
+  // -------------------------------------------------------------------------
+  server.registerTool(
+    "gma3_set_attributes",
+    {
+      title: "Set several attributes (a look) in one call",
+      description:
+        'Set a whole look on one target in one call: intensity (`At <value>`, percent) and/or several attributes, each `Attribute "<name>" At Absolute [<unit keyword>] <value>`, in the order given. Stops at the first command the console rejects (partial result). ' +
+        "Target is explicit: `fixtures` OR `use_selection: true`; with `fixtures`, ClearSelection and then a select (see gma3_set_attribute). Never clears programmer values. " +
+        "Note: setting one colour attribute activates the fixture's whole colour group in the programmer (the other mix channels at their defaults), so the programmer can hold more rows than attributes sent. " +
+        "Small explicit targets are pre-checked against the fixture types' attributes (check_attributes); the programmer is read back and every targeted fixture (and cell) is compared per attribute in the unit sent (verify), as gma3_set_attribute does. Serialised against this server's other mutations only.",
+      inputSchema: {
+        ...setterShape,
+        intensity: z.number().optional().describe("Intensity 0..100 percent, sent as `At <value>` (the Dimmer attribute)."),
+        values: z
+          .array(
+            z.object({
+              attribute: z.string().describe('Attribute name, e.g. "Pan", "ColorRGB_W", "Gobo1", "Shutter1".'),
+              value: z.number().describe("Absolute value in unit."),
+              unit: z.enum(ATTRIBUTE_UNIT_NAMES as [AttributeUnit, ...AttributeUnit[]]).optional().describe("percent, percent_fine, physical, natural, decimal8/16/24; omit for the console's readout."),
+            }),
+          )
+          .optional()
+          .describe(`Attributes to set (up to ${MAX_ATTRIBUTES}), each once.`),
+      },
+    },
+    async (args) =>
+      operation(async () => {
+        const op = "set_attributes";
+        const v = new Validator();
+        const t = validateTarget(v, args);
+        const intensity = args.intensity === undefined ? undefined : v.check(() => percent("intensity", args.intensity));
+        const values: Array<{ attribute: string; value: number; unit?: AttributeUnit }> = [];
+        const list = Array.isArray(args.values) ? args.values : [];
+        if (args.values !== undefined && !Array.isArray(args.values)) v.fail("values must be a list");
+        if (list.length > MAX_ATTRIBUTES) v.fail(`at most ${MAX_ATTRIBUTES} attributes per call`);
+        list.forEach((e, i) => {
+          const attribute = v.check(() => attributeName(`values[${i}].attribute`, e?.attribute));
+          const unit = v.check(() => oneOf(`values[${i}].unit`, e?.unit, ATTRIBUTE_UNIT_NAMES, { optional: true }));
+          const rule = unit ? ATTRIBUTE_UNITS[unit] : { min: undefined, max: undefined, integer: false };
+          const value = v.check(() => finiteNumber(`values[${i}].value`, e?.value, { min: rule.min, max: rule.max, integer: rule.integer }));
+          if (value !== undefined && value < 0 && !(unit === "physical" || unit === "natural")) v.fail(`values[${i}].value must not be negative for unit ${unit ?? "readout"}; use physical or natural for signed values`);
+          if (attribute && values.some((x) => x.attribute.toLowerCase() === attribute.toLowerCase())) v.fail(`attribute ${attribute} appears twice`);
+          if (attribute && intensity !== undefined && attribute.toLowerCase() === "dimmer") v.fail("Dimmer and intensity are the same attribute: give one of them");
+          if (attribute && value !== undefined) values.push({ attribute, value, ...(unit ? { unit } : {}) });
+        });
+        if (intensity === undefined && list.length === 0) v.fail("give intensity and/or values");
+        const baseTarget = { fixtures: args.fixtures, use_selection: args.use_selection, intensity: args.intensity, values: args.values };
+        if (!v.ok || !t) return validationFailure(op, baseTarget, v.errors);
+        const commands: Array<{ name: string; attribute: string; value: number; unit: AttributeUnit | "readout"; command: string }> = [];
+        if (intensity !== undefined) commands.push({ name: "set_intensity", attribute: "Dimmer", value: intensity, unit: "percent", command: `At ${formatValue(intensity)}` });
+        values.forEach((x, i) => commands.push({ name: `set_${i + 1}_${x.attribute}`, attribute: x.attribute, value: x.value, unit: x.unit ?? "readout", command: attributeCommand(x.attribute, x.value, x.unit ? ATTRIBUTE_UNITS[x.unit].keyword : undefined) }));
+        const target = { ...t.target, values: commands.map(({ attribute, value, unit }) => ({ attribute, value, unit })) };
+        const verify = args.verify !== false;
+        const preCheck = args.check_attributes !== false;
+        return ctx.mutations.run(async () => {
+          const warnings: string[] = [];
+          if (values.some((x) => !x.unit)) warnings.push("a value without unit was interpreted with the user profile's current readout for its attribute");
+          const resolved = { fixtures: [] as ResolvedFixture[], total: 0 };
+          const plan: Array<{ name: string; run: StepFn }> = values.map((x) => ({ name: `check_attribute_${x.attribute}`, run: checkAttributeStep(bridge, x.attribute, warnings) }));
+          const targetPlan = targetSteps(bridge, t, warnings, resolved);
+          plan.push(...targetPlan);
+          if (preCheck && t.selection !== null) plan.splice(values.length + 1, 0, { name: "check_fixture_attributes", run: checkFixtureAttributesStep(bridge, resolved, commands.map((c) => c.attribute), warnings) });
+          for (const c of commands) plan.push({ name: c.name, run: () => commandStep(bridge, c.name, c.command) });
+          const { steps } = await runSteps(plan);
+          const sent = commands.filter((c) => steps.some((s) => s.name === c.name && (s.status === "succeeded" || s.status === "unknown")));
+          const rb = await readBackValues(bridge, verify, steps, sent.map(({ attribute, value, unit }) => ({ attribute, value, unit })), sent.length > 0, warnings);
+          return finish({
+            operation: op,
+            target,
+            steps,
+            warnings,
+            selectionChanged: anySucceeded(steps, ["select", "clear_selection"]),
+            programmerValuesChanged: anySucceeded(steps, commands.map((c) => c.name)),
+            verification: rb.verification,
+            readBackSteps: rb.readBackSteps,
+            extra: { commands: commands.map((c) => c.command), ...rb.extra },
+          });
+        });
+      }),
+  );
+
+  server.registerTool(
+    "gma3_apply_preset",
+    {
+      title: "Apply a preset to fixtures",
+      description:
+        "Recall a stored preset into the programmer for an explicit target: `At Preset <pool>.<number>` (or a preset by name). Target: `fixtures` OR `use_selection: true` (with `fixtures`, ClearSelection and a select first). " +
+        "Pre-checks (nothing sent on failure): the preset exists, and the target is not empty. Both matter: the console answers OK and changes nothing for a missing preset or an empty selection. " +
+        "A preset applies to every fixture that has its attributes, whatever type it was stored from. Read-back: every selected fixture (or its cells) must hold programmer values linked to the preset (the channel's preset link; needs bridge 0.27.0); a fixture the preset holds nothing for is a mismatch. Never clears programmer values.",
+      inputSchema: {
+        ...targetShape,
+        pool: z.number().describe("Preset pool number: 1 Dimmer, 2 Position, 3 Gobo, 4 Color, 5 Beam, 6 Focus, 7 Control, 8 Shapers, 9 Video, 21.. All."),
+        preset: z.union([z.number(), z.string()]).describe("Preset number in the pool, or its name."),
+        verify: z.boolean().optional().describe("Read the programmer back and check the preset links (default true)."),
+      },
+    },
+    async (args) =>
+      operation(async () => {
+        const op = "apply_preset";
+        const v = new Validator();
+        const t = validateTarget(v, args);
+        const pool = v.check(() => finiteNumber("pool", args.pool, { integer: true, min: 1, max: 9999 }));
+        let preset: number | string | undefined;
+        if (typeof args.preset === "number") preset = v.check(() => finiteNumber("preset", args.preset, { integer: true, min: 1, max: 99999 }));
+        else if (typeof args.preset === "string" && args.preset.trim() !== "" && !/["\u0000-\u001f]/.test(args.preset)) preset = args.preset.trim();
+        else v.fail("preset must be a number or a name without quotes");
+        if (!v.ok || !t || pool === undefined || preset === undefined) return validationFailure(op, { fixtures: args.fixtures, use_selection: args.use_selection, pool: args.pool, preset: args.preset }, v.errors);
+        const ref = presetRef(pool, preset);
+        const command = `At ${ref}`;
+        const target = { ...t.target, preset: ref };
+        const verify = args.verify !== false;
+        return ctx.mutations.run(async () => {
+          const warnings: string[] = [];
+          let found: { addrNative: string; label: string } | undefined;
+          const checkPreset: StepFn = async () => {
+            try {
+              const res = (await bridge.request("objects", { ref, fields: ["Name"] })) as { total?: number; items?: Array<{ name?: string; addrNative?: string; class?: string }> };
+              const item = res.items?.[0];
+              if (!res.total || !item) return { name: "check_preset", kind: "read", status: "failed", op: "objects", error: `${ref} does not exist (the console would answer OK and change nothing); nothing was sent` };
+              if (res.total > 1) return { name: "check_preset", kind: "read", status: "failed", op: "objects", error: `${ref} resolves to ${res.total} objects; name one preset` };
+              if (!item.addrNative) return { name: "check_preset", kind: "read", status: "failed", op: "objects", error: `${ref} has no readable address` };
+              found = { addrNative: item.addrNative, label: `${ref} "${item.name ?? ""}"` };
+              return { name: "check_preset", kind: "read", status: "succeeded", op: "objects", detail: { name: item.name, addrNative: item.addrNative } };
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              if (/no objects? found|not found/i.test(message)) return { name: "check_preset", kind: "read", status: "failed", op: "objects", error: `${ref} does not exist; nothing was sent` };
+              return { name: "check_preset", kind: "read", status: "failed", op: "objects", error: message };
+            }
+          };
+          const plan: Array<{ name: string; run: StepFn }> = [{ name: "check_preset", run: checkPreset }, ...targetSteps(bridge, t, warnings)];
+          if (t.selection !== null) plan.push({ name: "check_selection", run: checkSelectionStep(bridge, warnings) });
+          plan.push({ name: "apply_preset", run: () => commandStep(bridge, "apply_preset", command) });
+          const { steps } = await runSteps(plan);
+          const sent = steps.some((s) => s.name === "apply_preset" && (s.status === "succeeded" || s.status === "unknown"));
+          let verification: Verification = { status: "not_requested" };
+          let summary: Record<string, unknown> = { performed: false };
+          const readBack: StepResult[] = [];
+          if (verify && sent && found) ({ verification, summary } = await verifyPresetLink(bridge, found, readBack));
+          return finish({
+            operation: op,
+            target,
+            steps,
+            warnings,
+            selectionChanged: anySucceeded(steps, ["select", "clear_selection"]),
+            programmerValuesChanged: anySucceeded(steps, ["apply_preset"]),
+            verification,
+            readBackSteps: readBack,
+            extra: { command, presetLink: summary },
+          });
+        });
+      }),
+  );
+
+  server.registerTool(
+    "gma3_release_attributes",
+    {
+      title: "Release attributes from the programmer",
+      description:
+        'Remove values from the programmer for an explicit target: `attributes` sends `Off Attribute "A" + "B"`; `all: true` sends `Off Selection` (every value of the target; the target is deselected afterwards). ' +
+        "Target: `fixtures` OR `use_selection: true` (with `fixtures`, ClearSelection and a select first). The release is scoped to the selection, and with nothing selected the console would release the attributes from EVERY fixture, so the tool refuses unless the target is selected. " +
+        "Read-back compares the whole programmer before and after: the released values must be gone from the target fixtures and their cells, and every other fixture's values must be unchanged.",
+      inputSchema: {
+        ...targetShape,
+        attributes: z.array(z.string()).optional().describe(`Attribute names to release (up to ${MAX_ATTRIBUTES}).`),
+        all: z.boolean().optional().describe("Release every value of the target instead of named attributes."),
+        verify: z.boolean().optional().describe("Compare the programmer before and after (default true)."),
+      },
+    },
+    async (args) =>
+      operation(async () => {
+        const op = "release_attributes";
+        const v = new Validator();
+        const t = validateTarget(v, args);
+        const attrs: string[] = [];
+        if (args.all === true && args.attributes !== undefined) v.fail("give attributes or all, not both");
+        else if (args.all !== true) {
+          if (!Array.isArray(args.attributes) || args.attributes.length === 0) v.fail("give attributes (a non-empty list) or all: true");
+          else if (args.attributes.length > MAX_ATTRIBUTES) v.fail(`at most ${MAX_ATTRIBUTES} attributes per call`);
+          else
+            args.attributes.forEach((a, i) => {
+              const n = v.check(() => attributeName(`attributes[${i}]`, a));
+              if (n && attrs.some((x) => x.toLowerCase() === n.toLowerCase())) v.fail(`attribute ${n} appears twice`);
+              else if (n) attrs.push(n);
+            });
+        }
+        if (!v.ok || !t) return validationFailure(op, { fixtures: args.fixtures, use_selection: args.use_selection, attributes: args.attributes, all: args.all }, v.errors);
+        const all = args.all === true;
+        const command = all ? "Off Selection" : `Off Attribute ${attrs.map((a) => `"${a}"`).join(" + ")}`;
+        const target = { ...t.target, ...(all ? { all: true } : { attributes: attrs }) };
+        const verify = args.verify !== false;
+        return ctx.mutations.run(async () => {
+          const warnings: string[] = [];
+          let roots: Set<string> | undefined;
+          let before: ProgrammerSnapshot | undefined;
+          const plan: Array<{ name: string; run: StepFn }> = [...attrs.map((a) => ({ name: `check_attribute_${a}`, run: checkAttributeStep(bridge, a, warnings) })), ...targetSteps(bridge, t, warnings)];
+          if (t.selection !== null) plan.push({ name: "check_selection", run: checkSelectionStep(bridge, warnings) });
+          plan.push({
+            name: "read_before",
+            run: async () => {
+              const sel = await selectedRoots(bridge);
+              if ("reason" in sel) return { name: "read_before", kind: "read", status: "failed", op: "programmer", error: `the target could not be established (${sel.reason}); nothing was released` };
+              roots = sel.roots;
+              if (verify) before = await snapshotProgrammer(bridge);
+              return { name: "read_before", kind: "read", status: "succeeded", op: "programmer", detail: { targets: [...sel.roots], values: before?.values.size } };
+            },
+          });
+          plan.push({ name: "release", run: () => commandStep(bridge, "release", command) });
+          const { steps } = await runSteps(plan);
+          const sent = steps.some((s) => s.name === "release" && (s.status === "succeeded" || s.status === "unknown"));
+          let verification: Verification = { status: "not_requested" };
+          let summary: Record<string, unknown> = { performed: false };
+          const readBack: StepResult[] = [];
+          if (verify && sent && before && roots) {
+            const after = await snapshotProgrammer(bridge).catch((err: unknown) => ({ rootByIndex: new Map(), values: new Map(), complete: false, reason: err instanceof Error ? err.message : String(err) }) as ProgrammerSnapshot);
+            readBack.push({ name: "read_after", kind: "read", status: after.complete ? "succeeded" : "failed", op: "programmer", ...(after.complete ? { detail: { values: after.values.size } } : { error: after.reason }) });
+            ({ verification, summary } = judgeRelease(before, after, roots, all ? null : attrs));
+          }
+          return finish({
+            operation: op,
+            target,
+            steps,
+            warnings,
+            selectionChanged: anySucceeded(steps, ["select", "clear_selection"]) || (all && anySucceeded(steps, ["release"])),
+            programmerValuesChanged: anySucceeded(steps, ["release"]),
+            verification,
+            readBackSteps: readBack,
+            extra: { command, release: summary },
+          });
         });
       }),
   );

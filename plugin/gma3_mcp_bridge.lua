@@ -154,7 +154,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.26.0"
+local VERSION      = "0.27.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -1160,6 +1160,9 @@ local function programmerRow(p, ui, sfIdx, sf, attrCache, stats)
   local row = {
     fixture = sf and safeProp(sf, "name") or nil, fid = sf and textProp(sf, "FID") or nil, subfixtureIndex = sfIdx, uiChannel = ui,
     present = true, masks = { activeValue = mv, activePhaser = mp, individual = mi }, stepCount = stepCount, steps = {},
+    -- SU-05 (0.27.0): the preset a recall linked this channel to (At Preset sets abs_preset, live 2026-10-15; the
+    -- per-step `integrated` stays empty). The link survives a later manual value on the channel.
+    absPreset = presetRef(p.abs_preset), relPreset = presetRef(p.rel_preset),
   }
   if attr then
     row.attribute = safeProp(attr, "name"); row.attributeIndex = numProp(attr, "AttributeIndex")
