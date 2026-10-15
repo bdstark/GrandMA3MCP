@@ -126,6 +126,14 @@ Pre-flight (`patch.check` `add`), nothing sent on failure:
 The change is `patch.add`. Read-back lists the new FIDs and compares, per fixture: present, patch address (start +
 i × footprint), name (when given) and mode.
 
+**Cells (SU-08).** When the new fixtures have cells, the result carries `cellLayout`:
+- `cells`, the count;
+- `shared`: the cells' positions come from the fixture type, and every fixture of that type and mode shares one
+  layout;
+- `ask`, for types whose names suggest cells laid out per install (festoon, string, strand, tape, strip, garland,
+  bulb). It tells the agent to ask whether the fixtures should share one layout or get their own; see
+  `gma3_layout_cells` in [positions.md](positions.md#cell-layouts-su-08).
+
 ## gma3_patch_set
 
 `edits`: up to 256 of `{fid, address?, unpatch?, name?}`, each FID once, each changing something. `address` and

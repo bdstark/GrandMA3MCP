@@ -154,7 +154,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.28.0"
+local VERSION      = "0.29.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -4641,6 +4641,240 @@ do
     return { removed = removed, renumbered = emptyArray(renumbered), types = p.FixtureTypes:Count() }
   end
 end
+
+-------------------------------------------------------------------------------
+-- SU-08: a fixture's cell layout (bridge 0.29.0; SETUP.md SU-08, docs/probes/su-08-cell-layout-macos-2.5.1.md).
+-- A cell (SubFixture) has no position of its own: its place is its GeometryReference in the fixture type, under the
+-- DMX mode's root geometry, shared by every fixture whose mode uses that root. Own layouts are type copies.
+--   patch.cellLayout       read-only: a mode's cells with positions, and every fixture a layout change moves
+--   patch.cellLayoutWrite  live: writes cell positions (refused while the patch copy is open; the affected set must
+--                          be the one the caller expects); returns the previous positions
+--   patch.layoutCopy       in the copy: duplicates a type under a new name and retypes the given fixtures to it
+--   patch.retype           in the copy: moves fixtures to another type with the same mode (a layout copy)
+-- In its own function scope: the main chunk is at Lua's local-variable limit.
+-------------------------------------------------------------------------------
+;(function()
+  local function rawNum(o, k)
+    local ok, v = pcall(function() return o:Get(k) end)
+    if ok and type(v) == "number" then return v end
+    return nil
+  end
+  local function rootOf(mode)
+    local ok, r = pcall(function() return mode.GeometryDirect end)
+    if ok and r then return r end
+    local ok2, r2 = pcall(function() return mode:Get("Geometry") end)
+    if ok2 and r2 and type(r2) ~= "string" then return r2 end
+    return nil
+  end
+  local function cellsOf(root)
+    local out = {}
+    local function walk(o)
+      for _, c in ipairs(o:Children()) do
+        if safeCall(c, "GetClass") == "GeometryReference" then out[#out + 1] = c end
+        walk(c)
+      end
+    end
+    walk(root)
+    return out
+  end
+  local function fixtureType(c)
+    local ok, t = pcall(function() return c:Get("FixtureType") end)
+    if ok and t and type(t) ~= "string" then return t end
+    return nil
+  end
+  -- The same type: the same handle, or the same GUID (a copy's GUID is all zeros until it is committed).
+  local function sameType(a, b)
+    if a == b then return true end
+    local ga, gb = displayProp(a, "Guid"), displayProp(b, "Guid")
+    return ga ~= nil and ga == gb and not ga:match("^[0 ]+$")
+  end
+  -- Fixtures of `p` whose mode, of type `t`, has the root geometry `root`: everything a layout change moves.
+  local function affectedBy(p, t, root)
+    local out = {}
+    for _, e in ipairs(walkFixtures(p)) do
+      local f = e.fixture
+      local ft = fixtureType(f)
+      local m = fixtureMode(f)
+      if ft and m and sameType(ft, t) and rootOf(m) == root then out[#out + 1] = { fid = numericFid(f) or tostring(safeProp(f, "FID")), name = tostring(safeProp(f, "name")), mode = tostring(safeProp(m, "name")) } end
+    end
+    table.sort(out, function(a, b) return tostring(a.fid) < tostring(b.fid) end)
+    return out
+  end
+  local function fixtureByFid(p, fid)
+    for _, e in ipairs(walkFixtures(p)) do if numericFid(e.fixture) == fid then return e.fixture end end
+    return nil
+  end
+  -- { type, mode } from args: a fixture (fid) or an explicit type and mode.
+  local function target(p, args)
+    if args.fid ~= nil then
+      local fid = integerArg(args.fid, "fid", 1, 2147483647)
+      local f = fixtureByFid(p, fid)
+      if not f then raise("[no-fixture] no fixture with FID " .. fid .. " in the patch") end
+      local t, m = fixtureType(f), fixtureMode(f)
+      if not t or not m then raise("[no-mode] the fixture type or DMX mode of FID " .. fid .. " cannot be read") end
+      return t, m
+    end
+    if args.type == nil or args.mode == nil then raise("[bad-args] fid, or type and mode, are required") end
+    local t = findType(p, args.type)
+    if not t then raise("[no-type] no fixture type " .. tostring(args.type) .. " in the show") end
+    local m = findMode(t, args.mode)
+    if not m then raise("[no-mode] fixture type " .. tostring(t.name) .. " has no DMX mode " .. tostring(args.mode)) end
+    return t, m
+  end
+  local function cellRow(i, c)
+    local par = nil
+    pcall(function() par = tostring(c:Parent().name) end)
+    return { index = i, name = tostring(safeProp(c, "name")), parent = par, posX = rawNum(c, "PosX"), posY = rawNum(c, "PosY"), posZ = rawNum(c, "PosZ") }
+  end
+  local function describe(p, t, m)
+    local root = rootOf(m)
+    if not root then raise("[no-geometry] the root geometry of mode " .. tostring(m.name) .. " cannot be read") end
+    local cells = {}
+    for i, c in ipairs(cellsOf(root)) do cells[i] = cellRow(i, c) end
+    return { type = { no = safeProp(t, "no"), name = tostring(safeProp(t, "name")), guid = displayProp(t, "Guid") }, mode = { no = safeProp(m, "no"), name = tostring(safeProp(m, "name")) }, rootGeometry = tostring(safeProp(root, "name")),
+      cells = emptyArray(cells), affected = emptyArray(affectedBy(p, t, root)), copyOpen = patchCopyOpen() }, root
+  end
+
+  -- args: { fid } | { type, mode }
+  ops["patch.cellLayout"] = function(args)
+    local p = ShowData().LivePatch
+    local t, m = target(p, args)
+    local res = describe(p, t, m)
+    return res
+  end
+
+  -- args: { fid | type+mode, cells = [{ index, x?, y?, z? }] (metres), expectAffected = [fid, ...], exclusive }
+  ops["patch.cellLayoutWrite"] = function(args)
+    requireExclusive(args, "patch.cellLayoutWrite")
+    -- An open copy is committed over the live patch: positions written now would be lost (as SU-04 found for fixtures).
+    if patchCopyOpen() then raise("[copy-open] the patch copy is open (the Patch menu or an unfinished session); its commit would overwrite the cell positions. Close it at the console first") end
+    local p = ShowData().LivePatch
+    local t, m = target(p, args)
+    local info, root = describe(p, t, m)
+    -- The fixtures that move must be exactly the ones the caller expects.
+    local want, have = {}, {}
+    for _, f in ipairs(type(args.expectAffected) == "table" and args.expectAffected or {}) do want[tostring(f)] = true end
+    for _, a in ipairs(info.affected) do have[tostring(a.fid)] = true end
+    local extra, missing = {}, {}
+    for k in pairs(have) do if not want[k] then extra[#extra + 1] = k end end
+    for k in pairs(want) do if not have[k] then missing[#missing + 1] = k end end
+    if #extra > 0 or #missing > 0 then
+      table.sort(extra); table.sort(missing)
+      raise({ code = "affected-mismatch", message = "the layout of " .. info.type.name .. " / " .. info.mode.name .. " moves fixtures " .. (#extra > 0 and table.concat(extra, ", ") or "-") .. " not expected" .. (#missing > 0 and ("; expected but not using it: " .. table.concat(missing, ", ")) or "") .. "; nothing was written", affected = info.affected })
+    end
+    local cells = cellsOf(root)
+    if type(args.cells) ~= "table" or #args.cells == 0 then raise("[bad-args] cells (a non-empty list of { index, x, y, z }) is required") end
+    for _, c in ipairs(args.cells) do
+      local i = tonumber(c.index)
+      if not i or not cells[i] then raise("[bad-args] cell index " .. tostring(c.index) .. " is not 1.." .. #cells) end
+      for _, k in ipairs({ "x", "y", "z" }) do
+        if c[k] ~= nil and (type(c[k]) ~= "number" or c[k] ~= c[k] or math.abs(c[k]) > 1000) then raise("[bad-args] cell " .. i .. " " .. k .. " must be a number of metres within 1000") end
+      end
+    end
+    local previous, written = {}, {}
+    for _, c in ipairs(args.cells) do
+      local i = tonumber(c.index)
+      local cell = cells[i]
+      previous[#previous + 1] = cellRow(i, cell)
+      for k, prop in pairs({ x = "PosX", y = "PosY", z = "PosZ" }) do
+        if c[k] ~= nil then
+          local ok, err = pcall(function() cell:Set(prop, c[k]) end)
+          if not ok then raise({ code = "write-failed", message = "cell " .. i .. " " .. prop .. " could not be written: " .. tostring(err) .. "; cells before it were written (see previous)", previous = emptyArray(previous) }) end
+        end
+      end
+      written[#written + 1] = cellRow(i, cell)
+    end
+    return { type = info.type, mode = info.mode, rootGeometry = info.rootGeometry, affected = info.affected, previous = emptyArray(previous), cells = emptyArray(written) }
+  end
+
+  -- Move fixture `f` of the copy to the mode of type `to` that has the same name as its current mode. Returns the
+  -- mode, or raises. Compatible: same footprint and the same DMX channels (name, coarse, fine, break) in order.
+  local function sameChannels(a, b)
+    local ca, cb = a.DMXChannels:Children(), b.DMXChannels:Children()
+    if #ca ~= #cb then return false end
+    for i = 1, #ca do
+      for _, k in ipairs({ "Coarse", "Fine", "Ultra", "DMXBreak" }) do
+        if displayProp(ca[i], k) ~= displayProp(cb[i], k) then return false end
+      end
+      if tostring(ca[i].name) ~= tostring(cb[i].name) then return false end
+    end
+    -- A type copied in the patch copy reads TotalFootprint 0 until the commit computes it (live 2026-10-15): with
+    -- identical channels the addressing is the same, so the footprints are compared only when both are known.
+    local fa, fb = tonumber(displayProp(a, "TotalFootprint")), tonumber(displayProp(b, "TotalFootprint"))
+    return not (fa and fb and fa > 0 and fb > 0) or fa == fb
+  end
+  local function retypeOne(f, to)
+    local cur = fixtureMode(f)
+    if not cur then raise("[no-mode] the DMX mode of FID " .. tostring(numericFid(f)) .. " cannot be read") end
+    local m = findMode(to, tostring(cur.name))
+    if not m then raise("[incompatible] type " .. tostring(to.name) .. " has no DMX mode named " .. tostring(cur.name)) end
+    if not sameChannels(cur, m) then raise("[incompatible] mode " .. tostring(cur.name) .. " of " .. tostring(to.name) .. " differs in its DMX channels or footprint from FID " .. tostring(numericFid(f)) .. "'s") end
+    local before = { mode = cur, patch = displayProp(f, "Patch"), cells = f:Count() }
+    f:Set("ModeDirect", m)
+    if fixtureMode(f) ~= m or displayProp(f, "Patch") ~= before.patch or f:Count() ~= before.cells then
+      pcall(function() f:Set("ModeDirect", cur) end)
+      raise("[retype-failed] FID " .. tostring(numericFid(f)) .. " did not take the new type with its address and cells; it was set back")
+    end
+    return before.mode
+  end
+  local function fixturesArg(p, args, ofType)
+    if type(args.fids) ~= "table" or #args.fids == 0 then raise("[bad-args] fids (a non-empty list) is required") end
+    local list = {}
+    for _, x in ipairs(args.fids) do
+      local fid = integerArg(x, "fid", 1, 2147483647)
+      local f = fixtureByFid(p, fid)
+      if not f then raise("[no-fixture] no fixture with FID " .. fid .. " in the copy") end
+      if ofType and not (fixtureType(f) and sameType(fixtureType(f), ofType)) then raise("[mixed-types] FID " .. fid .. " is not of type " .. tostring(ofType.name)) end
+      list[#list + 1] = { fid = fid, fixture = f }
+    end
+    return list
+  end
+  local function retypeAll(list, to)
+    local done = {}
+    for _, e in ipairs(list) do
+      local ok, res = pcall(retypeOne, e.fixture, to)
+      if not ok then
+        for _, d in ipairs(done) do pcall(function() d.fixture:Set("ModeDirect", d.from) end) end
+        error(res, 0)
+      end
+      done[#done + 1] = { fixture = e.fixture, from = res, fid = e.fid }
+    end
+    local out = {}
+    for _, d in ipairs(done) do out[#out + 1] = { fid = d.fid, mode = tostring(safeProp(fixtureMode(d.fixture), "name")), type = displayProp(d.fixture, "FixtureType") } end
+    return out
+  end
+
+  -- args: { type (the fixtures' current type), name (the new type's), fids, exclusive }
+  ops["patch.layoutCopy"] = function(args)
+    requireExclusive(args, "patch.layoutCopy")
+    local p = requireCopy(nil)
+    local src = findType(p, args.type)
+    if not src then raise("[no-type] no fixture type " .. tostring(args.type) .. " in the copy") end
+    local name = nameArg(args.name, "name")
+    if not name then raise("[bad-args] name (the new type's name) is required") end
+    if findType(p, name) then raise("[name-taken] the show already has a fixture type named " .. name) end
+    local list = fixturesArg(p, args, src)
+    local pool = p.FixtureTypes
+    local before = pool:Count()
+    local nt = pool:Append()
+    local ok, err = pcall(function() nt:Copy(src); nt:Set("Name", name) end)
+    local function drop() pcall(function() pool:Remove(before + 1) end) end
+    if not ok or pool:Count() ~= before + 1 or tostring(nt.name) ~= name then drop(); raise("[copy-failed] the fixture type could not be copied: " .. tostring(err)) end
+    local okR, res = pcall(retypeAll, list, nt)
+    if not okR then drop(); error(res, 0) end
+    return { type = { no = safeProp(nt, "no"), name = tostring(nt.name), from = tostring(src.name) }, retyped = emptyArray(res), types = pool:Count() }
+  end
+
+  -- args: { fids, type (the target type), exclusive }
+  ops["patch.retype"] = function(args)
+    requireExclusive(args, "patch.retype")
+    local p = requireCopy(nil)
+    local to = findType(p, args.type)
+    if not to then raise("[no-type] no fixture type " .. tostring(args.type) .. " in the copy") end
+    local list = fixturesArg(p, args, nil)
+    return { type = { no = safeProp(to, "no"), name = tostring(to.name) }, retyped = emptyArray(retypeAll(list, to)) }
+  end
+end)()
 
 -------------------------------------------------------------------------------
 -- SB-02: selection-grid readback (read-only)

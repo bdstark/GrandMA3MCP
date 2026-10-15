@@ -91,6 +91,8 @@ require `exclusive: true` and have no undo; details in [`tools/patch.md`](tools/
 | `gma3_release_attributes` | `Off Attribute` (`Off Attribute Thru` for every value) on an established target; read back by comparing the whole programmer, collateral included |
 | `gma3_fixture_positions` | Read-only: position, rotation (with its quaternion) and mesh mirroring of fixtures, in m, cm, mm, ft or in, with the axes' meaning |
 | `gma3_place_fixtures` | Place fixtures in 3D: positions, rotations (written as one quaternion), mesh mirroring; line, arc and mirror-pair layouts; preview; read back by quaternion; returns a restore list (no undo) |
+| `gma3_layout_cells` | Lay out a fixture's cells (string lights, pixel strands) along a line, square wave, zigzag or points, in explicit units: shared (the type's layout; `affects` must name every fixture that moves) or own (a copy of the type for some fixtures); read back per cell; returns the previous positions (bridge 0.29.0) |
+| `gma3_assign_cell_layout` | Move fixtures to another layout type of their fixture (a copy, or back to the original) in an isolated patch session (bridge 0.29.0) |
 
 Console feedback (KB-06; needs plugin v0.8.0; read-only, works with Lua and input disabled and while another client
 owns input; details in [`tools/feedback.md`](tools/feedback.md)):

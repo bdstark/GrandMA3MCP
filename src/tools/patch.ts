@@ -258,7 +258,7 @@ async function closeSession(bridge: Gma3Bridge, t: number): Promise<{ steps: Ste
   return { steps, closed: w.status === "succeeded", leftOpen: w.status !== "succeeded" };
 }
 
-interface SessionSpec {
+export interface SessionSpec {
   operation: string;
   target: Record<string, unknown>;
   /** FIDs the call touches; left out of the isolation check. */
@@ -294,7 +294,7 @@ function skippedSteps(names: string[], because: string): StepResult[] {
   return names.map((name) => ({ name, status: "skipped" as const, error: `not attempted: ${because}` }));
 }
 
-async function runSession(ctx: ToolContext, spec: SessionSpec): Promise<OperationResult> {
+export async function runSession(ctx: ToolContext, spec: SessionSpec): Promise<OperationResult> {
   const t = ctx.requestTimeoutMs;
   const bridge = ctx.bridge;
   return ctx.mutations.run(async () => {
@@ -458,6 +458,9 @@ export function blockAddress(start: string, footprint: number, i: number): strin
   return `${Math.floor(abs / 512) + 1}.${String((abs % 512) + 1).padStart(3, "0")}`;
 }
 
+/** Fixture types whose cells are commonly laid out per install (string lights, tapes, pixel strands; SU-08). */
+export const FREE_LAYOUT_HINT = /festoon|string|strand|tape|strip|garland|bulb|pixel ?(rope|line|dot)|dot ?string/i;
+
 export async function patchAdd(ctx: ToolContext, raw: AddArgs): Promise<OperationResult> {
   const op = "patch_add";
   const v = new Validator();
@@ -481,7 +484,7 @@ export async function patchAdd(ctx: ToolContext, raw: AddArgs): Promise<Operatio
   let checkDetail: unknown;
   const fids = Array.from({ length: count }, (_, i) => fid + i);
 
-  return runSession(ctx, {
+  const result = await runSession(ctx, {
     operation: op,
     target,
     touchedFids: fids,
@@ -554,6 +557,21 @@ export async function patchAdd(ctx: ToolContext, raw: AddArgs): Promise<Operatio
       }
     },
   });
+  // SU-08: fixtures with cells share their type's cell layout. For string lights and similar, ask at insert time.
+  const rows = (result as unknown as { fixtures?: FixtureRow[] }).fixtures ?? [];
+  const cells = rows.find((r) => typeof (r as { cells?: unknown }).cells === "number" && ((r as { cells?: number }).cells ?? 0) > 0) as (FixtureRow & { cells?: number }) | undefined;
+  if (cells) {
+    const typeName = String(cells.type ?? "");
+    const flexible = FREE_LAYOUT_HINT.test(typeName);
+    (result as unknown as Record<string, unknown>).cellLayout = {
+      cells: cells.cells,
+      shared: `the ${cells.cells} cells' positions come from the fixture type ${typeName} / ${modeName ?? cells.mode}: every fixture of that type and mode shares one cell layout (each fixture can still be placed, rotated and mirrored as a whole with gma3_place_fixtures)`,
+      ...(flexible
+        ? { ask: `${typeName} looks like a fixture whose cells are laid out per install (string lights, tape, pixel strands). Ask the user: should these fixtures share one cell layout, or should each (or some) get its own? A shared layout is set with gma3_layout_cells scope "shared"; an own layout with scope "own" (a copy of the type for those fixtures).` }
+        : {}),
+    };
+  }
+  return result;
 }
 
 // ---------------------------------------------------------------------------
