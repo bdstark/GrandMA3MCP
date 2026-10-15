@@ -95,6 +95,7 @@ OSC is optional for the normal bridge setup and is not forwarded by an SSH tunne
   [recipes](docs/tools/recipes.md), [speed masters and tempo](docs/tools/speed.md), [macros](docs/tools/macros.md),
   [timecode shows](docs/tools/timecode.md)
 - [Show-building features (SB-01 .. SB-08)](SHOWS.md)
+- [Show setup from scratch: field-test gaps and fixes (SU-01 .. SU-10)](SETUP.md)
 - [Hardkey, keyboard and feedback feature requests and evidence](KEYBOARD.md), [console interaction modules](docs/modules.md)
 - [Dialog control and dialog-free patching: plan and evidence](DIALOG.md)
 - [Optional Lua execution](docs/lua.md)

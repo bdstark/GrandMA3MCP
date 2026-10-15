@@ -110,7 +110,7 @@ end
 
 local console
 local function reset()
-  console = { live = buildLive(), copyOpen = false, dest = "Root", queue = {}, modal = false, last = "", addMode = "ok" }
+  console = { live = buildLive(), copyOpen = false, dest = "Root", queue = {}, modal = false, last = "", addMode = "ok", addCalls = {} }
   console.copy = obj("Patch", "Patch", 10, {}, {}); console.copy.addr = "14.10"
 end
 reset()
@@ -180,11 +180,14 @@ AddFixtures = function(spec)
   local fp = tonumber(spec.mode.pv.TOTALFOOTPRINT)
   local fid = tonumber(spec.fid)
   local start = spec.patch and parse(spec.patch[1]) or nil
-  local amount = console.addMode == "short" and spec.amount - 1 or spec.amount
+  console.addCalls[#console.addCalls + 1] = { amount = spec.amount, fid = fid, patch = spec.patch and spec.patch[1] or nil }
+  -- "failSecond": the second call of a block fails without creating anything.
+  if console.addMode == "failSecond" and #console.addCalls == 2 then return nil end
+  local amount = spec.amount
   for i = 0, amount - 1 do
     local addr = start and string.format("%d.%03d", (start + i * fp) // 512 + 1, (start + i * fp) % 512 + 1) or ""
-    -- "firstOnly": only the first fixture of the block gets an address, as onPC 2.5.1 did live for an 18-channel mode.
-    if console.addMode == "firstOnly" and i > 0 then addr = "" end
+    -- "unpatched": AddFixtures leaves the fixture without an address (amount > 1 did that live for all but the first).
+    if console.addMode == "unpatched" and #console.addCalls > 1 then addr = "" end
     stage.Fixtures.kids[#stage.Fixtures.kids + 1] = fixture(spec.name or ("Added " .. (fid + i)), fid + i, spec.mode, addr)
   end
   return true
@@ -232,7 +235,7 @@ end
 -------------------------------------------------------------------------------
 
 local r = request("ping")
-check("ping reports bridge 0.25.1", r.ok and r.result.bridgeVersion == "0.25.1", J(r))
+check("ping reports bridge 0.25.2", r.ok and r.result.bridgeVersion == "0.25.2", J(r))
 
 r = request("patch.state")
 check("patch.state at Root: copy closed, stages listed", r.ok and r.result.destination == "Root" and r.result.copyOpen == false and r.result.atRoot == true and r.result.stages[1] == "Stage 1" and r.result.modal == false, J(r))
@@ -313,22 +316,25 @@ r = request("patch.add", with({ stage = "Stage 1", type = 6, mode = 3, fid = 901
 check("patch.add refuses an overlapping address", r.ok == false and r.code == "dmx-taken", J(r))
 r = request("patch.add", with({ stage = "Stage 1", type = 6, mode = 3, fid = 901, count = 2, address = "1.505" }))
 check("patch.add refuses a block crossing the end of a universe", r.ok == false and r.code == "crosses-universe", J(r))
-console.addMode = "short"
+console.addMode = "failSecond"; console.addCalls = {}
 r = request("patch.add", with({ stage = "Stage 1", type = 6, mode = 3, fid = 901, count = 2, address = "2.001" }))
 local copyHas901 = false
 for _, f in ipairs(allFixtures(console.copy)) do if f.FID == 901 or f.FID == 902 then copyHas901 = true end end
-check("patch.add that creates fewer fixtures than asked fails and deletes what it created", r.ok == false and r.code == "add-failed" and r.detail.removed == 1 and not copyHas901, J(r))
-console.addMode = "ok"
+check("patch.add whose second AddFixtures fails stops, fails and deletes what it created", r.ok == false and r.code == "add-failed" and r.detail.removed == 1 and not copyHas901 and #console.addCalls == 2 and tostring(r.error):find("FID 902"), J(r))
+console.addMode = "ok"; console.addCalls = {}
 r = request("patch.add", with({ stage = "Stage 1", type = 6, mode = 3, fid = 901, count = 2, address = "2.001", name = "New Par" }))
 check("patch.add creates the fixtures at consecutive FIDs and addresses", r.ok and #r.result.created == 2 and r.result.created[1].fid == 901 and r.result.created[1].patch == "2.001" and r.result.created[2].patch == "2.009", J(r))
+local calls = console.addCalls
+check("patch.add calls AddFixtures once per fixture, amount 1, each with its own FID and address (onPC crashed on amount > 1 with cells)",
+  #calls == 2 and calls[1].amount == 1 and calls[2].amount == 1 and calls[1].fid == 901 and calls[2].fid == 902 and calls[1].patch == "2.001" and calls[2].patch == "2.009", J(calls))
 check("the live patch is unchanged until the commit", not liveFids():find("901"), liveFids())
 check("patch.add patched both through AddFixtures (no fix-up needed)", r.ok and r.result.patchedByBridge == 0, J(r))
 check("fingerprints excluding the touched FIDs match after the add", fpOf("copy", { 901, 902 }) == fpOf("live", { 901, 902 }))
 check("fingerprints without the exclusion differ after the add", fpOf("copy") ~= fpOf("live"))
 
-console.addMode = "firstOnly"
+console.addMode = "unpatched"; console.addCalls = {}
 r = request("patch.add", with({ stage = "Stage 1", type = 6, mode = 3, fid = 903, count = 2, address = "2.017" }))
-check("patch.add patches the rest of the block itself when AddFixtures only patched the first", r.ok and r.result.patchedByBridge == 1 and r.result.created[1].patch == "2.017" and r.result.created[2].patch == "2.025", J(r))
+check("patch.add patches a fixture itself when AddFixtures left it without its address", r.ok and r.result.patchedByBridge == 1 and r.result.created[1].patch == "2.017" and r.result.created[2].patch == "2.025", J(r))
 console.addMode = "ok"
 r = request("patch.remove", with({ fids = { 903, 904 } }))
 check("(the fix-up fixtures are removed again before the commit)", r.ok and #r.result.removed == 2, J(r))

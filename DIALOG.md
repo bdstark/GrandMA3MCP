@@ -220,6 +220,9 @@ hooks. Live patch fixtures also accept `Set()` outside patch mode.
     closed the unchanged copy. Nothing was committed.
   - `patch.add` now patches any block member that is not at its expected address with `Set("Patch")` (reported as
     `patchedByBridge`), then verifies every address exactly.
+  - Since bridge 0.25.2 `patch.add` makes one `AddFixtures` call per fixture instead: an amount-4 add of a mode with
+    cells crashed onPC inside `AddFixtures` (2026-10-14, [SETUP.md](SETUP.md) SU-02). The `Set("Patch")` fix-up
+    stays as a safety net.
 - **Cost:** the bridge fingerprints one side in about 3.7 s (FixtureTypes 1.7 s, DmxUniverses 1.0 s, AttributeDefinitions
   0.7 s). A change session therefore takes about 8 s, and the four sessions of the live test took 31 s.
 - **A fresh fixture-type import made the copy differ (bridge 0.25.1).** In a new show with five grandMA2 types
