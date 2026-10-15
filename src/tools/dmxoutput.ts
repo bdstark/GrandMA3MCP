@@ -278,9 +278,12 @@ export async function configureOutput(ctx: ToolContext, raw: Record<string, unkn
       const b = mappingOf(cur);
       effective.push({ label: String(s.entry), index: s.entry, before: b, after: s.remove ? b : { ...b, ...pick(s, b) }, remove: s.remove === true, spec: s });
     }
-    // Both complete ranges of every changed or added entry, from current values plus the requested ones.
+    // Both complete ranges of every entry whose mapping changes, that is added, or that is enabled by this call, from
+    // its current values plus the requested ones. Disabling alone needs no valid mapping: a broken entry can always be
+    // switched off.
     const rangeProblems: string[] = [];
-    for (const e of effective.filter((x) => !x.remove)) {
+    const needsRange = (e: Effective) => e.add !== undefined || (e.before !== undefined && (mappingChanged(e.before, e.after) || (e.after.enabled && !e.before.enabled)));
+    for (const e of effective.filter((x) => !x.remove && needsRange(x))) {
       const { localUniverse: lu, amount: n, universe: u } = e.after;
       if (lu === null || n === null || u === null) {
         rangeProblems.push(`entry ${e.label}: its local universe, amount or protocol universe cannot be read`);
@@ -336,8 +339,12 @@ export async function configureOutput(ctx: ToolContext, raw: Record<string, unkn
     const addIndex: number[] = [];
     let stopped: string | undefined;
     const disabledForRemap = new Set<string>();
+    /** Writes whose immediate answer could not be read: the read-back decides whether they took. */
+    const uncertain: Array<{ step: number; s: Extract<Step, { kind: "set" }>; index?: number }> = [];
+    let sentUpTo = 0;
     for (const s of plan) {
       if (stopped) break;
+      sentUpTo++;
       try {
         if (s.kind === "add") {
           const r = (await ctx.bridge.request("dmx.addEntry", { protocol, exclusive: true }, t)) as { index?: number };
@@ -352,8 +359,15 @@ export async function configureOutput(ctx: ToolContext, raw: Record<string, unkn
           const name = s.add !== undefined ? s.name.replace(/entry new \d+/, `entry ${index}`) : s.name;
           const r = (await ctx.bridge.request("dmx.set", { target: s.target, protocol: s.protocol, index, universe: s.universe, property: s.property, value: s.value, exclusive: true }, t)) as { value?: unknown };
           const got = r?.value === undefined || r?.value === null ? undefined : String(r.value);
+          if (got === undefined) {
+            // The write may have taken: uncertain, not failed. Nothing after it is sent; the read-back decides.
+            uncertain.push({ step: steps.length, s, index });
+            steps.push({ name, status: "unknown", op: "dmx.set", error: `the console's answer for ${s.property} could not be read; whether it took is decided by the read-back`, detail: r });
+            stopped = name;
+            continue;
+          }
           if (got !== s.value) {
-            steps.push({ name, status: "failed", op: "dmx.set", error: got === undefined ? `the console's answer for ${s.property} could not be read` : `the console kept ${s.property} ${got} (expected ${s.value})`, detail: r });
+            steps.push({ name, status: "failed", op: "dmx.set", error: `the console kept ${s.property} ${got} (expected ${s.value})`, detail: r });
             stopped = name;
             continue;
           }
@@ -412,6 +426,17 @@ export async function configureOutput(ctx: ToolContext, raw: Record<string, unkn
         verification = unavailable("the configuration could not be read back");
       }
     }
+    // Reconcile the uncertain writes with the read-back: confirmed, not applied, or still unknown.
+    if (after) {
+      for (const u of uncertain) {
+        const got = valueOf(after, u.s, u.index);
+        const st = steps[u.step];
+        if (got === u.s.value) steps[u.step] = { ...st, status: "succeeded", error: undefined, detail: { ...(st.detail as object), confirmedByReadBack: true } };
+        else if (got !== undefined) steps[u.step] = { ...st, status: "failed", error: `${u.s.property} was not applied: it reads ${got} (expected ${u.s.value})` };
+      }
+    }
+    // The steps a stop left unsent are listed, so the outcome reflects an unfinished plan.
+    for (const s of plan.slice(sentUpTo)) steps.push({ name: s.name, status: "skipped", error: `not sent: the call stopped at ${stopped}` });
     const result = buildResult({
       operation: op,
       target,
@@ -429,8 +454,25 @@ export async function configureOutput(ctx: ToolContext, raw: Record<string, unkn
       },
     });
     result.steps.push(...readBack);
+    // outcomeOf ignores skipped steps; an unfinished plan is never a success.
+    if (plan.length > sentUpTo && result.outcome === "succeeded") result.outcome = steps.some((x) => x.status === "succeeded" && x.kind !== "read") ? "partial" : "failed";
     return result;
   });
+}
+
+/** A planned write's value in a read-back (as the console displays it), or undefined when it is not readable. */
+function valueOf(after: OutputState, s: Extract<Step, { kind: "set" }>, index: number | undefined): string | undefined {
+  if (s.target === "protocol") {
+    const out = after.protocols[s.protocol as Protocol]?.out;
+    return out === undefined || out === null ? undefined : out ? "Yes" : "No";
+  }
+  if (s.target === "universe") return after.universes.find((u) => u.no === s.universe)?.request ?? undefined;
+  const e = after.protocols[s.protocol as Protocol]?.entries.find((x) => x.index === index);
+  if (!e) return undefined;
+  const key = { Enabled: "enabled", LocalUniverse: "localUniverse", Amount: "amount", "Art-NetAbsolute": "universe", sACNUniverse: "universe", Mode: "mode", Priority: "priority" }[s.property] as keyof Entry;
+  const v = e[key];
+  if (v === undefined || v === null) return undefined;
+  return typeof v === "boolean" ? (v ? "Yes" : "No") : String(v);
 }
 
 /** The spec key of a mapping field. */

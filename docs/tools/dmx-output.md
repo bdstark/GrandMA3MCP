@@ -57,8 +57,9 @@ learns why rather than getting an empty result.
 | `network` | required when the change makes a protocol send DMX onto the network |
 | `preview`, `exclusive`, `verify` | `exclusive` required unless `preview` |
 
-**Validation first, on the effective configuration.** Each touched entry is taken with its current values plus the
-requested ones, and both complete ranges are checked:
+**Validation first, on the effective configuration.** Each entry whose mapping changes, that is added, or that this
+call enables is taken with its current values plus the requested ones, and both complete ranges are checked.
+Disabling alone needs no valid mapping, so an entry with a broken mapping can always be switched off. The checks:
 - the local universes `local_universe` … `+amount − 1` must lie within 1..1024;
 - the protocol universes `universe` … `+amount − 1` must lie within 0..32767 (Art-Net) or 1..63999 (sACN).
 
@@ -82,9 +83,15 @@ Changing only `local_universe` to 1024 on an entry with an amount of 2 is refuse
 5. Removals, highest number first.
 6. A protocol's output turning on comes last.
 
-**Every reply is checked.** The bridge answers each write with the value read back at once. A value that differs,
-or an answer that cannot be read, stops the call: nothing that depends on it (`Enabled`, the protocol's `Out`) is
-sent. An entry that was disabled for its remap stays disabled, and the warnings say so.
+**Every reply is checked.** The bridge answers each write with the value read back at once.
+- A value that differs is a failed step and stops the call: nothing that depends on it (`Enabled`, the protocol's
+  `Out`) is sent.
+- An answer that cannot be read also stops the call, but the step is `unknown` (the write may have taken). The final
+  read-back then decides: the step becomes `succeeded` (`confirmedByReadBack`) or `failed` (not applied), or stays
+  `unknown` if the read-back fails too.
+
+The steps a stop left unsent are listed as `skipped`, and an unfinished plan is never `succeeded`. An entry that was
+disabled for its remap and left disabled is named in the warnings.
 
 **The network.** An entry sends DMX onto the network when it is enabled, its protocol's output is on and its mode
 is an output mode. This is judged on the configuration after the change. If an entry would start sending, or would

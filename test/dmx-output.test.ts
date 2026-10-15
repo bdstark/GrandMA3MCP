@@ -24,6 +24,10 @@ class World {
   sets: Array<Record<string, unknown>> = [];
   /** The console ignores writes of this property (a value it does not take). */
   ignore?: string;
+  /** The reply to a write of this property carries no value (the immediate read failed). */
+  mute?: string;
+  /** With mute: whether the muted write still took. */
+  muteApplies = true;
   state(want: number[] = []) {
     const rows = this.universes
       .filter((u) => u.fixtures > 0 || u.portOut || u.request === "On" || want.includes(u.no))
@@ -49,6 +53,10 @@ class World {
       const prop = String(args.property);
       const value = String(args.value);
       const yn = (b: boolean) => (b ? "Yes" : "No");
+      if (prop === this.mute) {
+        if (this.muteApplies && args.target === "protocol" && prop === "Out") this.protocols[args.protocol as "artnet"].out = value === "Yes";
+        return { property: prop };
+      }
       // As the bridge: the reply carries the value read back right after the write.
       if (args.target === "protocol") {
         const p = this.protocols[args.protocol as "artnet"];
@@ -299,6 +307,60 @@ test("configure: both complete ranges are validated from the current values plus
     r = await cfg(h, { protocol: "artnet", entries: [{ add: true, amount: 2 }], exclusive: true });
     assert.match(r.result.validationErrors.join(" "), /an added entry needs local_universe and universe/);
     assert.equal(w.sets.length, 0);
+  } finally {
+    await h.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Review round 2 (PR #55 at 69c6df8)
+// ---------------------------------------------------------------------------
+
+test("configure: an entry with an invalid mapping can be disabled without repairing it; enabling it still needs a valid one", async () => {
+  const { h, w } = await setup();
+  try {
+    w.protocols.artnet.entries[0] = { ...w.protocols.artnet.entries[0], localUniverse: 1024, amount: 2, enabled: true };
+    let r = await cfg(h, { protocol: "artnet", entries: [{ entry: 1, enabled: false }], exclusive: true });
+    assert.equal(r.result.verification.status, "matched", JSON.stringify(r.result, null, 2));
+    assert.equal(w.protocols.artnet.entries[0].enabled, false);
+    r = await cfg(h, { protocol: "artnet", entries: [{ entry: 1, enabled: true }], exclusive: true });
+    assert.match(r.result.steps.map((s: any) => s.error ?? "").join(" "), /local universes 1024\.\.1025 pass 1024/);
+    assert.equal(w.protocols.artnet.entries[0].enabled, false);
+  } finally {
+    await h.close();
+  }
+});
+
+test("configure: an unreadable answer is uncertain, stops the rest, and the read-back decides", async () => {
+  const { h, w } = await setup();
+  try {
+    w.mute = "Out";
+    let r = await cfg(h, { protocol: "sacn", output: true, entries: [{ entry: 1, enabled: true }], grant_request: { universes: [1], value: "on" }, network: true, exclusive: true });
+    const out = r.result.steps.find((s: any) => s.name === "sacn Out");
+    assert.equal(out.status, "succeeded", "confirmed by the read-back");
+    assert.equal(out.detail.confirmedByReadBack, true);
+    assert.equal(w.protocols.sacn.out, true);
+    assert.equal(r.result.verification.status, "matched");
+    assert.equal(r.result.outcome, "succeeded", "Out was the last step: nothing is left unsent");
+    // An unreadable answer in the middle: later steps are listed as skipped and the outcome is partial.
+    w.protocols.sacn.out = false;
+    w.mute = "Enabled";
+    w.sets = [];
+    r = await cfg(h, { protocol: "sacn", output: true, entries: [{ entry: 1, enabled: false }], network: true, exclusive: true });
+    const en = r.result.steps.find((s: any) => s.name === "sacn entry 1 Enabled");
+    assert.equal(en.status, "failed", "the read-back shows the muted Enabled did not take");
+    assert.match(en.error, /Enabled was not applied: it reads Yes \(expected No\)/);
+    assert.ok(r.result.steps.some((s: any) => s.name === "sacn Out" && s.status === "skipped"));
+    assert.notEqual(r.result.outcome, "succeeded");
+    // A muted write that did not take is failed after the read-back.
+    w.protocols.sacn.out = false;
+    w.mute = "Out";
+    w.muteApplies = false;
+    r = await cfg(h, { protocol: "sacn", output: true, network: true, exclusive: true });
+    const out2 = r.result.steps.find((s: any) => s.name === "sacn Out");
+    assert.equal(out2.status, "failed");
+    assert.match(out2.error, /was not applied: it reads No/);
+    assert.equal(r.result.outcome, "failed");
   } finally {
     await h.close();
   }
