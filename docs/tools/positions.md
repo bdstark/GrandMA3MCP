@@ -51,23 +51,29 @@ Layouts:
 | --- | --- | --- |
 | `line` | `fids`, `from`, `to`, `rotation?` | Evenly spaced from `from` to `to`, both included; one fixture sits at `from` |
 | `arc` | `fids`, `center`, `radius`, `start_deg`, `end_deg`, `rotation?`, `follow?` | Evenly spaced on a horizontal arc at `center.z`. 0° is stage left of the centre, 90° upstage, 180° stage right, 270° downstage. `follow` adds each fixture's angle to its rotation Z |
-| `mirror` | `pairs: [[source_fid, target_fid]]` | The target at its source's final pose mirrored across the stage centre line: x negated, rotation (x, −y, −z). The source's pose is the one this call gives it, or its current one |
+| `mirror` | `pairs: [[source_fid, target_fid]]` | The target at its source's final pose mirrored across the stage centre line: x negated, rotation (x, −y, −z). The source's pose is the one this call gives it, or its current one. Pairs may chain (A → B, B → C) and resolve in dependency order, whatever order they are given in; a cycle is refused |
 
 A FID may appear only once across placements and layouts.
+
+Everything from the first read to the read-back runs under this server's mutation lock, so another queued operation
+cannot open the patch copy or move a fixture between the checks, the `restore` values and the writes.
 
 Pre-flight (read-only; nothing is sent on failure):
 - `patch.state`: the patch copy is closed. **Committing an open copy overwrites position writes** (live), so the tool
   refuses while someone is in the Patch menu or a patch session is open.
 - `patch.list`: every FID exists and is a top-level fixture. A fixture inside a grouping fixture is refused: whether
   its position is relative to the parent is not established. Cells have no position of their own (see SU-08).
-- The current poses, which go into the result as `before` and `restore`.
+- The current poses, which go into the result as `before` and `restore`. A position or rotation value that is missing
+  or not a number refuses the call (it is never read as 0).
 
 Changes: per fixture, one `set` per position axis, one `ROTDIRECT` for the rotation, and `MESHMIRRORX` `1` / `0`
-(the console ignores `false` and `No`). One step per fixture; the first failure stops the rest, which are reported as
-skipped.
+(the console ignores `false` and `No`). Each write is its own step (`101.POSX`, `101.ROTDIRECT`, ...); the first
+failure stops the rest, which are reported as skipped. A fixture changed only in part makes the outcome `partial`, and
+the summary names it and what was written.
 
-Read-back, a frame after the writes: positions within 0.1 mm, rotations by quaternion, `mirror_mesh` exactly. A write
-the console ignores is a mismatch, never a success.
+Read-back, a frame after the writes, of exactly the properties that were written: positions within 0.1 mm, rotations
+by quaternion, `mirror_mesh` exactly. A write the console ignores is a mismatch, never a success; a value that cannot be
+read back makes the verification `unavailable`, never `matched`.
 
 Not offered: scale. The console ignores `SCALEX/Y/Z` writes without an error.
 

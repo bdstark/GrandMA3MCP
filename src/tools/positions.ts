@@ -231,6 +231,22 @@ export function expandPlan(raw: PlaceArgs, unit: Unit, v: Validator): Planned[] 
     if (prev) v.fail(`FID ${p.fid} is placed twice (${prev} and ${p.from})`);
     else seen.set(p.fid, p.from);
   }
+  // Mirror pairs may chain (A -> B, B -> C: C mirrors B's final pose); a cycle has no final pose.
+  const mirrorOf = new Map(plan.filter((p) => p.mirrorOf !== undefined).map((p) => [p.fid, p.mirrorOf as number]));
+  const reported = new Set<number>();
+  for (const start of mirrorOf.keys()) {
+    const path: number[] = [start];
+    let cur = mirrorOf.get(start);
+    while (cur !== undefined && !path.includes(cur)) {
+      path.push(cur);
+      cur = mirrorOf.get(cur);
+    }
+    if (cur !== undefined && !reported.has(cur)) {
+      const cycle = path.slice(path.indexOf(cur));
+      cycle.forEach((f) => reported.add(f));
+      v.fail(`mirror pairs form a cycle (FID ${[...cycle, cur].join(" -> ")}): no fixture in it has a pose to mirror`);
+    }
+  }
   if (plan.length === 0) v.fail("nothing to place: give placements and/or layouts");
   if (plan.length > MAX_FIXTURES) v.fail(`at most ${MAX_FIXTURES} fixtures per call`);
   return plan;
@@ -252,12 +268,18 @@ export interface FixturePose {
   rotation: Vec3;
   quaternion: Quat | null;
   mirrorMesh: boolean;
+  /** Fields that were missing or not a number (never read as 0). */
+  unreadable: string[];
 }
 
 type Item = { name?: string; class?: string; fields?: Record<string, unknown> };
 
+/** A number from a raw (or display) value; missing, empty or non-numeric values are NaN, never 0. */
 function num(v: unknown): number {
-  const n = typeof v === "number" ? v : Number(String(v ?? "").replace(/[°\s]/g, ""));
+  if (v === undefined || v === null) return NaN;
+  const text = typeof v === "number" ? null : String(v).replace(/[°\s]/g, "");
+  if (text === "") return NaN;
+  const n = text === null ? (v as number) : Number(text);
   if (!Number.isFinite(n)) return NaN;
   return Math.abs(n) < 1e-9 ? 0 : n; // the console keeps float noise such as 1.48e-32
 }
@@ -267,14 +289,22 @@ function poseOf(item: Item, quat?: unknown): FixturePose | null {
   const fid = Number(f.FID);
   if (!Number.isInteger(fid)) return null;
   const mirror = f.MESHMIRRORX;
-  return {
+  const pose: FixturePose = {
     fid,
     name: String(f.Name ?? item.name ?? ""),
     position: { x: num(f.POSX), y: num(f.POSY), z: num(f.POSZ) },
     rotation: { x: num(f.ROTX), y: num(f.ROTY), z: num(f.ROTZ) },
     quaternion: parseQuat(quat),
     mirrorMesh: mirror === true || String(mirror ?? "").trim().toLowerCase() === "yes",
+    unreadable: [],
   };
+  for (const k of ["x", "y", "z"] as const) {
+    if (!Number.isFinite(pose.position[k])) pose.unreadable.push(`POS${k.toUpperCase()}`);
+    if (!Number.isFinite(pose.rotation[k])) pose.unreadable.push(`ROT${k.toUpperCase()}`);
+  }
+  if (!pose.quaternion) pose.unreadable.push("ROTDIRECT");
+  if (typeof mirror !== "boolean" && typeof mirror !== "string") pose.unreadable.push("MESHMIRRORX");
+  return pose;
 }
 
 /** Poses of the fixtures `ref` resolves to: raw values and, in a second read, the quaternion. */
@@ -312,6 +342,7 @@ function poseOut(p: FixturePose, unit: Unit) {
     rotation: { x: round(p.rotation.x, 4), y: round(p.rotation.y, 4), z: round(p.rotation.z, 4) },
     quaternion: p.quaternion,
     mirror_mesh: p.mirrorMesh,
+    ...(p.unreadable.length ? { unreadable: p.unreadable } : {}),
   };
 }
 
@@ -351,134 +382,168 @@ export async function placeFixtures(ctx: ToolContext, raw: PlaceArgs): Promise<O
   const steps: StepResult[] = [];
   const done = (summary: string, verification: Verification, extra: Record<string, unknown> = {}) => buildResult({ operation: op, target, steps, verification, summary, extra: { unit, axes: AXES, ...extra } });
 
-  // Read-only pre-flight: the patch copy, the fixtures, their current poses.
-  try {
-    const st = (await bridge.request("patch.state", {}, t)) as { copyOpen?: boolean };
-    if (st.copyOpen) {
-      steps.push(asRead({ name: "check_patch", status: "failed", op: "patch.state", error: "the patch copy is open (the Patch menu, or a patch session): committing it would overwrite these positions. Close it at the console first (Menu > Patch, Save and Exit or Discard and Exit)" }));
-      return done(`${op} was not performed; nothing was sent: ${steps[0].error}.`, notRequested());
-    }
-    steps.push(asRead({ name: "check_patch", status: "succeeded", op: "patch.state", detail: "the patch copy is closed" }));
-  } catch (err) {
-    steps.push(asRead(stepFromError("check_patch", err, { op: "patch.state" })));
-    return done(`${op} was not performed; the patch state could not be read.`, notRequested());
-  }
-  let before: Map<number, FixturePose>;
-  try {
-    const rows = await listFids(bridge, allFids, t);
-    const problems: string[] = [];
-    for (const fid of allFids) {
-      const r = rows.get(fid);
-      if (!r) problems.push(`no fixture with FID ${fid}`);
-      else if (typeof r.depth === "number" && r.depth > 0) problems.push(`FID ${fid} is inside a grouping fixture (FID ${r.parentFid}): whether its position is relative to the parent is not established`);
-    }
-    before = await readPoses(bridge, allFids, t);
-    for (const fid of allFids) if (rows.has(fid) && !before.has(fid)) problems.push(`the position of FID ${fid} could not be read`);
-    if (problems.length) {
-      steps.push(asRead({ name: "check_fixtures", status: "failed", op: "patch.list", error: problems.join("; ") }));
-      return done(`${op} was not performed; nothing was sent: ${problems.join("; ")}.`, notRequested());
-    }
-    steps.push(asRead({ name: "check_fixtures", status: "succeeded", op: "objects", detail: { fixtures: allFids.length } }));
-  } catch (err) {
-    steps.push(asRead(stepFromError("check_fixtures", err, { op: "objects" })));
-    return done(`${op} was not performed; the fixtures could not be read.`, notRequested());
-  }
-
-  // Final poses; mirror targets from their source's final pose.
-  const finals = new Map<number, Final>();
-  const finalOf = (p: Planned): Final => {
-    const b = before.get(p.fid) as FixturePose;
-    const position = { ...b.position, ...(p.position ?? {}) };
-    return { fid: p.fid, position, rotation: p.rotation ?? b.rotation, writePosition: p.position ?? {}, ...(p.rotation ? { writeRotation: p.rotation } : {}), ...(p.mirrorMesh !== undefined ? { mirrorMesh: p.mirrorMesh } : {}), from: p.from };
-  };
-  for (const p of plan) if (p.mirrorOf === undefined) finals.set(p.fid, finalOf(p));
-  for (const p of plan) {
-    if (p.mirrorOf === undefined) continue;
-    const src = finals.get(p.mirrorOf) ?? finalOf({ fid: p.mirrorOf, from: "current" });
-    const m = mirrorAcrossCentre(src.position, src.rotation);
-    finals.set(p.fid, { fid: p.fid, position: m.position, rotation: m.rotation, writePosition: m.position, writeRotation: m.rotation, from: `${p.from} (mirror of FID ${p.mirrorOf} across the stage centre line)` });
-  }
-  const s = UNITS[unit];
-  const planOut = [...finals.values()].map((f) => ({
-    fid: f.fid,
-    name: before.get(f.fid)?.name,
-    from: f.from,
-    position: { x: round(f.position.x / s, 4), y: round(f.position.y / s, 4), z: round(f.position.z / s, 4) },
-    rotation: { x: round(f.rotation.x, 3), y: round(f.rotation.y, 3), z: round(f.rotation.z, 3) },
-    ...(f.mirrorMesh !== undefined ? { mirror_mesh: f.mirrorMesh } : {}),
-    before: poseOut(before.get(f.fid) as FixturePose, unit),
-  }));
-  const restore = [...finals.values()].map((f) => {
-    const b = poseOut(before.get(f.fid) as FixturePose, unit);
-    return { fid: f.fid, position: b.position, rotation: b.rotation, mirror_mesh: b.mirror_mesh };
-  });
-  if (preview) {
-    return done(`Preview only; nothing was sent (${finals.size} fixture(s)).`, notRequested(), { preview: true, plan: planOut });
-  }
-
-  // Writes: one step per fixture; stop at the first failure.
+  // Everything from the first read to the read-back holds the mutation lock: another queued operation cannot change
+  // the poses or open the patch copy between the checks, the restore values and the writes.
   return ctx.mutations.run(async () => {
-    let stopped: string | undefined;
-    for (const f of finals.values()) {
-      if (stopped) {
-        steps.push({ name: `place_${f.fid}`, status: "skipped", error: `not attempted: ${stopped}` });
-        continue;
+    // Read-only pre-flight: the patch copy, the fixtures, their current poses.
+    try {
+      const st = (await bridge.request("patch.state", {}, t)) as { copyOpen?: boolean };
+      if (st.copyOpen) {
+        steps.push(asRead({ name: "check_patch", status: "failed", op: "patch.state", error: "the patch copy is open (the Patch menu, or a patch session): committing it would overwrite these positions. Close it at the console first (Menu > Patch, Save and Exit or Discard and Exit)" }));
+        return done(`${op} was not performed; nothing was sent: ${steps[0].error}.`, notRequested());
       }
+      steps.push(asRead({ name: "check_patch", status: "succeeded", op: "patch.state", detail: "the patch copy is closed" }));
+    } catch (err) {
+      steps.push(asRead(stepFromError("check_patch", err, { op: "patch.state" })));
+      return done(`${op} was not performed; the patch state could not be read.`, notRequested());
+    }
+    let before: Map<number, FixturePose>;
+    try {
+      const rows = await listFids(bridge, allFids, t);
+      const problems: string[] = [];
+      for (const fid of allFids) {
+        const r = rows.get(fid);
+        if (!r) problems.push(`no fixture with FID ${fid}`);
+        else if (typeof r.depth === "number" && r.depth > 0) problems.push(`FID ${fid} is inside a grouping fixture (FID ${r.parentFid}): whether its position is relative to the parent is not established`);
+      }
+      before = await readPoses(bridge, allFids, t);
+      for (const fid of allFids) {
+        const b = before.get(fid);
+        if (rows.has(fid) && !b) problems.push(`the position of FID ${fid} could not be read`);
+        // The current pose is needed for axes not given, mirror sources and the restore list.
+        const bad = b?.unreadable.filter((k) => k !== "ROTDIRECT" && k !== "MESHMIRRORX") ?? [];
+        if (bad.length) problems.push(`FID ${fid}: ${bad.join(", ")} could not be read as numbers`);
+      }
+      if (problems.length) {
+        steps.push(asRead({ name: "check_fixtures", status: "failed", op: "patch.list", error: problems.join("; ") }));
+        return done(`${op} was not performed; nothing was sent: ${problems.join("; ")}.`, notRequested());
+      }
+      steps.push(asRead({ name: "check_fixtures", status: "succeeded", op: "objects", detail: { fixtures: allFids.length } }));
+    } catch (err) {
+      steps.push(asRead(stepFromError("check_fixtures", err, { op: "objects" })));
+      return done(`${op} was not performed; the fixtures could not be read.`, notRequested());
+    }
+
+    // Final poses. A mirror target takes its source's final pose, resolved in dependency order, so chained pairs do
+    // not depend on the order they were given in (cycles were refused by expandPlan).
+    const planned = new Map(plan.map((p) => [p.fid, p]));
+    const finals = new Map<number, Final>();
+    const finalFor = (fid: number): Final => {
+      const known = finals.get(fid);
+      if (known) return known;
+      const p = planned.get(fid) ?? { fid, from: "current" };
+      const b = before.get(fid) as FixturePose;
+      let f: Final;
+      if (p.mirrorOf !== undefined) {
+        const src = finalFor(p.mirrorOf);
+        const m = mirrorAcrossCentre(src.position, src.rotation);
+        f = { fid, position: m.position, rotation: m.rotation, writePosition: m.position, writeRotation: m.rotation, from: `${p.from} (mirror of FID ${p.mirrorOf} across the stage centre line)` };
+      } else {
+        f = { fid, position: { ...b.position, ...(p.position ?? {}) }, rotation: p.rotation ?? b.rotation, writePosition: p.position ?? {}, ...(p.rotation ? { writeRotation: p.rotation } : {}), ...(p.mirrorMesh !== undefined ? { mirrorMesh: p.mirrorMesh } : {}), from: p.from };
+      }
+      if (planned.has(fid)) finals.set(fid, f);
+      return f;
+    };
+    for (const p of plan) finalFor(p.fid);
+    const ordered = plan.map((p) => finals.get(p.fid) as Final);
+    const s = UNITS[unit];
+    const planOut = ordered.map((f) => ({
+      fid: f.fid,
+      name: before.get(f.fid)?.name,
+      from: f.from,
+      position: { x: round(f.position.x / s, 4), y: round(f.position.y / s, 4), z: round(f.position.z / s, 4) },
+      rotation: { x: round(f.rotation.x, 3), y: round(f.rotation.y, 3), z: round(f.rotation.z, 3) },
+      ...(f.mirrorMesh !== undefined ? { mirror_mesh: f.mirrorMesh } : {}),
+      before: poseOut(before.get(f.fid) as FixturePose, unit),
+    }));
+    const restore = ordered.map((f) => {
+      const b = poseOut(before.get(f.fid) as FixturePose, unit);
+      return { fid: f.fid, position: b.position, rotation: b.rotation, mirror_mesh: b.mirror_mesh };
+    });
+    if (preview) return done(`Preview only; nothing was sent (${ordered.length} fixture(s)).`, notRequested(), { preview: true, plan: planOut });
+
+    // Writes: one step per property, so a fixture changed only in part is reported as such; stop at the first failure.
+    const writes = ordered.map((f) => {
       const sets: Array<[string, number | string]> = [];
       for (const k of ["x", "y", "z"] as const) if (f.writePosition[k] !== undefined) sets.push([`POS${k.toUpperCase()}`, round(f.writePosition[k] as number, 5)]);
       // One write: per-axis writes are renormalized between requests (see the header).
       if (f.writeRotation) sets.push(["ROTDIRECT", quatFromEuler(f.writeRotation).map((n) => round(n, 9)).join(",")]);
       if (f.mirrorMesh !== undefined) sets.push(["MESHMIRRORX", f.mirrorMesh ? "1" : "0"]);
-      const sent: Array<{ property: string; value: unknown; reply?: unknown }> = [];
-      try {
-        for (const [property, value] of sets) {
-          const reply = await bridge.request("set", { ref: `Fixture ${f.fid}`, property, value }, t);
-          sent.push({ property, value, reply: (reply as { value?: unknown })?.value });
+      return { f, sets };
+    });
+    const written = new Map<number, Set<string>>();
+    let stopped: string | undefined;
+    for (const { f, sets } of writes) {
+      for (const [property, value] of sets) {
+        const name = `${f.fid}.${property}`;
+        if (stopped) {
+          steps.push({ name, status: "skipped", op: "set", error: `not attempted: ${stopped}` });
+          continue;
         }
-        steps.push({ name: `place_${f.fid}`, status: "succeeded", op: "set", detail: sent });
-      } catch (err) {
-        const st = stepFromError(`place_${f.fid}`, err, { op: "set" });
-        st.detail = { sent, failedAt: sets[sent.length]?.[0] };
-        steps.push(st);
-        stopped = `FID ${f.fid} failed`;
+        try {
+          const reply = await bridge.request("set", { ref: `Fixture ${f.fid}`, property, value }, t);
+          steps.push({ name, status: "succeeded", op: "set", detail: { value, reply: (reply as { value?: unknown })?.value } });
+          if (!written.has(f.fid)) written.set(f.fid, new Set());
+          written.get(f.fid)?.add(property);
+        } catch (err) {
+          steps.push(stepFromError(name, err, { op: "set", detail: { value } }));
+          stopped = `${name} ${steps[steps.length - 1].status === "unknown" ? "got no reply" : "failed"}`;
+        }
       }
     }
 
+    // Read-back of exactly what was written, including a fixture changed only in part.
     let verification: Verification = notRequested();
     let after: Map<number, FixturePose> | undefined;
-    if (verify) {
+    if (verify && written.size) {
       await sleep(FRAME_WAIT_MS);
       try {
-        after = await readPoses(bridge, [...finals.keys()], t);
+        after = await readPoses(bridge, [...written.keys()], t);
         const mismatches: string[] = [];
+        const unreadable: string[] = [];
         const actual: unknown[] = [];
-        for (const f of finals.values()) {
-          if (steps.find((x) => x.name === `place_${f.fid}`)?.status !== "succeeded") continue;
-          const a = after.get(f.fid);
+        for (const [fid, props] of written) {
+          const f = finals.get(fid) as Final;
+          const a = after.get(fid);
           if (!a) {
-            mismatches.push(`FID ${f.fid}: not read back`);
+            unreadable.push(`FID ${fid}: not read back`);
             continue;
           }
           actual.push(poseOut(a, unit));
-          for (const k of ["x", "y", "z"] as const) if (Math.abs(a.position[k] - f.position[k]) > POS_TOL_M) mismatches.push(`FID ${f.fid} ${k}: ${round(a.position[k] / s, 4)} ${unit}, expected ${round(f.position[k] / s, 4)}`);
-          if (f.writeRotation) {
-            const want = quatFromEuler(f.writeRotation);
-            if (!a.quaternion || !quatEquivalent(want, a.quaternion)) mismatches.push(`FID ${f.fid} rotation: the console reports ${JSON.stringify(a.rotation)} (quaternion ${a.quaternion?.join(",") ?? "unreadable"}), which is not ${JSON.stringify(f.writeRotation)}`);
+          for (const k of ["x", "y", "z"] as const) {
+            if (!props.has(`POS${k.toUpperCase()}`)) continue;
+            if (!Number.isFinite(a.position[k])) unreadable.push(`FID ${fid} POS${k.toUpperCase()}`);
+            else if (Math.abs(a.position[k] - f.position[k]) > POS_TOL_M) mismatches.push(`FID ${fid} ${k}: ${round(a.position[k] / s, 4)} ${unit}, expected ${round(f.position[k] / s, 4)}`);
           }
-          if (f.mirrorMesh !== undefined && a.mirrorMesh !== f.mirrorMesh) mismatches.push(`FID ${f.fid} mirror_mesh: ${a.mirrorMesh}, expected ${f.mirrorMesh} (the console ignored the write)`);
+          if (props.has("ROTDIRECT") && f.writeRotation) {
+            if (!a.quaternion) unreadable.push(`FID ${fid} ROTDIRECT`);
+            else if (!quatEquivalent(quatFromEuler(f.writeRotation), a.quaternion)) mismatches.push(`FID ${fid} rotation: the console reports ${JSON.stringify(a.rotation)} (quaternion ${a.quaternion.join(",")}), which is not ${JSON.stringify(f.writeRotation)}`);
+          }
+          if (props.has("MESHMIRRORX") && f.mirrorMesh !== undefined) {
+            if (a.unreadable.includes("MESHMIRRORX")) unreadable.push(`FID ${fid} MESHMIRRORX`);
+            else if (a.mirrorMesh !== f.mirrorMesh) mismatches.push(`FID ${fid} mirror_mesh: ${a.mirrorMesh}, expected ${f.mirrorMesh} (the console ignored the write)`);
+          }
         }
-        const checked = `positions within ${POS_TOL_M * 1000} mm, rotations by quaternion (the console renormalizes the angles), mirror_mesh, read a frame after the writes`;
-        verification = mismatches.length ? { status: "mismatched", checked, actual, detail: mismatches.join("; ") } : { status: "matched", checked, actual };
+        const checked = `the properties that were written: positions within ${POS_TOL_M * 1000} mm, rotations by quaternion (the console renormalizes the angles), mirror_mesh; read a frame after the writes`;
+        if (mismatches.length) verification = { status: "mismatched", checked, actual, detail: [...mismatches, ...unreadable.map((u) => `${u} unreadable`)].join("; ") };
+        else if (unreadable.length) verification = unavailable(`could not be read back as values: ${unreadable.join("; ")}`, checked);
+        else verification = { status: "matched", checked, actual };
       } catch (err) {
         steps.push(asRead(stepFromError("read_back", err, { op: "objects" })));
         verification = unavailable("the positions could not be read back");
       }
     }
-    const placed = steps.filter((x) => x.name.startsWith("place_") && x.status === "succeeded").length;
+
+    const complete = writes.filter(({ f, sets }) => sets.every(([p]) => written.get(f.fid)?.has(p))).length;
+    const partly = writes.filter(({ f, sets }) => (written.get(f.fid)?.size ?? 0) > 0 && !sets.every(([p]) => written.get(f.fid)?.has(p))).map(({ f }) => `FID ${f.fid} (written: ${[...(written.get(f.fid) ?? [])].join(", ")})`);
+    const untouched = writes.length - complete - partly.length;
+    const what = verification.status === "matched" ? " Read-back of the written values matched." : verification.status === "mismatched" ? ` Read-back MISMATCHED: ${verification.detail}` : verification.status === "unavailable" ? ` Read-back unavailable: ${verification.detail}` : "";
     const summary =
-      `${placed} of ${finals.size} fixture(s) placed${stopped ? `; stopped: ${stopped}` : ""}.` +
-      (verification.status === "matched" ? " Read-back matched." : verification.status === "mismatched" ? ` Read-back MISMATCHED: ${verification.detail}` : "") +
-      " There is no undo (Oops does not revert positions): `restore` holds the previous values.";
+      `${complete} of ${writes.length} fixture(s) placed` +
+      (partly.length ? `; changed only in part: ${partly.join("; ")}` : "") +
+      (untouched ? `; ${untouched} not changed` : "") +
+      (stopped ? `; stopped at ${stopped}` : "") +
+      `.${what} There is no undo (Oops does not revert positions): \`restore\` holds the previous values.`;
     return done(summary, verification, {
       fixtures: planOut.map((p) => ({ ...p, ...(after?.get(p.fid) ? { after: poseOut(after.get(p.fid) as FixturePose, unit) } : {}) })),
       restore,

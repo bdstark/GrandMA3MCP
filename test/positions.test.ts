@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { startHarness, type Harness } from "./helpers/tool-harness.js";
+import { BridgeReplyError } from "./helpers/fake-bridge.js";
 import { registerPositionTools, quatFromEuler, quatEquivalent, mirrorAcrossCentre, expandPlan, type Quat, type Vec3 } from "../src/tools/positions.js";
 import { Validator } from "../src/validate.js";
 
@@ -120,6 +121,12 @@ class Stage {
   copyOpen = false;
   /** Properties whose writes the console ignores. */
   ignore = new Set<string>();
+  /** A property whose write the bridge refuses. */
+  failSet?: string;
+  /** Fixtures whose POSX reads as garbage (raw). */
+  garbled = new Set<number>();
+  /** Garble every written fixture's POSX from the next read on. */
+  garbleWritten = false;
   constructor() {
     for (const [fid, depth] of [[101, 0], [102, 0], [103, 0], [4, 0], [401, 1]] as const) this.fixtures.set(fid, { fid, name: `Fx ${fid}`, depth, pos: { x: 0, y: 0, z: 0 }, q: [0, 0, 0, 1], rot: { x: 0, y: 0, z: 0 }, mirror: false });
   }
@@ -136,7 +143,7 @@ class Stage {
         // A later read: the console renormalizes the angles from the quaternion.
         const e = eulerFromQuat(x.q);
         // asText: false reads raw numbers (no ROTDIRECT: it has no raw value); the display role rounds.
-        if (args.asText === false) return { class: "Fixture", name: x.name, fields: { FID: x.fid, Name: x.name, POSX: x.pos.x, POSY: x.pos.y, POSZ: x.pos.z, ROTX: e.x, ROTY: e.y, ROTZ: e.z, MESHMIRRORX: x.mirror } };
+        if (args.asText === false) return { class: "Fixture", name: x.name, fields: { FID: x.fid, Name: x.name, POSX: this.garbled.has(x.fid) ? "garbage" : x.pos.x, POSY: x.pos.y, POSZ: x.pos.z, ROTX: e.x, ROTY: e.y, ROTZ: e.z, MESHMIRRORX: x.mirror } };
         return { class: "Fixture", name: x.name, fields: { FID: String(x.fid), Name: x.name, POSX: x.pos.x.toFixed(3), POSY: x.pos.y.toFixed(3), POSZ: x.pos.z.toFixed(3), ROTX: e.x.toFixed(2), ROTY: e.y.toFixed(2), ROTZ: e.z.toFixed(2), ROTDIRECT: x.q.map((n) => n.toFixed(6)).join(","), MESHMIRRORX: x.mirror ? "Yes" : "" } };
       });
       return { items, total: items.length };
@@ -144,6 +151,8 @@ class Stage {
     f.on("set", (args) => {
       const x = this.fixtures.get(Number(String(args.ref).replace(/^Fixture /, "")))!;
       const p = String(args.property);
+      if (p === this.failSet) throw new BridgeReplyError(`[set-failed] ${p} refused`, "set-failed");
+      if (this.garbleWritten) this.garbled.add(x.fid);
       if (!this.ignore.has(p)) {
         if (p.startsWith("POS")) x.pos[p.slice(3).toLowerCase() as "x"] = Number(args.value);
         if (p === "ROTDIRECT") {
@@ -257,4 +266,88 @@ test("(the fake console reproduces why angles are not written one by one: (30, 1
   rot = eulerFromQuat(quatFromEuler(rot));
   rot.z = 20;
   assert.ok(!quatEquivalent(quatFromEuler(rot), quatFromEuler({ x: 30, y: 100, z: 20 })));
+});
+
+// ---------------------------------------------------------------------------
+// Review of PR #49
+// ---------------------------------------------------------------------------
+
+test("review P1: the checks and the restore values are read inside the mutation lock", async () => {
+  const { h, s, sets } = await setup();
+  try {
+    // An operation already holding the lock opens the patch copy before releasing it.
+    const holder = h.ctx.mutations.run(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+      s.copyOpen = true;
+    });
+    const r = await h.callJson("gma3_place_fixtures", { placements: [{ fid: 101, position: { x: 1 } }] });
+    await holder;
+    assert.equal(r.result.outcome, "failed");
+    assert.match(r.result.summary, /patch copy is open/);
+    assert.deepEqual(sets(), [], "nothing is written after a stale check");
+    // An operation holding the lock moves the fixture: the restore list has the pose it left, not the earlier one.
+    s.copyOpen = false;
+    const mover = h.ctx.mutations.run(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+      s.fixtures.get(101)!.pos.x = 5;
+    });
+    const r2 = await h.callJson("gma3_place_fixtures", { placements: [{ fid: 101, position: { y: 1 } }] });
+    await mover;
+    assert.equal(r2.result.outcome, "succeeded", JSON.stringify(r2.result, null, 2));
+    assert.deepEqual(r2.result.restore[0].position, { x: 5, y: 0, z: 0 });
+    assert.deepEqual(r2.result.fixtures[0].after.position, { x: 5, y: 1, z: 0 });
+  } finally {
+    await h.close();
+  }
+});
+
+test("review P2: an unreadable pose is refused before writing and never verifies as matched", async () => {
+  const { h, s, sets } = await setup();
+  try {
+    s.garbled.add(103);
+    let r = await h.callJson("gma3_place_fixtures", { placements: [{ fid: 103, position: { y: 1 } }] });
+    assert.equal(r.result.outcome, "failed");
+    assert.match(r.result.summary, /FID 103: POSX could not be read as numbers/);
+    assert.deepEqual(sets(), []);
+    s.garbled.clear();
+    s.garbleWritten = true;
+    r = await h.callJson("gma3_place_fixtures", { placements: [{ fid: 102, position: { x: 1 } }] });
+    assert.equal(r.result.verification.status, "unavailable", "an unreadable value is not a match");
+    assert.match(r.result.verification.detail, /FID 102 POSX/);
+    assert.match(r.result.summary, /Read-back unavailable/);
+  } finally {
+    await h.close();
+  }
+});
+
+test("review P2: a fixture changed only in part is partial, with every property step reported", async () => {
+  const { h, s } = await setup();
+  try {
+    s.failSet = "POSY";
+    const { result, isError } = await h.callJson("gma3_place_fixtures", { placements: [{ fid: 101, position: { x: 1, y: 2, z: 3 } }, { fid: 102, position: { x: 4 } }] });
+    assert.equal(isError, true);
+    assert.equal(result.outcome, "partial");
+    assert.deepEqual(result.steps.filter((x: any) => x.op === "set").map((x: any) => `${x.name}:${x.status}`), ["101.POSX:succeeded", "101.POSY:failed", "101.POSZ:skipped", "102.POSX:skipped"]);
+    assert.match(result.summary, /0 of 2 fixture\(s\) placed; changed only in part: FID 101 \(written: POSX\); 1 not changed; stopped at 101.POSY failed/);
+    assert.equal(result.verification.status, "matched", "the value that was written is verified");
+    assert.match(result.summary, /Read-back of the written values matched/);
+    assert.equal(s.fixtures.get(101)!.pos.x, 1);
+  } finally {
+    await h.close();
+  }
+});
+
+test("review P2: chained mirror pairs resolve in dependency order; a cycle is refused", async () => {
+  const { h } = await setup();
+  try {
+    const { result } = await h.callJson("gma3_place_fixtures", { placements: [{ fid: 101, position: { x: 2, y: 1, z: 3 } }], layouts: [{ kind: "mirror", pairs: [[102, 103], [101, 102]] }], preview: true });
+    const by = Object.fromEntries(result.plan.map((p: any) => [p.fid, p.position]));
+    assert.deepEqual(by[102], { x: -2, y: 1, z: 3 });
+    assert.deepEqual(by[103], { x: 2, y: 1, z: 3 }, "103 mirrors 102's final pose, whatever the order of the pairs");
+    const r = await h.callJson("gma3_place_fixtures", { layouts: [{ kind: "mirror", pairs: [[101, 102], [102, 101]] }] });
+    assert.equal(r.result.outcome, "failed");
+    assert.match(r.result.validationErrors.join(" "), /mirror pairs form a cycle \(FID (101 -> 102 -> 101|102 -> 101 -> 102)\)/);
+  } finally {
+    await h.close();
+  }
 });
