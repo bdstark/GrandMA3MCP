@@ -176,7 +176,15 @@ had to clean up after itself. A Desktop chat agent cannot run `find` at all.
 **Lua changes:** Not expected: live fixtures take `Set()` outside patch mode (KB-26 hooks). A probe must establish
 which properties are writable and how rotation reads back.
 
-**Status:** proposed.
+**Status:** implemented without a bridge change: `gma3_fixture_positions`, `gma3_place_fixtures`
+([docs/tools/positions.md](docs/tools/positions.md), probe record
+[su-04-positions-macos-2.5.1.md](docs/probes/su-04-positions-macos-2.5.1.md), live test `test/live/positions.live.ts`
+1/1 on macOS onPC 2.5.1). Positions read raw (exact) and written through `set`; a rotation is written as one
+`ROTDIRECT` quaternion, because the console renormalizes the angles between separate writes, and verified by
+quaternion. Mirroring is the fixture's `MESHMIRRORX` flag (the console ignores scale); mirror pairs across the stage
+centre line, lines and arcs expand into a previewable plan. Refused while the patch copy is open: its commit overwrites
+positions. No undo, so the result carries a restore list. Fixtures inside grouping fixtures are refused (not
+established).
 
 **Evidence:** six `gma3_lua` calls wrote `POSX/POSY/POSZ/ROTX/ROTY/ROTZ` with hand conversion from feet. Mirroring by
 `SCALEX = -1` was accepted and silently read back as `1`; the agent mirrored with `ROTY = 180`, which read back as

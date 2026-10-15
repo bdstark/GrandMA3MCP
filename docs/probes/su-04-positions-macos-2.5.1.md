@@ -28,7 +28,7 @@ with meters and degrees". New fixtures sit at 0 with 0 rotation.
 | --- | --- | --- | --- |
 | `POSX`, `POSY`, `POSZ` | number, metres | `1.500` (3 decimals: millimetres) | yes, through `set` (no Lua) |
 | `ROTX`, `ROTY`, `ROTZ` | number, degrees | `-45.00` (2 decimals) | yes, through `set` |
-| `ROTDIRECT` | nil | quaternion `x,y,z,w` (6 decimals) | not tried |
+| `ROTDIRECT` | nil | quaternion `x,y,z,w` (6 decimals) | yes, through `set` with the text `x,y,z,w`: the whole rotation in one write |
 | `SCALEX`, `SCALEY`, `SCALEZ` | 1.0 | `1.00` | **ignored**: −1 and 2 both read back 1.00, with no error |
 | `MESHMIRRORX` | boolean | `""` off, `Yes` on | yes, through `set` with the text `1` / `0`; `false`, `No` and `On` do not change it |
 
@@ -49,6 +49,11 @@ A sub-fixture (cell, class `SubFixture`) has none of these properties: cells can
 
   This explains the field test's `ROTY = 180` reading back as (180, ~0, 180). A tool compares quaternions, and a
   rotation given as one axis cannot safely be combined with the other two axes as the console reports them.
+- **The three angles must not be written in separate requests.** The first live run of the tools wrote `ROTX = 30`,
+  `ROTY = 100`, `ROTZ = 20` through three `set` requests and got (−150, 80, 20): between the requests the console had
+  renormalized X and Y (to −150, 80, with Z moved to −180), and the Z write then replaced the renormalized Z. That is a
+  different rotation from (30, 100, 20), whose normalized form is (−150, 80, −160). Writing `ROTDIRECT` with the
+  quaternion `0.035349,0.757590,-0.087439,0.645881` set the whole rotation at once and read back (−150, 80, −160).
 
 ## The patch copy and undo
 
@@ -63,4 +68,10 @@ A sub-fixture (cell, class `SubFixture`) has none of these properties: cells can
 - Fixtures inside a grouping fixture: whether their position is relative to the parent.
 - More than one stage: whether positions are relative to the stage.
 - What `MESHMIRRORX` changes in the 3D view (the flag sticks; the effect was not looked at).
-- Writing `ROTDIRECT` directly.
+
+## The tools, live
+
+`test/live/positions.live.ts` 1/1 (2 s) on fixtures 201 and 202: a line in feet with the rotation (30, 100, 20) written
+as one `ROTDIRECT` quaternion and read back renormalized as (−150, 80, −160); mesh mirroring; a mirror pair across the
+stage centre line; an arc; and a restore from the tool's own `restore` list back to the starting poses. Positions read
+raw (`objects` with `asText: false`) are exact: 7 ft reads 7 ft, not the display's 2.134 m.

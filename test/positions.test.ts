@@ -146,7 +146,12 @@ class Stage {
       const p = String(args.property);
       if (!this.ignore.has(p)) {
         if (p.startsWith("POS")) x.pos[p.slice(3).toLowerCase() as "x"] = Number(args.value);
-        if (p.startsWith("ROT")) {
+        if (p === "ROTDIRECT") {
+          x.q = String(args.value).split(",").map(Number) as Quat;
+          x.rot = eulerFromQuat(x.q);
+        } else if (p.startsWith("ROT")) {
+          // A separate request: the console has renormalized the angles since the last one (live 2026-10-15).
+          x.rot = eulerFromQuat(x.q);
           x.rot[p.slice(3).toLowerCase() as "x"] = Number(args.value);
           x.q = quatFromEuler(x.rot);
         }
@@ -170,7 +175,8 @@ test("gma3_place_fixtures: positions in feet, a full rotation and mirroring, rea
     const { result, isError } = await h.callJson("gma3_place_fixtures", { unit: "ft", placements: [{ fid: 101, position: { x: 10, z: 7 }, rotation: { x: 30, y: 100, z: 20 }, mirror_mesh: true }] });
     assert.equal(isError, false, JSON.stringify(result, null, 2));
     assert.equal(result.verification.status, "matched");
-    assert.deepEqual(sets(), ["Fixture 101.POSX=3.048", "Fixture 101.POSZ=2.1336", "Fixture 101.ROTX=30", "Fixture 101.ROTY=100", "Fixture 101.ROTZ=20", "Fixture 101.MESHMIRRORX=1"]);
+    const q = quatFromEuler({ x: 30, y: 100, z: 20 }).map((n) => Math.round(n * 1e9) / 1e9).join(",");
+    assert.deepEqual(sets(), ["Fixture 101.POSX=3.048", "Fixture 101.POSZ=2.1336", `Fixture 101.ROTDIRECT=${q}`, "Fixture 101.MESHMIRRORX=1"], "the rotation is one quaternion write");
     const fx = result.fixtures[0];
     assert.deepEqual(fx.after.rotation, { x: -150, y: 80, z: -160 }, "the console's renormalized angles are reported as they are");
     assert.deepEqual(fx.after.position, { x: 10, y: 0, z: 7 });
@@ -243,4 +249,12 @@ test("gma3_fixture_positions: positions in the requested unit with the axes", as
   } finally {
     await h.close();
   }
+});
+
+test("(the fake console reproduces why angles are not written one by one: (30, 100, 20) becomes another rotation)", () => {
+  // As onPC did live: X and Y written, renormalized before Z is written.
+  let rot: Vec3 = { x: 30, y: 100, z: 0 };
+  rot = eulerFromQuat(quatFromEuler(rot));
+  rot.z = 20;
+  assert.ok(!quatEquivalent(quatFromEuler(rot), quatFromEuler({ x: 30, y: 100, z: 20 })));
 });

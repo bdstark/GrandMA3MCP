@@ -9,7 +9,9 @@
  *     stage left, Y positive upstage, Z positive up.
  *   - ROTDIRECT displays the rotation as a quaternion "x,y,z,w"; it is q = qZ·qY·qX of the three angles.
  *   - The console renormalizes the angles a frame later (Y within ±90°) and keeps the quaternion, so a rotation is
- *     verified by quaternion, and is always given as all three angles.
+ *     verified by quaternion, and is always given as all three angles. Writing the three angles in separate
+ *     requests is wrong: the renormalization between them combines a new angle with already-rewritten ones
+ *     ((30, 100, 20) became (-150, 80, 20), live). A rotation is written as one ROTDIRECT quaternion instead.
  *   - SCALEX/Y/Z ignore writes (no error): not offered. MESHMIRRORX takes the text "1" / "0" only.
  *   - An open patch copy overwrites position writes when it is committed: refused while the copy is open.
  *   - No undo (Oops fails): the result carries every fixture's previous values for a manual restore.
@@ -424,7 +426,8 @@ export async function placeFixtures(ctx: ToolContext, raw: PlaceArgs): Promise<O
       }
       const sets: Array<[string, number | string]> = [];
       for (const k of ["x", "y", "z"] as const) if (f.writePosition[k] !== undefined) sets.push([`POS${k.toUpperCase()}`, round(f.writePosition[k] as number, 5)]);
-      if (f.writeRotation) for (const k of ["x", "y", "z"] as const) sets.push([`ROT${k.toUpperCase()}`, round(f.writeRotation[k], 4)]);
+      // One write: per-axis writes are renormalized between requests (see the header).
+      if (f.writeRotation) sets.push(["ROTDIRECT", quatFromEuler(f.writeRotation).map((n) => round(n, 9)).join(",")]);
       if (f.mirrorMesh !== undefined) sets.push(["MESHMIRRORX", f.mirrorMesh ? "1" : "0"]);
       const sent: Array<{ property: string; value: unknown; reply?: unknown }> = [];
       try {
