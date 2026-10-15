@@ -61,7 +61,7 @@ The [SHOWS.md shared acceptance criteria](SHOWS.md#shared-acceptance-criteria) a
 
 **Lua changes:** Yes: the bridge's `patch.fingerprint`.
 
-**Status:** fixed in bridge 0.25.1 (PR GrandMA3MCP#46). After five grandMA2 types were imported, the first
+**Status:** fixed in bridge 0.25.1 (PR GrandMA3MCP#46, merged). After five grandMA2 types were imported, the first
 `gma3_patch_add` refused to commit: FixtureTypes and AttributeDefinitions differed between the copy and the live
 patch. A property-by-property diff of the open copy (3,765 objects) found only console-derived values:
 `ATTRIBUTEINDEXOLD` on the 29 imported attributes (unset `4294967295` live, numbered in the copy) and the
@@ -85,8 +85,9 @@ and that class. Verified read-only against the same open copy: all nine collecti
 
 **Lua changes:** Yes: the bridge's `patch.add`.
 
-**Status:** worked around in bridge 0.25.1 (PR GrandMA3MCP#46): `patch.add` calls `AddFixtures` once per fixture,
-amount 1, each with its own FID and address. The trigger is not fully isolated yet (see the probe below).
+**Status:** worked around in bridge 0.25.2: `patch.add` calls `AddFixtures` once per fixture, amount 1, each with its
+own FID and address. Reproduced without the bridge on an empty show and reported to MA Lighting (2026-10-14); the
+reproduction plugin and report are in [docs/probes/addfixtures-crash](docs/probes/addfixtures-crash/README.md).
 
 **What happened:** `gma3_patch_add` for 4 wall washers (52-channel mode, 12 cells each) at 1.097 crashed onPC
 during the add step. The crash report (`EXC_BAD_ACCESS` at address `0x4`, then `abort()` from the console's own
@@ -110,17 +111,14 @@ found that `amount > 1` addresses only the first fixture of a block.
 | Wall washer (52 ch, 12 cells), amount 4, with `patch` | **crashed onPC** |
 | Wall washer amount 1 ×4, beam amount 1 ×2, Festoon (40 cells) amount 1 ×2, each with `patch` | all worked |
 
-### Probe (not run: each attempt can crash onPC)
+### Reproduction
 
-On a disposable show, one call per onPC run, all with a mode that has cells unless stated:
-
-1. amount 2, no `patch` — does the crash need `patch`?
-2. amount 2 with `patch` — does it need more than two fixtures?
-3. amount 2 with `patch` on a mode without cells — the control.
-4. The same block through the Patch menu's own Add dialog — does the console UI share the fault?
-
-The result goes to MA Lighting as a bug report either way. The one-call-per-fixture path stays: it is the only one
-proven on every type in the field test.
+[docs/probes/addfixtures-crash](docs/probes/addfixtures-crash/README.md) holds a standalone plugin that needs nothing
+from this repository: on a new, empty show it imports the wall washer from the shipped grandMA2 library and calls
+`AddFixtures` the way the manual's example does. Variant A (`amount = 4`, with `patch`) crashed onPC with the same 19
+innermost frames as the field crash. The report went to MA Lighting on 2026-10-14. The narrower variants (amount 2
+with and without `patch`, a mode without cells, amount 1) were not run. The one-call-per-fixture path stays: it is
+the only one proven on every type in the field test.
 
 ### Acceptance criteria
 
@@ -320,7 +318,7 @@ was not found. The `gma3_lua` description advertises the whole Lua API and names
 
 ## Recommended delivery order
 
-SU-01 and SU-02 first (bridge 0.25.1). Then SU-03: without import, a new show cannot be set up without Lua or a
+SU-01 and SU-02 first (bridges 0.25.1 and 0.25.2). Then SU-03: without import, a new show cannot be set up without Lua or a
 shell. SU-04, SU-05 and SU-06 remove most of the remaining Lua from a typical setup; SU-10 is small and can go with
 any of them. SU-07 precedes SU-08, which needs a design decision. SU-09 is independent.
 

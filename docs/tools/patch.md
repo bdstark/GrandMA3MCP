@@ -60,7 +60,7 @@ the console: Menu › Patch, then **Discard and Exit** (drops everything in the 
 
 **Bridge-side safety net.** Each mutating op re-checks in the console:
 - `patch.add`: the copy, the destination, a free FID range, a free DMX range inside one universe, a single-break
-  mode. It calls `AddFixtures` once per fixture (amount 1, the fixture's own FID and address; bridge 0.25.1), stops
+  mode. It calls `AddFixtures` once per fixture (amount 1, the fixture's own FID and address; bridge 0.25.2), stops
   at the first call that fails, checks that exactly the requested fixtures exist where requested, and deletes them
   again on any problem. A single call for a whole block crashed onPC 2.5.1 for a mode with cells (see
   [SETUP.md](../../SETUP.md) SU-02).

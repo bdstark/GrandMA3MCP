@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<GMA3 DataVersion="0.8.84.0">
+    <UserPlugin Name="addfixtures_repro" Author="gma3-mcp" Version="1.0.1">
+        <ComponentLua Name="addfixtures_repro" FileName="addfixtures_repro.lua" />
+    </UserPlugin>
+</GMA3>
