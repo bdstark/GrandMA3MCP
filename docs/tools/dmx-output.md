@@ -36,6 +36,10 @@ universe it is sent as), and an explanation:
 | `no_protocol_output` | granted, but no enabled entry with its protocol's output on covers it (it reaches MA-Net devices only, if any) |
 | `sent` | granted and sent, as the listed Art-Net / sACN universes |
 
+An entry sends only when it is enabled, its protocol's output is on and its mode is an output mode. For Art-Net
+that is every mode but `Input`; for sACN, the `Output` modes. An enabled input entry receives the universe and is
+named as such.
+
 Also included: `totals` (universes, used, wanting output, granted among those), both protocols with every entry,
 the output stations, and a one-line summary.
 
@@ -53,26 +57,44 @@ learns why rather than getting an empty result.
 | `network` | required when the change makes a protocol send DMX onto the network |
 | `preview`, `exclusive`, `verify` | `exclusive` required unless `preview` |
 
-**Validation first.** The console silently ignores an invalid mode, clamps a priority above 200 to 200 and accepts an
-amount of 0, so the tool refuses such values before anything is sent. It also refuses an entry number the protocol
-does not have.
+**Validation first, on the effective configuration.** Each touched entry is taken with its current values plus the
+requested ones, and both complete ranges are checked:
+- the local universes `local_universe` … `+amount − 1` must lie within 1..1024;
+- the protocol universes `universe` … `+amount − 1` must lie within 0..32767 (Art-Net) or 1..63999 (sACN).
+
+Changing only `local_universe` to 1024 on an entry with an amount of 2 is refused. The tool also refuses:
+- an invalid mode, a priority above 200 or an amount of 0, which the console would ignore, clamp or accept as
+  meaningless;
+- an entry number the protocol does not have;
+- two specs for one entry (a remove twice, or an edit and a remove), whose numbers would shift;
+- an added entry without `local_universe` and `universe`.
 
 **Order.**
-1. Turning a protocol's output off goes first.
-2. New entries are appended, then each entry's mapping is written. `Enabled` comes last for each entry, so an entry
-   starts sending only once its mapping is in place.
-3. Grant requests.
-4. Turning a protocol's output on comes last.
-5. Removals run after the edits, highest number first, so the numbers stay valid.
+1. A protocol's output turning off goes first.
+2. Per entry:
+   - an enabled entry that is remapped or disabled is **disabled first**;
+   - its mapping is written while it is disabled;
+   - it is enabled last, only after the mapping was confirmed.
 
-**The network.** After the change, a protocol whose `Out` is on and that has an enabled entry sends DMX onto the
-network through the output stations' interfaces. If the change makes that happen, it is refused without
-`network: true`; `preview` shows the plan and the note.
+   An entry that keeps sending is disabled for the moment of its remap.
+3. Entries are added (disabled, as the console creates them), then mapped and enabled the same way.
+4. Grant requests.
+5. Removals, highest number first.
+6. A protocol's output turning on comes last.
 
-**Read-back.** Every written property is read back and compared, and a removal is checked by the entry count. A
-value the console did not take is a mismatch. The result carries `previous` (both protocols, and the requests of the
-universes touched) for a manual restore, since there is no undo, and `now` (the protocols, and each universe
-explained again).
+**Every reply is checked.** The bridge answers each write with the value read back at once. A value that differs,
+or an answer that cannot be read, stops the call: nothing that depends on it (`Enabled`, the protocol's `Out`) is
+sent. An entry that was disabled for its remap stays disabled, and the warnings say so.
+
+**The network.** An entry sends DMX onto the network when it is enabled, its protocol's output is on and its mode
+is an output mode. This is judged on the configuration after the change. If an entry would start sending, or would
+send with another mapping, the change is refused without `network: true`. That includes switching an input entry to
+an output mode, and turning output on with entries already enabled. `preview` shows the plan and the note.
+
+**Read-back.** The whole configuration is read back after the change (also after a stop): the protocol switch,
+every touched entry's mapping and enabled state, the entry count and the grant requests. A value the console did not
+take is a mismatch. The result carries `previous` for a manual restore (there is no undo) and `now`, with each
+universe explained again.
 
 ## Live test
 

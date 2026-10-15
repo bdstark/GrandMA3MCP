@@ -48,25 +48,30 @@ class World {
       if (args.exclusive !== true) throw new BridgeReplyError("[not-exclusive] x", "not-exclusive");
       const prop = String(args.property);
       const value = String(args.value);
-      if (prop === this.ignore) return { property: prop, value: "unchanged" };
+      const yn = (b: boolean) => (b ? "Yes" : "No");
+      // As the bridge: the reply carries the value read back right after the write.
       if (args.target === "protocol") {
         const p = this.protocols[args.protocol as "artnet"];
-        if (prop === "Out") p.out = value === "Yes";
-        return { property: prop };
+        if (prop === "Out" && prop !== this.ignore) p.out = value === "Yes";
+        return { property: prop, value: yn(p.out) };
       }
       if (args.target === "universe") {
-        this.universes.find((u) => u.no === args.universe)!.request = value;
-        return { property: prop };
+        const u = this.universes.find((x) => x.no === args.universe)!;
+        if (prop !== this.ignore) u.request = value;
+        return { property: prop, value: u.request };
       }
       const e = this.protocols[args.protocol as "artnet"].entries.find((x) => x.index === args.index);
       if (!e) throw new BridgeReplyError("[no-entry] none", "no-entry");
-      if (prop === "Enabled") e.enabled = value === "Yes";
-      if (prop === "LocalUniverse") e.localUniverse = Number(value);
-      if (prop === "Amount") e.amount = Number(value);
-      if (prop === "Art-NetAbsolute" || prop === "sACNUniverse") e.universe = Number(value);
-      if (prop === "Mode") e.mode = value;
-      if (prop === "Priority") e.priority = Math.min(200, Number(value));
-      return { property: prop };
+      if (prop !== this.ignore) {
+        if (prop === "Enabled") e.enabled = value === "Yes";
+        if (prop === "LocalUniverse") e.localUniverse = Number(value);
+        if (prop === "Amount") e.amount = Number(value);
+        if (prop === "Art-NetAbsolute" || prop === "sACNUniverse") e.universe = Number(value);
+        if (prop === "Mode") e.mode = value;
+        if (prop === "Priority") e.priority = Math.min(200, Number(value));
+      }
+      const now: Record<string, unknown> = { Enabled: yn(e.enabled), LocalUniverse: e.localUniverse, Amount: e.amount, "Art-NetAbsolute": e.universe, sACNUniverse: e.universe, Mode: e.mode, Priority: e.priority };
+      return { property: prop, value: String(now[prop]) };
     });
     f.on("dmx.addEntry", (args) => {
       const list = this.protocols[args.protocol as "artnet"].entries;
@@ -134,7 +139,7 @@ test("configure: validation refuses what the console would ignore or clamp, befo
     r = await cfg(h, { protocol: "artnet", entries: [{ entry: 1, amount: 0 }], exclusive: true });
     assert.match(r.result.validationErrors.join(" "), /amount must be >= 1/);
     r = await cfg(h, { protocol: "artnet", entries: [{ entry: 1, local_universe: 1000, amount: 50 }], exclusive: true });
-    assert.match(r.result.validationErrors.join(" "), /must not pass 1024/);
+    assert.match(r.result.steps.map((s: any) => s.error ?? "").join(" "), /local universes 1000\.\.1049 pass 1024/);
     r = await cfg(h, { protocol: "artnet", entries: [{ entry: 1, priority: 50 }], exclusive: true });
     assert.match(r.result.validationErrors.join(" "), /priority applies to sACN only/);
     r = await cfg(h, { protocol: "artnet", output: false });
@@ -158,7 +163,7 @@ test("configure: turning output on needs network: true; the mapping goes before 
     r = await cfg(h, { ...args, network: true });
     assert.equal(r.isError, false, JSON.stringify(r.result, null, 2));
     assert.equal(r.result.verification.status, "matched");
-    assert.deepEqual(w.sets.map((s) => s.property), ["LocalUniverse", "Amount", "Art-NetAbsolute", "Enabled", "Out"]);
+    assert.deepEqual(w.sets.map((s) => s.property), ["Amount", "Art-NetAbsolute", "Enabled", "Out"], "only what changes; Enabled after the mapping; Out last");
     assert.equal(r.result.now.universes[0].state, "not_granted", "sent by Art-Net now, but universe 1 is still not granted");
     assert.equal(r.result.previous.protocols.artnet.out, false);
     // Turning output off: Out first, no network confirmation needed.
@@ -184,7 +189,7 @@ test("configure: add and remove entries, grant requests; a value the console ign
     w.ignore = "Mode";
     r = await cfg(h, { protocol: "sacn", entries: [{ entry: 1, mode: "Output Unicast" }], exclusive: true });
     assert.equal(r.result.verification.status, "mismatched");
-    assert.match(r.result.verification.detail, /sacn entry 1 Mode reads Output Multicast, expected Output Unicast/);
+    assert.match(r.result.verification.detail, /entry 1 Mode reads Output Multicast, expected Output Unicast/);
   } finally {
     await h.close();
   }
@@ -196,6 +201,103 @@ test("configure: preview shows the plan and the network note, sends nothing", as
     const { result } = await cfg(h, { protocol: "sacn", output: true, entries: [{ entry: 1, enabled: true }], preview: true });
     assert.match(result.summary, /Preview only; nothing was sent.*sACN would send DMX onto the network/);
     assert.deepEqual(result.plan.map((p: any) => p.step), ["sacn entry 1 Enabled", "sacn Out"]);
+    assert.equal(w.sets.length, 0);
+  } finally {
+    await h.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Review round 1 (PR #55 at e62f358)
+// ---------------------------------------------------------------------------
+
+test("configure: a mapping write the console ignores stops the call before Enabled and Out", async () => {
+  const { h, w } = await setup();
+  try {
+    w.ignore = "LocalUniverse";
+    const { result } = await cfg(h, { protocol: "artnet", output: true, entries: [{ entry: 1, local_universe: 5, enabled: true }], network: true, exclusive: true });
+    assert.equal(result.outcome, "failed");
+    assert.deepEqual(w.sets.map((s) => s.property), ["LocalUniverse"], "nothing after the ignored write was sent");
+    assert.match(result.steps.map((s: any) => s.error ?? "").join(" "), /the console kept LocalUniverse 1 \(expected 5\)/);
+    assert.equal(w.protocols.artnet.entries[0].enabled, false);
+    assert.equal(w.protocols.artnet.out, false);
+  } finally {
+    await h.close();
+  }
+});
+
+test("configure: an enabled entry is disabled before it is remapped, and enabled again only after", async () => {
+  const { h, w } = await setup();
+  try {
+    w.protocols.sacn.out = true;
+    w.protocols.sacn.entries[0].enabled = true;
+    let r = await cfg(h, { protocol: "sacn", entries: [{ entry: 1, universe: 100, enabled: false }], exclusive: true });
+    assert.equal(r.result.verification.status, "matched", JSON.stringify(r.result.verification));
+    assert.deepEqual(w.sets.map((s) => `${s.property}=${s.value}`), ["Enabled=No", "sACNUniverse=100"], "disabled first, then remapped");
+    w.protocols.sacn.entries[0].enabled = true;
+    w.sets = [];
+    r = await cfg(h, { protocol: "sacn", entries: [{ entry: 1, universe: 200 }], network: true, exclusive: true });
+    assert.equal(r.result.verification.status, "matched", JSON.stringify(r.result.verification));
+    assert.deepEqual(w.sets.map((s) => `${s.property}=${s.value}`), ["Enabled=No", "sACNUniverse=200", "Enabled=Yes"], "an entry that keeps sending is disabled for its remap");
+    w.ignore = "sACNUniverse";
+    w.sets = [];
+    r = await cfg(h, { protocol: "sacn", entries: [{ entry: 1, universe: 300 }], network: true, exclusive: true });
+    assert.deepEqual(w.sets.map((s) => `${s.property}=${s.value}`), ["Enabled=No", "sACNUniverse=300"], "a remap that does not take leaves it disabled");
+    assert.match(r.result.warnings.join(" "), /sacn entry 1 was disabled for the change and stays disabled/);
+  } finally {
+    await h.close();
+  }
+});
+
+test("configure: duplicate or conflicting specs for one entry are refused before anything is sent", async () => {
+  const { h, w } = await setup();
+  try {
+    w.protocols.artnet.entries.push({ index: 2, enabled: false, mode: "Auto", localUniverse: 2, amount: 1, universe: 1 });
+    let r = await cfg(h, { protocol: "artnet", entries: [{ entry: 1, remove: true }, { entry: 1, remove: true }], exclusive: true });
+    assert.match(r.result.validationErrors.join(" "), /entry 1 appears more than once/);
+    r = await cfg(h, { protocol: "artnet", entries: [{ entry: 1, universe: 4 }, { entry: 1, remove: true }], exclusive: true });
+    assert.match(r.result.validationErrors.join(" "), /entry 1 appears more than once/);
+    assert.equal(w.protocols.artnet.entries.length, 2);
+    assert.equal(w.sets.length, 0);
+  } finally {
+    await h.close();
+  }
+});
+
+test("configure and explain: input entries never send; turning one to an output mode needs network: true", async () => {
+  const { h, w } = await setup();
+  try {
+    w.universes[0].granted = true;
+    w.protocols.sacn.out = true;
+    w.protocols.sacn.entries[0] = { ...w.protocols.sacn.entries[0], enabled: true, mode: "Input Multicast" };
+    const read = await h.callJson("gma3_dmx_output", {});
+    assert.equal(read.result.universes[0].state, "no_protocol_output");
+    assert.match(read.result.universes[0].explanation, /sACN entry 1 receives it \(Input Multicast\)/);
+    let r = await cfg(h, { protocol: "sacn", entries: [{ entry: 1, mode: "Output Multicast" }], exclusive: true });
+    assert.match(r.result.steps.map((s: any) => s.error ?? "").join(" "), /sACN would send DMX onto the network \(entry 1\).*pass network: true/);
+    assert.equal(w.sets.length, 0);
+    r = await cfg(h, { protocol: "sacn", entries: [{ entry: 1, mode: "Output Multicast" }], network: true, exclusive: true });
+    assert.equal(r.result.verification.status, "matched", JSON.stringify(r.result.verification));
+    const after = await h.callJson("gma3_dmx_output", {});
+    assert.equal(after.result.universes[0].state, "sent");
+  } finally {
+    await h.close();
+  }
+});
+
+test("configure: both complete ranges are validated from the current values plus the requested ones", async () => {
+  const { h, w } = await setup();
+  try {
+    w.protocols.artnet.entries[0].amount = 2;
+    let r = await cfg(h, { protocol: "artnet", entries: [{ entry: 1, local_universe: 1024 }], exclusive: true });
+    assert.match(r.result.steps.map((s: any) => s.error ?? "").join(" "), /local universes 1024\.\.1025 pass 1024/);
+    w.protocols.sacn.entries[0].amount = 2;
+    r = await cfg(h, { protocol: "sacn", entries: [{ entry: 1, universe: 63999 }], exclusive: true });
+    assert.match(r.result.steps.map((s: any) => s.error ?? "").join(" "), /sACN universes 63999\.\.64000 leave 1\.\.63999/);
+    r = await cfg(h, { protocol: "artnet", entries: [{ add: true, local_universe: 1, amount: 2, universe: 32767 }], exclusive: true });
+    assert.match(r.result.steps.map((s: any) => s.error ?? "").join(" "), /Art-Net universes 32767\.\.32768 leave 0\.\.32767/);
+    r = await cfg(h, { protocol: "artnet", entries: [{ add: true, amount: 2 }], exclusive: true });
+    assert.match(r.result.validationErrors.join(" "), /an added entry needs local_universe and universe/);
     assert.equal(w.sets.length, 0);
   } finally {
     await h.close();

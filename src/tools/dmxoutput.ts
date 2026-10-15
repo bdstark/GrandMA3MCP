@@ -65,17 +65,25 @@ const NAMES: Record<Protocol, string> = { artnet: "Art-Net", sacn: "sACN" };
 const NOT_GRANTED =
   "the session has no grant for it, so the console does not output it and its DMX values cannot be read. A grant comes from the MA licensing of the session: on grandMA3 onPC, from connected MA hardware (such as a command wing or a processing unit); with none, nothing is output. The universe's grant request (gma3_configure_dmx_output grant_request) asks for one; it does not create one.";
 
+/** An entry in this mode sends DMX (Art-Net: every mode but Input; sACN: the Output modes). */
+export function isOutputMode(protocol: Protocol, mode: string): boolean {
+  return protocol === "artnet" ? mode !== "Input" : mode.startsWith("Output");
+}
+
 /** What happens to one universe's DMX, in words, and a state name. */
 export function explainUniverse(u: UniverseRow): { state: "idle" | "not_granted" | "no_protocol_output" | "sent"; explanation: string; sentAs: string[] } {
   const wanted = u.fixtures > 0 || u.portOut === true || u.request === "On";
-  const sending = (u.outputs ?? []).filter((o) => o.enabled === true && o.protocolOut === true);
+  // Input entries receive the universe; they never send it.
+  const sending = (u.outputs ?? []).filter((o) => o.enabled === true && o.protocolOut === true && (o.mode == null || isOutputMode(o.protocol, o.mode)));
+  const receiving = (u.outputs ?? []).filter((o) => o.enabled === true && o.mode != null && !isOutputMode(o.protocol, o.mode)).map((o) => `${NAMES[o.protocol]} entry ${o.entry} receives it (${o.mode})`);
   const sentAs = sending.map((o) => `${NAMES[o.protocol]} universe ${o.as ?? "?"} (entry ${o.entry}, ${o.mode ?? "mode unknown"})`);
   if (!wanted) return { state: "idle", explanation: `Universe ${u.no} is not in use: nothing is patched to it and no output is set for it.`, sentAs };
   if (u.granted !== true) return { state: "not_granted", explanation: `Universe ${u.no} (${u.fixtures} fixture(s) patched) is not granted: ${NOT_GRANTED}`, sentAs };
   if (!sending.length) {
-    const off = (u.outputs ?? []).filter((o) => o.enabled === true && o.protocolOut !== true).map((o) => `${NAMES[o.protocol]} entry ${o.entry} is enabled but ${NAMES[o.protocol]} output is off`);
+    const off = (u.outputs ?? []).filter((o) => o.enabled === true && o.protocolOut !== true && (o.mode == null || isOutputMode(o.protocol, o.mode))).map((o) => `${NAMES[o.protocol]} entry ${o.entry} is enabled but ${NAMES[o.protocol]} output is off`);
     const disabled = (u.outputs ?? []).filter((o) => o.enabled !== true).map((o) => `${NAMES[o.protocol]} entry ${o.entry} covers it but is disabled`);
-    return { state: "no_protocol_output", explanation: `Universe ${u.no} is granted but no Art-Net or sACN output sends it${[...off, ...disabled].length ? ` (${[...off, ...disabled].join("; ")})` : " (no protocol entry covers it)"}; it reaches only MA-Net devices, if any are connected.`, sentAs };
+    const why = [...off, ...disabled, ...receiving];
+    return { state: "no_protocol_output", explanation: `Universe ${u.no} is granted but no Art-Net or sACN output sends it${why.length ? ` (${why.join("; ")})` : " (no protocol entry covers it)"}; it reaches only MA-Net devices, if any are connected.`, sentAs };
   }
   return { state: "sent", explanation: `Universe ${u.no} is granted and sent as ${sentAs.join(", ")}.`, sentAs };
 }
@@ -136,8 +144,12 @@ async function readOutput(ctx: ToolContext, raw: Record<string, unknown>): Promi
 
 const MODES: Record<Protocol, string[]> = { artnet: ["Auto", "Broadcast", "Unicast", "Input"], sacn: ["Output Multicast", "Output Unicast", "Input Multicast", "Input Unicast"] };
 const REQUESTS = { auto: "Auto", on: "On", off: "Off" } as const;
-/** One property write. `add` names the added entry (its position in the adds) whose index is known only after it is added. */
-type Planned = { name: string; target: "protocol" | "entry" | "universe"; protocol?: Protocol; index?: number; add?: number; universe?: number; property: string; value: string; expect: string };
+const UNIVERSE_RANGE: Record<Protocol, [number, number]> = { artnet: [0, 32767], sacn: [1, 63999] };
+/** Defaults of an appended entry (as the console creates it, live 2026-10-15). */
+const NEW_ENTRY: Record<Protocol, Mapping> = {
+  artnet: { localUniverse: 1, amount: 1, universe: 0, mode: "Auto", priority: null, enabled: false },
+  sacn: { localUniverse: 1, amount: 1, universe: 1, mode: "Output Multicast", priority: 100, enabled: false },
+};
 
 interface EntrySpec {
   entry?: number;
@@ -150,34 +162,76 @@ interface EntrySpec {
   priority?: number;
   enabled?: boolean;
 }
+interface Mapping {
+  localUniverse: number | null;
+  amount: number | null;
+  universe: number | null;
+  mode: string | null;
+  priority: number | null;
+  enabled: boolean;
+}
+/** An entry before and after the change: an existing one (index) or an added one (add = its position in the adds). */
+interface Effective {
+  label: string;
+  index?: number;
+  add?: number;
+  before?: Mapping;
+  after: Mapping;
+  remove: boolean;
+  spec: EntrySpec;
+}
+/** One mutation. A set carries the value the console must answer with; anything else stops the call. */
+type Step =
+  | { kind: "set"; name: string; target: "protocol" | "entry" | "universe"; protocol?: Protocol; index?: number; add?: number; universe?: number; property: string; value: string }
+  | { kind: "add"; name: string; add: number }
+  | { kind: "remove"; name: string; index: number };
 
 const yesNo = (b: boolean) => (b ? "Yes" : "No");
+const MAP_PROPS: Array<{ key: keyof Mapping; property: (p: Protocol) => string }> = [
+  { key: "localUniverse", property: () => "LocalUniverse" },
+  { key: "amount", property: () => "Amount" },
+  { key: "universe", property: (p) => (p === "artnet" ? "Art-NetAbsolute" : "sACNUniverse") },
+  { key: "mode", property: () => "Mode" },
+  { key: "priority", property: () => "Priority" },
+];
+
+const mappingOf = (e: Entry): Mapping => ({ localUniverse: e.localUniverse ?? null, amount: e.amount ?? null, universe: e.universe ?? null, mode: e.mode ?? null, priority: e.priority ?? null, enabled: e.enabled === true });
+/** Does an entry send DMX? Enabled, its protocol's output on, and an output mode. An unknown mode counts as sending. */
+const sends = (protocol: Protocol, out: boolean, m: Mapping) => out && m.enabled && (m.mode === null || isOutputMode(protocol, m.mode));
+const mappingChanged = (a: Mapping, b: Mapping) => MAP_PROPS.some((p) => a[p.key] !== b[p.key]);
 
 export async function configureOutput(ctx: ToolContext, raw: Record<string, unknown>): Promise<OperationResult> {
   const op = "configure_dmx_output";
   const v = new Validator();
   const protocol = raw.protocol === undefined ? undefined : raw.protocol === "artnet" || raw.protocol === "sacn" ? (raw.protocol as Protocol) : (v.fail('protocol must be "artnet" or "sacn"'), undefined);
   const output = raw.output === undefined ? undefined : typeof raw.output === "boolean" ? raw.output : (v.fail("output must be true or false"), undefined);
-  const entries: EntrySpec[] = Array.isArray(raw.entries) ? (raw.entries as EntrySpec[]) : raw.entries === undefined ? [] : (v.fail("entries must be a list"), []);
-  if ((output !== undefined || entries.length) && !protocol) v.fail("protocol (artnet or sacn) is required with output or entries");
+  const specs: EntrySpec[] = Array.isArray(raw.entries) ? (raw.entries as EntrySpec[]) : raw.entries === undefined ? [] : (v.fail("entries must be a list"), []);
+  if ((output !== undefined || specs.length) && !protocol) v.fail("protocol (artnet or sacn) is required with output or entries");
   const gr = raw.grant_request as { universes?: unknown; value?: unknown } | undefined;
   let grantUniverses: number[] = [];
   let grantValue: string | undefined;
   if (gr !== undefined) {
     grantUniverses = Array.isArray(gr.universes) && gr.universes.length ? gr.universes.map((x, i) => v.check(() => finiteNumber(`grant_request.universes[${i}]`, x, { integer: true, min: 1, max: 1024 })) ?? 1) : (v.fail("grant_request.universes must list universes 1..1024"), []);
+    if (new Set(grantUniverses).size !== grantUniverses.length) v.fail("grant_request.universes lists a universe twice");
     grantValue = REQUESTS[gr.value as keyof typeof REQUESTS] ?? (v.fail('grant_request.value must be "auto", "on" or "off"'), undefined);
   }
-  const uniMax = protocol === "artnet" ? 32767 : 63999;
-  const uniMin = protocol === "artnet" ? 0 : 1;
-  entries.forEach((e, i) => {
+  const [uniMin, uniMax] = UNIVERSE_RANGE[protocol ?? "artnet"];
+  const seen = new Set<number>();
+  specs.forEach((e, i) => {
     const p = `entries[${i}]`;
     if (e.add && e.entry !== undefined) v.fail(`${p}: add or entry, not both`);
     if (!e.add && e.entry === undefined) v.fail(`${p}: give entry (the entry number) or add: true`);
-    if (e.remove && (e.add || Object.keys(e).some((k) => !["entry", "remove"].includes(k)))) v.fail(`${p}: remove takes only entry`);
-    if (e.entry !== undefined) v.check(() => finiteNumber(`${p}.entry`, e.entry, { integer: true, min: 1, max: 1000 }));
+    if (e.add && e.remove) v.fail(`${p}: add and remove together`);
+    if (e.remove && Object.keys(e).some((k) => !["entry", "remove"].includes(k))) v.fail(`${p}: remove takes only entry`);
+    if (e.entry !== undefined) {
+      v.check(() => finiteNumber(`${p}.entry`, e.entry, { integer: true, min: 1, max: 1000 }));
+      // One spec per entry: two (a remove twice, a remove and an edit) would act on shifted numbers.
+      if (seen.has(e.entry)) v.fail(`${p}: entry ${e.entry} appears more than once; give one change per entry`);
+      seen.add(e.entry);
+    }
+    if (e.add && (e.local_universe === undefined || e.universe === undefined)) v.fail(`${p}: an added entry needs local_universe and universe`);
     if (e.local_universe !== undefined) v.check(() => finiteNumber(`${p}.local_universe`, e.local_universe, { integer: true, min: 1, max: 1024 }));
     if (e.amount !== undefined) v.check(() => finiteNumber(`${p}.amount`, e.amount, { integer: true, min: 1, max: 1024 }));
-    if (e.local_universe !== undefined && e.amount !== undefined && e.local_universe + e.amount - 1 > 1024) v.fail(`${p}: local_universe + amount - 1 must not pass 1024`);
     if (e.universe !== undefined) v.check(() => finiteNumber(`${p}.universe`, e.universe, { integer: true, min: uniMin, max: uniMax }));
     if (e.mode !== undefined && protocol && !MODES[protocol].includes(e.mode)) v.fail(`${p}.mode must be one of ${MODES[protocol].join(", ")}`);
     if (e.priority !== undefined) {
@@ -185,9 +239,8 @@ export async function configureOutput(ctx: ToolContext, raw: Record<string, unkn
       else v.check(() => finiteNumber(`${p}.priority`, e.priority, { integer: true, min: 0, max: 200 }));
     }
     if (e.enabled !== undefined && typeof e.enabled !== "boolean") v.fail(`${p}.enabled must be true or false`);
-    if (e.add && e.remove) v.fail(`${p}: add and remove together`);
   });
-  if (output === undefined && !entries.length && gr === undefined) v.fail("nothing to change: give output, entries and/or grant_request");
+  if (output === undefined && !specs.length && gr === undefined) v.fail("nothing to change: give output, entries and/or grant_request");
   const preview = raw.preview === true;
   if (!preview && raw.exclusive !== true) v.fail("exclusive must be true: the DMX output configuration of the console is changed (no undo; the result carries the previous values). preview: true needs no acknowledgement");
   const target = { protocol, output, entries: raw.entries, grant_request: raw.grant_request };
@@ -204,128 +257,155 @@ export async function configureOutput(ctx: ToolContext, raw: Record<string, unkn
       steps.push(asRead(stepFromError("read_output", err, { op: "dmx.output" })));
       return buildResult({ operation: op, target, steps, verification: unavailable("nothing was sent") });
     }
-    const p = protocol ? before.protocols[protocol] : undefined;
-    const problems: string[] = [];
-    for (const e of entries) if (e.entry !== undefined && p && !p.entries.some((x) => x.index === e.entry)) problems.push(`${NAMES[protocol as Protocol]} has no entry ${e.entry} (it has ${p.entries.map((x) => x.index).join(", ") || "none"})`);
-    if (problems.length) {
-      steps.push(asRead({ name: "check", status: "failed", error: `${problems.join("; ")}; nothing was changed` }));
-      return buildResult({ operation: op, target, steps, verification: unavailable("nothing was changed") });
-    }
-
-    // The plan: removals last (highest index first) so the numbers of the edited entries stay valid.
-    const plan: Planned[] = [];
-    const adds: EntrySpec[] = entries.filter((e) => e.add);
-    const edits = entries.filter((e) => e.entry !== undefined && !e.remove);
-    const removes = entries.filter((e) => e.remove).map((e) => e.entry as number).sort((a, b) => b - a);
-    const entryProps = (e: EntrySpec, where: { index: number } | { add: number }) => {
-      const props: Array<[string, string]> = [];
-      if (e.local_universe !== undefined) props.push(["LocalUniverse", String(e.local_universe)]);
-      if (e.amount !== undefined) props.push(["Amount", String(e.amount)]);
-      if (e.universe !== undefined) props.push([protocol === "artnet" ? "Art-NetAbsolute" : "sACNUniverse", String(e.universe)]);
-      if (e.mode !== undefined) props.push(["Mode", e.mode]);
-      if (e.priority !== undefined) props.push(["Priority", String(e.priority)]);
-      // Enabled last: an entry starts sending only once its mapping is set.
-      if (e.enabled !== undefined) props.push(["Enabled", yesNo(e.enabled)]);
-      const label = "index" in where ? String(where.index) : `new ${where.add + 1}`;
-      for (const [property, value] of props) plan.push({ name: `${protocol} entry ${label} ${property}`, target: "entry", protocol, ...where, property, value, expect: value });
+    const refuse = (why: string, extra: Record<string, unknown> = {}) => {
+      steps.push(asRead({ name: "check", status: "failed", error: `${why}; nothing was changed` }));
+      return buildResult({ operation: op, target, steps, verification: unavailable("nothing was changed"), extra });
     };
-    for (const e of edits) entryProps(e, { index: e.entry as number });
-    adds.forEach((e, k) => entryProps(e, { add: k }));
-    for (const n of grantUniverses) plan.push({ name: `universe ${n} Request`, target: "universe", universe: n, property: "Request", value: grantValue as string, expect: grantValue as string });
-    // The protocol switch after its entries: output goes on with the mapping in place, and off before anything else.
-    if (output !== undefined) {
-      const sw: Planned = { name: `${protocol} Out`, target: "protocol", protocol, property: "Out", value: yesNo(output), expect: yesNo(output) };
-      if (output) plan.push(sw);
-      else plan.unshift(sw);
-    }
 
-    // Would DMX go onto the network after this? The protocol's output on with at least one enabled entry.
-    const enabledAfter = (prot: Protocol) => {
-      const ps = before.protocols[prot];
-      const editOf = (i: number) => edits.find((e) => e.entry === i);
-      const kept = ps.entries.filter((x) => !removes.includes(x.index)).filter((x) => (editOf(x.index)?.enabled ?? x.enabled) === true).length;
-      return kept + (prot === protocol ? adds.filter((e) => e.enabled === true).length : 0);
-    };
-    const outAfter = (prot: Protocol) => (prot === protocol && output !== undefined ? output : before.protocols[prot].out === true);
-    const sendsAfter = (["artnet", "sacn"] as Protocol[]).filter((x) => outAfter(x) && enabledAfter(x) > 0);
-    const sendsBefore = (["artnet", "sacn"] as Protocol[]).filter((x) => before.protocols[x].out === true && before.protocols[x].entries.some((e) => e.enabled === true));
-    const newlySending = sendsAfter.filter((x) => !sendsBefore.includes(x) || (x === protocol && (adds.some((e) => e.enabled) || edits.some((e) => e.enabled === true))));
+    // The effective configuration: every touched entry before and after, with the console's current values for what
+    // the request leaves out.
+    const ps = protocol ? before.protocols[protocol] : undefined;
+    const effective: Effective[] = [];
+    let adds = 0;
+    for (const s of specs) {
+      if (s.add) {
+        const base = NEW_ENTRY[protocol as Protocol];
+        effective.push({ label: `new ${adds + 1}`, add: adds++, after: { ...base, ...pick(s, base) }, remove: false, spec: s });
+        continue;
+      }
+      const cur = ps?.entries.find((x) => x.index === s.entry);
+      if (!cur) return refuse(`${NAMES[protocol as Protocol]} has no entry ${s.entry} (it has ${ps?.entries.map((x) => x.index).join(", ") || "none"})`);
+      const b = mappingOf(cur);
+      effective.push({ label: String(s.entry), index: s.entry, before: b, after: s.remove ? b : { ...b, ...pick(s, b) }, remove: s.remove === true, spec: s });
+    }
+    // Both complete ranges of every changed or added entry, from current values plus the requested ones.
+    const rangeProblems: string[] = [];
+    for (const e of effective.filter((x) => !x.remove)) {
+      const { localUniverse: lu, amount: n, universe: u } = e.after;
+      if (lu === null || n === null || u === null) {
+        rangeProblems.push(`entry ${e.label}: its local universe, amount or protocol universe cannot be read`);
+        continue;
+      }
+      if (n < 1) rangeProblems.push(`entry ${e.label}: amount ${n} is not at least 1`);
+      if (lu + n - 1 > 1024) rangeProblems.push(`entry ${e.label}: local universes ${lu}..${lu + n - 1} pass 1024`);
+      if (u < uniMin || u + n - 1 > uniMax) rangeProblems.push(`entry ${e.label}: ${NAMES[protocol as Protocol]} universes ${u}..${u + n - 1} leave ${uniMin}..${uniMax}`);
+    }
+    if (rangeProblems.length) return refuse(rangeProblems.join("; "));
+
+    // The plan. Per entry: disable first when an enabled entry is remapped or disabled; write the mapping while
+    // disabled; enable last, only after the mapping was confirmed. A protocol's output goes off first and on last.
+    const plan: Step[] = [];
+    const protOutBefore = ps?.out === true;
+    const protOutAfter = output ?? protOutBefore;
+    if (protocol && output === false && protOutBefore) plan.push({ kind: "set", name: `${protocol} Out`, target: "protocol", protocol, property: "Out", value: "No" });
+    for (const e of effective) {
+      if (e.remove) continue;
+      const where = e.index !== undefined ? { index: e.index } : { add: e.add };
+      if (e.add !== undefined) plan.push({ kind: "add", name: `${protocol} add entry`, add: e.add });
+      const base = e.before ?? NEW_ENTRY[protocol as Protocol];
+      const changed = MAP_PROPS.filter((p) => (e.add !== undefined ? e.spec[specKey(p.key)] !== undefined : e.after[p.key] !== base[p.key]));
+      const wasEnabled = e.before?.enabled === true;
+      if (wasEnabled && (changed.length || !e.after.enabled)) plan.push({ kind: "set", name: `${protocol} entry ${e.label} Enabled`, target: "entry", protocol, ...where, property: "Enabled", value: "No" });
+      for (const p of changed) plan.push({ kind: "set", name: `${protocol} entry ${e.label} ${p.property(protocol as Protocol)}`, target: "entry", protocol, ...where, property: p.property(protocol as Protocol), value: String(e.after[p.key]) });
+      if (e.after.enabled && (!wasEnabled || changed.length)) plan.push({ kind: "set", name: `${protocol} entry ${e.label} Enabled`, target: "entry", protocol, ...where, property: "Enabled", value: "Yes" });
+    }
+    for (const n of grantUniverses) plan.push({ kind: "set", name: `universe ${n} Request`, target: "universe", universe: n, property: "Request", value: grantValue as string });
+    for (const e of effective.filter((x) => x.remove).sort((a, b) => (b.index as number) - (a.index as number))) plan.push({ kind: "remove", name: `${protocol} remove entry ${e.index}`, index: e.index as number });
+    if (protocol && output === true && !protOutBefore) plan.push({ kind: "set", name: `${protocol} Out`, target: "protocol", protocol, property: "Out", value: "Yes" });
+
+    // The network: an entry that sends after the change (output on, enabled, an output mode) and did not send before,
+    // or sends with another mapping.
+    const newly: string[] = [];
+    if (protocol) {
+      for (const e of effective.filter((x) => !x.remove)) {
+        const after = sends(protocol, protOutAfter, e.after);
+        const was = e.before ? sends(protocol, protOutBefore, e.before) : false;
+        if (after && (!was || mappingChanged(e.before as Mapping, e.after))) newly.push(`entry ${e.label}`);
+      }
+      // Output switched on: every untouched entry that would then send.
+      if (protOutAfter && !protOutBefore) for (const x of ps?.entries ?? []) if (!effective.some((e) => e.index === x.index) && sends(protocol, true, mappingOf(x))) newly.push(`entry ${x.index}`);
+    }
     const previewOut = {
-      plan: plan.map(({ name, value }) => ({ step: name, value })),
-      adds: adds.length,
-      removes,
-      sendsToNetworkAfter: sendsAfter.map((x) => NAMES[x]),
-      ...(newlySending.length ? { networkNote: `${newlySending.map((x) => NAMES[x]).join(" and ")} would send DMX onto the network through the output stations' interfaces (${before.stations.map((s) => `${s.name} ${s.ip}`).join(", ")})` } : {}),
+      plan: plan.map((s) => ({ step: s.name, ...(s.kind === "set" ? { value: s.value } : {}) })),
+      ...(newly.length ? { networkNote: `${NAMES[protocol as Protocol]} would send DMX onto the network (${newly.join(", ")}) through the output stations' interfaces (${before.stations.map((s) => `${s.name} ${s.ip}`).join(", ")})` } : {}),
     };
-    if (preview) return buildResult({ operation: op, target, steps, verification: notRequested(), summary: `Preview only; nothing was sent. ${plan.length + adds.length + removes.length} change(s).${previewOut.networkNote ? ` ${previewOut.networkNote}.` : ""}`, extra: previewOut });
-    if (newlySending.length && raw.network !== true) {
-      steps.push(asRead({ name: "check_network", status: "failed", error: `${previewOut.networkNote}; pass network: true to confirm. Nothing was changed` }));
-      return buildResult({ operation: op, target, steps, verification: unavailable("nothing was changed"), extra: previewOut });
-    }
+    if (preview) return buildResult({ operation: op, target, steps, verification: notRequested(), summary: `Preview only; nothing was sent. ${plan.length} step(s).${previewOut.networkNote ? ` ${previewOut.networkNote}.` : ""}`, extra: previewOut });
+    if (newly.length && raw.network !== true) return refuse(`${previewOut.networkNote}; pass network: true to confirm`, previewOut);
 
-    // Apply: adds first (their numbers are known only then), then the plan, then removals.
-    const sent: Planned[] = [];
-    let stopped = false;
-    const newIndex: number[] = [];
-    for (let i = 0; i < adds.length && !stopped; i++) {
-      try {
-        const r = (await ctx.bridge.request("dmx.addEntry", { protocol, exclusive: true }, t)) as { index: number };
-        newIndex.push(r.index);
-        steps.push({ name: `${protocol} add entry`, status: "succeeded", op: "dmx.addEntry", detail: r });
-      } catch (err) {
-        steps.push(stepFromError(`${protocol} add entry`, err, { op: "dmx.addEntry" }));
-        stopped = true;
-      }
-    }
-    for (const x of plan) {
-      if (stopped) break;
-      const index = x.add !== undefined ? newIndex[x.add] : x.index;
-      const name = x.add !== undefined ? `${protocol} entry ${index} ${x.property}` : x.name;
-      const args = { target: x.target, protocol: x.protocol, index, universe: x.universe, property: x.property, value: x.value, exclusive: true };
-      try {
-        const r = (await ctx.bridge.request("dmx.set", args, t)) as { before?: string; value?: string };
-        steps.push({ name, status: "succeeded", op: "dmx.set", detail: r });
-        sent.push({ ...x, name, index });
-      } catch (err) {
-        steps.push(stepFromError(name, err, { op: "dmx.set" }));
-        stopped = true;
-      }
-    }
-    for (const n of removes) {
+    // Apply, checking every reply: a write the console did not take stops the call before anything that depends on it.
+    const addIndex: number[] = [];
+    let stopped: string | undefined;
+    const disabledForRemap = new Set<string>();
+    for (const s of plan) {
       if (stopped) break;
       try {
-        const r = await ctx.bridge.request("dmx.removeEntry", { protocol, index: n, exclusive: true }, t);
-        steps.push({ name: `${protocol} remove entry ${n}`, status: "succeeded", op: "dmx.removeEntry", detail: r });
+        if (s.kind === "add") {
+          const r = (await ctx.bridge.request("dmx.addEntry", { protocol, exclusive: true }, t)) as { index?: number };
+          if (typeof r.index !== "number") throw new Error("the console did not report the new entry's number");
+          addIndex[s.add] = r.index;
+          steps.push({ name: `${protocol} add entry ${r.index}`, status: "succeeded", op: "dmx.addEntry", detail: r });
+        } else if (s.kind === "remove") {
+          const r = await ctx.bridge.request("dmx.removeEntry", { protocol, index: s.index, exclusive: true }, t);
+          steps.push({ name: s.name, status: "succeeded", op: "dmx.removeEntry", detail: r });
+        } else {
+          const index = s.add !== undefined ? addIndex[s.add] : s.index;
+          const name = s.add !== undefined ? s.name.replace(/entry new \d+/, `entry ${index}`) : s.name;
+          const r = (await ctx.bridge.request("dmx.set", { target: s.target, protocol: s.protocol, index, universe: s.universe, property: s.property, value: s.value, exclusive: true }, t)) as { value?: unknown };
+          const got = r?.value === undefined || r?.value === null ? undefined : String(r.value);
+          if (got !== s.value) {
+            steps.push({ name, status: "failed", op: "dmx.set", error: got === undefined ? `the console's answer for ${s.property} could not be read` : `the console kept ${s.property} ${got} (expected ${s.value})`, detail: r });
+            stopped = name;
+            continue;
+          }
+          steps.push({ name, status: "succeeded", op: "dmx.set", detail: r });
+          if (s.property === "Enabled" && s.value === "No" && s.target === "entry") disabledForRemap.add(name.replace(/ Enabled$/, ""));
+          if (s.property === "Enabled" && s.value === "Yes") disabledForRemap.delete(name.replace(/ Enabled$/, ""));
+        }
       } catch (err) {
-        steps.push(stepFromError(`${protocol} remove entry ${n}`, err, { op: "dmx.removeEntry" }));
-        stopped = true;
+        steps.push(stepFromError(s.name, err, { op: s.kind === "add" ? "dmx.addEntry" : s.kind === "remove" ? "dmx.removeEntry" : "dmx.set" }));
+        stopped = s.name;
       }
     }
 
-    // Read back every property that was sent (a value the console ignored or clamped is a mismatch).
+    // Read back the whole configuration and compare every touched entry, the switch and the requests.
     let verification: Verification = notRequested();
     const readBack: StepResult[] = [];
     let after: OutputState | undefined;
-    if (raw.verify !== false) {
+    if (raw.verify !== false || stopped) {
       try {
         after = await readState(ctx.bridge, t, grantUniverses);
         readBack.push(asRead({ name: "read_back", status: "succeeded", op: "dmx.output" }));
         const mism: string[] = [];
-        const show = (v: unknown) => (typeof v === "boolean" ? yesNo(v) : String(v));
-        for (const x of sent) {
-          let got: unknown;
-          if (x.target === "protocol") got = after.protocols[x.protocol as Protocol].out;
-          else if (x.target === "universe") got = after.universes.find((u) => u.no === x.universe)?.request;
-          else {
-            const removedBelow = removes.filter((r) => r < (x.index as number)).length;
-            const e = after.protocols[x.protocol as Protocol].entries.find((y) => y.index === (x.index as number) - removedBelow);
-            const key = { LocalUniverse: "localUniverse", Amount: "amount", "Art-NetAbsolute": "universe", sACNUniverse: "universe", Mode: "mode", Priority: "priority", Enabled: "enabled" }[x.property] as string;
-            got = e ? e[key] : undefined;
+        if (protocol) {
+          const pa = after.protocols[protocol];
+          if (output !== undefined && pa.out !== output) mism.push(`${NAMES[protocol]} output reads ${pa.out ? "on" : "off"}`);
+          const removedBelow = (i: number) => effective.filter((e) => e.remove && (e.index as number) < i).length;
+          for (const e of effective) {
+            if (e.remove) {
+              continue;
+            }
+            const idx = e.add !== undefined ? addIndex[e.add] : (e.index as number);
+            if (idx === undefined) {
+              mism.push(`entry ${e.label} was not added`);
+              continue;
+            }
+            const got = pa.entries.find((x) => x.index === idx - removedBelow(idx));
+            if (!got) {
+              mism.push(`entry ${e.label} is missing`);
+              continue;
+            }
+            const m = mappingOf(got);
+            for (const p of MAP_PROPS) if (m[p.key] !== e.after[p.key] && (e.add === undefined || e.spec[specKey(p.key)] !== undefined)) mism.push(`entry ${e.label} ${p.property(protocol)} reads ${m[p.key]}, expected ${e.after[p.key]}`);
+            if (m.enabled !== e.after.enabled) mism.push(`entry ${e.label} is ${m.enabled ? "enabled" : "disabled"}`);
           }
-          if (show(got) !== x.expect) mism.push(`${x.name} reads ${got === undefined ? "nothing" : show(got)}, expected ${x.expect}`);
+          const removes = effective.filter((e) => e.remove).length;
+          if (pa.entries.length !== (ps?.entries.length ?? 0) + addIndex.filter((x) => x !== undefined).length - (stopped ? steps.filter((s) => s.op === "dmx.removeEntry" && s.status === "succeeded").length : removes)) mism.push("the number of entries is not the expected one");
         }
-        for (const n of removes) if (!stopped && after.protocols[protocol as Protocol].entries.length !== before.protocols[protocol as Protocol].entries.length + newIndex.length - removes.length) mism.push(`entry ${n} was not removed`);
-        const checked = `${sent.length} written propert${sent.length === 1 ? "y" : "ies"}${removes.length ? ` and ${removes.length} removal(s)` : ""}, read back`;
+        for (const n of grantUniverses) {
+          const r = after.universes.find((u) => u.no === n)?.request;
+          if (r !== grantValue) mism.push(`universe ${n} request reads ${r ?? "nothing"}`);
+        }
+        const checked = "the protocol switch, every touched entry (mapping and enabled), the entry count and the grant requests, read back";
         verification = mism.length ? { status: "mismatched", checked, detail: [...new Set(mism)].join("; ") } : { status: "matched", checked };
       } catch (err) {
         readBack.push(asRead(stepFromError("read_back", err, { op: "dmx.output" })));
@@ -337,7 +417,11 @@ export async function configureOutput(ctx: ToolContext, raw: Record<string, unkn
       target,
       steps,
       verification,
-      warnings: ["the DMX output configuration has no undo; previous holds the values before this call", ...(newlySending.length ? [`${newlySending.map((x) => NAMES[x]).join(" and ")} now send DMX onto the network`] : [])],
+      warnings: [
+        "the DMX output configuration has no undo; previous holds the values before this call",
+        ...(newly.length && !stopped ? [`${NAMES[protocol as Protocol]} now sends DMX onto the network (${newly.join(", ")})`] : []),
+        ...(stopped ? [`stopped at ${stopped}: nothing after it was sent${disabledForRemap.size ? `; ${[...disabledForRemap].join(", ")} ${disabledForRemap.size === 1 ? "was" : "were"} disabled for the change and stay${disabledForRemap.size === 1 ? "s" : ""} disabled` : ""}`] : []),
+      ],
       extra: {
         ...previewOut,
         previous: { protocols: before.protocols, ...(grantUniverses.length ? { universes: before.universes.filter((u) => grantUniverses.includes(u.no)).map((u) => ({ no: u.no, request: u.request })) } : {}) },
@@ -347,6 +431,23 @@ export async function configureOutput(ctx: ToolContext, raw: Record<string, unkn
     result.steps.push(...readBack);
     return result;
   });
+}
+
+/** The spec key of a mapping field. */
+function specKey(k: keyof Mapping): keyof EntrySpec {
+  return ({ localUniverse: "local_universe", amount: "amount", universe: "universe", mode: "mode", priority: "priority", enabled: "enabled" } as const)[k];
+}
+
+/** The requested fields of a spec over a base mapping. */
+function pick(s: EntrySpec, base: Mapping): Partial<Mapping> {
+  return {
+    ...(s.local_universe !== undefined ? { localUniverse: s.local_universe } : {}),
+    ...(s.amount !== undefined ? { amount: s.amount } : {}),
+    ...(s.universe !== undefined ? { universe: s.universe } : {}),
+    ...(s.mode !== undefined ? { mode: s.mode } : {}),
+    ...(s.priority !== undefined ? { priority: s.priority } : {}),
+    ...(s.enabled !== undefined ? { enabled: s.enabled } : { enabled: base.enabled }),
+  };
 }
 
 export const registerDmxOutputTools: RegisterTools = (server, ctx) => {
