@@ -124,7 +124,10 @@ the only one proven on every type in the field test.
 
 - `patch.add` never passes `amount > 1` to `AddFixtures`.
 - A failing call stops the block; what was created is deleted from the copy.
-- Live: a multi-fixture add of a mode with cells completes without a crash.
+- Live: a multi-fixture add of a mode with cells completes without a crash. Verified with bridge 0.25.2 on a new show
+  (2026-10-15): 4 wall washers (12 cells) at 1.001 as one `gma3_patch_add`, the request that had crashed onPC, then
+  2 Festoons (40 cells) at 2.001 and 3 Mega Hex Pars at 1.209. All three committed and read back, every fixture at
+  its own address with `patchedByBridge: 0`, the cells present (12 and 40 `SubFixture` children), no crash.
 
 ## SU-03 — Find and import fixture types
 
@@ -248,6 +251,8 @@ and the wall washer's model size (1.04 m, needed to space a pair 1 ft apart).
 - Per DMX mode: footprint, breaks, channels with attributes, and cell count.
 - Geometry tree with instance names and positions; model dimensions in metres.
 - `gma3_patch_types` reports cell counts so a caller can see which modes have cells.
+- `gma3_patch_list` reports a fixture's cells. Its `subfixtures` field counts child fixtures (a grouping fixture's
+  members) and is `0` for a 12-cell wall washer or a 40-cell Festoon, whose cells are `SubFixture` objects.
 
 ## SU-08 — Lay out a fixture's cells
 
