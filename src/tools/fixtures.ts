@@ -68,7 +68,7 @@ const MAX_FOLLOWUP_SCANS = 8;
 const MAX_PRECHECK_FIXTURES = 8;
 
 /** Value-type keywords accepted by gma3_set_attribute, with their validation rules. */
-const ATTRIBUTE_UNITS = {
+export const ATTRIBUTE_UNITS = {
   percent: { keyword: "Percent", min: 0, max: 100, integer: false },
   percent_fine: { keyword: "PercentFine", min: 0, max: 100, integer: false },
   physical: { keyword: "Physical", min: undefined, max: undefined, integer: false },
@@ -77,8 +77,8 @@ const ATTRIBUTE_UNITS = {
   decimal16: { keyword: "Decimal16", min: 0, max: 65535, integer: true },
   decimal24: { keyword: "Decimal24", min: 0, max: 16777215, integer: true },
 } as const;
-type AttributeUnit = keyof typeof ATTRIBUTE_UNITS;
-const ATTRIBUTE_UNIT_NAMES = Object.keys(ATTRIBUTE_UNITS) as AttributeUnit[];
+export type AttributeUnit = keyof typeof ATTRIBUTE_UNITS;
+export const ATTRIBUTE_UNIT_NAMES = Object.keys(ATTRIBUTE_UNITS) as AttributeUnit[];
 
 const POSITION_UNITS = ["degrees", "percent"] as const;
 type PositionUnit = (typeof POSITION_UNITS)[number];
@@ -313,7 +313,7 @@ interface ResolvedFixture {
 }
 
 /** One value the setter asked the console to apply. */
-interface Expectation {
+export interface Expectation {
   attribute: string;
   value: number;
   /** Unit the value was sent in. "readout" = no value-type keyword (the user profile's readout applies). */
@@ -514,7 +514,7 @@ function judgeFixture(label: string, key: string, entries: ScannedFixture[], row
  * scan was complete and fully paginated; `mismatched` on any wrong or missing value or a fixture
  * without the attribute; `unavailable` when a read could not be completed or interpreted.
  */
-async function verifyProgrammer(bridge: Gma3Bridge, expectations: Expectation[], steps: StepResult[], warnings: string[]): Promise<{ verification: Verification; summary: Record<string, unknown> }> {
+export async function verifyProgrammer(bridge: Gma3Bridge, expectations: Expectation[], steps: StepResult[], warnings: string[]): Promise<{ verification: Verification; summary: Record<string, unknown> }> {
   const checked = `programmer values of the selected fixtures (${expectations.map((e) => `${e.attribute} = ${formatValue(e.value)} ${e.unit}`).join(", ")}), tolerance ${VERIFY_TOLERANCE_PERCENT} % of range`;
   const unavailableReasons: string[] = [];
   let primary: ProgrammerResult;
@@ -741,7 +741,7 @@ const anySucceeded = (steps: StepResult[], names: string[]): boolean => steps.so
  * itself and its cells (a compound fixture's values live on its cells). The link proves the recall reached the
  * channel; it also survives a later manual value, so the check belongs right after the recall.
  */
-async function verifyPresetLink(bridge: Gma3Bridge, preset: { addrNative: string; label: string }, steps: StepResult[]): Promise<{ verification: Verification; summary: Record<string, unknown> }> {
+export async function verifyPresetLink(bridge: Gma3Bridge, preset: { addrNative: string; label: string }, steps: StepResult[]): Promise<{ verification: Verification; summary: Record<string, unknown> }> {
   const checked = `every selected fixture (or its cells) holds programmer values linked to ${preset.label}`;
   const linkedRows = (rows: ProgrammerRow[]) => rows.filter((r) => r.absPreset?.addrNative === preset.addrNative);
   let primary: ProgrammerResult;
@@ -802,7 +802,7 @@ async function verifyPresetLink(bridge: Gma3Bridge, preset: { addrNative: string
   return { verification: { status: "matched", checked, actual: perFixture }, summary };
 }
 
-interface ProgrammerSnapshot {
+export interface ProgrammerSnapshot {
   /** A label per (sub)fixture index, for messages. */
   labelByIndex: Map<number, string>;
   /**
@@ -821,7 +821,7 @@ function rowContent(row: Record<string, unknown>): string {
   return JSON.stringify({ value: pick("value"), valueRaw: pick("valueRaw"), relative: pick("relative"), stepCount: pick("stepCount"), masks: pick("masks"), steps: pick("steps"), phaser: pick("phaser"), absPreset: pick("absPreset"), relPreset: pick("relPreset") });
 }
 
-async function snapshotProgrammer(bridge: Gma3Bridge): Promise<ProgrammerSnapshot> {
+export async function snapshotProgrammer(bridge: Gma3Bridge): Promise<ProgrammerSnapshot> {
   const read = await readProgrammerPages(bridge, { scope: "all" });
   if ("reason" in read) return { labelByIndex: new Map(), values: new Map(), complete: false, reason: read.reason };
   const r = read.result;
@@ -897,7 +897,7 @@ export function presetRef(pool: number, preset: number | string): string {
   return typeof preset === "number" ? `Preset ${pool}.${preset}` : `Preset ${pool}."${preset}"`;
 }
 
-const MAX_ATTRIBUTES = 32;
+export const MAX_ATTRIBUTES = 32;
 
 // ---------------------------------------------------------------------------
 // Registration

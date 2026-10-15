@@ -1,0 +1,145 @@
+# Cue lists and chases in batches (SU-06)
+
+`gma3_store_cues`, `gma3_edit_cues`, `gma3_build_chase` in `src/tools/cuelists.ts`. No bridge change: the looks use
+the SU-05 commands and programmer read-back (preset links need bridge 0.27.0), and the cue properties the FR-04 /
+FR-05 `set` writes. Evidence: [SETUP.md](../../SETUP.md) SU-06 and the
+[SU-06 record](../probes/su-06-cuelists-macos-2.5.1.md).
+
+## Content: looks
+
+A cue's content is one look or several. A look is a target and what to give it:
+
+| Field | Meaning |
+| --- | --- |
+| `fixtures` | the target (`"101 Thru 112"`, `"Group 3"`); defaults to the call's `fixtures` |
+| `presets` | presets applied in order, each `{pool, preset}` (number or name), `At Preset P.N` |
+| `intensity` | 0–100 %, `At <value>` |
+| `values` | attribute values as in `gma3_set_attributes` (`attribute`, `value`, `unit`), applied after the presets |
+
+A cue gives either the shorthand fields (`fixtures`, `presets`, `intensity`, `values`: one look) or `looks` (up to
+16). Looks are applied in order, so a later look wins on fixtures they share. Setting one colour attribute
+activates the fixture's whole colour group (KB-17), so a cue can hold more values than were given.
+
+## How a batch is built
+
+1. **Inspection** (read-only; nothing is sent when it fails):
+   - the sequence and its cues; mode `create` refuses when any of the cues exists;
+   - every preset, which must exist exactly once;
+   - every attribute name, which must exist in the show;
+   - every fixture expression, which must match something;
+   - the Normal programmer, which must be readable, with the console in Normal.
+2. **`Preview On`.** The Preview programmer must then be empty. If it is not, only `Preview Off` is sent, because
+   that content belongs to someone else.
+3. **Per cue, in order:**
+   - confirm the console is still in Preview, then `ClearAll` (the programmer keeps the previous cue's values after
+     a store);
+   - for each look: `ClearSelection`, the select, the presets, the intensity and the values, then the look check
+     (below);
+   - `Store Sequence N Cue C [/Merge|/Overwrite] /NoConfirmation`;
+   - `Name` and the timing on Part 0, `TrigType` / `TrigTime` on the cue.
+4. **Leaving Preview.** The console is confirmed in Preview, then `ClearAll` and `Preview Off`, whatever happened.
+   The Normal programmer is read again and must equal the snapshot from step 1.
+5. **Sequence name** (`sequence_name`, or `name` for a chase), written once a cue was stored.
+6. **Read-back** per stored cue: it exists, and its name, timing and trigger as given. A cue stored without a name
+   takes the preset's name (`[4.902]`), and the result reports that name.
+
+**The look check.** The check runs in the Preview programmer right after the look is applied:
+- every preset must be linked on every selected fixture or its cells, as `gma3_apply_preset` checks;
+- the intensity and values are compared per fixture and cell, as `gma3_set_attributes` compares them.
+
+A look that did not apply is a mismatch, and **the batch stops before that cue is stored**. Cues already stored
+stay; nothing is undone or retried. A check that cannot be completed is `unavailable`; the cue is stored and its
+verification says so.
+
+**Not verified:** the values stored in a cue. 2.5.1 has no GetCueData, so the values cannot be read back from the
+cue. The look check is the evidence that the programmer held the right values at the store.
+
+**Results.** `cues` lists every cue with:
+- `status`: `stored`, `failed`, `unknown` or `not_attempted`;
+- its verification (`looks`, then properties);
+- the name it has;
+- the first error.
+
+`stored` counts the stored cues. `normalProgrammer` is `untouched`, `changed` (a mismatch), `unknown` or
+`not_entered`. `Preview On` is a mutation, so a build that stops after it is `partial` even when nothing was stored.
+
+**exclusive: true** is required: the console is in Preview while the batch runs and nobody else may use it.
+
+## gma3_store_cues
+
+| Param | Notes |
+| --- | --- |
+| `sequence` | sequence number; the store creates it when it does not exist |
+| `sequence_name` | optional |
+| `mode` | `create` (refuse existing cues), `merge`, `overwrite` |
+| `fixtures` | default target for looks without their own |
+| `cues` | 1–100 cues: `cue` (number), `name`, content, `fade`, `delay`, `out_fade`, `out_delay`, `trigger` (`go`, `time` with `time`, `follow` with optional `time`, `sound`, `bpm`) |
+| `exclusive`, `verify` | `exclusive` required; `verify` default true (look checks and read-back) |
+
+Tracking is the sequence's own setting: with Tracking on, a cue's stored values track into later cues that do not
+store those attributes.
+
+## gma3_edit_cues
+
+Edits existing cues of one sequence in one call:
+- the same trigger (`trigger`, `time`);
+- the same timing (`fade`, `delay`, `out_fade`, `out_delay`, `snap_delay`, on Part 0);
+- one name per cue (`names`, in cue order).
+
+The cues are chosen with exactly one of `cues` (a list), `from` / `to` (a range, either end optional) or
+`all: true`. The tool refuses before sending anything when the sequence or a listed cue does not exist, when the
+range is empty, or when the number of names differs from the number of cues. It sends one `set` per property, cue by
+cue, stops at the first failure, and reads the written properties back per cue. Stored values and the programmer are
+not touched.
+
+## gma3_build_chase
+
+A chase is built into an **empty or new** sequence: one with cues is refused, since stale cues past the last step
+would join the loop.
+
+| Param | Notes |
+| --- | --- |
+| `sequence`, `name` | the sequence and its name |
+| `presets` or `steps` | `presets`: one cue per preset on `fixtures`; `steps`: 2–100 steps, each a look (or `looks`) with an optional `name` |
+| `step_seconds` or `cycle_seconds` | the time per step (each cue's TrigTime, at least 0.2 s), or the whole loop divided over the steps |
+| `fade` | crossfade per cue (CueInFade); it does not lengthen the step |
+| `observe` | play the chase and verify one cycle (default: as `verify`, true) |
+| `observe_max_seconds` | default 45, at most 120; keep it under the client's request timeout |
+| `leave_running` | default false: the chase is switched off after the observation |
+| `exclusive`, `verify` | as above |
+
+The cues are built as in `gma3_store_cues` (mode `create`), every cue with trigger Time and the step time (cue 1 too,
+so the loop continues after the wrap), then `WrapAround` is set to Yes and read back.
+
+**One observed cycle.** This **plays the chase**, which changes the live output.
+- **Preconditions:** the sequence must not already be running. Its rate is read: the rate master's effective BPM / 60
+  × RateScale, or its own rate fader. The predicted step is `step_seconds / rate`; a rate of 0 is refused.
+- **Plan:** when the full cycle (first cue back to the first, plus one step) fits in `observe_max_seconds`, it is
+  observed from cue 1. Otherwise the observation starts at a late cue, so that the last cues, the wrap to cue 1 and
+  the step after it fit (`mode: "tail"`).
+- **Run:** `Goto Sequence N Cue <start>`, then `CurrentCue` is sampled every 40 ms. Changes are counted from the
+  start cue on, since `CurrentCue` keeps the last cue after `Off`.
+- **Judgement:** the order must be exactly the expected one, through the wrap. Each step must be within ±max(150 ms,
+  10 %) + 80 ms of the predicted step. When the rate cannot be read, only the order is judged.
+- **End:** `Off Sequence N` unless `leave_running`.
+
+`cycle` in the result reports:
+- the mode, the start cue, the expected order and the observed changes (ms, cue);
+- the intervals, the predicted step and the tolerance;
+- the problems and notes (another rate, a tail observation).
+
+## Live test
+
+`test/live/cuelists.live.ts` (with `GMA3_LIVE=1`, see `test/live/README.md`). It needs:
+- two fixtures with colour from `GMA3_LIVE_CUELIST_FIDS`;
+- empty Presets 4.941–4.943 and Sequences 910–912.
+
+It:
+1. stores red, green and blue presets;
+2. puts an operator value in the Normal programmer;
+3. stores three cues from looks (one with two looks) and checks the Normal value survived;
+4. edits cues 2–3 (Time 3, fade 0.5, names);
+5. builds a 0.5 s three-step chase and watches one full cycle;
+6. builds a six-step 1 s chase with `observe_max_seconds: 5` and watches its tail through the wrap.
+
+Everything is deleted afterwards. The chases play for a few seconds.

@@ -89,6 +89,10 @@ const WORKFLOW_TOOLS = [
   "gma3_set_attributes",
   "gma3_apply_preset",
   "gma3_release_attributes",
+  // SU-06 cue lists and chases
+  "gma3_store_cues",
+  "gma3_edit_cues",
+  "gma3_build_chase",
   // SB-01 executor and sequence playback configuration
   "gma3_executor_settings",
   "gma3_configure_executor",

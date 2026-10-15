@@ -238,7 +238,12 @@ Percent 0` raw, and recalled `At Preset 2.1` and `Off Attribute "Pan" + "Tilt"` 
 
 **Lua changes:** No.
 
-**Status:** proposed.
+**Status:** implemented without a bridge change: `gma3_store_cues`, `gma3_edit_cues`, `gma3_build_chase`
+([docs/tools/cuelists.md](docs/tools/cuelists.md), probe record
+[su-06-cuelists-macos-2.5.1.md](docs/probes/su-06-cuelists-macos-2.5.1.md), live test `test/live/cuelists.live.ts`
+1/1 on macOS onPC 2.5.1). The cues are built in the Preview environment, so nothing is output and the operator's
+Normal programmer is untouched. A cue's stored values cannot be read back on 2.5.1, so each look is checked in the
+programmer before its store. A chase is verified by playing it and watching one cycle through the wrap.
 
 **Evidence:** `gma3_store_cue` and `gma3_set_cue_trigger` take one cue each, so the 12-cue chase was built in one
 `gma3_lua` call (clear, select, `At Preset 2.n`, `Store Sequence 2 Cue n` per cue), its triggers set to Time 7 in
