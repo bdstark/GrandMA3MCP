@@ -3738,23 +3738,31 @@ ops["patch.add"] = function(args)
     if #unknown > 0 then raise(occupancyUnknownError(unknown)) end
     if #conflicts > 0 then raise({ code = "dmx-taken", message = "the requested addresses overlap patched fixtures", conflicts = conflicts }) end
   end
-  local spec = { mode = mode, amount = count, fid = tostring(fid) }
-  if name then spec.name = name end
-  if start then spec.patch = { formatDmx(start.abs) } end
-  local okA, ret = pcall(AddFixtures, spec)
+  -- One AddFixtures call per fixture (amount 1, its own address). On onPC 2.5.1 an amount-4 add of a mode
+  -- with cells (a 52-channel wall washer, 12 cells) crashed onPC inside AddFixtures (a null dereference in
+  -- the console, 2026-10-14), while amount-1 adds of the same and of a 40-cell mode worked; amount > 1 also
+  -- addressed only the first fixture of a block (KB-26). The manual defines patch as the breaks of one fixture.
+  local ret, problem = nil, nil
+  for i = 0, count - 1 do
+    local spec = { mode = mode, amount = 1, fid = tostring(fid + i) }
+    if name then spec.name = name end
+    if start then spec.patch = { formatDmx(start.abs + i * (info.footprint or 0)) } end
+    local okA, r = pcall(AddFixtures, spec)
+    ret = r
+    if not okA then problem = "AddFixtures raised for FID " .. (fid + i) .. ": " .. tostring(r)
+    elseif r ~= true then problem = "AddFixtures did not report success for FID " .. (fid + i) .. " (" .. tostring(r) .. ")"
+    elseif not fixturesByFid(p)[fid + i] then problem = "AddFixtures reported success but FID " .. (fid + i) .. " is not in the copy" end
+    if problem then break end
+  end
   local created, createdEntries = {}, {}
   local after = fixturesByFid(p)
   for i = 0, count - 1 do local e = after[fid + i]; if e then created[#created + 1] = fixtureRow(e); createdEntries[#createdEntries + 1] = e end end
-  local problem
-  if not okA then problem = "AddFixtures raised: " .. tostring(ret)
-  elseif ret ~= true then problem = "AddFixtures did not report success (" .. tostring(ret) .. ")"
-  elseif #created ~= count then problem = "AddFixtures created " .. #created .. " of " .. count .. " fixtures at the requested FIDs" end
+  if not problem and #created ~= count then problem = "AddFixtures created " .. #created .. " of " .. count .. " fixtures at the requested FIDs" end
   local setByBridge = 0
   if not problem and start then
-    -- AddFixtures does not always step the address for every fixture of the block: on onPC 2.5.1 a
-    -- two-fixture add of an 18-channel mode at 3.001 patched only the first (KB-26 live, 2026-10-13), where
-    -- an 8-channel add at 2.001 had patched both (KB-25). Every fixture not at its expected address is
-    -- patched explicitly, then each address is verified exactly.
+    -- Each fixture is added with its own address now; this fix-up stays as a safety net from when a block
+    -- was one call and AddFixtures patched only its first fixture (KB-26 live, 2026-10-13). Every fixture
+    -- not at its expected address is patched explicitly, then each address is verified exactly.
     table.sort(createdEntries, function(a, b) return numericFid(a.fixture) < numericFid(b.fixture) end)
     for i, e in ipairs(createdEntries) do
       local want = formatDmx(start.abs + (i - 1) * (info.footprint or 0))
