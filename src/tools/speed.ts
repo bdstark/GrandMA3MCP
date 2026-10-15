@@ -682,7 +682,7 @@ export async function speedMasterAction(ctx: ToolContext, raw: ActionArgs): Prom
 // Observation
 // ---------------------------------------------------------------------------
 
-interface CueInfo {
+export interface CueInfo {
   no: number;
   addr?: string;
   name?: string;
@@ -691,7 +691,7 @@ interface CueInfo {
 }
 
 /** Cue number from a sequence child read with asText: false (No is x1000; OffCue has none, CueZero is 0). */
-function cueNo(v: unknown): number | null {
+export function cueNo(v: unknown): number | null {
   if (typeof v === "number" && Number.isFinite(v)) return v / 1000;
   const m = typeof v === "string" ? v.trim().match(/^(\d+(?:\.\d+)?)/) : null;
   return m ? Number(m[1]) : null;
@@ -714,6 +714,53 @@ export function predictedStep(cues: CueInfo[], rate: number | null): { ms: numbe
   return { ms: round((cues[0].trigTime * 1000) / rate, 1) };
 }
 
+type MasterLookup = (name: string | null) => MasterState | null;
+
+/** A lookup from a speed master's name to the master, ambiguous or unknown names to null. */
+function masterLookup(masters: MasterState[], names: Map<number, string>): MasterLookup {
+  const byName = numbersByName(names);
+  return (name) => {
+    if (!name) return null;
+    const hits = byName.get(name.toLowerCase()) ?? [];
+    return hits.length === 1 ? masters.find((m) => m.master === hits[0]) ?? null : null;
+  };
+}
+
+export interface SequenceRate {
+  /** Cue steps per second relative to the trigger times (1 = as configured); null when it cannot be read. */
+  rate: number | null;
+  rateSource: Record<string, unknown>;
+  notes: string[];
+}
+
+/** The rate a sequence's Time triggers run at: its rate master's effective BPM / 60 x RateScale, or its own rate fader. */
+async function rateOf(bridge: Gma3Bridge, ref: string, f: Record<string, unknown>, masterOf: MasterLookup, t: number): Promise<SequenceRate> {
+  const notes: string[] = [];
+  const rateMaster = noneOr(f.RateMaster);
+  if (rateMaster) {
+    const rm = masterOf(rateMaster);
+    if (!rm) notes.push(`its rate master "${rateMaster}" does not resolve to exactly one speed master`);
+    else if (rm.problems.length) notes.push(`its rate master ${rm.ref} reads inconsistently, so the rate is not predicted: ${rm.problems.join("; ")}`);
+    const rate = !rm || rm.effectiveBpm === null || rm.problems.length ? null : linkedRate(rm.effectiveBpm, String(f.RateScale ?? "One"));
+    return { rate, rateSource: { kind: "speed master", master: rm?.master ?? null, name: rateMaster, effectiveBpm: roundOrNull(rm?.effectiveBpm ?? null) }, notes };
+  }
+  const g = (await bridge.request("getfader", { ref, tokens: ["FaderRate"] }, t).catch(() => null)) as { faders?: Record<string, { value?: unknown }> } | null;
+  const fv = g?.faders?.FaderRate?.value;
+  const exp = scaleExponent(String(f.RateScale ?? "One"));
+  const rate = typeof fv === "number" && exp !== undefined ? (faderToBpm(fv) / 60) * 2 ** exp : null;
+  return { rate, rateSource: { kind: "own rate fader", fader: typeof fv === "number" ? round(fv, 3) : null }, notes };
+}
+
+/** The rate of one sequence (reads the speed masters and the sequence's links). Throws when the sequence does not exist. */
+export async function readSequenceRate(bridge: Gma3Bridge, sequence: number, t: number): Promise<SequenceRate> {
+  const { masters, names } = await readMasters(bridge, Array.from({ length: MASTER_COUNT }, (_, i) => i + 1), t);
+  const ref = `Sequence ${sequence}`;
+  const o = (await bridge.request("objects", { ref, fields: SEQUENCE_LINK_FIELDS, limit: 1 }, t)) as Listing;
+  const it = o.items?.[0];
+  if (!it) throw new ValidationError(`${ref} does not exist`);
+  return rateOf(bridge, ref, it.fields ?? {}, masterLookup(masters, names), t);
+}
+
 export async function observeTempo(ctx: ToolContext, raw: { sequences: unknown; seconds?: unknown; interval_ms?: unknown }): Promise<unknown> {
   const v = new Validator();
   const seqs = Array.isArray(raw.sequences) && raw.sequences.length && raw.sequences.length <= 8
@@ -725,39 +772,18 @@ export async function observeTempo(ctx: ToolContext, raw: { sequences: unknown; 
   const bridge = ctx.bridge;
   const t = ctx.requestTimeoutMs;
   const { masters: allMasters, names } = await readMasters(bridge, Array.from({ length: MASTER_COUNT }, (_, i) => i + 1), t);
-  const byName = numbersByName(names);
-  const masterOf = (name: string | null) => {
-    if (!name) return null;
-    const hits = byName.get(name.toLowerCase()) ?? [];
-    return hits.length === 1 ? allMasters.find((m) => m.master === hits[0]) ?? null : null;
-  };
+  const masterOf = masterLookup(allMasters, names);
 
   interface Watched { sequence: number; ref: string; config: Record<string, unknown>; cues: CueInfo[]; predicted: { ms: number | null; reason?: string }; notes: string[] }
   const watched: Watched[] = [];
   for (const s of seqs) {
     const ref = `Sequence ${s}`;
-    const notes: string[] = [];
     const o = (await bridge.request("objects", { ref, fields: ["Name", ...SEQUENCE_LINK_FIELDS, "WrapAround"], limit: 1 }, t)) as Listing;
     const it = o.items?.[0];
     if (!it) throw new ValidationError(`${ref} does not exist`);
     const f = it.fields ?? {};
-    const rateMaster = noneOr(f.RateMaster);
     const speedMaster = noneOr(f.SpeedMaster);
-    const rm = masterOf(rateMaster);
-    let rate: number | null = null;
-    let rateSource: Record<string, unknown>;
-    if (rateMaster) {
-      if (!rm) notes.push(`its rate master "${rateMaster}" does not resolve to exactly one speed master`);
-      else if (rm.problems.length) notes.push(`its rate master ${rm.ref} reads inconsistently, so the rate is not predicted: ${rm.problems.join("; ")}`);
-      rate = !rm || rm.effectiveBpm === null || rm.problems.length ? null : linkedRate(rm.effectiveBpm, String(f.RateScale ?? "One"));
-      rateSource = { kind: "speed master", master: rm?.master ?? null, name: rateMaster, effectiveBpm: roundOrNull(rm?.effectiveBpm ?? null) };
-    } else {
-      const g = (await bridge.request("getfader", { ref, tokens: ["FaderRate"] }, t).catch(() => null)) as { faders?: Record<string, { value?: unknown }> } | null;
-      const fv = g?.faders?.FaderRate?.value;
-      const exp = scaleExponent(String(f.RateScale ?? "One"));
-      rate = typeof fv === "number" && exp !== undefined ? (faderToBpm(fv) / 60) * 2 ** exp : null;
-      rateSource = { kind: "own rate fader", fader: typeof fv === "number" ? round(fv, 3) : null };
-    }
+    const { rate, rateSource, notes } = await rateOf(bridge, ref, f, masterOf, t);
     const sm = masterOf(speedMaster);
     const kids = (await bridge.request("children", { ref, fields: ["No", "TrigType", "TrigTime"], asText: false, limit: 1000 }, t)) as Listing;
     const cues: CueInfo[] = (kids.items ?? [])
