@@ -1,7 +1,10 @@
-# Fixture programming tools (FR-03)
+# Fixture programming tools (FR-03, SU-05)
 
 Module: `src/tools/fixtures.ts`. Tools: `gma3_select`, `gma3_set_attribute`, `gma3_set_color`,
-`gma3_set_position`, `gma3_clear_programmer`.
+`gma3_set_position`, `gma3_clear_programmer`, and since SU-05 ([SETUP.md](../../SETUP.md), probe record
+[su-05-programmer-macos-2.5.1.md](../probes/su-05-programmer-macos-2.5.1.md)) `gma3_set_attributes`,
+`gma3_apply_preset` and `gma3_release_attributes`. The SU-05 tools take the same `fixtures` / `use_selection` /
+`add_to_selection` target; `gma3_apply_preset` needs bridge 0.27.0 for its read-back.
 
 All five use only the existing bridge ops: `cmd` for every mutation, `objects` for read-only checks and
 selection read-back, `children` to list selected members. No Lua is generated, so they work with Lua
@@ -204,6 +207,53 @@ as defined in its fixture type (e.g. Pan -225..225); values outside it are left 
 | `all` | `ClearAll` | clears the selection and discards every programmer value | `Selection.CountTotalSelected == 0` |
 
 `mode` is mandatory; the tool never chooses for you and never sends plain `Clear`. One command per call.
+
+## gma3_set_attributes (SU-05)
+
+A whole look on one target in one call. `intensity` (0..100 %) is sent as `At <value>`, the Dimmer attribute.
+`values` is a list of up to 32 `{attribute, value, unit?}`, each sent as `Attribute "<name>" At Absolute
+[<unit keyword>] <value>`, in the order given and with the same units and range rules as `gma3_set_attribute`. An
+attribute may appear once, and Dimmer cannot be given together with `intensity`.
+
+Pre-checks: each attribute exists in the show; small explicit targets are checked against the fixture types'
+attributes (`check_attributes`). The commands stop at the first one the console rejects (partial result). Read-back
+judges every targeted fixture and cell per attribute, as `gma3_set_attribute` does.
+
+Setting one colour attribute activates the fixture's whole colour group in the programmer, with the other mix
+channels at their defaults (KB-17), so the programmer can hold more rows than attributes sent.
+
+## gma3_apply_preset (SU-05)
+
+`pool` and `preset` (a number, or a name): `At Preset <pool>.<number>` or `At Preset <pool>."<name>"`.
+
+| Step | |
+| --- | --- |
+| `check_preset` | The preset exists (`objects`), and its address is kept for the read-back. The console answers `OK` and changes nothing for a missing preset |
+| target steps | ClearSelection and the select, or the current selection; the selection must not be empty (the console answers `OK` and changes nothing for an empty one) |
+| `apply_preset` | `At Preset ...` |
+| read-back | Every selected fixture, or its cells, holds programmer values linked to the preset |
+
+The link is the channel's `abs_preset` from `GetProgPhaser`, which the programmer op reports as `absPreset` per row
+since bridge 0.27.0. A preset applies to every fixture that has its attributes, whatever type it was stored from. A
+fixture the preset holds nothing for is a mismatch. The link proves the recall reached the channel; it survives a
+later manual value, so it is checked right after the recall.
+
+## gma3_release_attributes (SU-05)
+
+`attributes` sends `Off Attribute "A" + "B"`; `all: true` sends `Off Attribute Thru`, which releases every value of
+the target and leaves it selected. `Off Selection` and `Off Fixture N` are not used: with a compound fixture selected as
+its parent they release nothing, because its values live on its cells; `Off Attribute` follows the selection down to
+the cells.
+
+`Off Attribute` is scoped to the selection, but with nothing selected it releases the attributes from **every**
+fixture. So the tool refuses unless the target is selected (the selection count is checked after the select).
+
+Read-back compares the whole programmer (scope `all`) before and after. The released values must be gone from the
+target fixtures and their cells, and every other value must be unchanged: a value released from, changed on or added
+to a fixture outside the target is a mismatch. Rows are compared by their whole content (value, steps, phaser timing,
+masks, preset links), since a multi-step phaser has no single value. The target is the selected (sub)fixture indices
+plus their cells, which come from a scan of the selected fixtures: the whole-programmer scan reports a cell's FID as
+`None` and does not name its parent.
 
 ## Live test
 

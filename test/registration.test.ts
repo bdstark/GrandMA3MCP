@@ -85,6 +85,10 @@ const WORKFLOW_TOOLS = [
   // SU-04 fixture positions
   "gma3_fixture_positions",
   "gma3_place_fixtures",
+  // SU-05 programmer looks
+  "gma3_set_attributes",
+  "gma3_apply_preset",
+  "gma3_release_attributes",
   // SB-01 executor and sequence playback configuration
   "gma3_executor_settings",
   "gma3_configure_executor",

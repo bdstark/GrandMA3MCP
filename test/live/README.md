@@ -33,6 +33,7 @@ Guard rails, enforced by `test/live/live.ts`:
 | Macros 901–903 (and Sequence 907) | SB-07 macro tests |
 | Timecode 901, Sequences 908–909 | SB-08 timecode tests (bridge 0.25.0) |
 | Fixtures with FID 990–993, DMX from the first free block at 3.001 (also needs `GMA3_LIVE_EXCLUSIVE=1`) | patch tests (committed with no undo) |
+| Two fixtures with Dimmer and ColorRGB from `GMA3_LIVE_LOOK_FIDS` (default 1, 2); colour preset slot `GMA3_LIVE_LOOK_PRESET` (default 4.901, must be empty; stored and deleted); optionally a compound fixture with colour cells from `GMA3_LIVE_LOOK_COMPOUND` (skipped when unset); the programmer cleared | SU-05 programmer tests (bridge 0.27.0) |
 | Two top-level fixtures from `GMA3_LIVE_POSITION_FIDS` (default 1, 2): position, rotation and mesh mirroring changed and restored | SU-04 position tests |
 | Fixture types Generic Fog and Fan (imported, then removed; their attributes stay), fixture FID 994 from the first free block at 3.001 (also needs `GMA3_LIVE_EXCLUSIVE=1`) | SU-03 fixture-type import tests (bridge 0.26.0; committed with no undo) |
 

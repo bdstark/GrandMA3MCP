@@ -705,7 +705,7 @@ do
 
   -- Programmer -------------------------------------------------------------
   local prog = {
-    [0] = { fade = 0, delay = 0, speed = 0, phase = 0, mask_active_value = 1, mask_active_phaser = 0, mask_individual = 0, { channel_function = 0, absolute = 50, absolute_value = 8388607, relative = 0 } },
+    [0] = { fade = 0, delay = 0, speed = 0, phase = 0, mask_active_value = 1, mask_active_phaser = 0, mask_individual = 0, abs_preset = presetRed, { channel_function = 0, absolute = 50, absolute_value = 8388607, relative = 0 } },
     [1] = { fade = 0, delay = 0, mask_active_value = 1, mask_active_phaser = 0, mask_individual = 0, { channel_function = 0, absolute = 0, absolute_value = 0, relative = 0 } },
     [6] = { fade = 1.5, delay = 0.25, speed = 60, phase = 0, measure = 0, gridpos = 0, mask_active_value = 1, mask_active_phaser = 2, mask_individual = 0,
             { channel_function = 0, absolute = 0, absolute_value = 0, relative = 0, accel = 0, decel = 0, trans = 100, width = 50 },
@@ -840,6 +840,9 @@ do
   check("programmer: zero value is present, not absent", row2 and row2.value == 0 and row2.present == true and row2.masks.activeValue == 1 and row2.attribute == "ColorRGB_R" and row2.subfixtureIndex == 2, json.encode(row2))
   local row3 = r.ok and r.result.rows[3]
   check("programmer: two-step phaser keeps every step", row3 and row3.stepCount == 2 and #row3.steps == 2 and row3.steps[1].absolute == 0 and row3.steps[2].absolute == 100 and row3.steps[2].width == 50 and row3.value == nil, json.encode(row3))
+  local row0
+  for _, rw in ipairs(r.result.rows or {}) do if rw.uiChannel == 0 then row0 = rw end end
+  check("programmer (SU-05): a recalled preset's link is reported per row (absPreset), none on other rows", row0 and row0.absPreset and row0.absPreset.name == "Red" and row0.absPreset.addrNative:find("PresetPools.Color.Red") and row0.relPreset == nil and row3 and row3.absPreset == nil, json.encode(row0))
   check("programmer: phaser-level timing and integrated preset", row3 and row3.phaser.supported == true and row3.phaser.multiStep == true and row3.phaser.speed == 60 and row3.phaser.fade == 1.5 and row3.phaser.delay == 0.25 and row3.steps[2].integratedPreset.name == "Red", json.encode(row3))
   check("programmer: inactive masks with step data are not reported as values", r.ok and r.result.stats.channelsWithStepsButInactiveMask == 1 and has(r.result.limitations, "activity masks zero"), json.encode(r))
   check("programmer: source and note distinguish programmer from output", r.ok and r.result.source == "programmer" and r.result.note:find("not output"), json.encode(r))
@@ -1526,7 +1529,7 @@ do
   r = request("feedback.read", {}, nil, C)
   check("feedback.read without items is refused with a code", r.ok == false and r.code == "no-items", r.error)
   r = request("feedback.read", { readers = { "commandText", "lastCommand", "blind", "solo", "page", "freeze", "selectedSequence", "previewBar", "sequenceActive" }, displays = { 1, 2, 9 }, executors = { 201, 202 }, sequences = { 5, 6 } }, nil, C)
-  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.26.0" and r.result.module.version == feedbackModule.VERSION and r.result.identity.showFile == "mcp-test-disposable", J(r))
+  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.27.0" and r.result.module.version == feedbackModule.VERSION and r.result.identity.showFile == "mcp-test-disposable", J(r))
   local by = {}
   if r.ok then for _, it in ipairs(r.result.items) do by[it.key] = it end end
   check("feedback.read: command text and last command are raw observations", by.commandText and by.commandText.value == "Store " and by.lastCommand.value == "Go+ Sequence 5 : OK" and by.lastCommand.note:find("not confirmation"), J(by.lastCommand))
@@ -1639,7 +1642,7 @@ do
   end
   local C = { id = 71 }
   r = request("feedback.context", { executors = { 201, 202 } }, nil, C)
-  check("feedback.context answers with Lua and input disabled", r.ok and r.result.bridgeVersion == "0.26.0" and r.result.module.version == feedbackModule.VERSION and r.result.atomic == false and r.result.generation == 1 and r.result.generationChanged == false and r.result.identity.showFile == "mcp-test-disposable" and r.result.identity.dataPool.name == "Default", J(r))
+  check("feedback.context answers with Lua and input disabled", r.ok and r.result.bridgeVersion == "0.27.0" and r.result.module.version == feedbackModule.VERSION and r.result.atomic == false and r.result.generation == 1 and r.result.generationChanged == false and r.result.identity.showFile == "mcp-test-disposable" and r.result.identity.dataPool.name == "Default", J(r))
   check("feedback.context: authoritative display, bank/page, slots with availability and value", r.ok and r.result.authoritativeDisplay.rule == "configured" and r.result.encoder.value.bank.name == "Color" and r.result.encoder.value.page.name == "RGB" and r.result.slots.value.slots[1].name == "ColorRGB_R" and r.result.slots.value.slots[1].availability == "available" and r.result.slots.value.slots[1].absolute == 50 and r.result.slots.value.slots[1].unit == "None" and r.result.slots.value.slots[2].valueState == "empty" and r.result.executorPage.no == 1, J(r.result.slots))
   check("feedback.context: executor targets with functions, level and playback-target status", r.ok and #r.result.executors == 2 and r.result.executors[1].value.functions.keyPress == "Temp" and r.result.executors[1].value.level.value == 100 and r.result.executors[1].value.playbackTarget == true and r.result.executors[2].value.empty == true and r.result.executors[2].value.reserved == nil, J(r.result.executors))
   check("feedback.context: nested fields survive the serialiser depth bound", r.ok and type(r.result.slots.value.slots[1].feature) == "string" and type(r.result.executors[1].value.assigned.name) == "string")
