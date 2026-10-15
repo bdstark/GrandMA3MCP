@@ -1,9 +1,10 @@
-# Patch tools (KB-26)
+# Patch tools (KB-26, SU-03)
 
-`gma3_patch_types`, `gma3_patch_list`, `gma3_patch_add`, `gma3_patch_set`, `gma3_patch_remove`. They need bridge
-0.19.0 (the `patch.*` ops); an older plugin is reported as such. The design and its evidence are in
-[DIALOG.md](../../DIALOG.md) ("KB-25", "KB-26") and the
-[KB-25 record](../probes/kb-25-dialogs-macos-2.5.1.md).
+`gma3_patch_types`, `gma3_patch_list`, `gma3_patch_add`, `gma3_patch_set`, `gma3_patch_remove`: bridge 0.19.0 (the
+`patch.*` ops); an older plugin is reported as such. `gma3_patch_library`, `gma3_patch_import` and
+`gma3_patch_remove_type` (fixture types, [SETUP.md](../../SETUP.md) SU-03): bridge 0.26.0. The design and its evidence
+are in [DIALOG.md](../../DIALOG.md) ("KB-25", "KB-26"), the [KB-25 record](../probes/kb-25-dialogs-macos-2.5.1.md) and
+the [SU-03 record](../probes/su-03-import-macos-2.5.1.md).
 
 ## Common behaviour
 
@@ -23,6 +24,11 @@ every object and property of every patch collection, leaving out the FIDs the ca
 derives itself (listed in the KB-25 and KB-26 records; bridge 0.25.1 adds what a fresh fixture-type import leaves
 different). It compares the two, one collection per request. Anything else that
 differs means someone changed the show during the session: nothing is committed and the copy is left open.
+
+Fixture types are compared by identity, not by number (bridge 0.26.0): deleting a type renumbers the ones after it,
+and every display text naming a type carries its number. An import session compares the copy as a prefix of the
+live patch, because an import appends its type, attributes and features; a type removal leaves the removed type out of
+the live side.
 
 The check is read over several seconds, so it is **not a consistent snapshot**. An edit landing in a collection
 after that collection was read is missed, and would be committed with the session. That is why exclusive use is
@@ -78,9 +84,8 @@ the console: Menu › Patch, then **Discard and Exit** (drops everything in the 
 
 Read-only (`patch.types`). The show's fixture types with number, name, short name, manufacturer and source, and per
 DMX mode its number, name, `footprint`, `breaks` (number of DMX breaks) and `breakChannels`. `search` filters on
-name, short name and manufacturer. Importing a type from the library is not supported yet. KB-25 found a dialog-free
-path (`Import Library` in the copy's FixtureTypes), but claiming the imported type safely needs the ownership rule from
-the KB-25 probe.
+name, short name and manufacturer. Each type also has its `guid`. A type that is not in the show yet comes from the
+library: `gma3_patch_library` finds it and `gma3_patch_import` adds it.
 
 ## gma3_patch_list
 
@@ -135,6 +140,49 @@ The change is `patch.set`. Read-back compares each fixture's patch address and/o
 it. Pre-flight (`patch.check` `fids`): every FID exists and has no sub-fixtures. The change is `patch.remove`.
 Read-back checks the FIDs are gone. The result's `removed` lists the fixtures as they were.
 
+## gma3_patch_library
+
+Read-only (`patch.library`). The fixture-type files the console can import, from its own library paths
+(`GetPath`): the grandMA3 library (a few fixtures and scenery), the grandMA2 library (about 11 500 fixtures), the user
+library and WorldServer downloads. Every word of `query` must occur in the manufacturer, model or file name, ignoring
+case. `sources` limits the libraries; scenery (`set@` files) is left out unless `include_sets`; `limit` (default 50,
+max 500) / `offset` paginate.
+
+Each entry has `source`, `file` (the name to import), `format`, `manufacturer` and `model` (from the file name,
+`manufacturer@model[@revision].ext`), and:
+
+| Field | |
+| --- | --- |
+| `name`, `modes` | From the XML header of a grandMA3 or user `.xml` (`modesKnown: true`). A grandMA2 `.pxml` is encrypted: its modes are known only after the import |
+| `verified` | `false` for user-library and WorldServer files: their import is not verified on the console yet |
+| `inShow` | Show types with the same manufacturer and name: importing again would add a duplicate |
+| `set` | Scenery |
+
+## gma3_patch_import
+
+`file` exactly as `gma3_patch_library` lists it, optionally `source`. One patch session at the copy's fixture-type
+pool:
+
+| Step | |
+| --- | --- |
+| `check_library` | The file is in exactly one library (`Import Library` names the file only, so a name in two libraries is refused); the show has no type matching it unless `allow_duplicate` (the console would silently add a second type with the same name) |
+| `enter` | `patch.enter` with target `fixturetypes`: the copy, then its `FixtureTypes` |
+| `import` | `Import Library "<file>"` with `CmdIndirect` (no dialog) |
+| `wait_import` | Poll until exactly one type is appended. Claimed only when its name or manufacturer matches the file; two new types, or an error answer from the console, fail the step |
+| `isolation_check` | The copy as a prefix of the live patch |
+| `commit`, read-back | The type in the live patch by GUID, with the same modes |
+
+The result has `type` (number, name, manufacturer, GUID, and the DMX modes with footprints and breaks),
+`attributesAdded`, `library`, and a `warning` for an unverified source. A committed import has no undo.
+
+## gma3_patch_remove_type
+
+`type` by number or name (a number when two types share a name). Pre-flight (`patch.typeInfo`): the type exists, has a
+GUID, and no fixture uses it. The change (`patch.removeType`) deletes it by GUID in the copy. The types after it move
+down one number; fixtures keep their type and only the displayed number changes. The result's `renumbered` lists
+`{name, from, to}`. Read-back checks the GUID is gone. **The attributes the type brought stay in the show**, unused: the
+console keeps them, and they cannot be told apart from its own unused attributes.
+
 ## Live test procedure
 
 `test/live/patch.live.ts`, with `GMA3_LIVE=1` **and** `GMA3_LIVE_EXCLUSIVE=1` (patch changes are committed with no
@@ -151,4 +199,15 @@ file against a fake bridge in both cases and checks that no patch change is sent
 
 ```bash
 GMA3_LIVE=1 GMA3_LIVE_EXCLUSIVE=1 node --import tsx --test test/live/patch.live.ts
+```
+
+`test/live/patch-import.live.ts`, with the same two variables, bridge 0.26.0, a disposable show without Generic Fog or
+Fan, and FID 994 free. It finds both in the grandMA2 library, imports Fog, checks a second Fog import is refused
+before anything is sent, imports Fan, patches FID 994 as a Fan, removes Fog (Fan, after it, is renumbered while 994
+uses it), checks removing Fan is refused while 994 uses it, then removes 994 and Fan. The cleanup removes only FID 994
+named "MCP live import" and only the types the run imported, by GUID. 1/1 on macOS onPC 2.5.1 (2026-10-15), about
+100 s.
+
+```bash
+GMA3_LIVE=1 GMA3_LIVE_EXCLUSIVE=1 node --import tsx --test test/live/patch-import.live.ts
 ```

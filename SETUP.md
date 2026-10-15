@@ -141,7 +141,13 @@ show.
 **Lua changes:** Likely: a read-only library search, and an import op that runs `Import Library "<file>"` in the
 fixture-type destination with `CmdIndirect` and claims only the type it created (KB-25: number + name, one new type).
 
-**Status:** proposed. The KB-26 open item "fixture-type import (needs the ownership rule)".
+**Status:** implemented in bridge 0.26.0: `gma3_patch_library`, `gma3_patch_import`, `gma3_patch_remove_type`
+([docs/tools/patch.md](docs/tools/patch.md), probe record [su-03-import-macos-2.5.1.md](docs/probes/su-03-import-macos-2.5.1.md),
+live test `test/live/patch-import.live.ts` 1/1 on macOS onPC 2.5.1). The ownership rule: an import claims exactly one
+appended type whose name or manufacturer matches the file; a duplicate is refused unless asked. A grandMA2 file's modes
+are known only after the import (the files are encrypted); a grandMA3 or user `.xml` lists them before. Removal is for
+unused types only; the types after it are renumbered and its attributes stay in the show. User-library and WorldServer
+files import through the same command but are marked unverified: none was available to test.
 
 **Evidence:** the agent located the files with `find` under `gma3_2.5.1/shared/lib_fixture_types` (all four types
 were only in the `grandma2/*.pxml` library), read their modes after importing them, and imported through

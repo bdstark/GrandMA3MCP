@@ -14,6 +14,7 @@ the live test procedure on a disposable show.
 | Console input (KB-05, opt-in on the console) | `gma3_input_interaction`, `gma3_hardkey`, `gma3_keyboard`, `gma3_type`, `gma3_input_sequence`, `gma3_hardkeys_status`, `gma3_hardkeys_release_all` | [input.md](input.md) |
 | Console feedback (KB-06, read-only) | `gma3_feedback` | [feedback.md](feedback.md) |
 | Patch (KB-26, bridge 0.19.0; changes need `exclusive: true`) | `gma3_patch_types`, `gma3_patch_list`, `gma3_patch_add`, `gma3_patch_set`, `gma3_patch_remove` | [patch.md](patch.md) |
+| Fixture-type library (SU-03, bridge 0.26.0; changes need `exclusive: true`) | `gma3_patch_library`, `gma3_patch_import`, `gma3_patch_remove_type` | [patch.md](patch.md) |
 | Executor and sequence playback configuration (SB-01) | `gma3_executor_settings`, `gma3_configure_executor`, `gma3_configure_sequence` | [playback.md](playback.md) |
 | Groups with selection grids and MAtricks (SB-02, bridge 0.21.0; storing a group needs `exclusive: true`) | `gma3_selection_grid`, `gma3_store_group`, `gma3_matricks`, `gma3_configure_matricks` | [groups.md](groups.md) |
 | Presets with explicit storage rules (SB-03, bridge 0.22.0; storing needs `exclusive: true`) | `gma3_preset`, `gma3_store_preset` | [presets.md](presets.md) |
@@ -37,5 +38,5 @@ result's `verification` field as the source of truth, not the lock.
 
 The console input tools add a bridge-side guard that does reach every client: while any client owns console input
 (an open interaction, a running sequence, a held key), the bridge refuses `cmd`, `set`, `setfader`, `lua` and the mutating `patch.*` ops
-(`patch.enter`, `patch.add`, `patch.set`, `patch.remove`, `patch.commit`) from every connection with `[busy]`, so a mutating tool can fail with that error while someone else types or holds a key. Reads are
+(`patch.enter`, `patch.add`, `patch.set`, `patch.remove`, `patch.commit`, `patch.import`, `patch.removeType`) from every connection with `[busy]`, so a mutating tool can fail with that error while someone else types or holds a key. Reads are
 never refused, `gma3_feedback` included. See [input.md](input.md#who-owns-an-interaction).

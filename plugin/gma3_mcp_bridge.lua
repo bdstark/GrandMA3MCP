@@ -1941,7 +1941,8 @@ end
 -- connection). Returns the module's busy descriptor or nil. Reads and the input recovery ops are
 -- never guarded; a bridge without the module (or with it disabled) is never busy.
 local GUARDED_OPS = { cmd = "a command", set = "a property change", setfader = "a fader change", lua = "arbitrary Lua",
-  ["patch.enter"] = "a patch session", ["patch.add"] = "a patch change", ["patch.set"] = "a patch change", ["patch.remove"] = "a patch change", ["patch.commit"] = "a patch commit" }
+  ["patch.enter"] = "a patch session", ["patch.add"] = "a patch change", ["patch.set"] = "a patch change", ["patch.remove"] = "a patch change", ["patch.commit"] = "a patch commit",
+  ["patch.import"] = "a fixture-type import", ["patch.removeType"] = "a fixture-type removal" }
 local function inputBusy()
   local rec = hardkeysRec()
   if rec and type(rec.instance.admission) == "function" then

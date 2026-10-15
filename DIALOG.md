@@ -200,7 +200,7 @@ Bridge 0.19.0 (`patch.*` ops) and five MCP tools. Details are in [docs/tools/pat
 | `gma3_patch_add` | done: type + mode by number or name, count, FID start, name, explicit address or first free block (`findFreeFrom`); FID and DMX ranges pre-checked (block inside one universe); every created fixture read back |
 | `gma3_patch_set` | readdress / unpatch / rename done (swaps and moves across a fixture's own range work); **re-numbering not done** (FID changes untested live) |
 | `gma3_patch_remove` | done for explicit FIDs, each checked first; fixtures with sub-fixtures refused |
-| Type import | **not done**: the dialog-free path exists (KB-25), but claiming the imported type needs the ownership rule; left for a follow-up |
+| Type import | done in SU-03 ([SETUP.md](SETUP.md), bridge 0.26.0): `gma3_patch_import` claims exactly one appended type whose name or manufacturer matches the file; `gma3_patch_remove_type` removes an unused type |
 | Live test | done: `test/live/patch.live.ts`, 1/1 in 31 s (four committed sessions) |
 
 **Concurrency, as decided:** every change tool requires `exclusive: true`. The isolation check (whole-patch

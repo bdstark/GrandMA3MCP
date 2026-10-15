@@ -1102,6 +1102,10 @@ do
   check("another connection's input is busy while the interaction is open", r.ok == false and r.code == "busy" and r.detail.reason == "interaction" and r.error:find("conn%-1") and #fake.events == 1, r.error)
   r = request("cmd", { command = "Go+ Sequence 1" }, nil, B)
   check("a command from any connection is refused as busy while the interaction is open", r.ok == false and r.code == "busy" and r.error:find("a command is refused") and r.detail.interaction == IA, r.error)
+  for _, op in ipairs({ "patch.import", "patch.removeType" }) do
+    r = request(op, { exclusive = true }, nil, B)
+    check(op .. " (SU-03) is refused as busy while the interaction is open", r.ok == false and r.code == "busy", r.error)
+  end
   r = request("ping", {}, nil, B)
   check("ping reports the busy owner", r.ok and r.result.input.busy.reason == "interaction" and r.result.input.interaction == IA, J(r.result.input))
   r = request("input.release", { key = "PLEASE" }, nil, B)

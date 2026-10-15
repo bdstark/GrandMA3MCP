@@ -89,6 +89,17 @@ session's isolation check can compare.
   name and GUID instead of by number.
 - Deleting a type that fixtures use was not tried: the tool refuses it, and trying would commit a destructive change.
 
+## The tools, live (bridge 0.26.0)
+
+`test/live/patch-import.live.ts`, 1/1 in about 100 s: search, import Fog, refuse a second Fog, import Fan, patch FID
+994 as a Fan, remove Fog (Fan renumbered while in use), refuse removing Fan, remove 994 and Fan. The KB-26 patch live
+test passes on the same bridge (64 s; the show's larger fixture-type tree makes the fingerprints slower).
+
+The first run found that the type's own `Name` and a fixture's `ModeDirect` also carry the type's number in the display
+role (`FixtureType 7 'Fan'`, `FixtureType 7 'Fan'.DMXModes.DMXMode 1 'Mode 0'`): removing Fog left those as the only
+differences, and the isolation check refused the commit, leaving the copy open. The fingerprint now hashes a type's
+name, `ModeDirect` by the mode's type GUID and name, and strips the number from any other `FixtureType N '` text.
+
 ## Not established
 
 - GDTF (`.gdtf`) and user-library `.xml` imports: no such files on this machine.
