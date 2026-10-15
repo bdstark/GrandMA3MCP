@@ -231,10 +231,14 @@ async function readCueList(bridge: Gma3Bridge, sequence: number, t: number): Pro
     .sort((a, b) => a.no - b.no);
 }
 
-/** Environment and value count of the current programmer (one short read). */
-async function environmentOf(bridge: Gma3Bridge, t: number): Promise<{ environment: string | null; values: number }> {
-  const r = (await bridge.request("programmer", { scope: "all", limit: 1 }, t)) as { environment?: string; total?: number };
-  return { environment: typeof r.environment === "string" ? r.environment : null, values: typeof r.total === "number" ? r.total : 0 };
+/**
+ * Environment and value count of the current programmer (one short read). `values` is null unless the scan was
+ * complete and reported a count: an incomplete scan says nothing about whether the programmer is empty.
+ */
+async function environmentOf(bridge: Gma3Bridge, t: number): Promise<{ environment: string | null; values: number | null }> {
+  const r = (await bridge.request("programmer", { scope: "all", limit: 1 }, t)) as { environment?: string; total?: number; coverage?: { complete?: boolean }; fixturesTruncated?: boolean };
+  const valid = r.coverage?.complete === true && r.fixturesTruncated !== true && typeof r.total === "number";
+  return { environment: typeof r.environment === "string" ? r.environment : null, values: valid ? (r.total as number) : null };
 }
 
 const sameProgrammer = (a: ProgrammerSnapshot, b: ProgrammerSnapshot): boolean => a.values.size === b.values.size && [...a.values].every(([k, v]) => b.values.get(k) === v);
@@ -274,6 +278,8 @@ interface BatchResult {
   cues: CueReport[];
   /** Did the build get past the read-only inspection (something was sent)? */
   sent: boolean;
+  /** Preview was left cleanly (every cleanup step succeeded) and the console was then read in Normal. */
+  backInNormal: boolean;
   normalProgrammer: "untouched" | "changed" | "unknown" | "not_entered";
   sequenceExisted: boolean;
   verification: Verification;
@@ -393,7 +399,7 @@ export async function buildCueBatch(ctx: ToolContext, b: Batch): Promise<BatchRe
   const steps: StepResult[] = [...inspect.steps];
   const sequenceExisted = existing !== null;
   if (inspect.outcome !== "succeeded") {
-    return { steps, readBack, warnings, cues: reports, sent: false, normalProgrammer: "not_entered", sequenceExisted, verification: unavailable("nothing was sent") };
+    return { steps, readBack, warnings, cues: reports, sent: false, backInNormal: true, normalProgrammer: "not_entered", sequenceExisted, verification: unavailable("nothing was sent") };
   }
 
   // 2. Build in Preview.
@@ -413,6 +419,9 @@ export async function buildCueBatch(ctx: ToolContext, b: Batch): Promise<BatchRe
             try {
               const env = await environmentOf(bridge, t);
               if (env.environment !== "Preview") return failedRead("check_preview", `the console reports the ${env.environment ?? "unknown"} environment after Preview On; nothing was built`);
+              // Only a complete scan proves the Preview programmer empty; otherwise its content may be someone's, and the
+              // cleanup would clear it.
+              if (env.values === null) return failedRead("check_preview", "the Preview programmer could not be read completely, so it is not known to be empty; nothing was built");
               if (env.values) return failedRead("check_preview", `the Preview programmer is not empty (${env.values} value(s)); nothing was built`);
               return asRead({ name: "check_preview", status: "succeeded", op: "programmer" });
             } catch (err) {
@@ -453,25 +462,32 @@ export async function buildCueBatch(ctx: ToolContext, b: Batch): Promise<BatchRe
         const lp = `${pre}look ${j + 1} `;
         plan.push({ name: `${lp}clear_selection`, run: () => commandStep(bridge, `${lp}clear_selection`, "ClearSelection", t) });
         plan.push({ name: `${lp}select`, run: () => commandStep(bridge, `${lp}select`, look.fixtures, t) });
-        look.presets.forEach((p) => plan.push({ name: `${lp}apply ${p.ref}`, run: () => commandStep(bridge, `${lp}apply ${p.ref}`, `At ${p.ref}`, t) }));
+        const entry: NonNullable<CueReport["looks"]>[number] = { fixtures: look.fixtures, presets: look.presets.map((p) => p.ref), verification: b.verify ? "matched" : "not_requested" };
+        report.looks!.push(entry);
+        const parts: Verification[] = [];
+        // A check right after the command it verifies: a later preset in the same look may take over an earlier one's
+        // channels (and their links), which is the recall order asked for, not a failure.
+        const check = (name: string, what: string, verifyIt: () => Promise<Verification>): { name: string; run: StepFn } => ({
+          name,
+          run: async () => {
+            const v = await verifyIt();
+            parts.push(v);
+            lookChecks.push(v);
+            const all = worst(parts, `look ${j + 1} on ${look.fixtures} in the programmer`);
+            entry.verification = all.status;
+            if (all.detail) entry.detail = all.detail;
+            if (v.status === "mismatched") return { name, kind: "read", status: "failed", op: "programmer", error: `${what} did not apply, so cue ${c.cue} was not stored: ${v.detail}` };
+            return asRead({ name, status: "succeeded", op: "programmer", detail: { verification: v.status } });
+          },
+        });
+        for (const p of look.presets) {
+          plan.push({ name: `${lp}apply ${p.ref}`, run: () => commandStep(bridge, `${lp}apply ${p.ref}`, `At ${p.ref}`, t) });
+          if (b.verify) plan.push(check(`${lp}check ${p.ref}`, p.ref, async () => (await verifyPresetLink(bridge, presets.get(p.ref) as { addrNative: string; label: string }, readBack)).verification));
+        }
         if (look.intensity !== undefined) plan.push({ name: `${lp}intensity`, run: () => commandStep(bridge, `${lp}intensity`, `At ${formatValue(look.intensity as number)}`, t) });
         look.values.forEach((x) => plan.push({ name: `${lp}${x.attribute}`, run: () => commandStep(bridge, `${lp}${x.attribute}`, attributeCommand(x.attribute, x.value, x.unit ? ATTRIBUTE_UNITS[x.unit].keyword : undefined), t) }));
-        if (b.verify) {
-          plan.push({
-            name: `${lp}check`,
-            run: async () => {
-              const parts: Verification[] = [];
-              for (const p of look.presets) parts.push((await verifyPresetLink(bridge, presets.get(p.ref) as { addrNative: string; label: string }, readBack)).verification);
-              const exp = expectationsOf(look);
-              if (exp.length) parts.push((await verifyProgrammer(bridge, exp, readBack, warnings)).verification);
-              const v = worst(parts, `look ${j + 1} on ${look.fixtures} in the programmer`);
-              lookChecks.push(v);
-              report.looks!.push({ fixtures: look.fixtures, presets: look.presets.map((p) => p.ref), verification: v.status, ...(v.detail ? { detail: v.detail } : {}) });
-              if (v.status === "mismatched") return { name: `${lp}check`, kind: "read", status: "failed", op: "programmer", error: `the look did not apply, so cue ${c.cue} was not stored: ${v.detail}` };
-              return asRead({ name: `${lp}check`, status: "succeeded", op: "programmer", detail: { verification: v.status } });
-            },
-          });
-        }
+        const exp = expectationsOf(look);
+        if (b.verify && exp.length) plan.push(check(`${lp}check values`, "the look's values", async () => (await verifyProgrammer(bridge, exp, readBack, warnings)).verification));
       });
       plan.push({ name: `${pre}store`, run: () => commandStep(bridge, `${pre}store`, storeCommand(b.sequence, c.cue, b.mode), t) });
       const part0 = cueRef(b.sequence, c.cue, 0);
@@ -509,9 +525,12 @@ export async function buildCueBatch(ctx: ToolContext, b: Batch): Promise<BatchRe
   }
 
   let normalProgrammer: BatchResult["normalProgrammer"] = entered ? "unknown" : "not_entered";
+  const cleanupSteps = steps.filter((x) => ["confirm_preview_end", "release_preview_programmer", "preview_off"].includes(x.name));
+  let backInNormal = !entered;
   if (entered && normalBefore) {
     try {
       const env = await environmentOf(bridge, t);
+      backInNormal = env.environment === "Normal" && cleanupSteps.every((x) => x.status === "succeeded");
       const after = await snapshotProgrammer(bridge);
       if (env.environment === "Normal" && after.complete) normalProgrammer = sameProgrammer(normalBefore, after) ? "untouched" : "changed";
       steps.push(asRead({ name: "check_normal_programmer", status: normalProgrammer === "untouched" ? "succeeded" : "failed", op: "programmer", ...(normalProgrammer === "untouched" ? {} : { error: env.environment !== "Normal" ? `the console is in the ${env.environment ?? "unknown"} environment; run gma3_phaser_release` : !after.complete ? "the Normal programmer could not be read completely" : "the Normal programmer changed while the cues were built (another operator, or a command that reached Normal)" }) }));
@@ -568,7 +587,7 @@ export async function buildCueBatch(ctx: ToolContext, b: Batch): Promise<BatchRe
           [...attempted.map((r) => ({ ...r.verification, detail: r.verification.detail ? `cue ${r.cue}: ${r.verification.detail}` : undefined })), ...(normalProgrammer === "changed" ? [{ status: "mismatched" as const, detail: "the Normal programmer changed during the build" }] : [])],
           `${attempted.length} cue(s): each look in the Preview programmer before its store, then the cue's existence, name, timing and trigger`,
         );
-  return { steps, readBack, warnings, cues: reports, sent: true, normalProgrammer, sequenceExisted, verification: overall };
+  return { steps, readBack, warnings, cues: reports, sent: true, backInNormal, normalProgrammer, sequenceExisted, verification: overall };
 }
 
 // ---------------------------------------------------------------------------
@@ -915,6 +934,9 @@ export async function buildChase(ctx: ToolContext, raw: Record<string, unknown>)
     const allStored = r.cues.every((c) => c.status === "stored");
     const extra: Record<string, unknown> = { stepSeconds: step, cycleSeconds: Number((step * cues.length).toFixed(3)) };
     if (!allStored) return batchResult(op, { sequence, steps: cues.length }, r, { ...extra, cycle: { watched: false, reason: "not every cue was stored" } });
+    // Nothing more is sent unless Preview was left cleanly and the console is confirmed back in Normal: a Goto from
+    // anywhere else would play the chase on a console in an unknown state.
+    if (!r.backInNormal) return batchResult(op, { sequence, steps: cues.length }, r, { ...extra, cycle: { watched: false, reason: "the console was not confirmed back in the Normal environment after the build (run gma3_phaser_release); Wrap Around was not set and the chase was not played" } });
 
     // Wrap Around: the last cue is followed by cue 1 (cue 1 carries a Time trigger too, so the loop continues).
     const wrap = await runSteps([setStep(bridge, "wrap_around", `Sequence ${sequence}`, "WrapAround", "Yes", t)]);

@@ -28,13 +28,14 @@ activates the fixture's whole colour group (KB-17), so a cue can hold more value
    - every attribute name, which must exist in the show;
    - every fixture expression, which must match something;
    - the Normal programmer, which must be readable, with the console in Normal.
-2. **`Preview On`.** The Preview programmer must then be empty. If it is not, only `Preview Off` is sent, because
-   that content belongs to someone else.
+2. **`Preview On`.** The Preview programmer must then be empty, shown by a complete scan with a value count (an
+   incomplete scan proves nothing). If it is not, or cannot be shown to be, only `Preview Off` is sent, because that
+   content may belong to someone else.
 3. **Per cue, in order:**
    - confirm the console is still in Preview, then `ClearAll` (the programmer keeps the previous cue's values after
      a store);
-   - for each look: `ClearSelection`, the select, the presets, the intensity and the values, then the look check
-     (below);
+   - for each look: `ClearSelection`, the select, each preset followed by its check, then the intensity and the
+     values followed by theirs (below);
    - `Store Sequence N Cue C [/Merge|/Overwrite] /NoConfirmation`;
    - `Name` and the timing on Part 0, `TrigType` / `TrigTime` on the cue.
 4. **Leaving Preview.** The console is confirmed in Preview, then `ClearAll` and `Preview Off`, whatever happened.
@@ -43,8 +44,9 @@ activates the fixture's whole colour group (KB-17), so a cue can hold more value
 6. **Read-back** per stored cue: it exists, and its name, timing and trigger as given. A cue stored without a name
    takes the preset's name (`[4.902]`), and the result reports that name.
 
-**The look check.** The check runs in the Preview programmer right after the look is applied:
-- every preset must be linked on every selected fixture or its cells, as `gma3_apply_preset` checks;
+**The look check.** Each check runs in the Preview programmer right after the command it verifies:
+- every preset must be linked on every selected fixture or its cells, as `gma3_apply_preset` checks, right after its
+  recall: a later preset of the same look may take over its channels, which is the order asked for;
 - the intensity and values are compared per fixture and cell, as `gma3_set_attributes` compares them.
 
 A look that did not apply is a mismatch, and **the batch stops before that cue is stored**. Cues already stored
@@ -109,7 +111,8 @@ would join the loop.
 | `exclusive`, `verify` | as above |
 
 The cues are built as in `gma3_store_cues` (mode `create`), every cue with trigger Time and the step time (cue 1 too,
-so the loop continues after the wrap), then `WrapAround` is set to Yes and read back.
+so the loop continues after the wrap), then `WrapAround` is set to Yes and read back. Nothing after the build is
+sent unless every cue was stored, every Preview cleanup step succeeded and the console then read back in Normal.
 
 **One observed cycle.** This **plays the chase**, which changes the live output.
 - **Preconditions:** the sequence must not already be running. Its rate is read: the rate master's effective BPM / 60

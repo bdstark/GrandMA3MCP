@@ -54,6 +54,10 @@ class Console {
   ignoreWrap = false;
   /** Something changes the Normal programmer while the build runs. */
   normalChangesOnStore = false;
+  /** The programmer op's scan of the Preview programmer is incomplete (coverage.complete false, no total). */
+  previewIncomplete = false;
+  /** Commands the console rejects (and does not perform). */
+  reject?: RegExp;
   playing: { seq: number; start: number; t0: number } | null = null;
   current = new Map<number, number>();
   commands: string[] = [];
@@ -76,6 +80,7 @@ class Console {
 
   apply(cmd: string): string {
     this.commands.push(`${this.env === "Preview" ? "[P] " : ""}${cmd}`);
+    if (this.reject?.test(cmd)) return "Illegal Command";
     let m: RegExpMatchArray | null;
     const sel = this.selected[this.env];
     if (cmd === "Preview On") this.env = "Preview";
@@ -148,6 +153,7 @@ class Console {
       })),
     );
     const limit = typeof args.limit === "number" ? args.limit : 500;
+    if (this.env === "Preview" && this.previewIncomplete) return { scope, environment: this.env, coverage: { complete: false }, scannedFixtures: [], fixturesTruncated: false, rows: [], limitations: ["scan aborted"] };
     return {
       scope,
       environment: this.env,
@@ -325,7 +331,7 @@ test("store_cues: a look that does not apply stops the batch before its cue is s
     assert.equal(isError, true);
     assert.equal(result.outcome, "partial");
     assert.deepEqual(result.cues.map((x: any) => x.status), ["stored", "failed", "not_attempted"]);
-    assert.match(result.cues[1].error, /the look did not apply, so cue 2 was not stored/);
+    assert.match(result.cues[1].error, /Preset 4\.2 did not apply, so cue 2 was not stored/);
     assert.deepEqual(c.seqs.get(951)!.cues.map((x) => x.no), [1]);
     normalUntouched(c);
     assert.ok(!c.commands.some((x) => x.includes("Cue 2 ")), "cue 2 was never stored");
@@ -452,4 +458,52 @@ test("planObservation: the full cycle when it fits, otherwise the tail through t
   assert.equal(planObservation(4, 30000, 45000), null);
   assert.deepEqual(judgeCycle([1, 2, 1], [{ ms: 0, cue: 1 }, { ms: 1000, cue: 2 }, { ms: 2600, cue: 1 }], 1000, 200), ["the step to cue 1 took 1600 ms, expected 1000 ms (± 200 ms)"]);
   assert.match(judgeCycle([1, 2, 3], [{ ms: 0, cue: 1 }, { ms: 1000, cue: 3 }], null, null)[0], /expected cue 2 as change 2, saw cue 3/);
+});
+
+// ---------------------------------------------------------------------------
+// Review round 1 (PR #51 at e2c8306)
+// ---------------------------------------------------------------------------
+
+test("store_cues: an incomplete Preview scan is not an empty Preview programmer: nothing is built and nothing in Preview is cleared", async () => {
+  const { h, c } = await setup();
+  try {
+    c.prog.Preview.set("102", new Map([["Dimmer", { value: 5 }]]));
+    c.previewIncomplete = true;
+    const { result } = await h.callJson("gma3_store_cues", { sequence: 951, mode: "create", fixtures: "101", exclusive: true, verify: false, cues: [{ cue: 1, intensity: 10 }] });
+    assert.equal(result.stored, 0);
+    assert.match(result.steps.map((x: any) => x.error ?? "").join(" | "), /could not be read completely, so it is not known to be empty; nothing was built/);
+    assert.ok(!c.commands.includes("[P] ClearAll"), "ClearAll is never sent in Preview");
+    assert.equal(c.prog.Preview.get("102")?.get("Dimmer")?.value, 5, "the existing Preview value survives");
+    assert.equal(c.env, "Normal");
+  } finally {
+    await h.close();
+  }
+});
+
+test("store_cues: a later preset in a look that takes over an earlier one's channels is the recall order asked for, not a mismatch", async () => {
+  const { h, c } = await setup();
+  try {
+    const { result, isError } = await h.callJson("gma3_store_cues", { sequence: 951, mode: "create", exclusive: true, cues: [{ cue: 1, fixtures: "101", presets: [{ pool: 4, preset: 1 }, { pool: 4, preset: 2 }] }] });
+    assert.equal(isError, false, JSON.stringify(result, null, 2));
+    assert.equal(result.verification.status, "matched");
+    assert.deepEqual(c.seqs.get(951)!.cues[0].data["101"], { ColorRGB_R: 0, ColorRGB_G: 100, ColorRGB_B: 0 }, "the later preset wins");
+  } finally {
+    await h.close();
+  }
+});
+
+test("build_chase: when Preview Off fails, nothing more is sent: no Wrap Around, no playback", async () => {
+  const { h, c } = await setup();
+  try {
+    c.reject = /^Preview Off$/;
+    const { result, isError } = await h.callJson("gma3_build_chase", { sequence: 973, fixtures: "101", presets: [{ pool: 4, preset: 1 }, { pool: 4, preset: 2 }], step_seconds: 0.25, exclusive: true });
+    assert.equal(isError, true);
+    assert.equal(result.cycle.watched, false);
+    assert.match(result.cycle.reason, /not confirmed back in the Normal environment/);
+    assert.ok(!c.commands.some((x) => x.includes("Goto")), "the chase was not played");
+    assert.ok(!result.steps.some((x: any) => x.name === "wrap_around"), "Wrap Around was not set");
+    assert.equal(c.playing, null);
+  } finally {
+    await h.close();
+  }
 });
