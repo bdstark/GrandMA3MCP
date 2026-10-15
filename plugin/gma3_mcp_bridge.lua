@@ -3934,9 +3934,11 @@ end
 -- and rise with an import (SU-03, live 2026-10-15). A read that fails or more than PATCH_FP_LIMIT objects mark
 -- it incomplete.
 --
--- Fixture types are compared by identity, not by number: deleting a type renumbers the ones after it, and a
--- fixture's FixtureType then displays a new number (SU-03, live 2026-10-15). So a type's INDEX is left out and a
--- FIXTURETYPE property is hashed as the referenced type's name and GUID.
+-- Fixture types are compared by identity, not by number: deleting a type renumbers the ones after it, and every
+-- display text naming a type carries its number (SU-03, live 2026-10-15: a fixture's FixtureType "7 Fan" and
+-- ModeDirect "FixtureType 7 'Fan'.DMXModes.DMXMode 1 'Mode 0'", the type's own Name "FixtureType 7 'Fan'"). So a
+-- type's INDEX is left out and its NAME hashed as the plain name, FIXTURETYPE as the referenced type's name and
+-- GUID, MODEDIRECT as the mode's type GUID and mode name, and any other "FixtureType N '" text without the number.
 --
 -- opts (SU-03):
 --   excludeGuids  types (by GUID) left out with their subtree: the type a removal deletes, on the live side
@@ -3970,6 +3972,13 @@ local function patchFingerprint(p, only, exclude, opts)
     if ok and (isHandle(t) or (type(t) == "table" and type(t.Get) == "function")) then return tostring(safeProp(t, "name")) .. "#" .. guidOf(t) end
     return nil
   end
+  local function modeIdentity(h)
+    local ok, m = pcall(function() return h:Get("ModeDirect") end)
+    if not (ok and isHandle(m)) then return nil end
+    local okP, t = pcall(function() return m:Parent():Parent() end)
+    if not (okP and isHandle(t)) then return nil end
+    return guidOf(t) .. "/" .. tostring(safeProp(m, "name"))
+  end
   local function add(h, depth, renumbered, isType)
     if r.objects >= PATCH_FP_LIMIT then r.complete = false; r.reason = "more than " .. PATCH_FP_LIMIT .. " objects"; return false end
     local okc, n = pcall(function() return h:PropertyCount() end)
@@ -3984,11 +3993,11 @@ local function patchFingerprint(p, only, exclude, opts)
     local parts = { tostring(depth), tostring(safeCall(h, "GetClass")), (renumbered or isType) and "" or tostring(safeProp(h, "no")) }
     for _, k in ipairs(pn) do
       if not PATCH_FP_PROP_SKIP[k] and not ((renumbered or isType) and k == "INDEX") then
-        local v = k == "FIXTURETYPE" and typeIdentity(h) or nil
+        local v = (k == "FIXTURETYPE" and typeIdentity(h)) or (k == "MODEDIRECT" and modeIdentity(h)) or ((isType and k == "NAME") and tostring(safeProp(h, "name"))) or nil
         if v == nil then
           local okv, dv = pcall(function() return h:Get(k, Enums.Roles.Display) end)
           if not okv then r.complete = false; r.reason = "property " .. tostring(k) .. " of " .. tostring(safeProp(h, "name")) .. " could not be read"; return false end
-          v = tostring(dv)
+          v = (tostring(dv):gsub("FixtureType %d+ '", "FixtureType # '"))
         end
         parts[#parts + 1] = k .. "=" .. v
       end

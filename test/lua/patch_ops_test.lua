@@ -79,6 +79,12 @@ function Obj:Get(k, role)
     if role == nil then return t end
     return tostring(t.no) .. " " .. tostring(t.name)
   end
+  -- Display texts that carry the type's number, as on the console (live 2026-10-15).
+  if k:upper() == "MODEDIRECT" and role ~= nil and rawget(self, "TypeRef") and rawget(self, "ModeDirect") then
+    local t, m = rawget(self, "TypeRef"), rawget(self, "ModeDirect")
+    return "FixtureType " .. tostring(t.no) .. " '" .. tostring(t.name) .. "'.DMXModes.DMXMode " .. tostring(m.no) .. " '" .. tostring(m.name) .. "'"
+  end
+  if k:upper() == "NAME" and role ~= nil and self.class == "FixtureType" then return "FixtureType " .. tostring(self.no) .. " '" .. tostring(self.name) .. "'" end
   local v = self.pv[k:upper()]
   if v == nil and k:upper() == "NAME" then return self.name end
   -- As on onPC 2.5.1: a DMX mode's DMXFootprint is a table unless read in the display role (live 2026-10-13).
@@ -117,7 +123,7 @@ local function ftype(no, name, modes, manufacturer) local t = obj("FixtureType",
 local function overview() return obj("SubfixtureOverview", "SubfixtureOverview", 2, {}, { obj("FTSubfixture", "Instance2", 1, { { "INDEX", 2 } }) }) end
 
 local function fixture(name, fid, m, patch, kids)
-  return obj("Fixture", name, fid, { { "FID", fid }, { "CID", "None" }, { "IDTYPE", "IDs 1 'Fixture'" }, { "FIXTURETYPE", "x" }, { "MODE", m.name }, { "PATCH", patch }, { "BREAK1", patch }, { "SUBFIXTUREINDEX", fid } }, kids, { FID = fid, ModeDirect = m })
+  return obj("Fixture", name, fid, { { "FID", fid }, { "CID", "None" }, { "IDTYPE", "IDs 1 'Fixture'" }, { "FIXTURETYPE", "x" }, { "MODEDIRECT", "x" }, { "MODE", m.name }, { "PATCH", patch }, { "BREAK1", patch }, { "SUBFIXTUREINDEX", fid } }, kids, { FID = fid, ModeDirect = m })
 end
 
 local function buildLive()
