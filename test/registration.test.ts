@@ -78,6 +78,10 @@ const WORKFLOW_TOOLS = [
   "gma3_patch_add",
   "gma3_patch_set",
   "gma3_patch_remove",
+  // SU-03 fixture-type library
+  "gma3_patch_library",
+  "gma3_patch_import",
+  "gma3_patch_remove_type",
   // SB-01 executor and sequence playback configuration
   "gma3_executor_settings",
   "gma3_configure_executor",

@@ -1,8 +1,11 @@
 /**
  * KB-26 patch tools: inspect and change the fixture patch without dialogs (DIALOG.md "KB-26").
  *
- * Reads: gma3_patch_types, gma3_patch_list (the bridge's patch.types / patch.list).
- * Changes: gma3_patch_add, gma3_patch_set, gma3_patch_remove. Each runs one patch session through the
+ * Reads: gma3_patch_types, gma3_patch_list, gma3_patch_library (the bridge's patch.types / patch.list /
+ * patch.library; SU-03).
+ * Changes: gma3_patch_add, gma3_patch_set, gma3_patch_remove, and since SU-03 gma3_patch_import and
+ * gma3_patch_remove_type (a type in the copy's fixture-type pool, with a settle step that waits for the
+ * import and its own isolation options). Each runs one patch session through the
  * patch edit copy (ShowData.Patch), the way KB-25 established live on onPC 2.5.1:
  *
  *   1. read   check_state      the command line is at Root, the copy is closed (nobody is in the Patch
@@ -165,7 +168,21 @@ async function waitStep(bridge: Gma3Bridge, name: string, t: number, pred: (s: P
   return asRead({ name, status: "unknown", op: "patch.state", error: `${what} did not happen within ${(POLL_TRIES * POLL_MS) / 1000} s (CmdIndirect lands on a later frame)`, detail: last });
 }
 
-async function fingerprints(bridge: Gma3Bridge, excludeFids: number[], t: number): Promise<{ equal: boolean; complete: boolean; mismatched: string[]; detail: Record<string, unknown> }> {
+/**
+ * What a session's isolation check leaves out. excludeFids: the fixtures the call touches (both sides).
+ * prefixOfLive: the copy is hashed only as far as the live patch has objects in every container, which leaves
+ * out what an import appended (its type, attributes and features; SU-03). excludeGuidsLive: fixture types left
+ * out of the live side, the type a removal deletes (fixture types are compared by identity, so the renumbering
+ * that follows is not a difference).
+ */
+interface IsolationSpec {
+  excludeFids: number[];
+  prefixOfLive?: boolean;
+  excludeGuidsLive?: string[];
+}
+
+async function fingerprints(bridge: Gma3Bridge, iso: IsolationSpec, t: number): Promise<{ equal: boolean; complete: boolean; mismatched: string[]; detail: Record<string, unknown> }> {
+  const { excludeFids } = iso;
   const cols = (await bridge.request("patch.collections", {}, t)) as { copyOpen: boolean; live: string[]; copy: string[] | false };
   if (!cols.copyOpen || !Array.isArray(cols.copy)) return { equal: false, complete: false, mismatched: ["the copy is not open"], detail: { collections: cols } };
   const ft = Math.max(t, 15_000);
@@ -174,23 +191,24 @@ async function fingerprints(bridge: Gma3Bridge, excludeFids: number[], t: number
   const reasons: string[] = [];
   if (JSON.stringify(cols.live) !== JSON.stringify(cols.copy)) mismatched.push(`collections differ: live ${cols.live.join(", ")} / copy ${cols.copy.join(", ")}`);
   for (const collection of cols.live) {
-    const live = (await bridge.request("patch.fingerprint", { side: "live", collection, excludeFids }, ft)) as Fingerprint;
-    const copy = (await bridge.request("patch.fingerprint", { side: "copy", collection, excludeFids }, ft)) as Fingerprint;
+    const live = (await bridge.request("patch.fingerprint", { side: "live", collection, excludeFids, ...(iso.excludeGuidsLive?.length ? { excludeGuids: iso.excludeGuidsLive } : {}) }, ft)) as Fingerprint;
+    const copy = (await bridge.request("patch.fingerprint", { side: "copy", collection, excludeFids, ...(iso.prefixOfLive ? { prefixOfLive: true } : {}) }, ft)) as Fingerprint;
     if (!live.complete || !copy.complete) {
       complete = false;
       reasons.push(`${collection}: ${live.reason ?? copy.reason ?? "incomplete"}`);
     } else if (live.objects !== copy.objects || live.hash !== copy.hash) mismatched.push(collection);
   }
-  return { equal: complete && mismatched.length === 0, complete, mismatched, detail: { collections: cols.live, excludeFids, ...(reasons.length ? { incomplete: reasons } : {}) } };
+  const leftOut = { ...(iso.prefixOfLive ? { prefixOfLive: true } : {}), ...(iso.excludeGuidsLive?.length ? { excludeGuidsLive: iso.excludeGuidsLive } : {}) };
+  return { equal: complete && mismatched.length === 0, complete, mismatched, detail: { collections: cols.live, excludeFids, ...leftOut, ...(reasons.length ? { incomplete: reasons } : {}) } };
 }
 
-async function isolationStep(bridge: Gma3Bridge, excludeFids: number[], t: number): Promise<StepResult> {
+async function isolationStep(bridge: Gma3Bridge, iso: IsolationSpec, t: number): Promise<StepResult> {
   try {
-    const f = await fingerprints(bridge, excludeFids, t);
+    const f = await fingerprints(bridge, iso, t);
     if (f.equal) return asRead({ name: "isolation_check", status: "succeeded", op: "patch.fingerprint", detail: f.detail });
     const why = !f.complete
       ? "the copy and the live patch could not be fingerprinted completely, so other changes cannot be ruled out"
-      : `the copy differs from the live patch outside the fixtures this call touched (${f.mismatched.join(", ")}): someone else changed the show during the session`;
+      : `the copy differs from the live patch outside what this call changed (${f.mismatched.join(", ")}): someone else changed the show during the session`;
     return asRead({ name: "isolation_check", status: "failed", op: "patch.fingerprint", error: `${why}; nothing was committed`, detail: { ...f.detail, mismatched: f.mismatched } });
   } catch (err) {
     return asRead(stepFromError("isolation_check", err, { op: "patch.fingerprint" }));
@@ -216,7 +234,7 @@ async function closeSession(bridge: Gma3Bridge, t: number): Promise<{ steps: Ste
   }
   let unchanged = false;
   try {
-    const f = await fingerprints(bridge, [], t);
+    const f = await fingerprints(bridge, { excludeFids: [] }, t);
     unchanged = f.equal;
     steps.push(asRead({ name: "close_check", status: unchanged ? "succeeded" : "failed", op: "patch.fingerprint", ...(unchanged ? {} : { error: "the copy holds changes (or could not be fingerprinted completely); it is left open for the operator" }), detail: { ...f.detail, mismatched: f.mismatched } }));
   } catch (err) {
@@ -245,6 +263,14 @@ interface SessionSpec {
   preflight: () => Promise<StepResult>;
   /** Step name of the edit ("add", "set", "remove"). */
   editName: string;
+  /** Extra patch.enter arguments (target "fixturetypes" for an import, SU-03). */
+  enterArgs?: Record<string, unknown>;
+  /** After a successful edit: wait until it has landed (an import lands a frame later). Not succeeded stops the session. */
+  settle?: { name: string; run: (editDetail: unknown) => Promise<StepResult> };
+  /** Receives the edit's reply when it succeeded. */
+  onEdit?: (editDetail: unknown) => void;
+  /** Isolation options beyond the touched FIDs, read after the edit (and settle) succeeded. */
+  isolation?: () => Omit<IsolationSpec, "excludeFids">;
   /** The edit inside the copy (patch.add / patch.set / patch.remove), built once the copy is open; `stage` is the stage patch.enter entered. */
   edit: (stage: string | undefined) => { op: string; args: Record<string, unknown> };
   /** Read-back after a commit. */
@@ -253,8 +279,11 @@ interface SessionSpec {
   extra?: () => Record<string, unknown>;
 }
 
-const SESSION_STEPS = ["enter", "wait_copy", "<edit>", "isolation_check", "commit", "wait_commit"];
-const sessionSteps = (editName: string, from: number) => SESSION_STEPS.slice(from).map((n) => (n === "<edit>" ? editName : n));
+const SESSION_STEPS = ["enter", "wait_copy", "<edit>", "<settle>", "isolation_check", "commit", "wait_commit"];
+const sessionSteps = (editName: string, settleName: string | undefined, from: number) =>
+  SESSION_STEPS.slice(from)
+    .filter((n) => n !== "<settle>" || settleName !== undefined)
+    .map((n) => (n === "<edit>" ? editName : n === "<settle>" ? (settleName as string) : n));
 
 function skippedSteps(names: string[], because: string): StepResult[] {
   return names.map((name) => ({ name, status: "skipped" as const, error: `not attempted: ${because}` }));
@@ -271,7 +300,8 @@ async function runSession(ctx: ToolContext, spec: SessionSpec): Promise<Operatio
       r.steps.push(...readBackSteps);
       return r;
     };
-    const planned = (from: number) => sessionSteps(spec.editName, from);
+    // Positions in SESSION_STEPS: 0 enter, 1 wait_copy, 2 edit, 3 settle, 4 isolation_check, 5 commit, 6 wait_commit.
+    const planned = (from: number) => sessionSteps(spec.editName, spec.settle?.name, from);
 
     // Phase 1: read-only checks. Nothing is sent if any fails.
     const st = await checkStateStep(bridge, t);
@@ -286,7 +316,7 @@ async function runSession(ctx: ToolContext, spec: SessionSpec): Promise<Operatio
     // Phase 2: the session.
     let enter: StepResult;
     try {
-      const res = await bridge.request("patch.enter", { exclusive: true, ...(spec.stage ? { stage: spec.stage } : {}) }, t);
+      const res = await bridge.request("patch.enter", { exclusive: true, ...(spec.stage ? { stage: spec.stage } : {}), ...(spec.enterArgs ?? {}) }, t);
       enter = { name: "enter", status: "succeeded", op: "patch.enter", detail: res };
     } catch (err) {
       enter = stepFromError("enter", err, { op: "patch.enter" });
@@ -328,8 +358,14 @@ async function runSession(ctx: ToolContext, spec: SessionSpec): Promise<Operatio
     if (editStep.status !== "succeeded") {
       return abort(editStep.status === "unknown" ? "unknown" : "failed", `the ${spec.editName} step ${editStep.status === "unknown" ? "got no reply" : "was refused"}: ${editStep.error}`, planned(3));
     }
+    spec.onEdit?.(editStep.detail);
+    if (spec.settle) {
+      const st = await spec.settle.run(editStep.detail);
+      steps.push(st);
+      if (st.status !== "succeeded") return abort(st.status === "unknown" ? "unknown" : "failed", `the ${spec.settle.name} step ${st.status}: ${st.error ?? ""}`, planned(4));
+    }
 
-    const iso = await isolationStep(bridge, spec.touchedFids, t);
+    const iso = await isolationStep(bridge, { excludeFids: spec.touchedFids, ...(spec.isolation?.() ?? {}) }, t);
     steps.push(iso);
     if (iso.status !== "succeeded") {
       steps.push(...skippedSteps(["commit", "wait_commit"], "the isolation check did not pass"));
@@ -679,6 +715,217 @@ export async function patchRemove(ctx: ToolContext, raw: RemoveArgs): Promise<Op
 }
 
 // ---------------------------------------------------------------------------
+// SU-03: fixture-type library, import and removal (bridge 0.26.0)
+// ---------------------------------------------------------------------------
+
+export const LIBRARY_SOURCES = ["grandma3", "grandma2", "user", "worldserver"] as const;
+type LibrarySource = (typeof LIBRARY_SOURCES)[number];
+
+export interface LibraryEntry {
+  source: LibrarySource;
+  file: string;
+  format: string;
+  manufacturer?: string;
+  model?: string;
+  name?: string;
+  modes?: string[];
+  modesKnown: boolean;
+  verified: boolean;
+  set: boolean;
+  inShow: Array<{ no: number; name: string; manufacturer?: string; guid?: string }>;
+}
+
+export interface TypeRow {
+  no: number;
+  name: string;
+  manufacturer?: string;
+  shortName?: string;
+  source?: string;
+  guid?: string;
+  modes: Array<{ no: number; name: string; footprint?: number; breaks?: number; breakChannels?: number[] }>;
+}
+
+interface ImportArgs {
+  file: string;
+  source?: string;
+  allow_duplicate?: boolean;
+  exclusive?: boolean;
+  verify?: boolean;
+}
+
+const IMPORT_POLL_TRIES = 50;
+const lc = (v: unknown) => (typeof v === "string" ? v.toLowerCase() : undefined);
+
+export async function patchImport(ctx: ToolContext, raw: ImportArgs): Promise<OperationResult> {
+  const op = "patch_import";
+  const v = new Validator();
+  const file = typeof raw.file === "string" && raw.file.trim() !== "" ? raw.file : undefined;
+  if (!file) v.fail("file is required: a library file name, as gma3_patch_library lists it");
+  else if (/["\u0000-\u001f]/.test(file)) v.fail("file must not contain a quote or a control character (it is sent as Import Library \"<file>\")");
+  if (raw.source !== undefined && !LIBRARY_SOURCES.includes(raw.source as LibrarySource)) v.fail(`source must be one of ${LIBRARY_SOURCES.join(", ")}`);
+  requireExclusive(v, raw.exclusive);
+  const verify = raw.verify !== false;
+  const target: Record<string, unknown> = { file: raw.file, ...(raw.source ? { source: raw.source } : {}) };
+  if (!v.ok) return validationFailure(op, target, v.errors);
+  const t = ctx.requestTimeoutMs;
+  let entry: LibraryEntry | undefined;
+  let queued: { typesBefore: number; attributesBefore?: number; verified?: boolean } | undefined;
+  let imported: TypeRow | undefined;
+  let attributesAfter: number | undefined;
+
+  return runSession(ctx, {
+    operation: op,
+    target,
+    touchedFids: [],
+    verify,
+    preflight: async () => {
+      try {
+        const lib = (await ctx.bridge.request("patch.library", { file, ...(raw.source ? { sources: [raw.source] } : {}) }, t)) as { entries: LibraryEntry[] };
+        const all = (await ctx.bridge.request("patch.library", { file }, t)) as { entries: LibraryEntry[] };
+        const detail = { entries: lib.entries };
+        if (lib.entries.length === 0) return asRead({ name: "check_library", status: "failed", op: "patch.library", error: `${file} is not in the ${raw.source ?? "fixture-type"} library (gma3_patch_library searches it)`, detail });
+        if (all.entries.length > 1) return asRead({ name: "check_library", status: "failed", op: "patch.library", error: `${file} is in more than one library (${all.entries.map((e) => e.source).join(", ")}); Import Library names the file only and cannot choose between them`, detail: { entries: all.entries } });
+        entry = lib.entries[0];
+        if (entry.inShow.length && raw.allow_duplicate !== true) {
+          return asRead({ name: "check_library", status: "failed", op: "patch.library", error: `the show already has ${entry.inShow.map((x) => `type ${x.no} "${x.name}"`).join(", ")} matching ${file}; the console would add a second type with the same name. Use that type, or pass allow_duplicate: true`, detail });
+        }
+        return asRead({ name: "check_library", status: "succeeded", op: "patch.library", detail });
+      } catch (err) {
+        return asRead(stepFromError("check_library", err, { op: "patch.library" }));
+      }
+    },
+    enterArgs: { target: "fixturetypes" },
+    editName: "import",
+    edit: () => ({ op: "patch.import", args: { file, ...(raw.source ? { source: raw.source } : {}) } }),
+    settle: {
+      name: "wait_import",
+      run: async (detail) => {
+        queued = detail as typeof queued;
+        const before = queued?.typesBefore;
+        if (typeof before !== "number") return asRead({ name: "wait_import", status: "unknown", op: "patch.importState", error: "patch.import did not report the type count before the import" });
+        let last: { added: TypeRow[]; lastCommand?: string; attributes?: number } | undefined;
+        for (let i = 0; i < IMPORT_POLL_TRIES; i++) {
+          try {
+            last = (await ctx.bridge.request("patch.importState", { typesBefore: before }, t)) as typeof last;
+          } catch (err) {
+            return asRead(stepFromError("wait_import", err, { op: "patch.importState" }));
+          }
+          const answered = typeof last?.lastCommand === "string" && last.lastCommand.includes(`Import Library "${file}"`);
+          if (last && last.added.length > 1) {
+            return asRead({ name: "wait_import", status: "failed", op: "patch.importState", error: `${last.added.length} types appeared instead of one (${last.added.map((x) => x.name).join(", ")}); the import cannot be told apart from another change`, detail: last });
+          }
+          if (last && last.added.length === 1) {
+            const got = last.added[0];
+            const expectName = lc(entry?.name ?? entry?.model);
+            const expectMan = lc(entry?.manufacturer);
+            if (expectName && lc(got.name) !== expectName && expectMan && lc(got.manufacturer) !== expectMan) {
+              return asRead({ name: "wait_import", status: "failed", op: "patch.importState", error: `the new type "${got.name}" by ${got.manufacturer ?? "?"} matches neither the name nor the manufacturer of ${file}; it is not claimed as this import`, detail: last });
+            }
+            imported = got;
+            attributesAfter = last.attributes;
+            return asRead({ name: "wait_import", status: "succeeded", op: "patch.importState", detail: { added: got, polls: i + 1, lastCommand: last.lastCommand } });
+          }
+          if (answered && !String(last?.lastCommand).startsWith("OK")) {
+            return asRead({ name: "wait_import", status: "failed", op: "patch.importState", error: `the console answered "${last?.lastCommand}" and added no type`, detail: last });
+          }
+          await sleep(POLL_MS);
+        }
+        return asRead({ name: "wait_import", status: "unknown", op: "patch.importState", error: `no new type appeared within ${(IMPORT_POLL_TRIES * POLL_MS) / 1000} s`, detail: last });
+      },
+    },
+    isolation: () => ({ prefixOfLive: true }),
+    extra: () => ({
+      ...(imported ? { type: imported } : {}),
+      ...(entry ? { library: { source: entry.source, file: entry.file, verified: entry.verified } } : {}),
+      ...(entry && !entry.verified ? { warning: `imports from the ${entry.source} library (${entry.format}) are not verified on the console yet; check the new type's modes` } : {}),
+      ...(queued?.attributesBefore !== undefined && attributesAfter !== undefined ? { attributesAdded: attributesAfter - queued.attributesBefore } : {}),
+    }),
+    readBack: async () => {
+      try {
+        const res = (await ctx.bridge.request("patch.types", {}, t)) as { types: TypeRow[] };
+        const live = imported?.guid ? res.types.find((x) => x.guid === imported?.guid) : undefined;
+        const checked = "the imported type is in the live patch, by GUID, with the same modes";
+        const expected = imported ? { no: imported.no, name: imported.name, guid: imported.guid, modes: imported.modes.map((m) => m.name) } : null;
+        if (!live) return { steps: [asRead({ name: "read_back", status: "succeeded", op: "patch.types", detail: { found: false } })], verification: { status: "mismatched", checked, expected, actual: null, detail: "the imported type is not in the live patch" } };
+        const actual = { no: live.no, name: live.name, guid: live.guid, modes: live.modes.map((m) => m.name) };
+        const same = JSON.stringify(actual) === JSON.stringify(expected);
+        return {
+          steps: [asRead({ name: "read_back", status: "succeeded", op: "patch.types", detail: live })],
+          verification: same ? { status: "matched", checked, expected, actual } : { status: "mismatched", checked, expected, actual, detail: "the live type differs from the one imported in the copy" },
+          extra: { type: live },
+        };
+      } catch (err) {
+        return { steps: [asRead(stepFromError("read_back", err, { op: "patch.types" }))], verification: unavailable("the fixture types could not be read back") };
+      }
+    },
+  });
+}
+
+interface RemoveTypeArgs {
+  type: number | string;
+  exclusive?: boolean;
+  verify?: boolean;
+}
+
+export async function patchRemoveType(ctx: ToolContext, raw: RemoveTypeArgs): Promise<OperationResult> {
+  const op = "patch_remove_type";
+  const v = new Validator();
+  const type = v.check(() => numberOrName("type", raw.type));
+  requireExclusive(v, raw.exclusive);
+  const verify = raw.verify !== false;
+  const target: Record<string, unknown> = { type: raw.type };
+  if (!v.ok) return validationFailure(op, target, v.errors);
+  const t = ctx.requestTimeoutMs;
+  let info: (TypeRow & { usedBy: Array<number | string>; realUsed?: number }) | undefined;
+  let removed: { removed: TypeRow; renumbered: Array<{ name: string; from: number; to: number }> } | undefined;
+
+  return runSession(ctx, {
+    operation: op,
+    target,
+    touchedFids: [],
+    verify,
+    preflight: async () => {
+      try {
+        const res = (await ctx.bridge.request("patch.typeInfo", { type }, t)) as { type: typeof info };
+        info = res.type;
+        if (!info?.guid) return asRead({ name: "check_type", status: "failed", op: "patch.typeInfo", error: "the type has no readable GUID, so it cannot be removed safely", detail: res });
+        if (info.usedBy.length > 0 || (info.realUsed ?? 0) > 0) {
+          const n = info.usedBy.length || info.realUsed;
+          return asRead({ name: "check_type", status: "failed", op: "patch.typeInfo", error: `fixture type ${info.no} "${info.name}" is used by ${n} fixture(s)${info.usedBy.length ? ` (${info.usedBy.slice(0, 10).join(", ")}${info.usedBy.length > 10 ? ", ..." : ""})` : ""}; remove or repatch them first`, detail: res });
+        }
+        return asRead({ name: "check_type", status: "succeeded", op: "patch.typeInfo", detail: res });
+      } catch (err) {
+        return asRead(stepFromError("check_type", err, { op: "patch.typeInfo" }));
+      }
+    },
+    editName: "remove_type",
+    edit: () => ({ op: "patch.removeType", args: { type: info?.no ?? type, guid: info?.guid } }),
+    onEdit: (detail) => {
+      removed = detail as typeof removed;
+    },
+    isolation: () => ({ excludeGuidsLive: info?.guid ? [info.guid] : [] }),
+    extra: () => ({
+      ...(info ? { type: { no: info.no, name: info.name, manufacturer: info.manufacturer, guid: info.guid } } : {}),
+      ...(removed ? { renumbered: removed.renumbered } : {}),
+      note: "Attributes the type brought into the show stay there, unused (the console keeps them; they cannot be told apart from its own unused attributes). Types after the removed one move down by one number.",
+    }),
+    readBack: async () => {
+      try {
+        const res = (await ctx.bridge.request("patch.types", {}, t)) as { types: TypeRow[] };
+        const still = res.types.find((x) => x.guid === info?.guid);
+        const checked = "the type is gone from the live patch (by GUID)";
+        return {
+          steps: [asRead({ name: "read_back", status: "succeeded", op: "patch.types", detail: { count: res.types.length, found: Boolean(still) } })],
+          verification: still ? { status: "mismatched", checked, expected: null, actual: still, detail: `type ${still.no} "${still.name}" is still in the live patch` } : { status: "matched", checked, expected: null, actual: null },
+        };
+      } catch (err) {
+        return { steps: [asRead(stepFromError("read_back", err, { op: "patch.types" }))], verification: unavailable("the fixture types could not be read back") };
+      }
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
@@ -697,7 +944,7 @@ export const registerPatchTools: RegisterTools = (server, ctx) => {
       title: "List fixture types and DMX modes in the show",
       description:
         "Read-only. Lists the fixture types imported into the show with their DMX modes: number, name, manufacturer, short name, source, and per mode the DMX footprint, the number of DMX breaks and the channels per break. " +
-        "Use the type and mode numbers or names with gma3_patch_add. Only the show's own types are listed; importing a type from the library is not supported yet.",
+        "Use the type and mode numbers or names with gma3_patch_add. Only the show's own types are listed: find a fixture in the console's library with gma3_patch_library and add it to the show with gma3_patch_import.",
       inputSchema: {
         search: z.string().optional().describe("Optional case-insensitive substring filter on type name, short name or manufacturer."),
       },
@@ -795,5 +1042,73 @@ export const registerPatchTools: RegisterTools = (server, ctx) => {
       },
     },
     async (args) => operation(() => patchRemove(ctx, args as RemoveArgs)),
+  );
+
+  server.registerTool(
+    "gma3_patch_library",
+    {
+      title: "Search the fixture-type library",
+      description:
+        "Read-only. Searches the fixture types the console can import: its grandMA3 library (a few fixtures plus scenery), its grandMA2 library (about 11 500 fixtures, the main one), the user library and WorldServer downloads (.xml and .gdtf). " +
+        "Every word of query must occur in the manufacturer, model or file name (case-insensitive), e.g. \"chauvet festoon\" or \"mega hex\". Each entry has the source, the file name to pass to gma3_patch_import, manufacturer and model, " +
+        "the mode names when the file is readable (grandMA3 and user .xml; grandMA2 .pxml files are encrypted, so their modes are known only after the import: gma3_patch_types then lists them), " +
+        "verified (false for user-library and WorldServer files, whose import is not verified on the console yet) and inShow: show types already matching it by manufacturer and name (importing again would add a duplicate). " +
+        "Scenery (set@ files) is left out unless include_sets. Paginated (limit default 50, max 500). Needs bridge 0.26.0.",
+      inputSchema: {
+        query: z.string().optional().describe("Words to match, e.g. \"oppsk wall washer\". Omit to list everything."),
+        sources: z.array(z.enum(LIBRARY_SOURCES)).optional().describe("Libraries to search (default all)."),
+        include_sets: z.boolean().optional().describe("Include scenery (set@ files: trusses, buildings, markers)."),
+        limit: z.number().optional().describe("Maximum entries (default 50, max 500)."),
+        offset: z.number().optional().describe("Entries to skip (default 0)."),
+      },
+    },
+    async (args) =>
+      json(
+        await ctx.bridge.request(
+          "patch.library",
+          { ...(args.query !== undefined ? { query: args.query } : {}), ...(args.sources ? { sources: args.sources } : {}), ...(args.include_sets ? { includeSets: true } : {}), ...(args.limit !== undefined ? { limit: args.limit } : {}), ...(args.offset !== undefined ? { offset: args.offset } : {}) },
+          ctx.requestTimeoutMs,
+        ),
+      ),
+  );
+
+  server.registerTool(
+    "gma3_patch_import",
+    {
+      title: "Import a fixture type from the library",
+      description:
+        "Import one fixture type from the console's library into the show, so gma3_patch_add can patch it. file is a file name exactly as gma3_patch_library lists it. " +
+        "Pre-checks (nothing sent on failure): the file is in exactly one library, and the show has no type with the same manufacturer and name (the console would silently add a second one) unless allow_duplicate. " +
+        "Runs one patch session at the copy's fixture-type pool: Import Library \"<file>\" (no dialog), then waits for exactly one new type and claims it only when its name or manufacturer matches the file. " +
+        "The isolation check compares everything the live patch already has; the new type and the attributes it brings are appended and left out. Then commit and read back: the result has the new type's number, name, GUID and DMX modes with footprints, and attributesAdded. " +
+        "Imports from the user library and WorldServer are not verified on the console yet (the result warns). " +
+        "Requires exclusive: true (see gma3_patch_add for what the patch session means). A committed import has NO UNDO; gma3_patch_remove_type removes an unused type again, but the attributes it brought stay. Needs bridge 0.26.0.",
+      inputSchema: {
+        file: z.string().describe("Library file name, e.g. \"oppsk@36pcs 4in1 led wall washer.pxml\"."),
+        source: z.enum(LIBRARY_SOURCES).optional().describe("Library the file is in (optional; the file must be in only one library either way)."),
+        allow_duplicate: z.boolean().optional().describe("Import even though the show has a type with the same manufacturer and name."),
+        exclusive: z.boolean().optional().describe(EXCLUSIVE_DESC),
+        verify: z.boolean().optional().describe(VERIFY_DESC),
+      },
+    },
+    async (args) => operation(() => patchImport(ctx, args as ImportArgs)),
+  );
+
+  server.registerTool(
+    "gma3_patch_remove_type",
+    {
+      title: "Remove an unused fixture type from the show",
+      description:
+        "Delete a fixture type no fixture uses, e.g. one imported by mistake. Pre-check (nothing sent on failure): the type exists and no fixture uses it. " +
+        "Runs one patch session; the type is deleted by its GUID. Every type after it moves down one number (fixtures keep their type; only the number changes), and the result lists the renumbered types. " +
+        "The attributes the type brought into the show stay, unused: the console keeps them and they cannot be told apart from its own unused attributes. " +
+        "Requires exclusive: true. NO UNDO. Needs bridge 0.26.0.",
+      inputSchema: {
+        type: z.union([z.number(), z.string()]).describe("Fixture type number or name, as gma3_patch_types lists it (a number when two types share a name)."),
+        exclusive: z.boolean().optional().describe(EXCLUSIVE_DESC),
+        verify: z.boolean().optional().describe(VERIFY_DESC),
+      },
+    },
+    async (args) => operation(() => patchRemoveType(ctx, args as RemoveTypeArgs)),
   );
 };
