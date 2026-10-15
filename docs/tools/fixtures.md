@@ -240,15 +240,20 @@ later manual value, so it is checked right after the recall.
 
 ## gma3_release_attributes (SU-05)
 
-`attributes` sends `Off Attribute "A" + "B"`; `all: true` sends `Off Selection`, which releases every value of the
-target and leaves nothing selected.
+`attributes` sends `Off Attribute "A" + "B"`; `all: true` sends `Off Attribute Thru`, which releases every value of
+the target and leaves it selected. `Off Selection` and `Off Fixture N` are not used: with a compound fixture selected as
+its parent they release nothing, because its values live on its cells; `Off Attribute` follows the selection down to
+the cells.
 
 `Off Attribute` is scoped to the selection, but with nothing selected it releases the attributes from **every**
 fixture. So the tool refuses unless the target is selected (the selection count is checked after the select).
 
 Read-back compares the whole programmer (scope `all`) before and after. The released values must be gone from the
-target fixtures and their cells, and every other fixture's values must be unchanged: a value released from a fixture
-outside the target is a mismatch.
+target fixtures and their cells, and every other value must be unchanged: a value released from, changed on or added
+to a fixture outside the target is a mismatch. Rows are compared by their whole content (value, steps, phaser timing,
+masks, preset links), since a multi-step phaser has no single value. The target is the selected (sub)fixture indices
+plus their cells, which come from a scan of the selected fixtures: the whole-programmer scan reports a cell's FID as
+`None` and does not name its parent.
 
 ## Live test
 

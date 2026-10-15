@@ -54,11 +54,35 @@ not that the value still equals it.
 
 `Off Attribute` is scoped to the selection, so a tool must establish a non-empty selection before sending it.
 
+### A compound fixture (PR #50 review round 1, bridge 0.27.0)
+
+Wall washer 201 (12 cells) with `ColorRGB_R` set, so all 12 cells hold the colour group (48 rows). The values live on
+the cells; the parent holds none.
+
+| Command | Result |
+| --- | --- |
+| `Fixture 201`, `Off Selection` | **nothing released** (48 rows remain) |
+| `Fixture 201`, `Off Fixture 201` / `Off Fixture 201` with nothing selected | nothing released |
+| `Fixture 201`, `Off` | nothing released |
+| `Fixture 101 + 201`, `Off Selection` | the cells of 201 keep every value |
+| `Off Fixture 201.1` | cell 1 released, 11 cells keep their values |
+| `Off Fixture 201.*`, or `Fixture 201.*` then `Off Selection` | every cell released |
+| `Fixture 201`, `Off Attribute "ColorRGB_R"` | R released from every cell |
+| `Fixture 201`, `Off Attribute Thru` | every value of every cell released; 101 and 301 untouched |
+| `Fixture 101`, `Off Attribute Thru` | 101 released; 201's cells and 301 untouched; 101 stays selected |
+| `Fixture 101 + 201`, `Off Attribute Thru` | both released, 301 untouched |
+
+`Off Attribute` follows the selection down to the cells, `Off Selection` does not. The scope `all` programmer scan
+reports a cell's FID as `None` and its root FID as `None`; only a scope `fixtures` scan names the parent.
+
 ## Consequences for the tools
 
 - Every command answers `OK` whether or not it changed anything: only the programmer read-back tells.
 - The preset must be checked to exist, and the selection to be non-empty, before `At Preset`.
 - The programmer op needs the channel-level `abs_preset` / `rel_preset` to verify a recall (a read-only addition).
+- Releasing every value of the target uses `Off Attribute Thru`, not `Off Selection`, so a compound fixture's cells
+  are released. Target membership for the collateral check is by (sub)fixture index, with the cells listed by a scope
+  `fixtures` scan.
 
 ## The tools, live (bridge 0.27.0)
 
@@ -66,3 +90,8 @@ not that the value still equals it.
 a colour preset stored for the run, recalled onto both and verified by its links (the preset's blue replaced the
 look's); a missing preset refused; R and G released from 101 only with 102 unchanged; every value of 102 released
 with `Off Selection`. The preset was deleted and the programmer cleared afterwards.
+
+After review round 1, with `GMA3_LIVE_LOOK_COMPOUND=201`, 1/1 (2.8 s): the same run plus the wall washer: the preset
+recalled onto its cells (verified by the follow-up scan of the fixture and its cells), R released from every cell with
+101 unchanged, and every value released with `Off Attribute Thru`. Before the switch from `Off Selection` the last
+step was a mismatch: 36 values remained on the cells.

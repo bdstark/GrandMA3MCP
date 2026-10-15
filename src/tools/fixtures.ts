@@ -8,7 +8,7 @@
  *   gma3_clear_programmer  ClearSelection / ClearActive / ClearAll, explicitly
  *   gma3_set_attributes    several attributes and/or intensity on one target in one call (SU-05)
  *   gma3_apply_preset      At Preset on an explicit target, verified by the programmer's preset link (SU-05)
- *   gma3_release_attributes  Off Attribute / Off Selection on an explicit target, verified for collateral (SU-05)
+ *   gma3_release_attributes  Off Attribute on an explicit target, verified for collateral (SU-05)
  *
  * Only the existing bridge ops are used: `cmd` for every mutation and `objects` for read-only
  * checks and read-back. No Lua is generated.
@@ -735,9 +735,6 @@ const anySucceeded = (steps: StepResult[], names: string[]): boolean => steps.so
 // SU-05: preset links and release read-back (docs/probes/su-05-programmer-macos-2.5.1.md)
 // ---------------------------------------------------------------------------
 
-/** Top-level fixture of a scanned (sub)fixture: its root FID, or its own FID. */
-const rootOf = (e: ScannedFixture): string | null => (e.rootFid && e.rootFid !== "None" ? e.rootFid : e.fid && e.fid !== "None" ? e.fid : null);
-
 /**
  * After `At Preset`: every selected fixture, or its cells, must hold at least one programmer value linked to the
  * preset (the channel's abs_preset, bridge 0.27.0). A fixture whose scanned entry holds none gets one follow-up scan of
@@ -787,6 +784,12 @@ async function verifyPresetLink(bridge: Gma3Bridge, preset: { addrNative: string
         unavailableReasons.push(`${label}: ${sub.reason}`);
         continue;
       }
+      // An incomplete or truncated follow-up scan proves nothing, even when it holds a linked row.
+      if (sub.result.coverage?.complete === false || sub.result.fixturesTruncated) {
+        steps.push({ name: "read_programmer_fixture", kind: "read", status: "failed", op: "programmer", error: "the scan of the fixture and its cells was incomplete", detail: { fixture: f.fid } });
+        unavailableReasons.push(`${label}: the programmer scan of the fixture and its cells was incomplete`);
+        continue;
+      }
       steps.push({ name: "read_programmer_fixture", kind: "read", status: "succeeded", op: "programmer", detail: { fixture: f.fid, rows: sub.result.total } });
       linked = linkedRows(sub.result.rows ?? []);
     }
@@ -800,69 +803,90 @@ async function verifyPresetLink(bridge: Gma3Bridge, preset: { addrNative: string
 }
 
 interface ProgrammerSnapshot {
-  /** Root FID of every (sub)fixture index in the show's scan. */
-  rootByIndex: Map<number, string | null>;
-  /** "index|attribute" -> value text, for every programmer row. */
+  /** A label per (sub)fixture index, for messages. */
+  labelByIndex: Map<number, string>;
+  /**
+   * "index|attribute" -> the row's whole programmer content: value, raw value, relative, step count, masks, every
+   * step (values, layers, integrated preset), phaser timing and the preset links. A multi-step phaser has no single
+   * value, so comparing `value` alone would miss a changed phaser.
+   */
   values: Map<string, string>;
   complete: boolean;
   reason?: string;
 }
 
-async function snapshotProgrammer(bridge: Gma3Bridge): Promise<ProgrammerSnapshot> {
-  const read = await readProgrammerPages(bridge, { scope: "all" });
-  if ("reason" in read) return { rootByIndex: new Map(), values: new Map(), complete: false, reason: read.reason };
-  const r = read.result;
-  const rootByIndex = new Map<number, string | null>();
-  for (const e of r.scannedFixtures ?? []) if (typeof e.subfixtureIndex === "number") rootByIndex.set(e.subfixtureIndex, rootOf(e));
-  const values = new Map<string, string>();
-  for (const row of r.rows ?? []) if (typeof row.subfixtureIndex === "number") values.set(`${row.subfixtureIndex}|${row.attribute ?? "?"}`, JSON.stringify(row.value ?? null));
-  const complete = r.coverage?.complete !== false && !r.fixturesTruncated;
-  return { rootByIndex, values, complete, ...(complete ? {} : { reason: "the programmer scan was incomplete" }) };
+/** The parts of a programmer row that make up its content (the op's metadata, e.g. ranges, is left out). */
+function rowContent(row: Record<string, unknown>): string {
+  const pick = (k: string) => (row[k] === undefined ? null : row[k]);
+  return JSON.stringify({ value: pick("value"), valueRaw: pick("valueRaw"), relative: pick("relative"), stepCount: pick("stepCount"), masks: pick("masks"), steps: pick("steps"), phaser: pick("phaser"), absPreset: pick("absPreset"), relPreset: pick("relPreset") });
 }
 
-/** Root FIDs of the current selection (after the target steps: exactly the target). */
-async function selectedRoots(bridge: Gma3Bridge): Promise<{ roots: Set<string> } | { reason: string }> {
-  const read = await readProgrammerPages(bridge, { scope: "selection" });
-  if ("reason" in read) return { reason: read.reason };
-  const roots = new Set<string>();
-  for (const e of read.result.scannedFixtures ?? []) {
-    const r = rootOf(e);
-    if (r) roots.add(r);
-  }
-  if (roots.size === 0) return { reason: "the selection holds no fixture with a FID" };
-  return { roots };
+async function snapshotProgrammer(bridge: Gma3Bridge): Promise<ProgrammerSnapshot> {
+  const read = await readProgrammerPages(bridge, { scope: "all" });
+  if ("reason" in read) return { labelByIndex: new Map(), values: new Map(), complete: false, reason: read.reason };
+  const r = read.result;
+  const labelByIndex = new Map<number, string>();
+  for (const e of r.scannedFixtures ?? []) if (typeof e.subfixtureIndex === "number") labelByIndex.set(e.subfixtureIndex, `${e.name ?? "?"}${e.fid && e.fid !== "None" ? ` (Fixture ${e.fid})` : ""}`);
+  const values = new Map<string, string>();
+  for (const row of r.rows ?? []) if (typeof row.subfixtureIndex === "number") values.set(`${row.subfixtureIndex}|${row.attribute ?? "?"}`, rowContent(row as unknown as Record<string, unknown>));
+  const complete = r.coverage?.complete !== false && !r.fixturesTruncated;
+  return { labelByIndex, values, complete, ...(complete ? {} : { reason: "the programmer scan was incomplete" }) };
 }
 
 /**
- * After a release: no value of the released attributes (every value, for all) remains on the target fixtures or
- * their cells, and every other fixture's values are unchanged (Off Attribute with an empty selection would hit every
- * fixture, so collateral is checked, not assumed).
+ * The (sub)fixture indices of the current selection (after the target steps: exactly the target) and of everything
+ * below them. A compound fixture is selected as its parent while its values live on its cells, whose own FID is
+ * "None"; the scope "all" scan does not say which fixture such a cell belongs to, so the descendants come from a scope
+ * "fixtures" scan of the selected FIDs (the bridge expands those to every cell).
  */
-function judgeRelease(before: ProgrammerSnapshot, after: ProgrammerSnapshot, roots: Set<string>, attributes: string[] | null): { verification: Verification; summary: Record<string, unknown> } {
-  const checked = `${attributes ? attributes.join(", ") : "every value"} removed from the target fixtures (and their cells); every other fixture's programmer values unchanged`;
+async function selectedTarget(bridge: Gma3Bridge): Promise<{ indices: Set<number>; fids: string[] } | { reason: string }> {
+  const read = await readProgrammerPages(bridge, { scope: "selection" });
+  if ("reason" in read) return { reason: read.reason };
+  if (read.result.coverage?.complete === false || read.result.fixturesTruncated) return { reason: "the programmer scan of the selection was incomplete" };
+  const indices = new Set<number>();
+  const fids = new Set<string>();
+  for (const e of read.result.scannedFixtures ?? []) {
+    if (typeof e.subfixtureIndex === "number") indices.add(e.subfixtureIndex);
+    if (e.fid && e.fid !== "None") fids.add(e.fid);
+  }
+  if (indices.size === 0) return { reason: "the selection is empty" };
+  const list = [...fids];
+  for (let i = 0; i < list.length; i += 50) {
+    const sub = await readProgrammerPages(bridge, { scope: "fixtures", fixtures: `Fixture ${list.slice(i, i + 50).join(" + ")}` });
+    if ("reason" in sub) return { reason: `the target's cells could not be listed: ${sub.reason}` };
+    if (sub.result.coverage?.complete === false || sub.result.fixturesTruncated) return { reason: "the scan of the target's cells was incomplete" };
+    for (const e of sub.result.scannedFixtures ?? []) if (typeof e.subfixtureIndex === "number") indices.add(e.subfixtureIndex);
+  }
+  return { indices, fids: list };
+}
+
+/**
+ * After a release: no value of the released attributes (every value, for all) remains on the target (sub)fixtures,
+ * the target's other values are unchanged, and every other fixture's programmer content is unchanged, with no row
+ * removed or added (Off Attribute with an empty selection would hit every fixture, so collateral is checked).
+ */
+function judgeRelease(before: ProgrammerSnapshot, after: ProgrammerSnapshot, target: Set<number>, attributes: string[] | null): { verification: Verification; summary: Record<string, unknown> } {
+  const checked = `${attributes ? attributes.join(", ") : "every value"} removed from the target fixtures (and their cells); every other programmer value, including phaser steps and timing, unchanged`;
   if (!before.complete || !after.complete) return { verification: unavailable(before.reason ?? after.reason ?? "incomplete programmer scan", checked), summary: { performed: true } };
-  const isTarget = (idx: number) => {
-    const r = after.rootByIndex.get(idx) ?? before.rootByIndex.get(idx);
-    return r !== null && r !== undefined && roots.has(r);
-  };
   const wanted = attributes ? new Set(attributes.map((a) => a.toLowerCase())) : null;
+  const label = (idx: number) => before.labelByIndex.get(idx) ?? after.labelByIndex.get(idx) ?? `index ${idx}`;
   const remaining: string[] = [];
   const collateral: string[] = [];
   let released = 0;
-  for (const [key, val] of before.values) {
+  for (const key of new Set([...before.values.keys(), ...after.values.keys()])) {
     const [idxText, attr] = key.split("|");
     const idx = Number(idxText);
-    if (isTarget(idx)) {
-      const releasedHere = wanted === null || wanted.has(attr.toLowerCase());
-      if (releasedHere) {
-        if (after.values.has(key)) remaining.push(`index ${idx} ${attr}`);
-        else released++;
-      } else if (after.values.get(key) !== val) collateral.push(`target index ${idx} ${attr} (not released) changed`);
-    } else if (after.values.get(key) !== val) {
-      collateral.push(`index ${idx} (Fixture ${before.rootByIndex.get(idx) ?? "?"}) ${attr} ${after.values.has(key) ? "changed" : "was removed"}`);
+    const was = before.values.get(key);
+    const now = after.values.get(key);
+    const how = was === undefined ? "was added" : now === undefined ? "was removed" : "changed";
+    if (target.has(idx) && (wanted === null || wanted.has(attr.toLowerCase()))) {
+      if (now !== undefined) remaining.push(`${label(idx)} ${attr}`);
+      else if (was !== undefined) released++;
+    } else if (was !== now) {
+      collateral.push(`${label(idx)} ${attr} ${how}${target.has(idx) ? " (a target value that was not released)" : ""}`);
     }
   }
-  const summary = { performed: true, valuesReleased: released, targets: [...roots] };
+  const summary = { performed: true, valuesReleased: released, targetIndices: target.size };
   const problems = [...remaining.map((r) => `${r} is still in the programmer`), ...collateral];
   if (problems.length) return { verification: { status: "mismatched", checked, detail: problems.slice(0, 20).join("; ") + (problems.length > 20 ? `; ... ${problems.length - 20} more` : "") }, summary };
   return { verification: { status: "matched", checked, actual: summary }, summary };
@@ -1377,7 +1401,7 @@ export const registerFixtureTools: RegisterTools = (server, ctx: ToolContext) =>
     {
       title: "Release attributes from the programmer",
       description:
-        'Remove values from the programmer for an explicit target: `attributes` sends `Off Attribute "A" + "B"`; `all: true` sends `Off Selection` (every value of the target; the target is deselected afterwards). ' +
+        'Remove values from the programmer for an explicit target: `attributes` sends `Off Attribute "A" + "B"`; `all: true` sends `Off Attribute Thru` (every value of the target, the cells of a compound fixture included; the target stays selected). ' +
         "Target: `fixtures` OR `use_selection: true` (with `fixtures`, ClearSelection and a select first). The release is scoped to the selection, and with nothing selected the console would release the attributes from EVERY fixture, so the tool refuses unless the target is selected. " +
         "Read-back compares the whole programmer before and after: the released values must be gone from the target fixtures and their cells, and every other fixture's values must be unchanged.",
       inputSchema: {
@@ -1406,23 +1430,25 @@ export const registerFixtureTools: RegisterTools = (server, ctx: ToolContext) =>
         }
         if (!v.ok || !t) return validationFailure(op, { fixtures: args.fixtures, use_selection: args.use_selection, attributes: args.attributes, all: args.all }, v.errors);
         const all = args.all === true;
-        const command = all ? "Off Selection" : `Off Attribute ${attrs.map((a) => `"${a}"`).join(" + ")}`;
+        // Off Selection / Off Fixture N release nothing from a compound fixture selected as its parent (its values live on
+        // its cells); Off Attribute Thru follows the selection down to the cells (docs/probes/su-05-programmer-macos-2.5.1.md).
+        const command = all ? "Off Attribute Thru" : `Off Attribute ${attrs.map((a) => `"${a}"`).join(" + ")}`;
         const target = { ...t.target, ...(all ? { all: true } : { attributes: attrs }) };
         const verify = args.verify !== false;
         return ctx.mutations.run(async () => {
           const warnings: string[] = [];
-          let roots: Set<string> | undefined;
+          let targetIdx: Set<number> | undefined;
           let before: ProgrammerSnapshot | undefined;
           const plan: Array<{ name: string; run: StepFn }> = [...attrs.map((a) => ({ name: `check_attribute_${a}`, run: checkAttributeStep(bridge, a, warnings) })), ...targetSteps(bridge, t, warnings)];
           if (t.selection !== null) plan.push({ name: "check_selection", run: checkSelectionStep(bridge, warnings) });
           plan.push({
             name: "read_before",
             run: async () => {
-              const sel = await selectedRoots(bridge);
+              const sel = await selectedTarget(bridge);
               if ("reason" in sel) return { name: "read_before", kind: "read", status: "failed", op: "programmer", error: `the target could not be established (${sel.reason}); nothing was released` };
-              roots = sel.roots;
+              targetIdx = sel.indices;
               if (verify) before = await snapshotProgrammer(bridge);
-              return { name: "read_before", kind: "read", status: "succeeded", op: "programmer", detail: { targets: [...sel.roots], values: before?.values.size } };
+              return { name: "read_before", kind: "read", status: "succeeded", op: "programmer", detail: { fixtures: sel.fids, indices: sel.indices.size, values: before?.values.size } };
             },
           });
           plan.push({ name: "release", run: () => commandStep(bridge, "release", command) });
@@ -1431,17 +1457,17 @@ export const registerFixtureTools: RegisterTools = (server, ctx: ToolContext) =>
           let verification: Verification = { status: "not_requested" };
           let summary: Record<string, unknown> = { performed: false };
           const readBack: StepResult[] = [];
-          if (verify && sent && before && roots) {
-            const after = await snapshotProgrammer(bridge).catch((err: unknown) => ({ rootByIndex: new Map(), values: new Map(), complete: false, reason: err instanceof Error ? err.message : String(err) }) as ProgrammerSnapshot);
+          if (verify && sent && before && targetIdx) {
+            const after = await snapshotProgrammer(bridge).catch((err: unknown) => ({ labelByIndex: new Map(), values: new Map(), complete: false, reason: err instanceof Error ? err.message : String(err) }) as ProgrammerSnapshot);
             readBack.push({ name: "read_after", kind: "read", status: after.complete ? "succeeded" : "failed", op: "programmer", ...(after.complete ? { detail: { values: after.values.size } } : { error: after.reason }) });
-            ({ verification, summary } = judgeRelease(before, after, roots, all ? null : attrs));
+            ({ verification, summary } = judgeRelease(before, after, targetIdx, all ? null : attrs));
           }
           return finish({
             operation: op,
             target,
             steps,
             warnings,
-            selectionChanged: anySucceeded(steps, ["select", "clear_selection"]) || (all && anySucceeded(steps, ["release"])),
+            selectionChanged: anySucceeded(steps, ["select", "clear_selection"]),
             programmerValuesChanged: anySucceeded(steps, ["release"]),
             verification,
             readBackSteps: readBack,

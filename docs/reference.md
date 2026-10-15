@@ -84,7 +84,7 @@ require `exclusive: true` and have no undo; details in [`tools/patch.md`](tools/
 | `gma3_patch_remove_type` | Delete a fixture type no fixture uses; reports the renumbered types; its attributes stay (bridge 0.26.0) |
 | `gma3_set_attributes` | Intensity and several attributes on one target in one call, read back per fixture and cell |
 | `gma3_apply_preset` | `At Preset` on a target (by number or name); refused for a missing preset or an empty target; read back by the programmer's preset link (bridge 0.27.0) |
-| `gma3_release_attributes` | `Off Attribute` / `Off Selection` on an established target; read back by comparing the whole programmer, collateral included |
+| `gma3_release_attributes` | `Off Attribute` (`Off Attribute Thru` for every value) on an established target; read back by comparing the whole programmer, collateral included |
 | `gma3_fixture_positions` | Read-only: position, rotation (with its quaternion) and mesh mirroring of fixtures, in m, cm, mm, ft or in, with the axes' meaning |
 | `gma3_place_fixtures` | Place fixtures in 3D: positions, rotations (written as one quaternion), mesh mirroring; line, arc and mirror-pair layouts; preview; read back by quaternion; returns a restore list (no undo) |
 

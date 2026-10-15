@@ -8,6 +8,8 @@
  *   - Two top-level fixtures with Dimmer and ColorRGB_R/G/B, FIDs from GMA3_LIVE_LOOK_FIDS (default "1,2").
  *   - A colour preset slot from GMA3_LIVE_LOOK_PRESET (default "4.901"): it must be empty; the run stores a preset there
  *     from the first fixture and deletes it at the end.
+ *   - Optional: a compound fixture whose cells have ColorRGB_R/G/B, FID from GMA3_LIVE_LOOK_COMPOUND (e.g. a wall washer
+ *     with cells); its values live on cells whose own FID is None. Skipped when unset.
  *   - The programmer: cleared (ClearAll) before and after the run.
  */
 import assert from "node:assert/strict";
@@ -21,6 +23,7 @@ import { liveTest, liveEnabled, bridge } from "./live.ts";
 const [A, B] = (process.env.GMA3_LIVE_LOOK_FIDS ?? "1,2").split(",").map((s) => s.trim());
 const [POOL, SLOT] = (process.env.GMA3_LIVE_LOOK_PRESET ?? "4.901").split(".").map(Number);
 const PRESET = `Preset ${POOL}.${SLOT}`;
+const COMPOUND = process.env.GMA3_LIVE_LOOK_COMPOUND?.trim();
 const ctx: ToolContext = { bridge, mutations: new MutationLock(), requestTimeoutMs: 15000, luaToolAllowed: false };
 const tools = captureTools(registerFixtureTools, ctx);
 
@@ -84,4 +87,16 @@ liveTest("SU-05 programmer tools: a look in one call, preset recall with its lin
 
   ok(await call("gma3_release_attributes", { fixtures: B, all: true }), "release every value of the second fixture");
   assert.deepEqual(await rowsOf(B), []);
+
+  if (COMPOUND) {
+    // The cells hold the values (FID None): the recall is verified by the follow-up scan of the fixture and its cells,
+    // and a release on the parent must count the cells as the target, not as collateral.
+    const cells = ok(await call("gma3_apply_preset", { fixtures: COMPOUND, pool: POOL, preset: SLOT }), "apply the preset to the compound fixture");
+    assert.equal(cells.presetLink.followUpScans, 1);
+    ok(await call("gma3_release_attributes", { fixtures: COMPOUND, attributes: ["ColorRGB_R"] }), "release R from the compound fixture's cells");
+    assert.ok(!(await rowsOf(COMPOUND)).some((r) => r.attribute === "ColorRGB_R"), "R released from every cell");
+    assert.ok((await rowsOf(A)).length > 0, "the first fixture keeps its values");
+    ok(await call("gma3_release_attributes", { fixtures: COMPOUND, all: true }), "release every value of the compound fixture");
+    assert.deepEqual(await rowsOf(COMPOUND), []);
+  }
 });
