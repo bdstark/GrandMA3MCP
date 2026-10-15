@@ -295,9 +295,17 @@ function skippedSteps(names: string[], because: string): StepResult[] {
 }
 
 export async function runSession(ctx: ToolContext, spec: SessionSpec): Promise<OperationResult> {
+  return ctx.mutations.run(() => runSessionLocked(ctx, spec));
+}
+
+/**
+ * runSession for a caller that already holds the mutation lock (the lock is not reentrant): a workflow that reads,
+ * runs a session and writes again in one lock span (SU-08).
+ */
+export async function runSessionLocked(ctx: ToolContext, spec: SessionSpec): Promise<OperationResult> {
   const t = ctx.requestTimeoutMs;
   const bridge = ctx.bridge;
-  return ctx.mutations.run(async () => {
+  return (async () => {
     const steps: StepResult[] = [];
     const finish = (outcome: ExecutionOutcome, summary: string, verification: Verification, extra: Record<string, unknown> = {}, readBackSteps: StepResult[] = []): OperationResult => {
       const r = buildResult({ operation: spec.operation, target: spec.target, steps, verification, summary, extra: { ...(spec.extra?.() ?? {}), ...extra } });
@@ -407,7 +415,7 @@ export async function runSession(ctx: ToolContext, spec: SessionSpec): Promise<O
     }
     const verified = verification.status === "matched" ? " Read-back matched." : verification.status === "mismatched" ? ` Read-back MISMATCHED: ${verification.detail}` : verification.status === "unavailable" ? ` Read-back unavailable: ${verification.detail}` : "";
     return finish("succeeded", `${spec.operation} succeeded and was committed (a committed patch change has no undo).${verified}`, verification, { committed: true, copyLeftOpen: false, ...rbExtra }, rbSteps);
-  });
+  })();
 }
 
 /**

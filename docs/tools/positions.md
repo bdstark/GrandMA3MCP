@@ -119,7 +119,11 @@ bulbs' drop). Positions are relative to the cells' parent geometry in the fixtur
 rotation and mirroring then apply.
 
 **Shared** writes the type's layout. The tool reads which fixtures use it and refuses, before writing anything,
-unless `affects` names exactly those. The bridge checks the set again when it writes.
+unless `affects` names exactly those. When it writes, the bridge checks the set again, and checks that the layout
+still belongs to the planned type (its GUID) with the planned number of cells.
+
+The whole call, from the first read through an own layout's patch session to the write and its read-back, holds
+this server's mutation lock, so no other tool call from this server can retype the fixtures in between.
 
 **Own** first runs one patch session (`exclusive`, isolation-checked like the patch tools):
 1. `patch.layoutCopy` appends a copy of the type under `own.name` and moves `own.fixtures` to the copy's mode of
@@ -132,14 +136,24 @@ Then the copy's cells are laid out. The other fixtures of the original type keep
 the only users of their layout are refused (use `shared`).
 
 Both are **refused while the patch copy is open**, since its commit would overwrite the positions. There is **no
-undo**: `previous` holds every cell's position before the call, ready to pass back as `points`. Read-back compares
-every written cell within 0.1 mm.
+undo**: `previous` holds every planned cell's position before the call, ready to pass back as `points`. Read-back
+compares every written cell within 0.1 mm.
+
+A write that stops part-way (a cell the console refuses) is `partial`. `writeState` gives:
+- `written`: the cells known to be written;
+- `uncertain`: the cell that may be partly written;
+- `changedAfter`: the cells the read-back found moved.
+
+A lost reply leaves every planned cell uncertain, and the read-back says which moved.
+
+Positions are computed from each cell's arc length, so the work is one step per cell, whatever the legs.
 
 ### gma3_assign_cell_layout
 
 Moves fixtures to another layout type of their fixture, so several fixtures share one layout: a copy made by
-`scope: "own"`, or back to the original. The target type must have a DMX mode of the same name with the same DMX
-channels (name, coarse, fine, ultra, break, in order) and footprint, otherwise it is refused. One patch session
+`scope: "own"`, or back to the original. The target type must have a DMX mode of the same name with the same expanded
+DMX addressing, otherwise it is refused. That means every channel (name, coarse, fine, ultra, break, in order) at the
+same address in every cell, with the same cells (names and break offsets). Only the cells' positions may differ. One patch session
 (`patch.retype`), committed with no undo, then a read-back of the fixtures' type. An unused copy is removed with
 `gma3_patch_remove_type`.
 

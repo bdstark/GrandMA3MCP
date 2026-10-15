@@ -4751,6 +4751,9 @@ end
     local p = ShowData().LivePatch
     local t, m = target(p, args)
     local info, root = describe(p, t, m)
+    -- The layout must still be the planned one: the same type (by GUID) and number of cells.
+    if args.expectType ~= nil and tostring(args.expectType) ~= tostring(info.type.guid) then raise({ code = "type-changed", message = "Fixture " .. tostring(args.fid) .. " is now of type " .. info.type.name .. " (GUID " .. tostring(info.type.guid) .. "), not the planned one (" .. tostring(args.expectType) .. "); nothing was written" }) end
+    if args.expectCells ~= nil and tonumber(args.expectCells) ~= #info.cells then raise({ code = "type-changed", message = "the layout now has " .. #info.cells .. " cells, not the planned " .. tostring(args.expectCells) .. "; nothing was written" }) end
     -- The fixtures that move must be exactly the ones the caller expects.
     local want, have = {}, {}
     for _, f in ipairs(type(args.expectAffected) == "table" and args.expectAffected or {}) do want[tostring(f)] = true end
@@ -4789,15 +4792,57 @@ end
 
   -- Move fixture `f` of the copy to the mode of type `to` that has the same name as its current mode. Returns the
   -- mode, or raises. Compatible: same footprint and the same DMX channels (name, coarse, fine, break) in order.
+  local function handleOf(o, k)
+    for _, f in ipairs({ function() return o[k] end, function() return o[k .. "Direct"] end, function() return o:Get(k) end }) do
+      local ok, v = pcall(f)
+      if ok and v ~= nil and type(v) ~= "string" and type(v) ~= "number" and type(v) ~= "boolean" then return v end
+    end
+    return nil
+  end
+  local function isWithin(g, anc)
+    local cur, guard = g, 0
+    while cur and guard < 32 do
+      if cur == anc then return true end
+      local ok, par = pcall(function() return cur:Parent() end)
+      cur = ok and par or nil
+      guard = guard + 1
+    end
+    return false
+  end
+  -- A mode's expanded DMX addressing (SU-07's rule): per channel in order, its offsets inside the root, or per cell
+  -- (in tree order) the cell's break offset + its own. Only positions are left out: it is what a layout copy may
+  -- change, and nothing else.
+  local function addressing(m)
+    local root = rootOf(m)
+    local refs = {}
+    for i, r in ipairs(root and cellsOf(root) or {}) do
+      local offsets = {}
+      for _, b in ipairs(r:Children()) do
+        if safeCall(b, "GetClass") == "Break" then offsets[tostring(displayProp(b, "DMXBreak"))] = displayProp(b, "DMXPatch") end
+      end
+      refs[i] = { template = handleOf(r, "Geometry"), offsets = offsets, name = tostring(safeProp(r, "name")) }
+    end
+    local out = {}
+    for i, c in ipairs(m.DMXChannels:Children()) do
+      local g = handleOf(c, "Geometry")
+      local own = table.concat({ tostring(c.name), tostring(displayProp(c, "Coarse")), tostring(displayProp(c, "Fine")), tostring(displayProp(c, "Ultra")), tostring(displayProp(c, "DMXBreak")) }, "/")
+      local cells = {}
+      for j, r in ipairs(refs) do
+        if g and r.template and isWithin(g, r.template) then cells[#cells + 1] = j .. "@" .. tostring(r.offsets[tostring(displayProp(c, "DMXBreak"))]) end
+      end
+      out[i] = own .. "|" .. table.concat(cells, ",")
+    end
+    local names = {}
+    for j, r in ipairs(refs) do names[j] = r.name .. ":" .. (function() local t = {} for k, v in pairs(r.offsets) do t[#t + 1] = k .. "=" .. tostring(v) end table.sort(t) return table.concat(t, ";") end)() end
+    return out, table.concat(names, ",")
+  end
   local function sameChannels(a, b)
     local ca, cb = a.DMXChannels:Children(), b.DMXChannels:Children()
     if #ca ~= #cb then return false end
-    for i = 1, #ca do
-      for _, k in ipairs({ "Coarse", "Fine", "Ultra", "DMXBreak" }) do
-        if displayProp(ca[i], k) ~= displayProp(cb[i], k) then return false end
-      end
-      if tostring(ca[i].name) ~= tostring(cb[i].name) then return false end
-    end
+    local xa, na = addressing(a)
+    local xb, nb = addressing(b)
+    if na ~= nb then return false end
+    for i = 1, #xa do if xa[i] ~= xb[i] then return false end end
     -- A type copied in the patch copy reads TotalFootprint 0 until the commit computes it (live 2026-10-15): with
     -- identical channels the addressing is the same, so the footprints are compared only when both are known.
     local fa, fb = tonumber(displayProp(a, "TotalFootprint")), tonumber(displayProp(b, "TotalFootprint"))

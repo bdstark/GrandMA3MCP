@@ -66,6 +66,11 @@ class World {
   dest = "Root";
   /** The GUID a committed copy gets: its own (default), all zeros, or the source's. */
   copyGuid: "own" | "zero" | "source" = "own";
+  /** The write stops with write-failed at this cell index (the cells before it are written). */
+  failAtCell?: number;
+  /** Delay (ms) of every patch.cellLayout read, to let a queued mutation try to land in between. */
+  readDelay = 0;
+  reads = 0;
   /** The write leaves this cell index unchanged (a write the console ignores). */
   ignoreCell?: number;
   writes: unknown[] = [];
@@ -120,17 +125,24 @@ class World {
       return { total: rows.length, offset: 0, count: rows.length, fixtures: rows };
     });
     f.on("patch.types", () => ({ count: this.types.length, types: this.types.map((t) => ({ no: t.no, name: t.name, modes: [] })) }));
-    f.on("patch.cellLayout", (args) => this.layout(args.fid as number));
+    f.on("patch.cellLayout", async (args) => {
+      if (this.readDelay) await new Promise((r) => setTimeout(r, this.readDelay));
+      this.reads++;
+      return this.layout(args.fid as number);
+    });
     f.on("patch.cellLayoutWrite", (args) => {
       this.writes.push(args);
       if (this.copy) throw new BridgeReplyError("[copy-open] open", "copy-open");
       const l = this.layout(args.fid as number);
       const want = (args.expectAffected as number[]).slice().sort().join(",");
       if (l.affected.map((a) => a.fid).sort().join(",") !== want) throw new BridgeReplyError("[affected-mismatch] differs", "affected-mismatch");
+      if (args.expectType !== undefined && args.expectType !== l.type.guid) throw new BridgeReplyError("[type-changed] another type", "type-changed");
       const t = this.typeOf(l.type.no);
-      const previous = t.cells.map((c) => ({ ...c }));
+      const previous: unknown[] = [];
       for (const c of args.cells as Array<{ index: number; x?: number; y?: number; z?: number }>) {
         const cell = t.cells.find((x) => x.index === c.index)!;
+        previous.push({ ...cell });
+        if (c.index === this.failAtCell) throw new BridgeReplyError(`[write-failed] cell ${c.index} PosX could not be written`, "write-failed", { previous });
         if (c.index === this.ignoreCell) continue;
         if (c.x !== undefined) cell.posX = c.x;
         if (c.y !== undefined) cell.posY = c.y;
@@ -269,4 +281,62 @@ test("layout_cells own: a copy without a GUID of its own after the commit stops 
       await h.close();
     }
   }
+});
+
+// ---------------------------------------------------------------------------
+// Review round 1 (PR #53 at 8d9339e)
+// ---------------------------------------------------------------------------
+
+test("layout_cells: one lock span from the read to the read-back; a queued retype cannot land between plan and write", async () => {
+  const { h, w } = await setup();
+  try {
+    w.types.push({ no: 9, name: "Festoon other", guid: "2E E3 8A D1 00 09", cells: [1, 2, 3, 4].map((i) => ({ index: i, name: `I${i}`, posX: 0, posY: 0, posZ: -0.24 })) });
+    w.readDelay = 30;
+    let seen: { reads: number; writes: number } | undefined;
+    const tool = h.callJson("gma3_layout_cells", { fixture: 401, path: { shape: "line", spacing: 1 }, unit: "m", affects: [401, 402, 403], exclusive: true });
+    await new Promise((r) => setTimeout(r, 5));
+    // Another tool call from this server: moves every Festoon to type 9 (same affected FIDs).
+    const retype = h.ctx.mutations.run(async () => {
+      seen = { reads: w.reads, writes: w.writes.length };
+      for (const f of w.live) f.type = 9;
+    });
+    const [{ result }] = await Promise.all([tool, retype]);
+    assert.deepEqual(seen, { reads: 2, writes: 1 }, "the retype waited for the read, the write and the read-back");
+    assert.equal(result.verification.status, "matched");
+    assert.equal(result.type.name, "Festoon 2 RGB");
+    assert.deepEqual(w.typeOf(2).cells.map((c) => c.posX), [0, 1, 2, 3], "the planned type got the layout");
+    assert.ok(w.typeOf(9).cells.every((c) => c.posX === 0), "the other type was not touched");
+    assert.equal((w.writes[0] as any).expectType, "2E E3 8A D1 1A 91", "the write names the planned type");
+  } finally {
+    await h.close();
+  }
+});
+
+test("layout_cells: a write that stops part-way is partial, with the recovery positions and which cells moved", async () => {
+  const { h, w } = await setup();
+  try {
+    w.typeOf(2).cells[0].posX = 0.3048;
+    w.failAtCell = 2;
+    const { result, isError } = await h.callJson("gma3_layout_cells", { fixture: 401, path: { shape: "line", spacing: 1, origin: { x: 5 } }, unit: "ft", affects: [401, 402, 403], exclusive: true });
+    assert.equal(isError, true);
+    assert.equal(result.outcome, "partial");
+    assert.deepEqual(result.previous.map((c: any) => [c.index, c.x]), [[1, 1], [2, 0], [3, 0], [4, 0]], "every planned cell's position before the call, in feet");
+    assert.deepEqual(result.writeState.written, [1]);
+    assert.deepEqual(result.writeState.uncertain, [2]);
+    assert.deepEqual(result.writeState.changedAfter, [1], "the read-back ran and found cell 1 moved");
+    assert.equal(result.verification.status, "mismatched");
+    assert.match(result.summary, /stopped part-way.*Cells 1 moved; cell 2 may be partly written/);
+  } finally {
+    await h.close();
+  }
+});
+
+test("layoutPositions: widely spaced cells on many tiny legs are computed directly (no leg-by-leg walk)", () => {
+  const t0 = Date.now();
+  const pos = layoutPositions({ shape: "square_wave", spacing: 1000, legLength: 0.0001, legStep: 0, legDirection: "-y", advance: "+x", origin: {} }, 4);
+  const z = layoutPositions({ shape: "zigzag", spacing: 1000, legLength: 0.0001, legStep: 0.0001, legDirection: "-y", advance: "+x", origin: {} }, 4);
+  assert.ok(Date.now() - t0 < 100, "fast");
+  assert.equal(pos.length, 4);
+  assert.ok(pos.every((p) => Number.isFinite(p.x!) && Number.isFinite(p.y!)) && z.every((p) => Number.isFinite(p.x!)));
+  assert.ok(near(pos[0].x!, 0) && near(pos[0].y!, 0) && near(pos[3].x!, 0), "leg_step 0: the path never advances");
 });

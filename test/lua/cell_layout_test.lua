@@ -107,13 +107,17 @@ function Obj:Copy(src)
   self.DMXModes, self.Geometries = self.kids[1], self.kids[2]
 end
 
-local function channel(name, coarse) return obj("DMXChannel", name, { Coarse = coarse, DMXBreak = 1 }) end
-local function cellRef(name, x) return obj("GeometryReference", name, { PosX = x, PosY = 0, PosZ = -0.2 }) end
+local function channel(name, coarse, geometry) return obj("DMXChannel", name, { Coarse = coarse, DMXBreak = 1 }, {}, geometry and { Geometry = geometry } or nil) end
+-- A cell references its template only through GeometryDirect (as on the console) and carries its break offset.
+local function cellRef(name, x, template, offset)
+  return obj("GeometryReference", name, { PosX = x, PosY = 0, PosZ = -0.2 }, offset and { obj("Break", "Break 1 offset", { DMXBreak = 1, DMXPatch = offset }) } or {}, template and { GeometryDirect = template } or nil)
+end
 local function buildPatch(addr)
-  -- Festoon: one mode, root BodyP with three cells under Main.
-  local main = obj("Beam", "Main", {}, { cellRef("I1", 0), cellRef("I2", 0), cellRef("I3", 0) })
+  -- Festoon: one mode, root BodyP with three cells under Main, each referencing the template RGB at offsets 1, 4, 7.
+  local rgb = obj("Beam", "RGB", {}, {})
+  local main = obj("Beam", "Main", {}, { cellRef("I1", 0, rgb, 1), cellRef("I2", 0, rgb, 4), cellRef("I3", 0, rgb, 7) })
   local bodyP = obj("Geometry", "BodyP", {}, { main })
-  local fest = obj("FixtureType", "Festoon", { Guid = "AA 01" }, { obj("DMXModes", "DMXModes", {}, { obj("DMXMode", "Pixel", { TotalFootprint = 9 }, { obj("DMXChannels", "DMXChannels", {}, { channel("R", 1), channel("G", 2), channel("B", 3) }) }, { GeometryDirect = bodyP }) }), obj("Geometries", "Geometries", {}, { bodyP }) })
+  local fest = obj("FixtureType", "Festoon", { Guid = "AA 01" }, { obj("DMXModes", "DMXModes", {}, { obj("DMXMode", "Pixel", { TotalFootprint = 9 }, { obj("DMXChannels", "DMXChannels", {}, { channel("R", 1, rgb), channel("G", 2, rgb), channel("B", 3, rgb) }) }, { GeometryDirect = bodyP }) }), obj("Geometries", "Geometries", {}, { rgb, bodyP }) })
   fest.no = 1
   -- Strip: two modes sharing one root with two cells.
   local bodyS = obj("Geometry", "BodyS", {}, { cellRef("S1", -0.1), cellRef("S2", 0.1) })
@@ -199,14 +203,20 @@ local X = { exclusive = true }
 local function with(t) local o = { exclusive = true } for k, v in pairs(t) do o[k] = v end return o end
 r = request("patch.cellLayoutWrite", with({ fid = 401, cells = { { index = 1, x = 1 } }, expectAffected = { 401 } }))
 check("a write whose affected set is not the caller's is refused, and names every fixture that would move", r.ok == false and r.code == "affected-mismatch" and r.error:find("moves fixtures 402", 1, true) ~= nil, J(r))
-check("(nothing was written)", LIVE.FixtureTypes.kids[1].Geometries.kids[1].kids[1].kids[1].pv.POSX == 0)
+check("(nothing was written)", LIVE.FixtureTypes.kids[1].Geometries.kids[2].kids[1].kids[1].pv.POSX == 0)
 r = request("patch.cellLayoutWrite", with({ fid = 401, cells = { { index = 1, x = 1 }, { index = 9, x = 2 } }, expectAffected = { 401, 402 } }))
-check("a bad cell index is refused before anything is written", r.ok == false and r.code == "bad-args" and LIVE.FixtureTypes.kids[1].Geometries.kids[1].kids[1].kids[1].pv.POSX == 0, J(r))
+check("a bad cell index is refused before anything is written", r.ok == false and r.code == "bad-args" and LIVE.FixtureTypes.kids[1].Geometries.kids[2].kids[1].kids[1].pv.POSX == 0, J(r))
 r = request("patch.cellLayoutWrite", { fid = 401, cells = { { index = 1, x = 1 } }, expectAffected = { 401, 402 } })
 check("the write needs exclusive", r.ok == false, J(r))
 r = request("patch.cellLayoutWrite", with({ fid = 401, cells = { { index = 1, x = 0.5, y = -0.6 }, { index = 3, z = -0.1 } }, expectAffected = { 402, 401 } }))
-local cellsL = LIVE.FixtureTypes.kids[1].Geometries.kids[1].kids[1].kids
+local cellsL = LIVE.FixtureTypes.kids[1].Geometries.kids[2].kids[1].kids
 check("the write sets the given axes of the given cells and returns their previous positions", r.ok and cellsL[1].pv.POSX == 0.5 and cellsL[1].pv.POSY == -0.6 and cellsL[1].pv.POSZ == -0.2 and cellsL[3].pv.POSZ == -0.1 and cellsL[2].pv.POSX == 0 and r.result.previous[1].posX == 0 and r.result.cells[1].posX == 0.5, J(r))
+r = request("patch.cellLayoutWrite", with({ fid = 401, cells = { { index = 1, x = 3 } }, expectAffected = { 401, 402 }, expectType = "BB 02" }))
+check("a write whose layout now belongs to another type than planned is refused (type-changed)", r.ok == false and r.code == "type-changed" and cellsL[1].pv.POSX == 0.5, J(r))
+r = request("patch.cellLayoutWrite", with({ fid = 401, cells = { { index = 1, x = 3 } }, expectAffected = { 401, 402 }, expectType = "AA 01", expectCells = 40 }))
+check("... or another number of cells than planned", r.ok == false and r.code == "type-changed" and cellsL[1].pv.POSX == 0.5, J(r))
+r = request("patch.cellLayoutWrite", with({ fid = 401, cells = { { index = 2, x = 0.25 } }, expectAffected = { 401, 402 }, expectType = "AA 01", expectCells = 3 }))
+check("with the planned type and cells the write goes ahead", r.ok and cellsL[2].pv.POSX == 0.25, J(r))
 openCopy()
 r = request("patch.cellLayoutWrite", with({ fid = 401, cells = { { index = 1, x = 2 } }, expectAffected = { 401, 402 } }))
 check("the write is refused while the patch copy is open (its commit would overwrite it)", r.ok == false and r.code == "copy-open", J(r))
@@ -216,7 +226,7 @@ r = request("patch.layoutCopy", with({ type = "Festoon", name = "Festoon own", f
 local nt = COPY.FixtureTypes.kids[4]
 check("patch.layoutCopy appends a copy of the type under the new name", r.ok and nt and nt.name == "Festoon own" and r.result.type.name == "Festoon own" and COPY.FixtureTypes:Count() == 4, J(r))
 check("... and moves the fixtures to it: same mode name, address and cells; the others stay", r.ok and fx(COPY, 402).refs.TypeRef == nt and fx(COPY, 402).refs.ModeDirect == nt.DMXModes.kids[1] and fx(COPY, 402).pv.PATCH == "1.402" and fx(COPY, 401).refs.TypeRef == COPY.FixtureTypes.kids[1], J(r))
-check("the copy's geometry is its own (a fresh copy reads footprint 0, which is accepted)", nt.Geometries.kids[1] ~= COPY.FixtureTypes.kids[1].Geometries.kids[1] and nt.DMXModes.kids[1].refs.GeometryDirect == nt.Geometries.kids[1])
+check("the copy's geometry is its own (a fresh copy reads footprint 0, which is accepted)", nt.Geometries.kids[2] ~= COPY.FixtureTypes.kids[1].Geometries.kids[2] and nt.DMXModes.kids[1].refs.GeometryDirect == nt.Geometries.kids[2])
 r = request("patch.layoutCopy", with({ type = "Festoon", name = "Strip", fids = { 401 } }))
 check("a taken name is refused, nothing appended", r.ok == false and r.code == "name-taken" and COPY.FixtureTypes:Count() == 4, J(r))
 r = request("patch.layoutCopy", with({ type = "Festoon", name = "Mixed", fids = { 401, 501 } }))
@@ -229,9 +239,24 @@ console.failRetype[402] = nil
 
 r = request("patch.retype", with({ fids = { 401 }, type = "Other" }))
 check("patch.retype refuses a type whose mode of that name has other channels", r.ok == false and r.code == "incompatible" and fx(COPY, 401).refs.TypeRef == COPY.FixtureTypes.kids[1], J(r))
+-- Review of PR #53: a copy whose cells address the DMX channels differently is not a layout copy.
+request("patch.layoutCopy", with({ type = "Festoon", name = "Festoon own", fids = { 402 } }))
+local copyCells = COPY.FixtureTypes.kids[4] and COPY.FixtureTypes.kids[4].Geometries.kids[2].kids[1].kids
+if copyCells then
+  copyCells[1].pv.POSX = 0.7 -- a layout difference: allowed
+  r = request("patch.retype", with({ fids = { 401 }, type = "Festoon own" }))
+  check("a copy that differs only in cell positions is compatible", r.ok and fx(COPY, 401).refs.TypeRef == COPY.FixtureTypes.kids[4], J(r))
+  r = request("patch.retype", with({ fids = { 401 }, type = "Festoon" }))
+  copyCells[1].kids[1].pv.DMXPATCH, copyCells[2].kids[1].pv.DMXPATCH = 4, 1 -- the first two cells swap their DMX offsets
+  r = request("patch.retype", with({ fids = { 401 }, type = "Festoon own" }))
+  check("a copy whose cells swap their DMX offsets is refused: the expanded addressing differs", r.ok == false and r.code == "incompatible" and fx(COPY, 401).refs.TypeRef == COPY.FixtureTypes.kids[1], J(r))
+  copyCells[1].kids[1].pv.DMXPATCH, copyCells[2].kids[1].pv.DMXPATCH = 1, 4
+else
+  check("(the layout copy for the addressing checks exists)", false)
+end
 r = request("patch.retype", with({ fids = { 501 }, type = "Festoon" }))
 check("patch.retype refuses a type without the fixture's mode", r.ok == false and r.code == "incompatible", J(r))
-r = request("patch.layoutCopy", with({ type = "Festoon", name = "Festoon own", fids = { 401 } }))
+r = request("patch.layoutCopy", with({ type = "Festoon", name = "Festoon own 2", fids = { 401 } }))
 r = request("patch.retype", with({ fids = { 401 }, type = "Festoon" }))
 check("patch.retype moves a fixture back to the original layout", r.ok and fx(COPY, 401).refs.TypeRef == COPY.FixtureTypes.kids[1] and r.result.retyped[1].fid == 401, J(r))
 closeCopy()

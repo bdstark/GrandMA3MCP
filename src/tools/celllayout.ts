@@ -21,7 +21,7 @@ import { BridgeError } from "../bridge.js";
 import { asRead, buildResult, notRequested, stepFromError, unavailable, validationFailure, type OperationResult, type StepResult, type Verification } from "../results.js";
 import { Validator, finiteNumber, objectName } from "../validate.js";
 import { operation, type RegisterTools, type ToolContext } from "./context.js";
-import { listFids, runSession } from "./patch.js";
+import { listFids, runSession, runSessionLocked } from "./patch.js";
 import { UNITS } from "./positions.js";
 
 type Unit = keyof typeof UNITS;
@@ -36,7 +36,6 @@ const TOLERANCE_M = 0.0001;
 type Vec = { x: number; y: number; z: number };
 const vec = (a: Axis): Vec => ({ x: a[1] === "x" ? (a[0] === "+" ? 1 : -1) : 0, y: a[1] === "y" ? (a[0] === "+" ? 1 : -1) : 0, z: a[1] === "z" ? (a[0] === "+" ? 1 : -1) : 0 });
 const add = (a: Vec, b: Vec, k = 1): Vec => ({ x: a.x + b.x * k, y: a.y + b.y * k, z: a.z + b.z * k });
-const dist = (a: Vec, b: Vec) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
 
 export interface PathSpec {
   shape: Shape;
@@ -69,46 +68,35 @@ export function layoutPositions(p: PathSpec, count: number): Array<Partial<Vec>>
   const o: Vec = { x: p.origin.x ?? 0, y: p.origin.y ?? 0, z: p.origin.z ?? 0 };
   if (p.shape === "points") return (p.points ?? []).slice(0, count).map((pt) => ({ ...pt }));
   const spacing = p.spacing as number;
-  const need = spacing * (count - 1);
-  const verts: Vec[] = [o];
-  if (p.shape === "line") verts.push(add(o, vec(p.direction ?? "+x"), Math.max(need, spacing)));
-  else {
-    const leg = vec(p.legDirection ?? "-y");
-    const adv = vec(p.advance ?? "+x");
-    const L = p.legLength as number;
-    const step = p.legStep ?? spacing;
-    let cur = o;
-    let len = 0;
-    for (let k = 0; len <= need + L + step; k++) {
-      const sign = k % 2 === 0 ? 1 : -1;
-      const next = p.shape === "square_wave" ? add(cur, leg, L * sign) : add(add(cur, adv, step), leg, L * sign);
-      verts.push(next);
-      len += dist(cur, next);
-      cur = next;
-      if (p.shape === "square_wave") {
-        const stepped = add(cur, adv, step);
-        verts.push(stepped);
-        len += step;
-        cur = stepped;
-      }
-    }
+  // Each cell's position is computed from its arc length alone: O(count), whatever the legs (a path of many tiny
+  // legs between widely spaced cells must not be walked leg by leg).
+  if (p.shape === "line") {
+    const d = vec(p.direction ?? "+x");
+    return Array.from({ length: count }, (_, i) => add(o, d, i * spacing));
   }
-  const out: Array<Partial<Vec>> = [];
-  let seg = 0;
-  let segStart = 0;
-  for (let i = 0; i < count; i++) {
+  const leg = vec(p.legDirection ?? "-y");
+  const adv = vec(p.advance ?? "+x");
+  const L = p.legLength as number;
+  const step = p.legStep ?? spacing;
+  return Array.from({ length: count }, (_, i) => {
     const s = i * spacing;
-    while (seg < verts.length - 2 && s > segStart + dist(verts[seg], verts[seg + 1]) + 1e-12) {
-      segStart += dist(verts[seg], verts[seg + 1]);
-      seg++;
+    if (p.shape === "square_wave") {
+      // Unit j: leg j (length L, down on even j, back up on odd j), then a step of `step` along advance.
+      const unit = L + step;
+      const j = Math.floor(s / unit);
+      const r = s - j * unit;
+      const onLeg = r <= L;
+      const along = onLeg ? (j % 2 === 0 ? r : L - r) : j % 2 === 0 ? L : 0;
+      const a = j * step + (onLeg ? 0 : r - L);
+      return add(add(o, adv, a), leg, along);
     }
-    const a = verts[seg];
-    const b = verts[seg + 1];
-    const L = dist(a, b);
-    const t = L === 0 ? 0 : (s - segStart) / L;
-    out.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, z: a.z + (b.z - a.z) * t });
-  }
-  return out;
+    // zigzag: leg j runs diagonally from (j x step, 0 or L) to ((j + 1) x step, L or 0).
+    const d = Math.hypot(step, L);
+    const j = Math.floor(s / d);
+    const f = (s - j * d) / d;
+    const along = j % 2 === 0 ? f * L : (1 - f) * L;
+    return add(add(o, adv, (j + f) * step), leg, along);
+  });
 }
 
 interface CellRow {
@@ -248,7 +236,29 @@ export async function layoutCells(ctx: ToolContext, raw: Record<string, unknown>
   if (scope === "shared" && !preview && affects === undefined) v.fail("affects is required for a shared layout: list every FID that uses this layout (preview: true lists them); all of them move");
   const target = { fixture: raw.fixture, scope, path: raw.path, unit };
   if (!v.ok || fid === undefined || !path) return validationFailure(op, target, v.errors);
+  // One lock span from the first read to the read-back: a queued mutation (a retype, another layout) cannot land
+  // between the plan and the write. The patch session runs inside it (runSessionLocked: the lock is not reentrant).
+  return ctx.mutations.run(() => layoutCellsLocked(ctx, { op, target, fid, unit, path, scope, count, rest, preview, affects, ownFids, ownName, verify: raw.verify !== false }));
+}
 
+interface LayoutJob {
+  op: string;
+  target: Record<string, unknown>;
+  fid: number;
+  unit: Unit;
+  path: PathSpec;
+  scope: "shared" | "own";
+  count: number | undefined;
+  rest: "keep" | "last";
+  preview: boolean;
+  affects: number[] | undefined;
+  ownFids: number[];
+  ownName: string | undefined;
+  verify: boolean;
+}
+
+async function layoutCellsLocked(ctx: ToolContext, job: LayoutJob): Promise<OperationResult> {
+  const { op, target, fid, unit, path, scope, count, rest, preview, affects, ownFids, ownName } = job;
   const steps: StepResult[] = [];
   const t = ctx.requestTimeoutMs;
   let before: LayoutRead;
@@ -292,7 +302,7 @@ export async function layoutCells(ctx: ToolContext, raw: Record<string, unknown>
   let layoutType = before.type;
   const sourceGuid = before.type.guid;
   if (scope === "own") {
-    session = await runSession(ctx, {
+    session = await runSessionLocked(ctx, {
       operation: "layout_copy",
       target: { type: before.type.name, name: ownName, fixtures: ownFids },
       touchedFids: ownFids,
@@ -354,28 +364,53 @@ export async function layoutCells(ctx: ToolContext, raw: Record<string, unknown>
 
   const expect = scope === "own" ? ownFids : (affects as number[]);
   let written: { previous: CellRow[]; cells: CellRow[] } | undefined;
-  await ctx.mutations.run(async () => {
-    try {
-      written = (await ctx.bridge.request("patch.cellLayoutWrite", { fid, cells: plan, expectAffected: expect, exclusive: true }, t)) as { previous: CellRow[]; cells: CellRow[] };
-      steps.push({ name: "write_cells", status: "succeeded", op: "patch.cellLayoutWrite", detail: { cells: plan.length } });
-    } catch (err) {
-      const s = stepFromError("write_cells", err, { op: "patch.cellLayoutWrite" });
-      if (err instanceof BridgeError && err.detail !== undefined) s.detail = err.detail;
-      steps.push(s);
+  let failedDetail: { previous?: CellRow[] } | undefined;
+  let writeStatus: "succeeded" | "failed" | "unknown";
+  try {
+    // The bridge re-checks the affected set and that the layout still belongs to the planned type (GUID, cells).
+    written = (await ctx.bridge.request("patch.cellLayoutWrite", { fid, cells: plan, expectAffected: expect, expectType: before.type.guid, expectCells: before.cells.length, exclusive: true }, t)) as { previous: CellRow[]; cells: CellRow[] };
+    steps.push({ name: "write_cells", status: "succeeded", op: "patch.cellLayoutWrite", detail: { cells: plan.length } });
+    writeStatus = "succeeded";
+  } catch (err) {
+    const s = stepFromError("write_cells", err, { op: "patch.cellLayoutWrite" });
+    if (err instanceof BridgeError && err.detail !== undefined) {
+      s.detail = err.detail;
+      failedDetail = err.detail as { previous?: CellRow[] };
     }
-  });
+    steps.push(s);
+    writeStatus = s.status === "unknown" ? "unknown" : "failed";
+  }
+  // The positions before the write: the bridge's, or this call's own read (taken under the same lock).
+  const planned = new Set(plan.map((p) => p.index));
+  const previousRows = written?.previous ?? before.cells.filter((c) => planned.has(c.index));
+  // A refused write that names written cells (write-failed) stopped part-way: the cells before the last one were
+  // written, the last one may be partly written. A lost reply leaves every planned cell uncertain.
+  const reported = failedDetail?.previous ?? [];
+  const writeState =
+    writeStatus === "succeeded"
+      ? { written: plan.map((p) => p.index), uncertain: [] as number[] }
+      : writeStatus === "unknown"
+        ? { written: [] as number[], uncertain: plan.map((p) => p.index) }
+        : { written: reported.slice(0, -1).map((c) => c.index), uncertain: reported.slice(-1).map((c) => c.index) };
+
   let verification: Verification = notRequested();
-  if (raw.verify !== false && steps.at(-1)?.status !== "failed") {
+  let changed: number[] | undefined;
+  if (job.verify || writeStatus !== "succeeded") {
     try {
       const after = await readLayout(ctx, fid);
       steps.push(asRead({ name: "read_back", status: "succeeded", op: "patch.cellLayout" }));
       verification = judge(plan, after, unit);
+      const moved = (c: CellRow) => {
+        const b = before.cells.find((x) => x.index === c.index);
+        return !b || ["posX", "posY", "posZ"].some((k) => Math.abs(((c as unknown as Record<string, number>)[k] ?? 0) - ((b as unknown as Record<string, number>)[k] ?? 0)) > TOLERANCE_M);
+      };
+      changed = after.cells.filter((c) => planned.has(c.index) && moved(c)).map((c) => c.index);
     } catch (err) {
       steps.push(asRead(stepFromError("read_back", err, { op: "patch.cellLayout" })));
       verification = unavailable("the cell positions could not be read back");
     }
   }
-  return buildResult({
+  const result = buildResult({
     operation: op,
     target,
     steps,
@@ -387,9 +422,24 @@ export async function layoutCells(ctx: ToolContext, raw: Record<string, unknown>
       scope,
       ...(scope === "own" ? { own: { name: ownName, fixtures: ownFids, from: session?.target } } : {}),
       affected: expect,
-      previous: (written?.previous ?? []).map((c) => inUnit(c, unit)),
+      previous: previousRows.map((c) => inUnit(c, unit)),
+      ...(writeStatus !== "succeeded" ? { writeState: { ...writeState, ...(changed ? { changedAfter: changed } : {}) } } : {}),
     },
   });
+  // A write that stopped part-way changed some cells: the read-back decides between partial and failed.
+  if (writeStatus === "failed") {
+    const some = (changed?.length ?? 0) > 0 || writeState.written.length > 0;
+    // Cells moved (read back, or reported written): partial. None reported and the read-back failed with a cell
+    // that may be partly written: unknown. Otherwise nothing of the layout changed: failed, or partial after an own
+    // layout's session (the type copy and the retype were committed).
+    if (some) result.outcome = "partial";
+    else if (changed === undefined && writeState.uncertain.length > 0) result.outcome = "unknown";
+    else result.outcome = scope === "own" ? "partial" : "failed";
+    result.summary = `${op}: the cell write stopped part-way (${steps.find((x) => x.name === "write_cells")?.error ?? "refused"}). ${some ? `Cells ${(changed ?? writeState.written).join(", ")} moved` : changed === undefined ? "Which cells moved is unknown (the read-back failed)" : "No cell moved"}${writeState.uncertain.length ? `; cell ${writeState.uncertain.join(", ")} may be partly written` : ""}. previous holds every planned cell's position before the call, to restore with path points.`;
+  } else if (writeStatus === "unknown") {
+    result.summary = `${op}: the cell write got no reply; ${changed === undefined ? "whether any cell moved is unknown" : changed.length ? `cells ${changed.join(", ")} moved` : "no cell moved"}. previous holds the positions before the call.`;
+  }
+  return result;
 }
 
 export async function assignCellLayout(ctx: ToolContext, raw: Record<string, unknown>): Promise<OperationResult> {
