@@ -25,6 +25,7 @@ import { registerMacroTools } from "./tools/macros.js";
 import { registerTimecodeTools } from "./tools/timecode.js";
 import { registerPlaybackTools } from "./tools/playback.js";
 import { registerPositionTools } from "./tools/positions.js";
+import { registerCueListTools } from "./tools/cuelists.js";
 import { registerTypeStructureTools } from "./tools/typestructure.js";
 
 const env = process.env;
@@ -616,6 +617,7 @@ registerSpeedTools(server, toolContext);
 registerMacroTools(server, toolContext);
 registerTimecodeTools(server, toolContext);
 registerPositionTools(server, toolContext);
+registerCueListTools(server, toolContext);
 registerTypeStructureTools(server, toolContext);
 
 server.registerResource(

@@ -43,6 +43,9 @@ Workflow tools (shared result model, see [below](#workflow-tools); details in [`
 | `gma3_store_cue`, `gma3_store_cue_part` | `Store ... /NoConfirmation` with explicit create / merge / overwrite mode, name and timing set as separate verified steps ([docs](tools/cues.md)) |
 | `gma3_set_cue_timing`, `gma3_set_cue_trigger` | Edit part timing (fade, delay, out fade, out delay, snap delay) and trigger (Go, Time, Follow, Sound, BPM) with read-back ([docs](tools/cues.md)) |
 | `gma3_goto_cue`, `gma3_delete_cue` | `Goto` (a playback mutation) and single-cue `Delete ... /NoConfirmation` with existence checks ([docs](tools/cues.md)) |
+| `gma3_store_cues` | A list of cues in one call, each from explicit looks (fixtures + presets, intensity, attribute values), with names, timing and triggers; built in the Preview environment (nothing output, Normal programmer untouched), each look checked before its store, reported per cue ([docs](tools/cuelists.md)) |
+| `gma3_edit_cues` | The same trigger and timing, and one name per cue, on a list, range or all cues of a sequence, read back per cue ([docs](tools/cuelists.md)) |
+| `gma3_build_chase` | A looping chase into an empty sequence (one cue per look or preset, Time triggers, Wrap Around), then plays it and verifies one observed cycle through the wrap ([docs](tools/cuelists.md)) |
 | `gma3_assign_to_executor`, `gma3_label_executor` | Inspect, then `Assign Sequence n At Page p.e` (replacing only with `replace`), label, read back ([docs](tools/executors.md)) |
 
 Structured inspection tools (read-only; work with Lua execution disabled; need plugin v0.3.0 or newer, see

@@ -64,19 +64,19 @@ import { cueRef, exists, readFields } from "./common.js";
 // ---------------------------------------------------------------------------
 
 /** Tool trigger names -> console TrigType enum names (Enums.CueTrigger on 2.5.1). */
-const TRIGGERS = { go: "Go", time: "Time", follow: "Follow", sound: "Sound", bpm: "BPM" } as const;
-type TriggerKey = keyof typeof TRIGGERS;
-const TRIGGER_KEYS = Object.keys(TRIGGERS) as TriggerKey[];
+export const TRIGGERS = { go: "Go", time: "Time", follow: "Follow", sound: "Sound", bpm: "BPM" } as const;
+export type TriggerKey = keyof typeof TRIGGERS;
+export const TRIGGER_KEYS = Object.keys(TRIGGERS) as TriggerKey[];
 
 /** Tool timing parameters -> writable Part property names (never the composite CueFade / CueDelay). */
-const TIMING_PROPS = {
+export const TIMING_PROPS = {
   fade: "CueInFade",
   delay: "CueInDelay",
   out_fade: "CueOutFade",
   out_delay: "CueOutDelay",
   snap_delay: "SnapDelay",
 } as const;
-type TimingKey = keyof typeof TIMING_PROPS;
+export type TimingKey = keyof typeof TIMING_PROPS;
 
 const NOT_VERIFIED_VALUES = "Stored fixture values (attribute data) are NOT verified; that needs gma3_cue_contents (FR-10).";
 const LOCK_CAVEAT = "The mutation lock orders only this server's own mutations; it does not isolate the operation from another console operator or another client.";
@@ -246,7 +246,7 @@ async function readBack(bridge: Gma3Bridge, reads: Array<{ ref: string; fields: 
  * compared through `timeToSeconds` so a unit-bearing value is interpreted, not prefix-matched.
  */
 const TIME_FIELDS = [...Object.values(TIMING_PROPS), "TrigTime"] as string[];
-const TIME_NORMALIZERS: Record<string, (v: unknown) => unknown> = Object.fromEntries(TIME_FIELDS.map((f) => [f, timeToSeconds]));
+export const TIME_NORMALIZERS: Record<string, (v: unknown) => unknown> = Object.fromEntries(TIME_FIELDS.map((f) => [f, timeToSeconds]));
 
 /** Turn a read-back into a Verification against `expected` (undefined values are existence-only). */
 function verifyAgainst(checked: string, expected: Record<string, unknown>, rb: ReadBack, missingMeans: string): Verification {

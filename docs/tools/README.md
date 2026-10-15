@@ -10,6 +10,7 @@ the live test procedure on a disposable show.
 | Fixture programming (FR-03) | `gma3_select`, `gma3_set_attribute`, `gma3_set_color`, `gma3_set_position`, `gma3_clear_programmer` | [fixtures.md](fixtures.md) |
 | Looks, presets and release (SU-05; preset read-back needs bridge 0.27.0) | `gma3_set_attributes`, `gma3_apply_preset`, `gma3_release_attributes` | [fixtures.md](fixtures.md) |
 | Cue storage and editing (FR-04, FR-05) | `gma3_store_cue`, `gma3_store_cue_part`, `gma3_set_cue_timing`, `gma3_set_cue_trigger`, `gma3_goto_cue`, `gma3_delete_cue` | [cues.md](cues.md) |
+| Cue lists and chases in batches (SU-06; built in Preview, needs `exclusive: true`; preset read-back needs bridge 0.27.0) | `gma3_store_cues`, `gma3_edit_cues`, `gma3_build_chase` | [cuelists.md](cuelists.md) |
 | Executors (FR-06) | `gma3_assign_to_executor`, `gma3_label_executor` | [executors.md](executors.md) |
 | Structured inspection (FR-07 .. FR-10) | `gma3_fixture_attributes`, `gma3_programmer`, `gma3_fixture_output`, `gma3_dmx`, `gma3_cue_contents` | [inspection.md](inspection.md) |
 | Console input (KB-05, opt-in on the console) | `gma3_input_interaction`, `gma3_hardkey`, `gma3_keyboard`, `gma3_type`, `gma3_input_sequence`, `gma3_hardkeys_status`, `gma3_hardkeys_release_all` | [input.md](input.md) |
