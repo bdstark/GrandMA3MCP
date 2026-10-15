@@ -1087,7 +1087,7 @@ export const registerMacroTools: RegisterTools = (server, ctx) => {
     {
       title: "Run (Go+) or stop (Off) a macro and observe it",
       description:
-        "EXECUTES: action go sends Go+ Macro N (starts it, or continues it after a Go wait); off sends Off Macro N. Then observes the macro's running line for observe_seconds (default 3, max 60): finished, paused_at_go (a manual wait), running, idle. The result separates dispatched (the command was accepted) from observed (the run state seen); it never claims that every line succeeded, because a failing line does not stop a macro. Lines with a (prompt) ask the operator for input.",
+        "EXECUTES: action go sends Go+ Macro N (starts it, or continues it after a Go wait); off sends Off Macro N. Then OBSERVES the macro's running line over time, on the server side (no Lua loop needed), for observe_seconds (default 3, max 60): finished, paused_at_go (a manual wait), running, idle. The result separates dispatched (the command was accepted) from observed (the run state seen); it never claims that every line succeeded, because a failing line does not stop a macro. Lines with a (prompt) ask the operator for input.",
       inputSchema: { macro: z.number(), action: z.enum(["go", "off"]), observe_seconds: z.number().optional(), interval_ms: z.number().optional() },
     },
     async (args) => operation(() => runMacro(ctx, args)),

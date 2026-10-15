@@ -57,6 +57,14 @@ lock orders only this server's mutations; it does not isolate from another opera
 the live test procedure. Tool `description` strings must carry the same essential facts (selection change,
 programmer impact, verification scope, what is NOT verified).
 
+## Discovery (SU-10)
+
+Add every new tool to the task map in `src/discovery.ts` (`TASK_TOOLS`, or `OBSERVING_TOOLS` for one that watches the
+console over time). The server sends that map as its instructions on every start, so an agent finds the tool instead
+of writing Lua. `test/discovery.test.ts` fails for a tool that is neither mapped nor deliberately left out, and for a
+mapped name that is not registered. A tool that observes over time says so in its description (`OBSERVES OVER TIME`)
+and that no Lua loop is needed.
+
 ## Report
 
 Finish with: tools implemented, commands used per tool, acceptance criteria met / not met and why, anything

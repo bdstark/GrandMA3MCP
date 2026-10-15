@@ -154,7 +154,10 @@ test("gma3_status reports the server build, and a server run from source carries
   const status = JSON.parse(res.content[0].text);
   assert.equal(status.server.build.state, "current");
   assert.equal(status.bridge.connected, true);
-  assert.equal(client.getInstructions(), undefined);
+  // SU-10: instructions on every start, without the stale warning on a current build.
+  const instructions = client.getInstructions() ?? "";
+  assert.match(instructions, /Map from task to tools/);
+  assert.doesNotMatch(instructions, /WARNING: this gma3-mcp server build is out of date/);
 });
 
 test("gma3_lua is serialised with the other mutations", async () => {

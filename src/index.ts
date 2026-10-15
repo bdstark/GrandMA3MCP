@@ -10,6 +10,7 @@ import { MutationLock } from "./mutations.js";
 import { serverBuild } from "./buildinfo.js";
 import type { ToolContext } from "./tools/context.js";
 import { registerFixtureTools } from "./tools/fixtures.js";
+import { COMMAND_FALLBACK_NOTE, LUA_FALLBACK_NOTE, serverInstructions } from "./discovery.js";
 import { registerCueTools } from "./tools/cues.js";
 import { registerExecutorTools } from "./tools/executors.js";
 import { registerInspectionTools } from "./tools/inspection.js";
@@ -45,16 +46,18 @@ const osc = new OscSender({
 // set; an agent then has no reason to suspect missing tools and falls back to gma3_lua. Say so in the
 // server instructions, which the client shows the model at connect time.
 const startupBuild = serverBuild.check();
+// SU-10: instructions on every start (the task-to-tool map); a stale build's warning comes first.
 const server = new McpServer(
   { name: "gma3-mcp", version: "0.1.0" },
-  startupBuild.state === "stale"
-    ? {
-        instructions:
-          `WARNING: this gma3-mcp server build is out of date: ${startupBuild.reason}. ` +
-          `Tell the user before doing show work, and do not work around a missing tool with gma3_lua or gma3_command. ` +
-          `To fix: ${startupBuild.action}. gma3_status reports the build state.`,
-      }
-    : undefined,
+  {
+    instructions: serverInstructions(
+      startupBuild.state === "stale"
+        ? `WARNING: this gma3-mcp server build is out of date: ${startupBuild.reason}. ` +
+            `Tell the user before doing show work, and do not work around a missing tool with gma3_lua or gma3_command. ` +
+            `To fix: ${startupBuild.action}. gma3_status reports the build state.`
+        : undefined,
+    ),
+  },
 );
 
 // Arbitrary Lua execution is a separately gated capability. The console-side switch (the plugin's
@@ -182,6 +185,7 @@ server.registerTool(
   {
     title: "Execute a grandMA3 command",
     description:
+      COMMAND_FALLBACK_NOTE +
       "Execute a grandMA3 command-line command exactly as it would be typed (without Please/Enter). " +
       'Examples: "Go+ Sequence 1", "Fixture 1 Thru 10 At 50", "Store Cue 2 /Merge /NoConfirmation", "ClearAll", "FaderMaster Page 1.201 At 75 Fade 2". ' +
       "Returns the command line feedback (OK, Syntax Error, Illegal Command). Commands that produce output (List, etc.) print to the console history, not here; use gma3_get_object / gma3_list_children to read data. " +
@@ -232,6 +236,7 @@ if (allowLuaTool) {
     {
       title: "Run Lua inside grandMA3",
       description:
+        LUA_FALLBACK_NOTE +
         "Evaluate Lua 5.4 code inside the grandMA3 Lua engine and return the result(s) as JSON. The code is first compiled as an expression ('return <code>'), then as a statement block. " +
         "All grandMA3 Lua API functions are available (Cmd, ObjectList, DataPool, Root, ShowData, Patch, Programmer, SelectedSequence, GetCurrentCue, GetExecutor, GetVar/SetVar, Printf, Echo, Enums, ...). " +
         "Object handles are returned as {name, class, addr, addrNative, index, childCount}; use handle:Get('Prop') to read properties, :Children(), :Count(), :Ptr(i). " +
