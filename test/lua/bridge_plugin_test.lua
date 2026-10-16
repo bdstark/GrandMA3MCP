@@ -649,9 +649,11 @@ do
   local fxStrip = fixture({ name = "Strip 1", class = "Fixture", addr = "14.9.7.1.2.7", children = { stripSub }, props = { FID = "7", CID = "None", SubfixtureIndex = "9", FixtureType = ftStrip, Mode = stripMode, Patch = "4.001", ChannelRTCount = "2" } })
 
   -- Patch index -> handle, UI channels (0-based) and RT channels per (sub)fixture
-  -- Indices 8..10 exist for direct lookups only; GetSubfixtureCount stays 8 so the "all" scan covers 1..7.
-  local bySfIndex = { [1] = fxDimmer, [2] = fxRGB, [3] = fxMover, [4] = fxWash, [5] = sub1, [6] = sub2, [7] = fxUnpatched, [8] = fxMover2, [9] = fxStrip, [10] = stripSub }
-  local uiOf = { [1] = { 0 }, [2] = { 1, 2, 3 }, [3] = { 4, 5, 6, 7, 8 }, [4] = { 9 }, [5] = { 10, 11, 12 }, [6] = { 13, 14, 15 }, [7] = { 16 }, [8] = { 17, 18 }, [9] = { 19 }, [10] = { 20 } }
+  -- Index 0 is MA's Universal fixture (no channels), as in a show that has one. Indices 8..10 exist for direct lookups
+  -- only; GetSubfixtureCount stays 8 so the "all" scan covers 0..7.
+  local fxUniversal = fixture({ name = "Universal", class = "Fixture", addr = "14.9.7.1.2.0", props = { FID = "None", CID = "None", SubfixtureIndex = "0", Patch = "", ChannelRTCount = "0" } })
+  local bySfIndex = { [0] = fxUniversal, [1] = fxDimmer, [2] = fxRGB, [3] = fxMover, [4] = fxWash, [5] = sub1, [6] = sub2, [7] = fxUnpatched, [8] = fxMover2, [9] = fxStrip, [10] = stripSub }
+  local uiOf = { [0] = {}, [1] = { 0 }, [2] = { 1, 2, 3 }, [3] = { 4, 5, 6, 7, 8 }, [4] = { 9 }, [5] = { 10, 11, 12 }, [6] = { 13, 14, 15 }, [7] = { 16 }, [8] = { 17, 18 }, [9] = { 19 }, [10] = { 20 } }
   local uiAttr = { [0] = "Dimmer", "ColorRGB_R", "ColorRGB_G", "ColorRGB_B", "Pan", "Tilt", "Dimmer", "Gobo1", "Shutter1", "Dimmer", "ColorRGB_R", "ColorRGB_G", "ColorRGB_B", "ColorRGB_R", "ColorRGB_G", "ColorRGB_B", "Dimmer", "Pan", "Dimmer", "Shutter1", "Dimmer" }
   local uiCf = { [0] = "Dimmer 1", "ColorRGB_R 1", "ColorRGB_G 1", "ColorRGB_B 1", "Pan 1", "Tilt 1", "Dimmer 1", "Gobo1 1", "Shutter1 1", "Dimmer 1", "ColorRGB_R 1", "ColorRGB_G 1", "ColorRGB_B 1", "ColorRGB_R 1", "ColorRGB_G 1", "ColorRGB_B 1", "Dimmer 1", "Pan 1", "Dimmer 1", "Shutter1 1", "Dimmer 1" }
   local function findCf(modeH, name)
@@ -832,7 +834,7 @@ do
 
   -- FR-08 programmer ---------------------------------------------------------
   r = request("programmer", { scope = "all" })
-  check("programmer: scans every patch index with complete coverage", r.ok and r.result.coverage.complete == true and r.result.coverage.totalFixtures == 7 and r.result.coverage.scannedFixtures == 7 and r.result.coverage.scannedChannels == 17, json.encode(r.result and r.result.coverage))
+  check("programmer: scans every patch index with complete coverage", r.ok and r.result.coverage.complete == true and r.result.coverage.totalFixtures == 8 and r.result.coverage.scannedFixtures == 8 and r.result.coverage.scannedChannels == 17, json.encode(r.result and r.result.coverage))
   check("programmer: rows for selected and unselected fixtures", r.ok and r.result.total == 3 and r.result.rows[1].fid == "1" and r.result.rows[2].fid == "2" and r.result.rows[3].fid == "3", json.encode(r))
   local row1 = r.ok and r.result.rows[1]
   check("programmer: single value row", row1 and row1.attribute == "Dimmer" and row1.value == 50 and row1.valueRaw == 8388607 and row1.present == true and row1.stepCount == 1 and row1.phaser.supported == true and row1.phaser.multiStep == false, json.encode(row1))
@@ -849,9 +851,9 @@ do
   check("programmer: rows carry the channel function range and readout for unit-aware comparison",
     row1 and row1.physicalFrom == 0 and row1.physicalTo == 1 and row1.readout == "Percent" and row1.physicalUnit == "LuminousIntensity" and row1.channelFunction == "Dimmer 1", json.encode(row1))
   check("programmer: each scanned (sub)fixture lists the attributes it has",
-    r.ok and r.result.scannedFixtures[1].attributes[1] == "Dimmer" and #r.result.scannedFixtures[1].attributes == 1 and #r.result.scannedFixtures[2].attributes >= 3, json.encode(r.result and r.result.scannedFixtures))
+    r.ok and #r.result.scannedFixtures[1].attributes == 0 and r.result.scannedFixtures[2].attributes[1] == "Dimmer" and #r.result.scannedFixtures[2].attributes == 1 and #r.result.scannedFixtures[3].attributes >= 3, json.encode(r.result and r.result.scannedFixtures))
   check("programmer: the scanned (sub)fixtures are listed with fid and name",
-    r.ok and #r.result.scannedFixtures == 7 and r.result.scannedFixtures[1].fid == "1" and r.result.scannedFixtures[1].subfixtureIndex == 1 and r.result.scannedFixtures[1].name ~= nil and r.result.fixturesTruncated == false, json.encode(r.result and r.result.scannedFixtures))
+    r.ok and #r.result.scannedFixtures == 8 and r.result.scannedFixtures[1].subfixtureIndex == 0 and r.result.scannedFixtures[1].name == "Universal" and r.result.scannedFixtures[2].fid == "1" and r.result.scannedFixtures[2].subfixtureIndex == 1 and r.result.fixturesTruncated == false, json.encode(r.result and r.result.scannedFixtures))
 
   r = request("programmer", { scope = "selection" })
   check("programmer: selection scope only covers selected fixtures", r.ok and r.result.total == 1 and r.result.rows[1].fid == "1" and r.result.selectionCount == 1 and r.result.coverage.complete == true, json.encode(r))
@@ -865,8 +867,21 @@ do
   r = request("programmer", { scope = "all", limit = 1, offset = 1 })
   check("programmer: pagination", r.ok and r.result.total == 3 and r.result.count == 1 and r.result.rows[1].fid == "2", json.encode(r))
   r = request("programmer", { scope = "all", maxChannels = 2 })
-  check("programmer: channel budget cuts the scan and reports incomplete coverage", r.ok and r.result.coverage.complete == false and r.result.coverage.scannedFixtures == 2 and r.result.coverage.scannedChannels == 4 and has(r.result.limitations, "channel budget"), json.encode(r))
-  check("programmer: the fixture list only covers what was scanned", r.ok and #r.result.scannedFixtures == 2, json.encode(r.result and r.result.scannedFixtures))
+  check("programmer: channel budget cuts the scan and reports incomplete coverage", r.ok and r.result.coverage.complete == false and r.result.coverage.scannedFixtures == 3 and r.result.coverage.scannedChannels == 4 and has(r.result.limitations, "channel budget"), json.encode(r))
+  check("programmer: the fixture list only covers what was scanned", r.ok and #r.result.scannedFixtures == 3, json.encode(r.result and r.result.scannedFixtures))
+
+  -- 0.30.1: patch indices are 0..count-1. In a show without MA's Universal fixture, index 0 is the first patched
+  -- fixture; its programmer values must be in the scope "all" scan (it was skipped before).
+  local savedGetSub, savedCount0, savedUis0 = GetSubfixture, GetSubfixtureCount, GetUIChannels
+  local firstTwo = { [0] = fxDimmer, [1] = fxRGB }
+  GetSubfixtureCount = function() return 2 end
+  GetSubfixture = function(i) return firstTwo[i] end
+  GetUIChannels = function(x, asHandles) return savedUis0(type(x) == "number" and firstTwo[x] or x, asHandles) end
+  r = request("programmer", { scope = "all" })
+  GetSubfixture, GetSubfixtureCount, GetUIChannels = savedGetSub, savedCount0, savedUis0
+  local first = r.ok and byAttr(r.result.rows, "Dimmer")
+  check("programmer (0.30.1): the scan of all fixtures covers patch index 0",
+    first and first.subfixtureIndex == 0 and first.fid == "1" and first.value == 50 and r.result.coverage.totalFixtures == 2 and r.result.coverage.complete == true, json.encode(r))
 
   -- SU-11: Fixture 3's Shutter1 channel has two channel functions (Shutter1 1 at DMX 000000..0F0F0F, Shutter1 Strobe at
   -- 101010..FFFFFF). The console reports `absolute` as a share of the attribute's function range, so Decimal8 32
@@ -1540,7 +1555,7 @@ do
   r = request("feedback.read", {}, nil, C)
   check("feedback.read without items is refused with a code", r.ok == false and r.code == "no-items", r.error)
   r = request("feedback.read", { readers = { "commandText", "lastCommand", "blind", "solo", "page", "freeze", "selectedSequence", "previewBar", "sequenceActive" }, displays = { 1, 2, 9 }, executors = { 201, 202 }, sequences = { 5, 6 } }, nil, C)
-  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.30.0" and r.result.module.version == feedbackModule.VERSION and r.result.identity.showFile == "mcp-test-disposable", J(r))
+  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.30.1" and r.result.module.version == feedbackModule.VERSION and r.result.identity.showFile == "mcp-test-disposable", J(r))
   local by = {}
   if r.ok then for _, it in ipairs(r.result.items) do by[it.key] = it end end
   check("feedback.read: command text and last command are raw observations", by.commandText and by.commandText.value == "Store " and by.lastCommand.value == "Go+ Sequence 5 : OK" and by.lastCommand.note:find("not confirmation"), J(by.lastCommand))
@@ -1653,7 +1668,7 @@ do
   end
   local C = { id = 71 }
   r = request("feedback.context", { executors = { 201, 202 } }, nil, C)
-  check("feedback.context answers with Lua and input disabled", r.ok and r.result.bridgeVersion == "0.30.0" and r.result.module.version == feedbackModule.VERSION and r.result.atomic == false and r.result.generation == 1 and r.result.generationChanged == false and r.result.identity.showFile == "mcp-test-disposable" and r.result.identity.dataPool.name == "Default", J(r))
+  check("feedback.context answers with Lua and input disabled", r.ok and r.result.bridgeVersion == "0.30.1" and r.result.module.version == feedbackModule.VERSION and r.result.atomic == false and r.result.generation == 1 and r.result.generationChanged == false and r.result.identity.showFile == "mcp-test-disposable" and r.result.identity.dataPool.name == "Default", J(r))
   check("feedback.context: authoritative display, bank/page, slots with availability and value", r.ok and r.result.authoritativeDisplay.rule == "configured" and r.result.encoder.value.bank.name == "Color" and r.result.encoder.value.page.name == "RGB" and r.result.slots.value.slots[1].name == "ColorRGB_R" and r.result.slots.value.slots[1].availability == "available" and r.result.slots.value.slots[1].absolute == 50 and r.result.slots.value.slots[1].unit == "None" and r.result.slots.value.slots[2].valueState == "empty" and r.result.executorPage.no == 1, J(r.result.slots))
   check("feedback.context: executor targets with functions, level and playback-target status", r.ok and #r.result.executors == 2 and r.result.executors[1].value.functions.keyPress == "Temp" and r.result.executors[1].value.level.value == 100 and r.result.executors[1].value.playbackTarget == true and r.result.executors[2].value.empty == true and r.result.executors[2].value.reserved == nil, J(r.result.executors))
   check("feedback.context: nested fields survive the serialiser depth bound", r.ok and type(r.result.slots.value.slots[1].feature) == "string" and type(r.result.executors[1].value.assigned.name) == "string")
