@@ -607,7 +607,11 @@ export function verifyBuild(input: {
     for (const [sf, id] of input.scope) {
       const pos = posOf.get(sf);
       if (pos !== undefined) want.push(norm360(expectedPhase(ph.phase, pos - minPos, span, ph.repeat)));
-      const rows = (bySf.get(sf) ?? []).filter((r) => typeof r.phaser?.phase === "number");
+      // Every participating row must carry a phase (review round 3): a row without one is not silently left out.
+      const all = bySf.get(sf) ?? [];
+      const finite = (r: BuildRow) => typeof r.phaser?.phase === "number" && Number.isFinite(r.phaser.phase);
+      for (const r of all.filter((x) => !finite(x))) problems.push(`${id} ${r.attribute}: no phase read (the shuffled distribution cannot be checked)`);
+      const rows = all.filter(finite);
       if (!rows.length) continue;
       // The fixture's phase: from an attribute the effect writes, else its first phased row.
       const own = rows.find((r) => attrs.includes(String(r.attribute))) ?? rows[0];

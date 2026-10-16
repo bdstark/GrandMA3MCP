@@ -619,3 +619,19 @@ test("SU-13 review round 1: presets stored with a rejected name write are partia
   assert.match(result.summary, /2 stored with a later step that did not succeed/);
   assert.ok(result.items[0].steps.some((st: any) => st.status === "failed"), "the failed name step is listed in the compact line");
 });
+
+test("SU-13 review round 3: with shuffle a participating channel without a phase read is a problem, never left out", () => {
+  const e: Effect = { unit: "percent", steps: [{ values: { Dimmer: { absolute: 100 }, ColorRGB_R: { absolute: 100 } } }, { values: { Dimmer: { absolute: 0 }, ColorRGB_R: { absolute: 0 } } }], phaser: { phase: { from: 0, to: 180 }, shuffle: 7 } };
+  const row = (sf: number, attribute: string, pos: number, phase: number | null | undefined) => ({ subfixtureIndex: sf, attribute, stepCount: 2, steps: [{ absolute: 100 }, { absolute: 0 }], phaser: { gridPos: pos, ...(phase === undefined ? {} : { phase }) } });
+  const scope = new Map([[1, "1"], [2, "2"]]);
+  // The reviewer's case: Dimmer 0/180, both ColorRGB_R rows without a phase field.
+  const missing = [row(1, "Dimmer", 0, 0), row(1, "ColorRGB_R", 0, undefined), row(2, "Dimmer", 1, 180), row(2, "ColorRGB_R", 1, undefined)];
+  const p1 = verifyBuild({ effect: e, rows: missing as never, scope, implied: new Set(), stepPresets: [] }).problems.join(" | ");
+  assert.match(p1, /1 ColorRGB_R: no phase read/);
+  assert.match(p1, /2 ColorRGB_R: no phase read/);
+  // A null phase is not a phase either; a numeric mismatch is still out of phase.
+  const nul = [row(1, "Dimmer", 0, 0), row(1, "ColorRGB_R", 0, null), row(2, "Dimmer", 1, 180), row(2, "ColorRGB_R", 1, 270)];
+  const p2 = verifyBuild({ effect: e, rows: nul as never, scope, implied: new Set(), stepPresets: [] }).problems.join(" | ");
+  assert.match(p2, /1 ColorRGB_R: no phase read/);
+  assert.match(p2, /2: its attributes are out of phase \(Dimmer 180, ColorRGB_R 270\)/);
+});
