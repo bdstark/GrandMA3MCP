@@ -15,7 +15,7 @@
  */
 import { z } from "zod";
 import type { Gma3Bridge } from "../bridge.js";
-import { asRead, buildResult, notRequested, stepFromError, unavailable, validationFailure, type OperationResult, type StepResult, type Verification } from "../results.js";
+import { asRead, buildResult, commandStep, notRequested, stepFromError, unavailable, validationFailure, type OperationResult, type StepResult, type Verification } from "../results.js";
 import { json, operation, type RegisterTools, type ToolContext } from "./context.js";
 import { readTargetState, FRAME_DELAY_MS } from "./livestate.js";
 
@@ -26,6 +26,13 @@ export const START_HINT = `start it at the console with Plugin "${PLUGIN}" (from
 /** The plugin rewrites its status four times a second; an older Updated means it is not running (BS-02). */
 export const STALE_S = 2;
 const MAX_SEQUENCES = 100;
+/** Sequence numbers the tools accept (the console's pool numbers; also keeps every value an exact integer). */
+const MAX_SEQUENCE_NO = 99999;
+const sequenceNo = (raw: string | number): number => {
+  const n = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isSafeInteger(n) || n < 1 || n > MAX_SEQUENCE_NO) throw new Error(`sequence numbers are whole numbers 1-${MAX_SEQUENCE_NO} (got ${raw})`);
+  return n;
+};
 
 // ---------------------------------------------------------------------------
 // ReSync
@@ -42,12 +49,13 @@ export function sequenceList(target: string): number[] | null {
   for (const part of m[1].split(/\s*\+\s*/)) {
     const r = part.match(/^(\d+)(?:\s+Thru\s+(\d+))?$/i);
     if (!r) throw new Error(`"${part}" is not a sequence number or "a Thru b" range`);
-    const a = Number(r[1]);
-    const b = r[2] === undefined ? a : Number(r[2]);
-    if (a < 1 || b < 1) throw new Error("sequence numbers start at 1");
+    const a = sequenceNo(r[1]);
+    const b = r[2] === undefined ? a : sequenceNo(r[2]);
     const [lo, hi] = a <= b ? [a, b] : [b, a];
-    if (hi - lo + 1 + out.length > MAX_SEQUENCES) throw new Error(`at most ${MAX_SEQUENCES} sequences per resync`);
-    for (let n = lo; n <= hi; n++) if (!out.includes(n)) out.push(n);
+    const count = hi - lo + 1;
+    if (count + out.length > MAX_SEQUENCES) throw new Error(`at most ${MAX_SEQUENCES} sequences per resync`);
+    // A counted loop: it ends after `count` steps whatever the values (review of PR #67).
+    for (let i = 0; i < count; i++) if (!out.includes(lo + i)) out.push(lo + i);
   }
   return out;
 }
@@ -83,16 +91,12 @@ export async function resyncPlayback(ctx: ToolContext, target: string): Promise<
       if (missing.length) return buildResult({ operation: op, target: { target, sequences: seqs }, steps, verification: unavailable("ReSync was not sent") });
     }
     const command = `ReSync ${target.trim()}`;
-    try {
-      const r = (await ctx.bridge.request("cmd", { command }, t)) as { feedback?: unknown };
-      const fb = r?.feedback === undefined || r?.feedback === null ? null : String(r.feedback);
-      const bad = fb !== null && /error|unknown|illegal|not found|syntax/i.test(fb);
-      steps.push({ name: "resync", status: bad ? "failed" : "succeeded", op: "cmd", command, feedback: fb, ...(bad ? { error: `the console answered ${JSON.stringify(fb)}` } : {}) });
-      if (bad) return buildResult({ operation: op, target: { target }, steps, verification: unavailable("the console refused ReSync") });
-    } catch (err) {
-      steps.push(stepFromError("resync", err, { op: "cmd", command }));
-      return buildResult({ operation: op, target: { target }, steps, verification: unavailable("ReSync's reply was not received; it was not resent") });
-    }
+    // The shared feedback classification: a known refusal fails, missing or unfamiliar feedback is unknown, and
+    // nothing is resent (a playing sequence afterwards proves nothing about its phasers).
+    const sent = await commandStep(ctx.bridge, "resync", command, t);
+    steps.push(sent);
+    if (sent.status === "failed") return buildResult({ operation: op, target: { target }, steps, verification: unavailable(`the console refused ReSync (${sent.feedback ?? sent.error})`) });
+    if (sent.status === "unknown") return buildResult({ operation: op, target: { target }, steps, verification: unavailable(`whether the console ran ReSync is unknown (${sent.error}); it was not resent`) });
     // Read back each sequence a frame later: which ones play (ReSync acts on running phasers only) and their cue.
     await sleep(FRAME_DELAY_MS);
     let verification: Verification = notRequested();
@@ -102,11 +106,14 @@ export async function resyncPlayback(ctx: ToolContext, target: string): Promise<
         const s = await readTargetState(ctx.bridge, `Sequence ${n}`, t);
         states.push({ sequence: n, ...(s.notRead ? { notRead: s.notRead } : { active: s.active ?? null, currentCue: s.currentCue ?? null, ...(s.lastCue ? { lastCue: s.lastCue } : {}) }) });
       }
-      const unread = states.filter((s) => (s as { notRead?: string }).notRead).length;
-      const idle = states.filter((s) => (s as { active?: boolean }).active === false).map((s) => (s as { sequence: number }).sequence);
-      verification = unread
-        ? unavailable(`${unread} sequence state(s) could not be read`, "each sequence's playback state a frame after ReSync")
-        : { status: "matched", checked: "each sequence's playback state a frame after ReSync (a phaser's realignment is gradual and its output is not observable over the bridge)", actual: { playing: states.length - idle.length, idle } };
+      // Only a readable activity flag counts: true is playing, false idle, anything else unknown (never "playing").
+      const flag = (s: unknown) => (s as { active?: unknown }).active;
+      const unknown = states.filter((s) => (s as { notRead?: string }).notRead || typeof flag(s) !== "boolean").map((s) => (s as { sequence: number }).sequence);
+      const playing = states.filter((s) => flag(s) === true).length;
+      const idle = states.filter((s) => flag(s) === false).map((s) => (s as { sequence: number }).sequence);
+      verification = unknown.length
+        ? unavailable(`the playback state of Sequence ${unknown.join(", ")} could not be read (${playing} playing, ${idle.length} idle of ${states.length})`, "each sequence's playback state a frame after ReSync")
+        : { status: "matched", checked: "each sequence's playback state a frame after ReSync (a phaser's realignment is gradual and its output is not observable over the bridge)", actual: { playing, idle } };
     }
     const idleList = states.filter((s) => (s as { active?: boolean }).active === false).map((s) => (s as { sequence: number }).sequence);
     return buildResult({
@@ -143,10 +150,22 @@ async function readVars(bridge: Gma3Bridge, keys: readonly string[], t: number):
 
 /** Whether the plugin is in the show's plugin pool: true, false, or null when the pool cannot be read. */
 async function pluginInstalled(bridge: Gma3Bridge, t: number): Promise<{ installed: boolean | null; slot?: number; error?: string }> {
+  // Page through the whole pool: "not imported" only after every entry was read (review of PR #67).
+  const PAGE = 200;
+  let offset = 0;
   try {
-    const r = (await bridge.request("children", { ref: "DataPool.Plugins", fields: ["Name"], limit: 1000 }, t)) as { items?: Array<{ name?: string; index?: number }> };
-    const hit = (r.items ?? []).find((i) => typeof i.name === "string" && i.name.toLowerCase() === PLUGIN);
-    return hit ? { installed: true, slot: hit.index } : { installed: false };
+    for (let page = 0; page < 1000; page++) {
+      const r = (await bridge.request("children", { ref: "DataPool.Plugins", fields: ["Name"], limit: PAGE, offset }, t)) as { items?: Array<{ name?: string; index?: number }>; total?: unknown };
+      const items = r.items ?? [];
+      const hit = items.find((i) => typeof i.name === "string" && i.name.toLowerCase() === PLUGIN);
+      if (hit) return { installed: true, slot: hit.index };
+      offset += items.length;
+      if (typeof r.total === "number") {
+        if (offset >= r.total) return { installed: false };
+        if (!items.length) return { installed: null, error: `the plugin pool lists ${r.total} entries but only ${offset} could be read` };
+      } else if (items.length < PAGE) return { installed: false };
+    }
+    return { installed: null, error: "the plugin pool could not be read to its end" };
   } catch (err) {
     return { installed: null, error: err instanceof Error ? err.message : String(err) };
   }
@@ -187,12 +206,20 @@ export function statusView(installed: { installed: boolean | null; slot?: number
   if (installed.installed === false) {
     running = false;
     explanation = `${PLUGIN_NAME} is not imported in this show${state ? " (its status variables are left from an earlier run)" : ""}. Import gma3_beat_sync.xml into an empty plugin slot, then ${START_HINT}`;
-  } else if (!state || state === "not running") {
+  } else if (!state || state === "not running" || state === "stopped") {
     running = false;
-    explanation = `${PLUGIN_NAME} is not running${state ? "" : " (it has never published a status in this show)"}; ${START_HINT}. After a show load it is always stopped`;
+    explanation = `${PLUGIN_NAME} is not running${state ? ` (state "${state}")` : " (it has never published a status in this show)"}; ${START_HINT}. After a show load it is always stopped`;
+  } else if (state === "error") {
+    running = false;
+    explanation = `${PLUGIN_NAME} stopped with an error${v("Error") ? `: ${v("Error")}` : ""}; ${START_HINT}`;
   } else if (age === null) {
     running = null;
     explanation = `the plugin's state reads "${state}", but whether it is current cannot be told (${now === null ? "the console clock cannot be read (needs bridge 0.35.0)" : "BeatSync.Updated is not a time"})`;
+  } else if (age < -STALE_S) {
+    // A time ahead of the console clock (a show saved on a machine whose clock was ahead, or a clock correction) is not
+    // evidence of a live plugin (review of PR #67).
+    running = null;
+    explanation = `the plugin's status is stamped ${-age} s ahead of the console clock, so it cannot be judged live (the values may be saved from a machine with another clock); ${START_HINT} if it is not running`;
   } else if (age > STALE_S) {
     running = false;
     explanation = `${PLUGIN_NAME} is not running: its status was last written ${age} s ago (it writes four times a second; the values are left from an earlier run, e.g. saved with the show); ${START_HINT}`;
@@ -281,9 +308,10 @@ export function planConfig(raw: Record<string, unknown>): { writes: Write[]; err
   });
   put("Resync", raw.resync, (v) => {
     const list = Array.isArray(v) ? v : typeof v === "string" ? null : (() => { throw new Error("resync must be a list of sequence numbers or a sequence list such as \"1 + 11 Thru 19\" (or null to clear)"); })();
+    if (list && list.length > MAX_SEQUENCES) throw new Error(`resync lists at most ${MAX_SEQUENCES} sequences`);
     const nums = list ? list.map((x) => {
-      if (typeof x !== "number" || !Number.isInteger(x) || x < 1) throw new Error("resync lists sequence numbers (positive integers)");
-      return x;
+      if (typeof x !== "number") throw new Error("resync lists sequence numbers");
+      return sequenceNo(x);
     }) : sequenceList(`Sequence ${v}`)!;
     if (!nums.length) throw new Error("resync must name at least one sequence (or null to clear)");
     sequences.push(...nums);
@@ -363,9 +391,19 @@ export async function configureTempoSync(ctx: ToolContext, raw: Record<string, u
         continue;
       }
       try {
-        if (w.value === null) await ctx.bridge.request("vars.delete", { scope: "global", name: `BeatSync.${w.key}` }, t);
-        else await ctx.bridge.request("vars.set", { scope: "global", name: `BeatSync.${w.key}`, value: w.value, type: "text" }, t);
-        steps.push({ name: `BeatSync.${w.key}`, status: "succeeded", op: w.value === null ? "vars.delete" : "vars.set", detail: { value: w.value } });
+        const opName = w.value === null ? "vars.delete" : "vars.set";
+        const r = (await ctx.bridge.request(opName, w.value === null ? { scope: "global", name: `BeatSync.${w.key}` } : { scope: "global", name: `BeatSync.${w.key}`, value: w.value, type: "text" }, t)) as { after?: { exists?: unknown; value?: unknown } } | null;
+        // Each write is judged by the console's own after-read before the next one is sent (review of PR #67): a
+        // running plugin must not pick up a configuration only partly as asked.
+        const after = r?.after;
+        const got = after && typeof after.exists === "boolean" ? (after.exists && after.value !== undefined && after.value !== null ? String(after.value) : null) : undefined;
+        if (got === undefined) {
+          steps.push({ name: `BeatSync.${w.key}`, status: "unknown", op: opName, error: "the console's answer did not include the variable's state; the read-back decides", detail: { value: w.value } });
+          stopped = `BeatSync.${w.key}`;
+        } else if (got !== w.value) {
+          steps.push({ name: `BeatSync.${w.key}`, status: "failed", op: opName, error: `the console kept BeatSync.${w.key} ${JSON.stringify(got)} (expected ${JSON.stringify(w.value)})`, detail: { value: w.value } });
+          stopped = `BeatSync.${w.key}`;
+        } else steps.push({ name: `BeatSync.${w.key}`, status: "succeeded", op: opName, detail: { value: w.value } });
       } catch (err) {
         steps.push(stepFromError(`BeatSync.${w.key}`, err, { op: w.value === null ? "vars.delete" : "vars.set" }));
         stopped = `BeatSync.${w.key}`;

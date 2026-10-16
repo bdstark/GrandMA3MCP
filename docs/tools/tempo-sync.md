@@ -14,15 +14,19 @@ variables `BeatSync.*`. No code crosses the repositories, and no OSC or console 
 ## ReSync
 
 `gma3_playback` with `action: "resync"` and a target:
-- `Sequence 1`, a list or range such as `Sequence 1 + 11 Thru 19 + 31` (up to 100 sequences);
+- `Sequence 1`, a list or range such as `Sequence 1 + 11 Thru 19 + 31` (up to 100 sequences, numbers 1-99999;
+  anything else is refused before any range is expanded);
 - or an executor (`Executor 201`).
 
 Sequence targets:
 1. Every sequence is checked first. A missing one refuses the call before anything is sent, because ReSync of a
    range skips it silently.
-2. `ReSync <target>` is sent once and never resent.
+2. `ReSync <target>` is sent once and never resent. The console's answer goes through the shared feedback
+   classification: a known refusal ("Access denied", "Command not executed", ...) fails, and missing or unfamiliar
+   feedback is unknown, never success.
 3. A frame later, each sequence's state is read back: playing or not, and its current cue. The summary names the
-   sequences that don't play, since there is nothing to realign in them.
+   sequences that don't play, since there is nothing to realign in them. Only a readable activity flag counts: a
+   sequence whose state can't be read makes the verification `unavailable`, never "playing".
 
 **What ReSync does:**
 - **Phasers:** the console's manual says ReSync "gradually synchronizes phasers": it moves the start point of the
@@ -34,11 +38,14 @@ Sequence targets:
 
 ## gma3_tempo_sync_status
 
-- `installed`: whether `gma3_beat_sync` is in the show's plugin pool, with its `slot`.
+- `installed`: whether `gma3_beat_sync` is in the show's plugin pool, with its `slot`. The pool is read page by page,
+  and "not imported" is said only after every entry was read; otherwise `installed` is null.
 - `running`:
-  - false when `BeatSync.State` is missing or `not running`, or when `BeatSync.Updated` is more than 2 s older than
-    the console clock (the plugin writes its status four times a second);
-  - null when the clock can't be read (`show.files`, bridge 0.35.0).
+  - false when `BeatSync.State` is missing, `not running`, `stopped` or `error` (the error is quoted), or when
+    `BeatSync.Updated` is more than 2 s older than the console clock (the plugin writes its status four times a
+    second);
+  - null when the clock can't be read (`show.files`, bridge 0.35.0), or when `Updated` is more than 2 s ahead of the
+    console clock (saved from a machine with another clock, or a clock correction).
 
   After a show load the plugin is always stopped, and its status variables saved with the show are stale.
 - `explanation` says plainly what holds: the plugin is not imported, not running (with how to start it), running
@@ -66,8 +73,12 @@ through the bridge's `cmd`, it would block in the plugin's loop.
 | `lead_ms` | `BeatSync.LeadMs` | 0-200 ms; about 17 puts the console's effect on the beat |
 
 `null` clears a key, so the plugin falls back to its default. Values are written as text, as the plugin reads them,
-and an unchanged value is not written. Every written key is read back: `matched` or `mismatched`, with `previous`
-and `now`.
+and an unchanged value is not written.
+
+Each write is judged by the console's own after-read before the next one is sent. A value the console kept, or an
+answer without the variable's state, stops the call, and the remaining keys are listed as skipped, so a running
+plugin never picks up a configuration only partly as asked. Afterwards every key is read back: `matched` or
+`mismatched`, with `previous` and `now`.
 
 After the writes the tool waits 0.7 s, since the plugin reads its configuration every 0.5 s, and includes the
 problems a running plugin reports about the changed keys.

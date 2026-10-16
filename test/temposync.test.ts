@@ -21,15 +21,25 @@ class Console {
   install(h: Harness) {
     h.fake.on("children", (args) => {
       if (args.ref !== "DataPool.Plugins") throw new Error("unexpected");
-      return { items: this.plugins.map((name, i) => ({ name, index: i + 1 })) };
+      const all = this.plugins.map((name, i) => ({ name, index: i + 1 }));
+      const offset = Number(args.offset ?? 0);
+      const limit = Number(args.limit ?? 100);
+      return { total: all.length, offset, count: Math.min(limit, Math.max(0, all.length - offset)), items: all.slice(offset, offset + limit) };
     });
     h.fake.on("vars.get", ({ names }) => ({ items: (names as string[]).map((n) => (this.vars.has(n) ? { name: n, exists: true, value: this.vars.get(n), type: "text" } : { name: n, exists: false })) }));
+    // As the bridge answers: before and after reads of the variable.
+    const read = (n: string) => (this.vars.has(n) ? { name: n, exists: true, value: this.vars.get(n), type: "text" } : { name: n, exists: false });
     h.fake.on("vars.set", ({ name, value, type }) => {
       assert.equal(type, "text");
+      const before = read(String(name));
       if (!this.ignore.has(String(name))) this.vars.set(String(name), String(value));
-      return { name, value };
+      return { scope: "global", before, after: read(String(name)) };
     });
-    h.fake.on("vars.delete", ({ name }) => ({ name, deleted: this.vars.delete(String(name)) }));
+    h.fake.on("vars.delete", ({ name }) => {
+      const before = read(String(name));
+      if (!this.ignore.has(String(name))) this.vars.delete(String(name));
+      return { scope: "global", before, after: read(String(name)) };
+    });
     h.fake.on("show.files", () => ({ now: this.now, files: [], current: "x" }));
     h.fake.on("objects", (args) => {
       const m = String(args.ref).match(/^Sequence (\d+)$/);
@@ -74,7 +84,7 @@ test("sequenceList: lists, ranges in either direction, no duplicates; other targ
   assert.equal(sequenceList("Executor 201"), null);
   assert.throws(() => sequenceList("Sequence 1 + x"), /not a sequence number/);
   assert.throws(() => sequenceList("Sequence 1 Thru 500"), /at most 100/);
-  assert.throws(() => sequenceList("Sequence 0"), /start at 1/);
+  assert.throws(() => sequenceList("Sequence 0"), /whole numbers 1-99999/);
 });
 
 test("resync: every sequence checked, ReSync sent once, each state read a frame later; the note says what it does", async () => {
@@ -219,4 +229,88 @@ test("configure_tempo_sync: a missing resync sequence writes nothing; an ignored
   assert.ok(run.result.warnings.some((w: string) => /the plugin reports: Master: speed master 3.16 is locked/.test(w)), JSON.stringify(run.result.warnings));
   const none = await h.callJson("gma3_configure_tempo_sync", {});
   assert.match(none.result.validationErrors.join(" "), /nothing to change/);
+});
+
+// --- review of PR #67 -----------------------------------------------------------------------------
+
+test("review 1: sequence numbers are bounded before any range loop (no hang at 2^53)", () => {
+  assert.throws(() => sequenceList("Sequence 9007199254740992"), /whole numbers 1-99999/);
+  assert.throws(() => sequenceList("Sequence 9007199254740991 Thru 9007199254740992"), /whole numbers/);
+  assert.throws(() => sequenceList("Sequence 100000"), /whole numbers/);
+  assert.match(planConfig({ resync: [9007199254740992] }).errors.join(" "), /whole numbers/);
+  assert.match(planConfig({ resync: "9007199254740992" }).errors.join(" "), /whole numbers/);
+  assert.match(planConfig({ resync: Array.from({ length: 101 }, (_, i) => i + 1) }).errors.join(" "), /at most 100/);
+  assert.deepEqual(sequenceList("Sequence 99999"), [99999]);
+});
+
+test("review 1: an ignored write stops the call before later writes; an ignored delete too", async () => {
+  con.ignore.add("BeatSync.Master");
+  const r = await h.callJson("gma3_configure_tempo_sync", { master: 12, on_beat: "Go+ Macro 2" });
+  assert.notEqual(r.result.outcome, "succeeded");
+  assert.ok(r.result.steps.some((s: { name: string; status: string; error?: string }) => s.name === "BeatSync.Master" && s.status === "failed" && /kept BeatSync.Master null/.test(String(s.error))), r.text);
+  assert.ok(r.result.steps.some((s: { name: string; status: string }) => s.name === "BeatSync.OnBeat" && s.status === "skipped"));
+  assert.equal(con.vars.has("BeatSync.OnBeat"), false, "the later write was not sent");
+  con.ignore.clear();
+  con.vars.set("BeatSync.OnBar", "Go+ Macro 1");
+  con.ignore.add("BeatSync.OnBar");
+  // LeadMs comes after OnBar in the write order.
+  const del = await h.callJson("gma3_configure_tempo_sync", { on_bar: null, lead_ms: 17 });
+  assert.ok(del.result.steps.some((s: { name: string; status: string }) => s.name === "BeatSync.OnBar" && s.status === "failed"));
+  assert.equal(con.vars.has("BeatSync.LeadMs"), false);
+  // An answer without the variable's state is unknown and stops the call too.
+  con.ignore.clear();
+  h.fake.on("vars.set", () => ({ ok: true }));
+  const odd = await h.callJson("gma3_configure_tempo_sync", { master: 4, quantum: 5 });
+  assert.ok(odd.result.steps.some((s: { name: string; status: string }) => s.name === "BeatSync.Master" && s.status === "unknown"));
+  assert.ok(odd.result.steps.some((s: { name: string; status: string }) => s.name === "BeatSync.Quantum" && s.status === "skipped"));
+});
+
+test("review 1: ReSync feedback uses the shared classification: refusals fail, missing or unfamiliar feedback is unknown", async () => {
+  for (const [fb, status] of [["Access denied", "failed"], ["Error #72: Command not executed", "failed"], ["Hmm, something", "unknown"]] as const) {
+    con.feedback = fb;
+    const r = await resyncPlayback(h.ctx, "Sequence 1");
+    assert.equal(r.steps.find((s) => s.name === "resync")!.status, status, fb);
+    assert.notEqual(r.outcome, "succeeded", fb);
+    assert.equal(r.verification.status, "unavailable", fb);
+  }
+  h.fake.on("cmd", () => ({ feedback: null }));
+  const none = await resyncPlayback(h.ctx, "Sequence 1");
+  assert.equal(none.steps.find((s) => s.name === "resync")!.status, "unknown");
+  assert.match(String(none.verification.detail), /not resent/);
+});
+
+test("review 1: an unreadable activity flag is not counted as playing", async () => {
+  h.fake.on("object", () => ({ class: "Sequence", name: "x" }));
+  const r = await resyncPlayback(h.ctx, "Sequence 1 + 11");
+  assert.equal(r.verification.status, "unavailable");
+  assert.match(String(r.verification.detail), /could not be read \(0 playing, 0 idle of 2\)/);
+});
+
+test("review 1: a fresh 'stopped' or 'error' state is not running; a status stamped ahead of the console clock is not live", () => {
+  const now = 1792180000;
+  const fresh = new Date(now * 1000 - 300).toISOString();
+  const s = (o: Record<string, string>) => statusView({ installed: true }, new Map(Object.entries(o)), now);
+  assert.equal(s({ State: "stopped", Updated: fresh }).running, false);
+  const err = s({ State: "error", Updated: fresh, Error: "socket bind failed" });
+  assert.equal(err.running, false);
+  assert.match(err.explanation, /stopped with an error: socket bind failed/);
+  assert.equal(s({ State: "measuring", Updated: fresh }).running, true);
+  const future = s({ State: "following", Updated: new Date((now + 3600) * 1000).toISOString(), Tempo: "120" });
+  assert.equal(future.running, null);
+  assert.match(future.explanation, /3600 s ahead of the console clock/);
+  assert.equal(s({ State: "following", Updated: new Date((now + 1) * 1000).toISOString() }).running, true, "a second of clock skew is tolerated");
+});
+
+test("review 1: the plugin pool is read page by page; an incomplete read is not 'not imported'", async () => {
+  con.following();
+  con.plugins = [...Array.from({ length: 1000 }, (_, i) => `other ${i}`), "gma3_beat_sync"];
+  const r = await h.callJson("gma3_tempo_sync_status", {});
+  assert.equal(r.result.installed, true, r.text);
+  assert.equal(r.result.slot, 1001);
+  assert.equal(r.result.running, true);
+  // The pool claims more entries than it gives.
+  h.fake.on("children", (args) => (Number(args.offset ?? 0) === 0 ? { total: 300, items: Array.from({ length: 200 }, (_, i) => ({ name: `x${i}`, index: i + 1 })) } : { total: 300, items: [] }));
+  const part = await h.callJson("gma3_tempo_sync_status", {});
+  assert.equal(part.result.installed, null);
+  assert.match(part.result.installedNote, /lists 300 entries but only 200 could be read/);
 });
