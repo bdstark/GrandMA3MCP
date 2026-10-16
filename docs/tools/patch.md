@@ -235,6 +235,44 @@ channel whose break cannot be read (listed with `addressUnknown: true` and no br
 reference the template it points to and its break offsets. With a mode, only the geometry that mode uses is listed
 (its root's tree and the templates its cells reference), together with the models those nodes use.
 
+### Cell order (SU-19)
+
+A mode's cells are numbered in geometry-tree order: the patched fixture's 401.1, 401.2 and so on. The bulbs along a
+string are wired in DMX order instead, because data runs along the string. Each mode with more than one cell
+carries `cellOrder`:
+
+- `dmxRuns`: the cells in DMX order (by break, then the cell's offset in it), as runs. The Festoon's "Pixel Mode - 2
+  string" reads `1-9, 19-29, 10-18, 30-40`, the interleave the field test worked out by hand.
+- `differsFromCellNumbers`: whether that order differs from the cell numbers.
+- `dmx`: the full list, when a mode is given.
+- `stepsInDmxOrder` and `stepsInCellNumberOrder`: the distance between neighbouring cells, from the type's own
+  positions, in `unit`. In DMX order the Festoon steps one 2 ft pitch at a time (the last four bulbs are bunched); in
+  cell-number order it jumps up to 7.2 ft.
+- No order is given when a cell's DMX address cannot be read.
+
+Use the order with `gma3_layout_cells` `order: "dmx"` ([positions.md](positions.md#gma3_layout_cells)) and with
+`{cells_of: <fid>, order: "dmx"}` in group lists ([groups.md](groups.md#compact-specs-and-the-batch-form-su-12)).
+Evidence: the [SU-19 record](../probes/su-19-fixture-type-data-macos-2.5.1.md).
+
+### Wheels (SU-19, bridge 0.34.0)
+
+`wheels` lists the type's wheels. Each wheel has:
+- `kind`: `color` (a Color attribute drives it, or the wheel is named like one), `gobo`, or `other`.
+- `functions`: the channel functions that drive it, per mode: channel, attribute, and the DMX range in the
+  channel's resolution.
+- `slots`: name, `color` (`{r, g, b, a}` in 0..1), `media` and `appearance` (a gobo image), and `selectedBy`. That
+  is the channel sets whose WheelSlotIndex picks the slot: mode, channel, attribute, set name, and `dmxFrom` /
+  `dmxTo` in the channel's resolution (8-bit: the colour wheel's "colour 1" is 11-21).
+- `slotColors`:
+  - `set`;
+  - `unset`, when every slot reads white. A colour wheel then gets a note to ask what colour each slot is instead
+    of guessing; converted grandMA2-library types have no slot colours.
+  - `unreadable`.
+- `unselectedSlots`: slots no channel set selects.
+
+The bridge sends the wheel channel functions beside the modes (`wheelFunctions`, each tagged with its mode), because
+nested inside a mode they would pass the console serialiser's depth bound.
+
 ## Live test procedure
 
 `test/live/patch.live.ts`, with `GMA3_LIVE=1` **and** `GMA3_LIVE_EXCLUSIVE=1` (patch changes are committed with no

@@ -651,3 +651,19 @@ test("a reset property that cannot be read is written, and one that stays unread
   assert.equal(result.verification.status, "mismatched");
   assert.match(result.verification.detail, /SpeedMasterOverride: expected "", read null/);
 });
+
+test("SU-19: store_group preview expands {cells_of, order: dmx} through the console's type data", async () => {
+  // Fixture 501's three cells sit along the string in DMX order 3, 1, 2.
+  h.fake.on("patch.cellLayout", () => ({ type: { no: 7, name: "Strip" }, mode: { no: 1, name: "3 cell" }, cells: [{ index: 1 }, { index: 2 }, { index: 3 }] }));
+  h.fake.on("patch.typeStructure", () => ({ modes: [{ cellList: [{ index: 1, breakOffsets: "1:4" }, { index: 2, breakOffsets: "1:7" }, { index: 3, breakOffsets: "1:1" }] }] }));
+  const { result, isError } = await h.callJson("gma3_store_group", { group: 906, arrangement: { type: "row", fixtures: [{ cells_of: 501, order: "dmx" }, 401] }, preview: true });
+  assert.equal(isError, false, JSON.stringify(result));
+  assert.deepEqual(cells(result.plan.items), ["501.3@0/0/0", "501.1@1/0/0", "501.2@2/0/0", "401@3/0/0"]);
+  assert.deepEqual(result.cellLists, [{ cells_of: 501, order: "dmx", ids: "501.3, 501.1-501.2" }]);
+  assert.equal(mutations().length, 0);
+  // A fixture without cells: refused before anything is sent.
+  h.fake.on("patch.cellLayout", () => ({ type: { no: 1, name: "Par" }, mode: { no: 1, name: "x" }, cells: [] }));
+  const none = await h.callJson("gma3_store_group", { group: 906, arrangement: { type: "row", fixtures: [{ cells_of: 401 }] }, preview: true });
+  assert.equal(none.isError, true);
+  assert.match(none.result.validationErrors.join(" "), /cells_of: Fixture 401 has no cells/);
+});

@@ -114,7 +114,12 @@ fixtures in between; `check_selection` and the recall check detect that.
   - `center`: packed in the middle, the extra cell on the right.
 
   A row longer than the width is refused.
-- A fixture's cells in physical order (the Festoon's bulb order) wait for SU-19's cell-order read.
+- `{cells_of: 401, order: "dmx"}` in a list stands for fixture 401's cells, in DMX order, which is the physical order
+  along the string (SU-19, see [cell order](patch.md#cell-order-su-19)). `order: "index"` gives the cell numbers;
+  `reverse: true` runs either order backwards. The tool reads the fixture's type and mode through the console. The
+  result's `cellLists` says what each entry stood for (the Festoon's 2-string mode: `401.1-401.9, 401.19-401.29,
+  401.10-401.18, 401.30-401.40`). A fixture without cells, or with an unreadable address, is refused before anything
+  is sent.
 - `groups: [{group, name, items | arrangement, overwrite, preserve_grid_positions, allow_shared_cells}]` stores
   several groups one after the other, each with the steps above; `exclusive`, `verify` and the other options apply to
   every item unless an item gives its own. A group listed twice is refused. See

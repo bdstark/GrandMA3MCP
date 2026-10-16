@@ -788,6 +788,17 @@ on macOS onPC 2.5.1).
 - `gma3_patch_type_structure` lists wheels: wheel name, slots with name, colour and media, and the channel-set DMX
   range that selects each slot. It says when slot colours are unset, so the agent asks instead of guessing.
 
+**Status:** implemented in bridge 0.34.0 ([docs/tools/patch.md](docs/tools/patch.md#cell-order-su-19), probe record
+[su-19-fixture-type-data-macos-2.5.1.md](docs/probes/su-19-fixture-type-data-macos-2.5.1.md), live test
+`test/live/fixture-type-data.live.ts` on macOS onPC 2.5.1: 4 checks passed, the layout preview skipped while the
+console's patch copy was open).
+- **The physical order can be derived from the type:** it is the cells' DMX order. The Festoon's 2-string mode reads
+  `1-9, 19-29, 10-18, 30-40`, and in that order every step between bulbs is one 2 ft pitch of the type's positions.
+  `gma3_patch_type_structure` reports it as `cellOrder`. `gma3_layout_cells` takes `order: "dmx"`, and group lists
+  take `{cells_of: <fid>, order: "dmx"}`. No order has to be given by hand.
+- `wheels`: slots with name, colour, media and the channel sets (DMX range) that select them; `slotColors: "unset"`
+  with a note to ask when every slot of a colour wheel reads white.
+
 ## SU-20 — Save the show
 
 **Request:** Save the show file from a chat with no shell.

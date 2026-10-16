@@ -18,6 +18,7 @@ import { z } from "zod";
 import { BridgeError } from "../bridge.js";
 import { json, type RegisterTools } from "./context.js";
 import { UNITS } from "./positions.js";
+import { cellOrderView, type OrderCell } from "./cellorder.js";
 
 type Unit = keyof typeof UNITS;
 const UNIT_NAMES = Object.keys(UNITS) as Unit[];
@@ -40,12 +41,84 @@ interface ModeStructure {
   size?: Record<string, unknown>;
   [k: string]: unknown;
 }
+export interface WheelSlot {
+  index: number;
+  name?: string;
+  color?: { r?: number; g?: number; b?: number; a?: number } | null;
+  media?: string;
+  appearance?: string;
+}
+export interface Wheel {
+  index: number;
+  name?: string;
+  slots?: WheelSlot[];
+}
+export interface WheelFunction {
+  mode?: string;
+  channel?: string;
+  attribute?: string;
+  channelFunction?: string;
+  wheel?: string;
+  bits?: number;
+  dmxFrom?: string;
+  dmxTo?: string;
+  channelSets?: Array<{ name?: string; slot?: number | null; dmxFrom?: string; dmxTo?: string }>;
+}
 export interface TypeStructure {
   type?: Record<string, unknown>;
   modes?: ModeStructure[];
   geometry?: GeometryNode[];
   models?: Array<Record<string, unknown>>;
+  wheels?: Wheel[];
+  wheelFunctions?: WheelFunction[];
   limitations?: string[];
+}
+
+/** A 24-bit hex DMX value as displayed ("0B0B0B") in the channel's resolution (8-bit: 11). */
+export function dmxAt(hex: string | undefined, bits: number): number | null {
+  if (typeof hex !== "string" || !/^[0-9a-f]{1,6}$/i.test(hex.trim())) return null;
+  const raw = parseInt(hex.trim(), 16);
+  return Math.round((raw * (2 ** bits - 1)) / 16777215);
+}
+
+const isWhite = (c: WheelSlot["color"]) => !!c && c.r === 1 && c.g === 1 && c.b === 1;
+
+/**
+ * The wheels with each slot's name, colour, media and the channel sets that select it (per mode: channel, attribute,
+ * DMX range in the channel's resolution). A colour wheel whose slots all read white has no colours in the type: the
+ * note says so, so the slot colours are asked for, not guessed.
+ */
+export function wheelsView(res: TypeStructure) {
+  const fns = res.wheelFunctions ?? [];
+  return (res.wheels ?? []).map((w) => {
+    const mine = fns.filter((f) => f.wheel === w.name);
+    const colorWheel = mine.some((f) => /^color/i.test(f.attribute ?? "")) || /^c\d*$|colou?r/i.test(w.name ?? "");
+    const slots = (w.slots ?? []).map((sl) => ({
+      index: sl.index,
+      name: sl.name,
+      color: sl.color ?? null,
+      ...(sl.media ? { media: sl.media } : {}),
+      ...(sl.appearance ? { appearance: sl.appearance } : {}),
+      selectedBy: mine.flatMap((f) =>
+        (f.channelSets ?? [])
+          .filter((cs) => cs.slot === sl.index)
+          .map((cs) => ({ mode: f.mode, channel: f.channel, attribute: f.attribute, channelSet: cs.name, bits: f.bits ?? 8, dmxFrom: dmxAt(cs.dmxFrom, f.bits ?? 8), dmxTo: dmxAt(cs.dmxTo, f.bits ?? 8) })),
+      ),
+    }));
+    const allWhite = slots.length > 1 && slots.every((sl) => isWhite(sl.color));
+    const unreadable = slots.filter((sl) => !sl.color).length;
+    const unselected = mine.length ? slots.filter((sl) => !sl.selectedBy.length).map((sl) => sl.index) : [];
+    return {
+      index: w.index,
+      name: w.name,
+      kind: colorWheel ? "color" : mine.some((f) => /^gobo/i.test(f.attribute ?? "")) ? "gobo" : "other",
+      functions: [...new Map(mine.map((f) => [`${f.mode}|${f.channelFunction}`, { mode: f.mode, channel: f.channel, attribute: f.attribute, channelFunction: f.channelFunction, bits: f.bits ?? 8, dmxFrom: dmxAt(f.dmxFrom, f.bits ?? 8), dmxTo: dmxAt(f.dmxTo, f.bits ?? 8) }])).values()],
+      slotColors: unreadable ? "unreadable" : allWhite ? "unset" : "set",
+      slots,
+      ...(colorWheel && allWhite ? { note: "every slot reads white: the fixture type carries no slot colours (common in converted grandMA2-library types). Ask what colour each slot is instead of guessing from its name" } : {}),
+      ...(unselected.length ? { unselectedSlots: unselected } : {}),
+    };
+  });
 }
 
 const LENGTH_KEYS = ["posX", "posY", "posZ", "length", "width", "height"];
@@ -88,9 +161,18 @@ export function structureView(res: TypeStructure, opts: { unit: Unit; channels: 
       // The per-cell list only with channels or geometry: a summary of a pixel fixture's modes stays small.
       ...(opts.channels || opts.geometry !== "none" ? { cellList: (cellList ?? []).map((c) => inUnit(c, opts.unit)) } : {}),
       ...(opts.channels ? { channels } : {}),
+      // SU-19: the physical (DMX) order of the cells; the full list with a mode, the runs in a summary.
+      ...(() => {
+        const order = cellOrderView((cellList ?? []) as unknown as OrderCell[], (res.modes?.length ?? 0) === 1);
+        if (!order) return {};
+        const conv = (st: { min: number; max: number; mean: number } | undefined) => (st ? { min: round(st.min / UNITS[opts.unit]), max: round(st.max / UNITS[opts.unit]), mean: round(st.mean / UNITS[opts.unit]) } : undefined);
+        const o = order as Record<string, unknown>;
+        return { cellOrder: { ...o, ...(o.stepsInDmxOrder ? { stepsInDmxOrder: conv(o.stepsInDmxOrder as never) } : {}), ...(o.stepsInCellNumberOrder ? { stepsInCellNumberOrder: conv(o.stepsInCellNumberOrder as never) } : {}) } };
+      })(),
     };
   });
   const out: Record<string, unknown> = { type: res.type, unit: opts.unit, angles: "degrees", modes };
+  if (res.wheels) out.wheels = wheelsView(res);
   if (opts.geometry !== "none" && res.geometry) {
     const nodes = opts.geometry === "mode" && res.modes?.length === 1 ? modeGeometry(res.geometry, res.modes[0]) : res.geometry;
     out.geometry = nodes.map((n) => inUnit(n, opts.unit));
@@ -109,7 +191,9 @@ export const registerTypeStructureTools: RegisterTools = (server, ctx) => {
       description:
         "Read-only. One fixture type of the show (number or name, as gma3_patch_types lists it). Per DMX mode: footprint, breaks, the root geometry and its size (the model's length, width, height), the cells (the geometry references a patched fixture's cells come from: name, position, break offset) and, with channels, every DMX channel expanded per cell: break, offset (1-based within the break), fine/ultra offsets, attribute(s), cell, virtual (no DMX address, e.g. an RGB fixture's dimmer). " +
         "addressesUsed counts the footprint's addresses the channels cover; limitations say what could not be established. geometry: the tree as flat nodes (name, class, parent, depth, position, rotation, model, the template a reference points to); with a mode, only the geometry that mode uses. " +
-        "Without a mode, every mode is summarised (cells, footprint) and channels and geometry are left out unless asked for (a pixel fixture's full listing is large). Lengths in unit (m default; cm, mm, ft, in), angles in degrees. Needs bridge 0.28.0.",
+        "Without a mode, every mode is summarised (cells, footprint) and channels and geometry are left out unless asked for (a pixel fixture's full listing is large). Lengths in unit (m default; cm, mm, ft, in), angles in degrees. Needs bridge 0.28.0. " +
+        "cellOrder (SU-19): the cells' physical order along the string is their DMX order, which can differ from the cell numbers (the Festoon's 2-string mode: 1-9, 19-29, 10-18, 30-40); stepsInDmxOrder checks it against the type's positions. Use it with gma3_layout_cells order: \"dmx\" and group lists {cells_of: <fid>, order: \"dmx\"}. " +
+        "wheels (bridge 0.34.0): each wheel's slots with name, colour, media and the channel sets that select them (mode, channel, attribute, DMX range in the channel's resolution); slotColors says set, unset (every slot white: ask, do not guess) or unreadable.",
       inputSchema: {
         type: z.union([z.number(), z.string()]).describe("Fixture type number or name in the show."),
         mode: z.union([z.number(), z.string()]).optional().describe("DMX mode number or name (default: every mode, summarised)."),
