@@ -4,7 +4,8 @@
  * Runs only with GMA3_LIVE=1, GMA3_LIVE_EXCLUSIVE=1 and GMA3_LIVE_SAVE=1 against a disposable show (see README.md in
  * this folder). Not part of `npm test`. Needs bridge 0.35.0.
  *
- * Show files written: mcp-save-live-1.show (must not exist; left in the shows folder: nothing deletes show files),
+ * Show files written: mcp-save-live-1.show (GMA3_LIVE_SAVE_SCRATCH; must not exist; left in the shows folder: nothing
+ * deletes show files),
  * and, at the end, the show the console started on (or GMA3_LIVE_SAVE_RESTORE), replaced with the current state so the
  * console ends on that name again. The current show name changes during the test.
  */
@@ -16,7 +17,7 @@ import { captureTools } from "../helpers/tool-harness.ts";
 import { liveTest, bridge } from "./live.ts";
 
 const enabled = process.env.GMA3_LIVE_EXCLUSIVE === "1" && process.env.GMA3_LIVE_SAVE === "1";
-const SCRATCH = "mcp-save-live-1";
+const SCRATCH = process.env.GMA3_LIVE_SAVE_SCRATCH ?? "mcp-save-live-1";
 const ctx: ToolContext = { bridge, mutations: new MutationLock(), requestTimeoutMs: 20000, luaToolAllowed: false };
 const tools = captureTools(registerShowTools, ctx);
 async function call(name: string, args: Record<string, unknown>) {

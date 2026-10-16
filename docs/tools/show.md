@@ -40,22 +40,32 @@ UTC) and `localTime` (the console's wall clock). It includes the open dialog, if
 | `exclusive` | Required: the file is written and the current show name may change |
 
 Steps:
-1. **Read** the files and the current show. The tool refuses when a dialog is already open, when the current name
-   can't be read, or when the folder can't be listed (an existing file could not be ruled out).
+1. **Read** the files and the current show. The tool refuses when a dialog is already open, when whether one is
+   open can't be read (a failed lookup is never "no dialog"), when the current name can't be read, or when the folder
+   can't be listed (an existing file could not be ruled out).
 2. **Check the name.** The current name is a normal save. A new name expects the rename dialog. Another show's
    existing file expects the overwrite dialog and is refused without `overwrite: true`; the refusal names the
    file's size and time. Names compare case-insensitively, as on macOS and Windows.
-3. **Queue** SaveShow.
+3. **Queue** SaveShow. File times have whole seconds, so when the existing file is from the console's current
+   second, the tool first waits until the clock has passed it. If the reply to the queue request is lost, the save
+   may still run: it is watched, never resent, and never reported as "not queued".
 4. **Poll** every 150 ms:
-   - the expected dialog is answered with OK;
-   - any other dialog stops the tool. It is reported and left for the operator, never answered;
-   - the save is done when the file carries a time from this save and the console names it current.
+   - the expected dialog is answered with OK only when its text names this show (`'<name>'`). The bridge checks the
+     title and the name again just before it clicks;
+   - any other dialog stops the tool, including a same-title dialog for another show. It is reported and left for
+     the operator, never answered;
+   - the save is done when a file this save produced is there (new, or with a later time than before) and the
+     console names it current.
+
+   Only the latest read counts. If the last read failed, the tool reads once more. If that fails too, the result
+   is `unavailable`, and the earlier read appears only as `lastObserved`.
 
 Verification:
 - `matched`: written and current. The result has `file` (name, size, time), `previous` (the current show and the
   file before), `current`, and `dialog` (expected, answered).
-- `mismatched`: the file is missing or still old, or another show is current.
-- `unavailable`: an unexpected dialog, or nothing within the timeout.
+- `mismatched`: the file is missing or still has its earlier time, or another show is current.
+- `unavailable`: an unexpected dialog, an unreadable dialog state, a lost reply with no write seen, completion that
+  could not be observed, or nothing within the timeout.
 
 A new name makes it the current show. The result warns that later saves without a name write the new file.
 

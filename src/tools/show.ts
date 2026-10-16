@@ -41,6 +41,9 @@ export interface ShowFiles {
   now?: number;
   localNow?: string;
   modal?: Modal | false;
+  /** false when the bridge could not read whether a dialog is open (never taken for "no dialog"). */
+  modalKnown?: boolean;
+  modalError?: string;
 }
 
 export const RENAME_TITLE = "Change show file name?";
@@ -106,6 +109,7 @@ export async function saveShow(ctx: ToolContext, raw: Record<string, unknown>): 
       steps.push(asRead({ name: "check", status: "failed", error: `${why}; nothing was saved` }));
       return buildResult({ operation: op, target, steps, verification: unavailable("nothing was saved"), extra: { current: before.current ?? null, ...extra } });
     };
+    if (before.modalKnown === false) return refuse(`whether a dialog is open cannot be read (${before.modalError ?? "unknown"})`);
     if (before.modal) return refuse(`a dialog is open on the console (${before.modal.title ?? before.modal.name ?? before.modal.class}); close it first`, { modal: before.modal });
     if (!before.current) return refuse("the console's current show name cannot be read");
     if (!before.listed) return refuse("the shows folder cannot be listed, so an existing file cannot be ruled out");
@@ -118,73 +122,109 @@ export async function saveShow(ctx: ToolContext, raw: Record<string, unknown>): 
       return refuse(`"${existing.name}" is another show's file (${existing.size ?? "?"} bytes, saved ${existing.localTime ?? "?"}); saving would replace it and make it the current show. Pass overwrite: true to replace it, or choose a new name`, { existing: fileView(existing) });
     }
 
-    let sent: { command?: string; now?: number };
+    // A write is proven only by a file this save produced: a new file, or one with a later time than before. File times
+    // have whole seconds, so when the existing file is from the console's current second, wait until the clock has
+    // passed it (review of PR #66: an unchanged recent file is never proof).
+    if (existing && typeof existing.time === "number" && typeof before.now === "number" && existing.time >= before.now - 1) {
+      await sleep(Math.min(2500, (existing.time - before.now + 1) * 1000 + 300));
+    }
+    const proves = (f: ShowFile | undefined) => !!f && typeof f.time === "number" && (!existing || f.time > (existing.time ?? Number.POSITIVE_INFINITY) || (typeof f.size === "number" && f.size !== existing.size && f.time >= (existing.time ?? 0)));
+
+    let queueUncertain = false;
     try {
-      sent = (await ctx.bridge.request("show.save", { ...(isCurrent ? {} : { name: to }), exclusive: true }, t)) as { command?: string; now?: number };
+      const sent = (await ctx.bridge.request("show.save", { ...(isCurrent ? {} : { name: to }), exclusive: true }, t)) as { command?: string };
       steps.push({ name: "save", status: "succeeded", op: "show.save", command: sent.command, detail: { queued: true } });
     } catch (err) {
-      steps.push(stepFromError("save", err, { op: "show.save" }));
-      return buildResult({ operation: op, target, steps, verification: unavailable("SaveShow was not queued") });
+      const step = stepFromError("save", err, { op: "show.save" });
+      steps.push(step);
+      if (step.status !== "unknown") return buildResult({ operation: op, target, steps, verification: unavailable("the bridge refused SaveShow: it was not queued") });
+      // The request went out and its answer was lost: the save may still run. It is not resent; it is watched.
+      queueUncertain = true;
     }
-    const sentAt = typeof sent.now === "number" ? sent.now : before.now ?? Math.floor(Date.now() / 1000);
 
-    // Poll: answer SaveShow's own dialog (only the expected title), stop at any other dialog, finish when the file
-    // carries a time from this save and the console names it current.
+    // Poll: answer only SaveShow's own dialog naming this show, stop at any other dialog, finish when a file this save
+    // produced is there and current. Only the latest read counts: a failed read is a gap, never the old snapshot.
     const t0 = Date.now();
     let answered = false;
-    let after: ShowFiles | undefined;
+    let last: ShowFiles | undefined;
+    let lastOk = false;
     let foreign: Modal | undefined;
+    let unknownModal: string | undefined;
     let unread = 0;
+    const quoted = `'${to}'`;
     while (Date.now() - t0 < timeoutMs) {
       await sleep(POLL_MS);
+      let now: ShowFiles;
       try {
-        after = await readShowFiles(ctx.bridge, t);
+        now = await readShowFiles(ctx.bridge, t);
       } catch {
         unread++;
+        lastOk = false;
         continue;
       }
-      if (after.modal) {
-        if (!answered && expect && after.modal.title === expect) {
+      last = now;
+      lastOk = true;
+      if (now.modalKnown === false) {
+        unknownModal = now.modalError ?? "unknown";
+        continue;
+      }
+      unknownModal = undefined;
+      if (now.modal) {
+        const ours = !answered && expect && now.modal.title === expect && typeof now.modal.text === "string" && now.modal.text.includes(quoted);
+        if (ours) {
           try {
-            await ctx.bridge.request("show.answer", { expectTitle: expect, button: "OK", exclusive: true }, t);
+            await ctx.bridge.request("show.answer", { expectTitle: expect, expectTarget: to, button: "OK", exclusive: true }, t);
             answered = true;
-            steps.push({ name: "confirm", status: "succeeded", op: "show.answer", detail: { title: expect, text: after.modal.text ?? null, clicked: "OK" } });
+            steps.push({ name: "confirm", status: "succeeded", op: "show.answer", detail: { title: expect, text: now.modal.text ?? null, clicked: "OK" } });
           } catch (err) {
-            steps.push(stepFromError("confirm", err, { op: "show.answer", detail: { title: expect } }));
+            steps.push(stepFromError("confirm", err, { op: "show.answer", detail: { title: expect, target: to } }));
             break;
           }
           continue;
         }
-        if (!answered || after.modal.title !== expect) {
-          foreign = after.modal;
-          break;
-        }
-        continue;
+        foreign = now.modal;
+        break;
       }
-      const f = after.files.find((x) => same(x.name, to));
-      if (f && typeof f.time === "number" && f.time >= sentAt - 1 && same(after.current, to)) break;
+      const f = now.files.find((x) => same(x.name, to));
+      if (proves(f) && same(now.current, to)) break;
+    }
+    // A final read when the last attempt failed: completion is judged from a current observation or not at all.
+    if (!foreign && !lastOk && last) {
+      try {
+        last = await readShowFiles(ctx.bridge, t);
+        lastOk = true;
+      } catch {
+        unread++;
+      }
     }
 
+    const after = lastOk ? last : undefined;
     const written = after?.files.find((x) => same(x.name, to));
-    const fresh = !!written && typeof written.time === "number" && written.time >= sentAt - 1;
+    const fresh = proves(written);
+    const checked = `${to}.show written by this save (new, or a later time than ${existing?.localTime ?? "before"}) and current`;
     let verification: Verification;
     if (foreign) {
-      steps.push({ name: "wait", status: "unknown", error: `an unexpected dialog opened (${foreign.title ?? foreign.name ?? foreign.class}); it was not answered: answer it at the console`, detail: { modal: foreign } });
-      verification = unavailable(`an unexpected dialog is open on the console: ${foreign.title ?? foreign.name}`, `${to}.show written`);
-    } else if (expect && !answered) {
-      steps.push({ name: "wait", status: "unknown", error: `the expected dialog "${expect}" did not appear within ${timeoutMs} ms` });
-      verification = fresh ? { status: "matched", checked: `${to}.show written`, actual: fileView(written) } : unavailable(`no confirmation dialog appeared and the file was not written within ${timeoutMs} ms`, `${to}.show written`);
+      const otherTarget = foreign.title === expect;
+      steps.push({ name: "wait", status: "unknown", error: `${otherTarget ? `a "${foreign.title}" dialog for another show` : `an unexpected dialog (${foreign.title ?? foreign.name ?? foreign.class})`} is open; it was not answered: answer it at the console`, detail: { modal: foreign } });
+      verification = unavailable(`an unexpected dialog is open on the console: ${foreign.title ?? foreign.name}${foreign.text ? ` (${foreign.text})` : ""}`, checked);
     } else if (!after) {
-      verification = unavailable("the shows folder could not be read back", `${to}.show written`);
+      steps.push({ name: "wait", status: "unknown", error: `the shows folder could not be read at the end${last ? ` (last read: ${same(last.current, to) ? "current" : `current ${last.current}`})` : ""}; whether the save completed is unknown` });
+      verification = unavailable("the save's completion could not be observed (the shows folder could not be read)", checked);
     } else if (fresh && same(after.current, to)) {
-      verification = { status: "matched", checked: `${to}.show carries a time from this save, and the console's current show is ${to}`, expected: { file: `${to}.show`, current: to }, actual: { ...fileView(written), current: after.current } };
+      verification = { status: "matched", checked, expected: { file: `${to}.show`, current: to }, actual: { ...fileView(written), current: after.current } };
+    } else if (unknownModal) {
+      steps.push({ name: "wait", status: "unknown", error: `whether a dialog is open cannot be read (${unknownModal}); nothing was answered` });
+      verification = unavailable(`the dialog state could not be read (${unknownModal})`, checked);
+    } else if (queueUncertain || (expect && !answered)) {
+      steps.push({ name: "wait", status: "unknown", error: queueUncertain ? `the reply to SaveShow was lost and no write was seen within ${timeoutMs} ms; SaveShow was not resent and may still run (check gma3_show_files)` : `the expected dialog "${expect}" did not appear within ${timeoutMs} ms` });
+      verification = unavailable(queueUncertain ? "SaveShow may have been queued (its reply was lost); no write was seen" : `no confirmation dialog appeared and no write was seen within ${timeoutMs} ms`, checked);
     } else {
       verification = {
         status: "mismatched",
-        checked: `${to}.show written and current`,
-        expected: { file: `${to}.show`, current: to, timeAtLeast: iso(sentAt) },
+        checked,
+        expected: { file: `${to}.show`, current: to, writtenAfter: existing?.localTime ?? null },
         actual: { file: fileView(written), current: after.current ?? null },
-        detail: !written ? `${to}.show is not in the shows folder after ${timeoutMs} ms` : !fresh ? `${to}.show still carries its old time (${written.localTime})` : `the console's current show is ${after.current}, not ${to}`,
+        detail: !written ? `${to}.show is not in the shows folder after ${timeoutMs} ms` : !fresh ? `${to}.show still carries its earlier time (${written.localTime}) and size` : `the console's current show is ${after.current}, not ${to}`,
       };
     }
     const renamed = !isCurrent && same(after?.current, to);
@@ -200,11 +240,13 @@ export async function saveShow(ctx: ToolContext, raw: Record<string, unknown>): 
       warnings: [
         ...(renamed ? [`the console's current show is now ${to}: later saves without a name write ${to}.show, not ${before.current}.show`] : []),
         ...(unread ? [`${unread} read(s) of the shows folder failed while waiting`] : []),
+        ...(queueUncertain ? ["the reply to SaveShow was lost: it was not resent"] : []),
       ],
       extra: {
         file: fileView(written),
         previous: { current: before.current, file: fileView(existing) },
         current: after?.current ?? null,
+        ...(!after && last ? { lastObserved: { current: last.current ?? null, file: fileView(last.files.find((x) => same(x.name, to))), note: "an earlier read, not the final state" } } : {}),
         ...(expect ? { dialog: { expected: expect, answered } } : { dialog: "none (the current name saves without a dialog)" }),
         path: before.path,
       },

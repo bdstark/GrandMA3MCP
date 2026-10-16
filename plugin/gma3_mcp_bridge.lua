@@ -5253,10 +5253,13 @@ end)()
     local ok, v = pcall(function() return Root().MANetSocket:Get("ShowFile") end)
     return ok and v and tostring(v) or nil
   end
+  -- The top modal: (row, handle) when one is open, (nil) when none is, (nil, nil, reason) when it cannot be read; a
+  -- failed lookup is never taken for "no dialog" (review of PR #66).
   local function topModal()
-    if type(GetTopModal) ~= "function" then return nil end
+    if type(GetTopModal) ~= "function" then return nil, nil, "GetTopModal is not available" end
     local ok, m = pcall(GetTopModal)
-    if not ok or not m then return nil end
+    if not ok then return nil, nil, "GetTopModal failed: " .. tostring(m) end
+    if not m then return nil end
     local r = { class = safeCall(m, "GetClass"), name = tostring(safeProp(m, "name")), buttons = {} }
     pcall(function() r.display = m:GetDisplayIndex() end)
     local function walk(h, d)
@@ -5316,28 +5319,36 @@ end)()
         end
       end
     end
-    local modal = topModal()
-    return { current = currentShow(), path = path, listed = ok and type(list) == "table", files = emptyArray(files), now = now, localNow = os.date("%Y-%m-%d %H:%M:%S", now), utcOffset = off, modal = modal or false }
+    local modal, _, modalError = topModal()
+    return { current = currentShow(), path = path, listed = ok and type(list) == "table", files = emptyArray(files), now = now, localNow = os.date("%Y-%m-%d %H:%M:%S", now), utcOffset = off, modal = modal or false, modalKnown = modalError == nil, modalError = modalError }
   end
 
   -- args: { name?, exclusive }
   ops["show.save"] = function(args)
     requireExclusive(args, "show.save")
-    if topModal() then raise("[modal-open] a dialog is open on the console; SaveShow was not sent") end
+    local open, _, modalError = topModal()
+    if modalError then raise("[modal-unknown] whether a dialog is open cannot be read (" .. modalError .. "); SaveShow was not sent") end
+    if open then raise("[modal-open] a dialog is open on the console; SaveShow was not sent") end
     local command = "SaveShow"
     if args.name ~= nil then command = 'SaveShow "' .. showName(args.name) .. '"' end
     CmdIndirect(command)
     return { queued = true, command = command, now = os.time() }
   end
 
-  -- args: { expectTitle, button = "OK" | "Cancel", exclusive }
+  -- args: { expectTitle, expectTarget, button = "OK" | "Cancel", exclusive }. The dialog must name the expected show
+  -- ('<name>' in its text, as the console writes it): a same-title dialog from another save is never answered.
   ops["show.answer"] = function(args)
     requireExclusive(args, "show.answer")
     if args.button ~= "OK" and args.button ~= "Cancel" then raise("[bad-args] button must be OK or Cancel") end
     if not SAVE_TITLES[args.expectTitle] then raise("[bad-args] expectTitle must be one of SaveShow's own dialogs") end
-    local md, m = topModal()
+    local target = showName(args.expectTarget)
+    local md, m, modalError = topModal()
+    if modalError then raise("[modal-unknown] the dialog cannot be read (" .. modalError .. "); nothing was clicked") end
     if not md then raise("[no-modal] no dialog is open") end
     if md.title ~= args.expectTitle then raise("[wrong-modal] the open dialog is " .. tostring(md.title) .. ", not " .. args.expectTitle .. "; nothing was clicked") end
+    if type(md.text) ~= "string" or not md.text:find("'" .. target .. "'", 1, true) then
+      raise("[wrong-target] the open dialog does not name '" .. target .. "' (" .. tostring(md.text) .. "); nothing was clicked")
+    end
     local target
     local function find(h)
       for _, c in ipairs(h:UIChildren() or {}) do

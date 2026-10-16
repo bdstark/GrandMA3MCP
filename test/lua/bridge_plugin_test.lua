@@ -2450,7 +2450,7 @@ do
   end
   local modal = nil
   GetTopModal = function() return modal end
-  local msgbox = function(title) return ui("MessageBox", "MsgBox", nil, { ui("TitleBar", "Title", title), ui("TextBox", "Text", "Do you intend to change the show file name?"), ui("Button", "Button 1", "OK", nil, { x = 100, y = 200, w = 40, h = 20 }), ui("Button", "Button 2", "Cancel") }) end
+  local msgbox = function(title, target) return ui("MessageBox", "MsgBox", nil, { ui("TitleBar", "Title", title), ui("TextBox", "Text", "Do you intend to change the show file name to\n'" .. (target or "Show B") .. "'?"), ui("Button", "Button 1", "OK", nil, { x = 100, y = 200, w = 40, h = 20 }), ui("Button", "Button 2", "Cancel") }) end
 
   r = request("show.files", {})
   check("su20: show.files lists the current show, the folder, the files with corrected time and wall-clock text, no modal", r.ok and r.result.current == "Show A" and r.result.path == "/shows" and r.result.listed == true and #r.result.files == 2 and r.result.files[1].name == "Show A" and r.result.files[1].file == "Show A.show" and r.result.files[1].size == 1000 and r.result.files[1].time == wall - r.result.utcOffset and r.result.files[1].localTime == os.date("!%Y-%m-%d %H:%M:%S", wall) and r.result.modal == false, J(r))
@@ -2469,13 +2469,32 @@ do
   check("su20: show.save refuses while a dialog is open", r.ok == false and r.error:find("modal%-open") and #queued == 2, J(r))
   r = request("show.answer", { expectTitle = "Leaving the patch", button = "OK", exclusive = true })
   check("su20: show.answer answers only SaveShow's own dialogs", r.ok == false and r.error:find("bad%-args") and #clicks == 0, J(r))
-  r = request("show.answer", { expectTitle = "Change show file name and overwrite existing show file?", button = "OK", exclusive = true })
+  r = request("show.answer", { expectTitle = "Change show file name and overwrite existing show file?", expectTarget = "Show B", button = "OK", exclusive = true })
   check("su20: show.answer refuses when the open dialog is not the expected one", r.ok == false and r.error:find("wrong%-modal") and #clicks == 0, J(r))
+  r = request("show.answer", { expectTitle = "Change show file name?", expectTarget = "Other", button = "OK", exclusive = true })
+  check("su20 review: a same-title dialog for another show is not answered", r.ok == false and r.error:find("wrong%-target") and #clicks == 0, J(r))
   r = request("show.answer", { expectTitle = "Change show file name?", button = "OK", exclusive = true })
-  check("su20: show.answer clicks the OK button of the expected dialog", r.ok and r.result.clicked == "OK" and #clicks == 3 and clicks[1] == "move@1", J({ r, clicks }))
+  check("su20 review: show.answer needs the expected target", r.ok == false and r.error:find("bad%-args") and #clicks == 0, J(r))
+  r = request("show.answer", { expectTitle = "Change show file name?", expectTarget = "Show B", button = "OK", exclusive = true })
+  check("su20: show.answer clicks the OK button of the expected dialog naming the expected show", r.ok and r.result.clicked == "OK" and #clicks == 3 and clicks[1] == "move@1", J({ r, clicks }))
   modal = nil
-  r = request("show.answer", { expectTitle = "Change show file name?", button = "OK", exclusive = true })
+  r = request("show.answer", { expectTitle = "Change show file name?", expectTarget = "Show B", button = "OK", exclusive = true })
   check("su20: show.answer with no dialog open is an error", r.ok == false and r.error:find("no%-modal"), J(r))
+  -- Review of PR #66: a modal lookup that fails is not "no dialog".
+  local nq = #queued
+  GetTopModal = function() error("lookup broke") end
+  r = request("show.files", {})
+  check("su20 review: a failed modal lookup is reported as unknown, not as no dialog", r.ok and r.result.modalKnown == false and r.result.modalError:find("lookup broke"), J(r))
+  r = request("show.save", { exclusive = true })
+  check("su20 review: show.save refuses while the modal state is unknown", r.ok == false and r.error:find("modal%-unknown") and #queued == nq, J(r))
+  r = request("show.answer", { expectTitle = "Change show file name?", expectTarget = "Show B", button = "OK", exclusive = true })
+  check("su20 review: show.answer refuses while the modal state is unknown", r.ok == false and r.error:find("modal%-unknown"), J(r))
+  GetTopModal = nil
+  r = request("show.files", {})
+  check("su20 review: a missing GetTopModal is unknown too", r.ok and r.result.modalKnown == false and r.result.modalError:find("not available"), J(r))
+  GetTopModal = function() return nil end
+  r = request("show.files", {})
+  check("su20 review: no dialog is known absence", r.ok and r.result.modalKnown == true and r.result.modal == false, J(r))
 
   Root, GetPath, DirList, CmdIndirect, GetTopModal, Mouse = saved.Root, saved.GetPath, saved.DirList, saved.CmdIndirect, saved.GetTopModal, saved.Mouse
   Enums.PathType.Showfiles = saved.Showfiles

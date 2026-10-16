@@ -9,6 +9,7 @@ import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { OVERWRITE_TITLE, RENAME_TITLE, registerShowTools, showName } from "../src/tools/show.ts";
 import { startHarness, type Harness } from "./helpers/tool-harness.ts";
+import { SILENT } from "./helpers/fake-bridge.ts";
 
 type File = { size: number; time: number };
 
@@ -27,6 +28,7 @@ class FakeConsole {
   /** No dialog ever appears for a new name (and nothing is written). */
   noDialog = false;
   saves: string[] = [];
+  modalUnknown = false;
 
   write(name: string) {
     if (this.writeNothing) return;
@@ -44,7 +46,7 @@ class FakeConsole {
     if (name.toLowerCase() === this.current.toLowerCase()) return this.write(name);
     if (this.noDialog) return;
     const exists = [...this.files.keys()].some((k) => k.toLowerCase() === name.toLowerCase());
-    this.modal = exists ? { title: OVERWRITE_TITLE, text: `overwrite '${name}'`, target: name } : { title: RENAME_TITLE, text: `change to '${name}'`, target: name };
+    this.modal = exists ? { title: OVERWRITE_TITLE, text: `overwrite the file with the name\n'${name}' that already exists`, target: name } : { title: RENAME_TITLE, text: `change the show file name to\n'${name}'?`, target: name };
   }
   install(h: Harness) {
     h.fake.on("show.files", () => {
@@ -59,6 +61,7 @@ class FakeConsole {
         now: this.now,
         localNow: `wall ${this.now}`,
         modal,
+        ...(this.modalUnknown ? { modalKnown: false, modalError: "GetTopModal failed" } : { modalKnown: true }),
       };
     });
     h.fake.on("show.save", (args) => {
@@ -72,6 +75,7 @@ class FakeConsole {
     h.fake.on("show.answer", (args) => {
       if (!this.modal) throw new Error("[no-modal] no dialog is open");
       if (args.expectTitle !== this.modal.title) throw new Error("[wrong-modal]");
+      if (args.expectTarget !== this.modal.target) throw new Error("[wrong-target]");
       const target = this.modal.target;
       this.modal = null;
       if (args.button === "OK") this.write(target);
@@ -158,7 +162,7 @@ test("save_show refuses while a dialog is open, and never answers a dialog it do
   });
   const r = await h.callJson("gma3_save_show", { name: "New", exclusive: true });
   assert.equal(r.result.verification.status, "unavailable");
-  assert.match(r.text, /unexpected dialog opened \(Something else\).*answer it at the console/);
+  assert.match(r.text, /unexpected dialog \(Something else\) is open; it was not answered: answer it at the console/);
   assert.ok(!h.fake.requests.some((x) => x.op === "show.answer"));
 });
 
@@ -171,7 +175,7 @@ test("save_show: no dialog and no file within the timeout is unavailable; a save
   con.writeNothing = true;
   const m = await h.callJson("gma3_save_show", { exclusive: true, timeout_ms: 2000 });
   assert.equal(m.result.verification.status, "mismatched");
-  assert.match(m.result.verification.detail, /still carries its old time/);
+  assert.match(m.result.verification.detail, /still carries its earlier time/);
 });
 
 test("save_show validation: exclusive, names, overwrite and timeout", async () => {
@@ -192,4 +196,88 @@ test("save_show validation: exclusive, names, overwrite and timeout", async () =
   assert.match(typed.text, /overwrite/);
   assert.equal(h.fake.requests.length, 0);
   assert.equal(showName("Show C.show"), "Show C");
+});
+
+// --- review of PR #66 -----------------------------------------------------------------------------
+
+test("review 1: an unchanged file from the current second is not proof; the tool waits for a later second", async () => {
+  con.files.get("Show A")!.time = con.now;
+  con.writeNothing = true;
+  const r = await h.callJson("gma3_save_show", { exclusive: true, timeout_ms: 2000 });
+  assert.notEqual(r.result.verification.status, "matched", r.text);
+  assert.equal(r.result.summary.startsWith("Saved"), false);
+  con.writeNothing = false;
+  const t0 = Date.now();
+  const ok = await h.callJson("gma3_save_show", { exclusive: true });
+  assert.equal(ok.result.verification.status, "matched", ok.text);
+  assert.ok(Date.now() - t0 >= 1000, "it waited for the console's clock to pass the old file's second");
+  assert.ok(con.files.get("Show A")!.time > 1792146000);
+});
+
+test("review 1: a same-title dialog naming another show is never answered", async () => {
+  // A pending save of Show A surfaces as an overwrite dialog while this call saves Other.
+  h.fake.on("show.save", () => {
+    con.modal = { title: OVERWRITE_TITLE, text: "overwrite the file with the name\n'Show A' that already exists", target: "Show A" };
+    return { queued: true, command: 'SaveShow "Other"', now: con.now };
+  });
+  const before = { ...con.files.get("Show A")! };
+  const r = await h.callJson("gma3_save_show", { name: "Other", overwrite: true, exclusive: true });
+  assert.equal(r.result.verification.status, "unavailable");
+  assert.match(r.text, /dialog for another show is open; it was not answered/);
+  assert.ok(!h.fake.requests.some((x) => x.op === "show.answer"), "nothing was clicked");
+  assert.deepEqual(con.files.get("Show A"), before);
+  assert.equal(con.files.get("Other")!.size, 2000);
+});
+
+test("review 1: a lost reply to SaveShow is watched, never resent, and never called 'not queued'", async () => {
+  // The save went out and lands, but its reply is lost.
+  h.fake.on("show.save", (args) => {
+    con.pending = (args.name as string | undefined) ?? null;
+    return SILENT;
+  });
+  const landed = await h.callJson("gma3_save_show", { exclusive: true });
+  assert.equal(landed.result.verification.status, "matched", landed.text);
+  assert.ok(landed.result.warnings.some((w: string) => /reply to SaveShow was lost: it was not resent/.test(w)));
+  assert.equal(h.fake.requests.filter((x) => x.op === "show.save").length, 1);
+  // The reply is lost and nothing is written.
+  h.fake.on("show.save", () => SILENT);
+  const lost = await h.callJson("gma3_save_show", { exclusive: true, timeout_ms: 2000 });
+  assert.equal(lost.result.verification.status, "unavailable");
+  assert.match(lost.text, /may have been queued/);
+  assert.doesNotMatch(lost.text, /was not queued/);
+  assert.equal(h.fake.requests.filter((x) => x.op === "show.save").length, 2, "one request per call, no resend");
+});
+
+test("review 1: a failed final read is unavailable, never the stale snapshot's mismatch", async () => {
+  let n = 0;
+  const real = h.fake.handlerFor("show.files")!;
+  h.fake.on("show.files", (args, req) => {
+    n++;
+    // The preflight and the first poll work (the old file); every later read fails.
+    if (n <= 2) return real(args, req);
+    throw new Error("busy");
+  });
+  h.fake.on("show.save", () => ({ queued: true, command: "SaveShow", now: con.now }));
+  const r = await h.callJson("gma3_save_show", { exclusive: true, timeout_ms: 2000 });
+  assert.equal(r.result.verification.status, "unavailable", r.text);
+  assert.match(r.result.verification.detail, /could not be observed/);
+  assert.equal(r.result.lastObserved.note, "an earlier read, not the final state");
+  assert.notEqual(r.result.outcome, "succeeded");
+  // Every poll fails.
+  n = 0;
+  h.fake.on("show.files", (args, req) => {
+    n++;
+    if (n === 1) return real(args, req);
+    throw new Error("busy");
+  });
+  const all = await h.callJson("gma3_save_show", { exclusive: true, timeout_ms: 2000 });
+  assert.equal(all.result.verification.status, "unavailable");
+});
+
+test("review 1: an unreadable dialog state refuses the save", async () => {
+  con.modalUnknown = true;
+  const r = await h.callJson("gma3_save_show", { exclusive: true });
+  assert.equal(r.result.outcome, "failed");
+  assert.match(String(r.result.steps.at(-1).error), /whether a dialog is open cannot be read \(GetTopModal failed\)/);
+  assert.deepEqual(sent(), []);
 });
