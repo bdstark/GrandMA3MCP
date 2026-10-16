@@ -1143,7 +1143,11 @@ export async function buildPhaser(ctx: ToolContext, raw: BuildArgs): Promise<Ope
               const r = "operation" in p ? p : await p.body();
               rep.stored = r;
               const ok = r.outcome === "succeeded" && r.verification.status !== "mismatched";
-              return { name: `${P}store`, status: ok ? "succeeded" : r.outcome === "unknown" ? "unknown" : "failed", op: "gma3_store_preset", detail: { outcome: r.outcome, verification: r.verification.status }, ...(ok ? {} : { error: r.summary }) };
+              // A store with a step that got no reply (its name write after the store, say) is uncertain, not failed:
+              // the build stops there instead of going on to the next preset.
+              const uncertain = r.outcome === "unknown" || r.steps.some((st) => st.status === "unknown" && st.kind !== "read");
+              const status = uncertain ? "unknown" : ok ? "succeeded" : "failed";
+              return { name: `${P}store`, status, op: "gma3_store_preset", detail: { outcome: r.outcome, verification: r.verification.status }, ...(status === "succeeded" ? {} : { error: r.summary }) };
             },
           },
         );

@@ -4,6 +4,7 @@ import { startHarness, type Harness } from "./helpers/tool-harness.ts";
 import { registerPhaserTools, parseStep, parsePhaser, expandTemplate, effectCommands, expectedPhase, verifyBuild, fingerprint, planEffect, invertValue, summarizePhases, variantOf, sameAngle, type Effect } from "../src/tools/phasers.ts";
 import type { ProgrammerRow } from "../src/tools/presets.ts";
 import { ValidationError } from "../src/validate.ts";
+import { SILENT } from "./helpers/fake-bridge.ts";
 
 // ---------------------------------------------------------------------------
 // Request parsing, templates, commands
@@ -154,10 +155,13 @@ class Console {
   }
 
   names = new Map<string, string>();
+  /** Never answer a Name write (a lost reply after the store went through). */
+  silentNameSet = false;
   matricks: { kind: "groups" | "wings" | "blocks"; count: number } | undefined;
 
   install(h: Harness): void {
     h.fake.on("set", (args) => {
+      if (this.silentNameSet) return SILENT;
       const key = String(args.ref).replace("Preset ", "");
       this.names.set(key, String(args.value));
       return { ref: args.ref, property: args.property, value: args.value };
@@ -558,4 +562,13 @@ test("SU-13 tool: several effects in one call; one refused does not stop the res
     const r = await build(args as Record<string, unknown>);
     assert.match((r.result.validationErrors ?? []).join(" "), re, JSON.stringify(r.result).slice(0, 500));
   }
+});
+
+test("SU-13 tool: a store whose name write got no reply stops the build; the next variant is not stored", async () => {
+  con.silentNameSet = true;
+  const { result } = await build({ preset: "23.20", name: "Chase", fixtures: [401, 402], steps: [{ values: { Dimmer: 100 }, transition: 0 }, { values: { Dimmer: 0 }, transition: 0 }], variants: ["sync", "follow"] });
+  assert.deepEqual(result.items.map((i: any) => i.outcome), ["partial", "not_attempted"], JSON.stringify(result.items).slice(0, 1500));
+  assert.equal(con.presets.has("23.20"), true);
+  assert.equal(con.presets.has("23.21"), false, "nothing more is stored after an uncertain step");
+  assert.equal(con.env, "Normal", "Preview is still left");
 });
