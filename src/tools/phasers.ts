@@ -594,38 +594,32 @@ export function verifyBuild(input: {
       }
     }
   }
-  // Shuffle permutes which fixture gets which phase (review round 1: every attribute, not only the first row):
-  //   - the attributes of one fixture share its phase (one At Phase command sets every active attribute);
-  //   - for every attribute, the set of phases over the fixtures is the unshuffled set (modulo 360).
+  // Shuffle permutes which fixture gets which phase:
+  //   - every attribute of one fixture shares that fixture's phase (one At Phase command sets every active attribute,
+  //     activated siblings and step-preset channels included; review round 1);
+  //   - over the whole selection, the fixtures' phases are the unshuffled set (modulo 360). An attribute that only part
+  //     of a mixed rig has (RGBW's W next to RGB fixtures) takes whatever phase its fixture drew from the whole set, so
+  //     it is checked against its fixture, not against a subset of the distribution (review round 2).
   const ph = effect.phaser;
   if (ph.phase && ph.shuffle !== undefined) {
-    const expectedOf = new Map<number, number>();
-    for (const [sf] of input.scope) {
-      const pos = posOf.get(sf);
-      if (pos !== undefined) expectedOf.set(sf, norm360(expectedPhase(ph.phase, pos - minPos, span, ph.repeat)));
-    }
+    const want: number[] = [];
+    const got: number[] = [];
     for (const [sf, id] of input.scope) {
+      const pos = posOf.get(sf);
+      if (pos !== undefined) want.push(norm360(expectedPhase(ph.phase, pos - minPos, span, ph.repeat)));
       const rows = (bySf.get(sf) ?? []).filter((r) => typeof r.phaser?.phase === "number");
-      const first = rows[0]?.phaser?.phase;
-      const off = rows.filter((r) => !sameAngle(r.phaser!.phase, first));
+      if (!rows.length) continue;
+      // The fixture's phase: from an attribute the effect writes, else its first phased row.
+      const own = rows.find((r) => attrs.includes(String(r.attribute))) ?? rows[0];
+      const phase = own.phaser!.phase as number;
+      got.push(norm360(phase));
+      const off = rows.filter((r) => !sameAngle(r.phaser!.phase, phase));
       if (off.length) problems.push(`${id}: its attributes are out of phase (${rows.map((r) => `${r.attribute} ${norm360(r.phaser!.phase as number)}`).join(", ")})`);
     }
-    const attrsSeen = [...new Set(input.rows.filter((r) => input.scope.has(r.subfixtureIndex)).map((r) => String(r.attribute)))];
-    for (const a of attrsSeen) {
-      const want: number[] = [];
-      const got: number[] = [];
-      for (const [sf] of input.scope) {
-        const r = (bySf.get(sf) ?? []).find((x) => x.attribute === a);
-        const w = expectedOf.get(sf);
-        if (!r || w === undefined) continue;
-        want.push(w);
-        if (typeof r.phaser?.phase === "number") got.push(norm360(r.phaser.phase));
-      }
-      want.sort((x, y) => x - y);
-      got.sort((x, y) => x - y);
-      const same = want.length === got.length && want.every((w, i) => sameAngle(w, got[i]));
-      if (!same) problems.push(`${a}: shuffled phases: expected the set ${want.join(", ")}, read ${got.join(", ")}`);
-    }
+    want.sort((x, y) => x - y);
+    got.sort((x, y) => x - y);
+    const same = want.length === got.length && want.every((w, i) => sameAngle(w, got[i]));
+    if (!same) problems.push(`shuffled phases: expected the set ${want.join(", ")} over the fixtures, read ${got.join(", ")}`);
   }
   // A step that calls a preset: every fixture references it in that step (on the preset's attributes), none another.
   input.stepPresets.forEach((sp, i) => {

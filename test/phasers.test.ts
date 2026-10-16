@@ -590,8 +590,24 @@ test("SU-13 review round 1: with shuffle every attribute's phases are checked an
   // The reviewer's case: Dimmer 0/180 but ColorRGB_R 90/90 was reported as matched.
   const bad = [row(1, "Dimmer", 0, 0), row(1, "ColorRGB_R", 0, 90), row(2, "Dimmer", 1, 180), row(2, "ColorRGB_R", 1, 90)];
   const problems = verifyBuild({ effect: e, rows: bad, scope, implied: new Set(), stepPresets: [] }).problems.join(" | ");
-  assert.match(problems, /ColorRGB_R: shuffled phases: expected the set 0, 180, read 90, 90/);
   assert.match(problems, /1: its attributes are out of phase \(Dimmer 0, ColorRGB_R 90\)/);
+  assert.match(problems, /2: its attributes are out of phase \(Dimmer 180, ColorRGB_R 90\)/);
+  // Every attribute in step but the distribution wrong over the fixtures: the full-set check.
+  const allWrong = [row(1, "Dimmer", 0, 90), row(1, "ColorRGB_R", 0, 90), row(2, "Dimmer", 1, 90), row(2, "ColorRGB_R", 1, 90)];
+  assert.match(verifyBuild({ effect: e, rows: allWrong, scope, implied: new Set(), stepPresets: [] }).problems.join(), /shuffled phases: expected the set 0, 180 over the fixtures, read 90, 90/);
+});
+
+test("SU-13 review round 2: a channel only part of a mixed rig has (RGBW's W) follows its fixture's shuffled phase", () => {
+  // One RGB and one RGBW fixture; ColorRGB_R explicit, ColorRGB_W an activated sibling on the RGBW fixture only.
+  const e: Effect = { unit: "percent", steps: [{ values: { ColorRGB_R: { absolute: 100 } } }, { values: { ColorRGB_R: { absolute: 0 } } }], phaser: { phase: { from: 0, to: 180 }, shuffle: 7 } };
+  const row = (sf: number, attribute: string, pos: number, phase: number) => ({ subfixtureIndex: sf, attribute, stepCount: 2, steps: [{ absolute: attribute === "ColorRGB_R" ? 100 : 0 }, { absolute: 0 }], phaser: { gridPos: pos, phase } });
+  const scope = new Map([[1, "rgb"], [2, "rgbw"]]);
+  // Shuffle gave the RGB fixture 180 and the RGBW fixture 0; W reads 0 with its fixture's R: valid.
+  const valid = [row(1, "ColorRGB_R", 0, 180), row(2, "ColorRGB_R", 1, 0), row(2, "ColorRGB_W", 1, 0)];
+  assert.deepEqual(verifyBuild({ effect: e, rows: valid, scope, implied: new Set(["ColorRGB_W"]), stepPresets: [] }).problems, []);
+  // W out of step with its own fixture is still caught.
+  const off = [row(1, "ColorRGB_R", 0, 180), row(2, "ColorRGB_R", 1, 0), row(2, "ColorRGB_W", 1, 180)];
+  assert.match(verifyBuild({ effect: e, rows: off, scope, implied: new Set(["ColorRGB_W"]), stepPresets: [] }).problems.join(), /rgbw: its attributes are out of phase \(ColorRGB_R 0, ColorRGB_W 180\)/);
 });
 
 test("SU-13 review round 1: presets stored with a rejected name write are partial work, so the call is partial, not failed", async () => {

@@ -83,7 +83,8 @@ a template.
 - **Phase forms.** `{from, to}` as before; `{from, step}` gives a phase step per fixture (`step: 180` on 72 cells sends
   `At Phase 0 Thru 12780`); `"spread"` is 0 → 360·(n−1)/n. Phases are compared modulo 360. `shuffle: <seed>` sets the
   selection MAtricks XShuffle while the phase is set: the phases are permuted. The check requires every attribute of a
-  fixture to share its phase, and for every attribute the set of phases over the fixtures to be the unshuffled set.
+  fixture to share its phase, and the fixtures' phases over the whole selection to be the unshuffled set. A channel
+  that only part of a mixed rig has (RGBW's W) is checked against its own fixture's phase.
 - **Mirror.** `mirror: {attributes, wings}` cuts the fixtures (grid order) into `wings` parts and inverts the attributes
   on every second part: relative and physical values change sign (Pan −20° for +20°), percent becomes 100 − v. The
   per-fixture values are written once every step exists, on those fixtures, and the whole selection is restored before
