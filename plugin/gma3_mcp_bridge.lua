@@ -5249,13 +5249,24 @@ end)()
 -------------------------------------------------------------------------------
 ;(function()
   local SAVE_TITLES = { ["Change show file name?"] = true, ["Change show file name and overwrite existing show file?"] = true }
-  -- The whole message each dialog shows for a target (live, whitespace collapsed): the target is bound by the complete
-  -- text, never by a substring ("Joe's Show" contains "'s Show'"; review of PR #66).
-  local SAVE_TEXTS = {
-    ["Change show file name?"] = function(n) return "Do you intend to change the show file name to '" .. n .. "'?" end,
-    ["Change show file name and overwrite existing show file?"] = function(n) return "You are going to change the show file name and overwrite the file with the name '" .. n .. "' that already exists. Do you want to continue ?" end,
+  -- Each dialog's message around the show name (live): the framing is compared with whitespace collapsed (it wraps),
+  -- the name between the first and the last quote exactly (apostrophes and every space kept): "Joe's Show" is not
+  -- "s Show", and "Show  B" is not "Show B" (reviews of PR #66). The framing text has no quote of its own.
+  local SAVE_FRAMES = {
+    ["Change show file name?"] = { "Do you intend to change the show file name to", "?" },
+    ["Change show file name and overwrite existing show file?"] = { "You are going to change the show file name and overwrite the file with the name", "that already exists. Do you want to continue ?" },
   }
   local function squash(t) return (tostring(t):gsub("%s+", " "):gsub("^ ", ""):gsub(" $", "")) end
+  -- The show name a dialog's message names, or nil when the message is not the expected one.
+  local function dialogTarget(title, text)
+    local frame = SAVE_FRAMES[title]
+    if not frame or type(text) ~= "string" then return nil end
+    local first = text:find("'", 1, true)
+    local last = text:match("^.*()'")
+    if not first or not last or last <= first then return nil end
+    if squash(text:sub(1, first - 1)) ~= frame[1] or squash(text:sub(last + 1)) ~= frame[2] then return nil end
+    return text:sub(first + 1, last - 1)
+  end
   local function currentShow()
     local ok, v = pcall(function() return Root().MANetSocket:Get("ShowFile") end)
     return ok and v and tostring(v) or nil
@@ -5353,7 +5364,7 @@ end)()
     if modalError then raise("[modal-unknown] the dialog cannot be read (" .. modalError .. "); nothing was clicked") end
     if not md then raise("[no-modal] no dialog is open") end
     if md.title ~= args.expectTitle then raise("[wrong-modal] the open dialog is " .. tostring(md.title) .. ", not " .. args.expectTitle .. "; nothing was clicked") end
-    if type(md.text) ~= "string" or squash(md.text) ~= SAVE_TEXTS[args.expectTitle](target) then
+    if dialogTarget(args.expectTitle, md.text) ~= target then
       raise("[wrong-target] the open dialog's message is not the one for '" .. target .. "' (" .. tostring(md.text) .. "); nothing was clicked")
     end
     local target

@@ -49,14 +49,25 @@ export interface ShowFiles {
 export const RENAME_TITLE = "Change show file name?";
 export const OVERWRITE_TITLE = "Change show file name and overwrite existing show file?";
 /**
- * The whole message each SaveShow dialog shows for a show (live, whitespace collapsed). A dialog is ours only when its
- * message is exactly this: a substring check would take "Joe's Show" for "s Show" (review of PR #66).
+ * Each SaveShow dialog's message around the show name (live). The framing is compared with whitespace collapsed (it
+ * wraps); the name between the first and the last quote exactly, apostrophes and every space kept: "Joe's Show" is not
+ * "s Show" and "Show  B" is not "Show B" (reviews of PR #66). The framing has no quote of its own.
  */
-export const DIALOG_TEXT: Record<string, (name: string) => string> = {
-  [RENAME_TITLE]: (n) => `Do you intend to change the show file name to '${n}'?`,
-  [OVERWRITE_TITLE]: (n) => `You are going to change the show file name and overwrite the file with the name '${n}' that already exists. Do you want to continue ?`,
+export const DIALOG_FRAME: Record<string, [string, string]> = {
+  [RENAME_TITLE]: ["Do you intend to change the show file name to", "?"],
+  [OVERWRITE_TITLE]: ["You are going to change the show file name and overwrite the file with the name", "that already exists. Do you want to continue ?"],
 };
-export const squash = (t: string) => t.replace(/\s+/g, " ").trim();
+const squash = (t: string) => t.replace(/\s+/g, " ").trim();
+/** The show name a dialog's message names, or null when the message is not the expected one. */
+export function dialogTarget(title: string, text: unknown): string | null {
+  const frame = DIALOG_FRAME[title];
+  if (!frame || typeof text !== "string") return null;
+  const first = text.indexOf("'");
+  const last = text.lastIndexOf("'");
+  if (first < 0 || last <= first) return null;
+  if (squash(text.slice(0, first)) !== frame[0] || squash(text.slice(last + 1)) !== frame[1]) return null;
+  return text.slice(first + 1, last);
+}
 const NEEDS_BRIDGE = "the console runs an older bridge plugin without the show ops (bridge 0.35.0); update the plugin";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const POLL_MS = 150;
@@ -178,7 +189,7 @@ export async function saveShow(ctx: ToolContext, raw: Record<string, unknown>): 
       }
       unknownModal = undefined;
       if (now.modal) {
-        const ours = !answered && expect && now.modal.title === expect && typeof now.modal.text === "string" && squash(now.modal.text) === DIALOG_TEXT[expect](to);
+        const ours = !answered && expect && now.modal.title === expect && dialogTarget(expect, now.modal.text) === to;
         if (ours) {
           try {
             await ctx.bridge.request("show.answer", { expectTitle: expect, expectTarget: to, button: "OK", exclusive: true }, t);

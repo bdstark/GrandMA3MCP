@@ -2484,7 +2484,18 @@ do
   check("su20 review 2: a dialog for Joe's Show is not answered for s Show", r.ok == false and r.error:find("wrong%-target") and #clicks == nclicks, J({ r, clicks }))
   r = request("show.answer", { expectTitle = "Change show file name and overwrite existing show file?", expectTarget = "Joe's Show", button = "OK", exclusive = true })
   check("su20 review 2: the same dialog is answered for its own complete name", r.ok and r.result.clicked == "OK" and #clicks == nclicks + 3, J({ r, clicks }))
-  modal = msgbox("Change show file name?", "Show B")
+  -- Review 3 of PR #66: the name between the quotes is compared exactly; "Show  B" (two spaces) is not "Show B".
+  local overwriteBox = function(n) return ui("MessageBox", "MsgBox", nil, { ui("TitleBar", "Title", "Change show file name and overwrite existing show file?"), ui("TextBox", "Text", "You are going to change the show file name and overwrite the file with the name\n'" .. n .. "' that already exists.\nDo you want to continue ?"), ui("Button", "Button 1", "OK"), ui("Button", "Button 2", "Cancel") }) end
+  nclicks = #clicks
+  modal = overwriteBox("Show  B")
+  r = request("show.answer", { expectTitle = "Change show file name and overwrite existing show file?", expectTarget = "Show B", button = "OK", exclusive = true })
+  check("su20 review 3: a dialog for 'Show  B' is not answered for 'Show B'", r.ok == false and r.error:find("wrong%-target") and #clicks == nclicks, J({ r, clicks }))
+  modal = overwriteBox("Show B")
+  r = request("show.answer", { expectTitle = "Change show file name and overwrite existing show file?", expectTarget = "Show  B", button = "OK", exclusive = true })
+  check("su20 review 3: a dialog for 'Show B' is not answered for 'Show  B'", r.ok == false and r.error:find("wrong%-target") and #clicks == nclicks, J({ r, clicks }))
+  modal = overwriteBox("Show  B")
+  r = request("show.answer", { expectTitle = "Change show file name and overwrite existing show file?", expectTarget = "Show  B", button = "OK", exclusive = true })
+  check("su20 review 3: its own name, two spaces and all, is answered", r.ok and r.result.clicked == "OK" and #clicks == nclicks + 3, J({ r, clicks }))
   modal = ui("MessageBox", "MsgBox", nil, { ui("TitleBar", "Title", "Change show file name?"), ui("TextBox", "Text", "Something else entirely 'Show B'?"), ui("Button", "Button 1", "OK") })
   r = request("show.answer", { expectTitle = "Change show file name?", expectTarget = "Show B", button = "OK", exclusive = true })
   check("su20 review 2: a message that is not the probed one is refused even when it quotes the name", r.ok == false and r.error:find("wrong%-target"), J(r))

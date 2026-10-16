@@ -9,11 +9,20 @@ import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { OVERWRITE_TITLE, RENAME_TITLE, registerShowTools, showName } from "../src/tools/show.ts";
 
-/** The console's messages as probed live (whitespace collapsed); kept here, independent of the code under test. */
+/**
+ * The console's messages as probed live, kept here independent of the code under test: the name sits between the
+ * first and the last quote and is compared exactly (every space and apostrophe); only the framing wraps.
+ */
 const squash = (t: string) => t.replace(/\s+/g, " ").trim();
-const DIALOG_TEXT: Record<string, (n: string) => string> = {
-  [RENAME_TITLE]: (n) => `Do you intend to change the show file name to '${n}'?`,
-  [OVERWRITE_TITLE]: (n) => `You are going to change the show file name and overwrite the file with the name '${n}' that already exists. Do you want to continue ?`,
+const FRAME: Record<string, [string, string]> = {
+  [RENAME_TITLE]: ["Do you intend to change the show file name to", "?"],
+  [OVERWRITE_TITLE]: ["You are going to change the show file name and overwrite the file with the name", "that already exists. Do you want to continue ?"],
+};
+const namedIn = (title: string, text: string): string | null => {
+  const a = text.indexOf("'");
+  const b = text.lastIndexOf("'");
+  if (a < 0 || b <= a || squash(text.slice(0, a)) !== FRAME[title][0] || squash(text.slice(b + 1)) !== FRAME[title][1]) return null;
+  return text.slice(a + 1, b);
 };
 import { startHarness, type Harness } from "./helpers/tool-harness.ts";
 import { SILENT } from "./helpers/fake-bridge.ts";
@@ -86,7 +95,7 @@ class FakeConsole {
       if (!this.modal) throw new Error("[no-modal] no dialog is open");
       if (args.expectTitle !== this.modal.title) throw new Error("[wrong-modal]");
       // As the bridge does: the whole message must be the one for the expected target (not the fake's own field).
-      if (squash(this.modal.text) !== DIALOG_TEXT[this.modal.title](String(args.expectTarget))) throw new Error("[wrong-target]");
+      if (namedIn(this.modal.title, this.modal.text) !== String(args.expectTarget)) throw new Error("[wrong-target]");
       const target = this.modal.target;
       this.modal = null;
       if (args.button === "OK") this.write(target);
@@ -304,9 +313,8 @@ test("review 2: a dialog for \"Joe's Show\" is not taken for \"s Show\" (the who
   assert.equal(r.result.verification.status, "unavailable", r.text);
   assert.ok(!h.fake.requests.some((x) => x.op === "show.answer"), "nothing was clicked");
   assert.equal(con.files.get("Joe's Show")!.size, 3000);
-  // The dialog text matches only its own complete name.
-  assert.notEqual(squash(con.modal!.text), DIALOG_TEXT[OVERWRITE_TITLE]("s Show"));
-  assert.equal(squash(con.modal!.text), DIALOG_TEXT[OVERWRITE_TITLE]("Joe's Show"));
+  // The dialog text names only its own complete name.
+  assert.equal(namedIn(OVERWRITE_TITLE, con.modal!.text), "Joe's Show");
 });
 
 test("review 2: a dialog that changes between the poll and the click is refused by the bridge's own check", async () => {
@@ -324,4 +332,31 @@ test("review 2: a dialog that changes between the poll and the click is refused 
   assert.notEqual(r.result.verification.status, "matched");
   assert.ok(r.result.steps.some((x: { name: string; error?: string }) => x.name === "confirm" && /wrong-target/.test(String(x.error))), r.text);
   assert.equal(con.files.has("Another"), false);
+});
+
+test("review 3: \"Show B\" and \"Show  B\" (two spaces) are different files, in both directions", async () => {
+  con.files.set("Show B", { size: 3000, time: 1792120000 });
+  con.files.set("Show  B", { size: 4000, time: 1792120000 });
+  const overwriteText = (n: string) => `You are going to change the show file name and overwrite the file with the name\n'${n}' that already exists.\nDo you want to continue ?`;
+  for (const [request, shown] of [["Show B", "Show  B"], ["Show  B", "Show B"]]) {
+    h.fake.reset();
+    con.install(h);
+    con.modal = null;
+    h.fake.on("show.save", () => {
+      con.modal = { title: OVERWRITE_TITLE, text: overwriteText(shown), target: shown };
+      return { queued: true, command: `SaveShow "${request}"`, now: con.now };
+    });
+    const sizes = [con.files.get("Show B")!.size, con.files.get("Show  B")!.size];
+    const r = await h.callJson("gma3_save_show", { name: request, overwrite: true, exclusive: true });
+    assert.equal(r.result.verification.status, "unavailable", `${request} vs ${shown}: ${r.text}`);
+    assert.ok(!h.fake.requests.some((x) => x.op === "show.answer"), `nothing clicked for ${JSON.stringify(request)} while the dialog names ${JSON.stringify(shown)}`);
+    assert.deepEqual([con.files.get("Show B")!.size, con.files.get("Show  B")!.size], sizes);
+  }
+  // Its own dialog, two spaces and all, is answered.
+  h.fake.reset();
+  con.modal = null;
+  con.install(h);
+  const own = await h.callJson("gma3_save_show", { name: "Show  B", overwrite: true, exclusive: true });
+  assert.equal(own.result.verification.status, "matched", own.text);
+  assert.equal(con.current, "Show  B");
 });

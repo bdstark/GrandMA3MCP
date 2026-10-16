@@ -50,11 +50,13 @@ Steps:
    second, the tool first waits until the clock has passed it. If the reply to the queue request is lost, the save
    may still run: it is watched, never resent, and never reported as "not queued".
 4. **Poll** every 150 ms:
-   - the expected dialog is answered with OK only when its whole message, whitespace collapsed, is the one the console
-     shows for this show: "Do you intend to change the show file name to '<name>'?" or "You are going to change the
-     show file name and overwrite the file with the name '<name>' that already exists. Do you want to continue ?". A
-     quoted-name substring is not enough, since "Joe's Show" contains "'s Show'". The bridge checks the title and the
-     whole message again just before it clicks; any other message is refused;
+   - the expected dialog is answered with OK only when its message is the one the console shows for this show: "Do
+     you intend to change the show file name to '<name>'?" or "You are going to change the show file name and
+     overwrite the file with the name '<name>' that already exists. Do you want to continue ?".
+     - The text around the name is compared with whitespace collapsed, since it wraps.
+     - The name between the first and the last quote is compared exactly, every space and apostrophe kept: "Joe's
+       Show" is not "s Show", and "Show  B" (two spaces) is not "Show B".
+     - The bridge checks the title and the name again just before it clicks. Any other message is refused;
    - any other dialog stops the tool, including a same-title dialog for another show. It is reported and left for
      the operator, never answered;
    - the save is done when a file this save produced is there (new, or with a later time than before) and the
