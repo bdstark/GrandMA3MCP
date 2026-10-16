@@ -115,8 +115,8 @@ The results of `gma3_store_cues` and `gma3_build_chase` are compact by default:
 - **`sequence_settings`** (as `gma3_configure_sequence` takes them) are applied after the build in the same lock span.
   With a priority above LTP, the result's `override` lists the running sequences of lower priority with Off When
   Overridden on. They are switched off where the override plays on the same fixtures; cue contents cannot be read, so
-  every playing candidate is listed. `protect_running: true` turns Off When Overridden off on them. The scan must be complete and every protection
-  must succeed and read back; otherwise the override's settings are not applied and a chase is not played. Settings are
+  every playing candidate is listed. `protect_running: true` turns Off When Overridden off on them. The scan must be complete (every sequence's number, priority, Off When
+  Overridden and, for a candidate, its playback state readable) and every protection must succeed and read back; otherwise the override's settings are not applied and a chase is not played. Settings are
   only applied after a complete build with no step that went unanswered.
 
 ## gma3_edit_cues

@@ -74,6 +74,9 @@ class Console {
   running = new Set<number>();
   /** The programmer's current step (Step N). */
   step = 1;
+  /** Sequences whose object reply omits hasActivePlayback, and whose listing omits Priority (review round 2). */
+  omitPlayback = new Set<number>();
+  unreadablePriority = new Set<number>();
   current = new Map<number, number>();
   commands: string[] = [];
 
@@ -219,7 +222,7 @@ class Console {
       return { total: 1, items: [{ name: c.name, class: ref.endsWith("Part 0") ? "Part" : "Cue", fields: Object.fromEntries(fields.map((f) => [f, all[f]])) }] };
     }
     if (ref === "Sequence Thru") {
-      const items = [...this.seqs].map(([no, s]) => ({ name: s.name, class: "Sequence", fields: Object.fromEntries(fields.map((f) => [f, f === "No" ? `${no} (${s.cues.length})` : { Priority: "LTP", OffWhenOverridden: "Yes", ...(s.props ?? {}) }[f]])) }));
+      const items = [...this.seqs].map(([no, s]) => ({ name: s.name, class: "Sequence", fields: Object.fromEntries(fields.filter((f) => !(f === "Priority" && this.unreadablePriority.has(no))).map((f) => [f, f === "No" ? `${no} (${s.cues.length})` : { Priority: "LTP", OffWhenOverridden: "Yes", ...(s.props ?? {}) }[f]])) }));
       return { total: items.length, items };
     }
     if ((m = ref.match(/^Preset (\d+)\.(\d+) Thru (\d+)$/))) {
@@ -298,6 +301,7 @@ class Console {
     });
     f.on("object", (args) => {
       const no = Number(String(args.ref).replace(/^Sequence /, ""));
+      if (this.omitPlayback.has(no)) return { name: String(args.ref) };
       return { name: String(args.ref), hasActivePlayback: this.playing?.seq === no || this.running.has(no) };
     });
     f.on("getfader", (args) => {
@@ -944,6 +948,62 @@ test("SU-14 after SU-13: a look's phaser refuses the count-dependent forms (phas
       assert.match(r.result.validationErrors.join(" "), /a look's phaser takes phase \{from, to\}/, JSON.stringify(phaser));
     }
     assert.deepEqual(c.commands, []);
+  } finally {
+    await h.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// SU-14 review round 2
+// ---------------------------------------------------------------------------
+
+test("SU-14 review 2: a settings write without a reply keeps the call uncertain, so a batch stops before the next sequence", async () => {
+  const { h, c } = await setup();
+  try {
+    c.silentSet = /^Sequence 98[57] OffWhenOverridden$/;
+    const r = await h.callJson("gma3_store_cues", {
+      mode: "create",
+      exclusive: true,
+      sequence_settings: { priority: "high", off_when_overridden: false },
+      sequences: [
+        { sequence: 985, cues: [{ cue: 1, fixtures: "101", intensity: 10 }] },
+        { sequence: 986, cues: [{ cue: 1, fixtures: "101", intensity: 20 }] },
+      ],
+    });
+    assert.deepEqual(r.result.items.map((i: any) => i.outcome), ["partial", "not_attempted"], JSON.stringify(r.result.items).slice(0, 1500));
+    assert.equal(c.seqs.get(986), undefined, "the second sequence was never built");
+    assert.equal(c.seqs.get(985)!.props?.Priority, "High", "the completed write is kept");
+    const single = await h.callJson("gma3_store_cues", { sequence: 987, mode: "create", exclusive: true, cues: [{ cue: 1, fixtures: "101", intensity: 5 }], sequence_settings: { priority: "high", off_when_overridden: false }, detail: true });
+    c.silentSet = undefined;
+    const wrapper = single.result.steps.find((st: any) => st.name === "sequence_settings");
+    assert.equal(wrapper?.status, "unknown", JSON.stringify(wrapper));
+    assert.ok(wrapper.detail.unknown.some((n: string) => /OffWhenOverridden|off_when_overridden/i.test(n)), JSON.stringify(wrapper.detail));
+    assert.ok(wrapper.detail.written.length > 0, "the completed write is listed");
+  } finally {
+    await h.close();
+  }
+});
+
+test("SU-14 review 2: an unreadable playback state or priority makes discovery incomplete; protect_running stops before configuring or playing", async () => {
+  const { h, c } = await setup();
+  try {
+    c.addCue(5, 1);
+    c.running.add(5);
+    c.omitPlayback.add(5);
+    const sc = await h.callJson("gma3_store_cues", { sequence: 988, mode: "create", exclusive: true, cues: [{ cue: 1, fixtures: "101", intensity: 100 }], sequence_settings: { priority: "high" }, protect_running: true });
+    assert.equal(sc.isError, true);
+    assert.equal(c.seqs.get(988)!.props?.Priority, undefined, "the override was not configured");
+    assert.match(JSON.stringify(sc.result), /Sequence 5 \(playback state unreadable\)/);
+    c.omitPlayback.clear();
+    c.unreadablePriority.add(5);
+    const ch = await h.callJson("gma3_build_chase", { sequence: 989, exclusive: true, fixtures: "101", steps: [{ intensity: 10 }, { intensity: 90 }], step_seconds: 0.25, sequence_settings: { priority: "high" }, protect_running: true });
+    assert.equal(ch.isError, true);
+    assert.ok(!c.commands.some((x) => /^Goto Sequence 989/.test(x)), "the chase was not played");
+    assert.match(JSON.stringify(ch.result), /Sequence 5 \(priority or Off When Overridden unreadable\)/);
+    // Without protect_running the override goes on, with a warning that the list may be incomplete.
+    const warn = await h.callJson("gma3_store_cues", { sequence: 990, mode: "create", exclusive: true, cues: [{ cue: 1, fixtures: "101", intensity: 100 }], sequence_settings: { priority: "high" } });
+    assert.equal(warn.result.override.complete, false);
+    assert.ok(warn.result.warnings.some((w: string) => /could not all be judged/.test(w)));
   } finally {
     await h.close();
   }

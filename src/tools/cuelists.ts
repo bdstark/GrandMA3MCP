@@ -1051,22 +1051,36 @@ const rankOf = (p: unknown) => PRIORITY_RANK[String(p ?? "").trim().toLowerCase(
  * Off When Overridden on, not the sequence itself. They switch off only where the override plays on the same fixtures;
  * cue contents cannot be read on 2.5.1, so every candidate is listed.
  */
-async function overrideCandidates(bridge: Gma3Bridge, sequence: number, priority: string, t: number): Promise<{ sequences: Array<{ sequence: number; name: string; priority: string }>; complete: boolean }> {
+async function overrideCandidates(bridge: Gma3Bridge, sequence: number, priority: string, t: number): Promise<{ sequences: Array<{ sequence: number; name: string; priority: string }>; complete: boolean; unread?: string[] }> {
   const res = (await bridge.request("objects", { ref: "Sequence Thru", fields: ["No", "Priority", "OffWhenOverridden"], limit: 500 }, t)) as { total?: number; items?: Array<{ name?: string; fields?: Record<string, unknown> }> };
   const out: Array<{ sequence: number; name: string; priority: string }> = [];
-  let complete = (res.total ?? 0) <= (res.items?.length ?? 0);
+  // Discovery is complete only when every sequence could be judged (review round 2): an unreadable number, priority,
+  // Off When Overridden or playback state never excludes a sequence silently.
+  const unread: string[] = [];
+  if ((res.total ?? 0) > (res.items?.length ?? 0)) unread.push(`${(res.total ?? 0) - (res.items?.length ?? 0)} sequence(s) beyond the listing`);
   for (const it of res.items ?? []) {
     const no = Number(String(it.fields?.No ?? "").match(/^\d+/)?.[0]);
-    if (!Number.isInteger(no) || no === sequence) continue;
-    if (rankOf(it.fields?.Priority) >= rankOf(priority) || String(it.fields?.OffWhenOverridden ?? "").toLowerCase() !== "yes") continue;
+    if (!Number.isInteger(no)) {
+      unread.push(`"${it.name ?? "?"}" (number unreadable)`);
+      continue;
+    }
+    if (no === sequence) continue;
+    const prio = String(it.fields?.Priority ?? "").trim().toLowerCase();
+    const owo = String(it.fields?.OffWhenOverridden ?? "").trim().toLowerCase();
+    if (!(prio in PRIORITY_RANK) || (owo !== "yes" && owo !== "no")) {
+      unread.push(`Sequence ${no} (priority or Off When Overridden unreadable)`);
+      continue;
+    }
+    if (PRIORITY_RANK[prio] >= rankOf(priority) || owo !== "yes") continue;
     try {
       const o = (await bridge.request("object", { ref: `Sequence ${no}`, properties: false }, t)) as { hasActivePlayback?: unknown };
-      if (o?.hasActivePlayback === true) out.push({ sequence: no, name: String(it.name ?? ""), priority: String(it.fields?.Priority ?? "") });
+      if (typeof o?.hasActivePlayback !== "boolean") unread.push(`Sequence ${no} (playback state unreadable)`);
+      else if (o.hasActivePlayback) out.push({ sequence: no, name: String(it.name ?? ""), priority: String(it.fields?.Priority ?? "") });
     } catch {
-      complete = false;
+      unread.push(`Sequence ${no} (playback state not read)`);
     }
   }
-  return { sequences: out, complete };
+  return { sequences: out, complete: unread.length === 0, ...(unread.length ? { unread } : {}) };
 }
 
 /**
@@ -1094,7 +1108,7 @@ async function sequenceExtras(ctx: ToolContext, sequence: number, settings: Reco
       extra.override = { priority, wouldSwitchOff: c.sequences, complete: c.complete, protected: protectedOnes };
       if (protect) {
         // Protection must be complete and confirmed before the override is configured or played (review round 1).
-        if (!c.complete) return notReady("the running sequences could not all be read, so their protection is not complete");
+        if (!c.complete) return notReady(`the running sequences could not all be judged (${(c.unread ?? []).join("; ")}), so their protection is not complete`);
         for (const r of c.sequences) {
           const res = await configureSequence(held, { sequence: r.sequence, off_when_overridden: false } as ConfigureSequenceArgs);
           const ok = res.outcome === "succeeded" && res.verification.status === "matched";
@@ -1103,7 +1117,10 @@ async function sequenceExtras(ctx: ToolContext, sequence: number, settings: Reco
           if (!ok) return notReady(`Off When Overridden could not be confirmed off on Sequence ${r.sequence} (${res.outcome}, read-back ${res.verification.status})`);
           protectedOnes.push(r.sequence);
         }
-      } else if (c.sequences.length) {
+      } else if (!c.complete) {
+        warnings.push(`the running sequences could not all be judged (${(c.unread ?? []).join("; ")}); the override may switch off more than listed`);
+      }
+      if (!protect && c.sequences.length) {
         warnings.push(`Sequence ${sequence} plays at priority ${priority}: where it plays on the same fixtures it switches off ${c.sequences.map((r) => `Sequence ${r.sequence} "${r.name}"`).join(", ")} (Off When Overridden is on); pass protect_running: true to turn Off When Overridden off on them`);
       }
       extra.override = { priority, wouldSwitchOff: c.sequences, complete: c.complete, protected: protectedOnes, note: "a running sequence of lower priority with Off When Overridden on is switched off where the override plays on the same fixtures; cue contents cannot be read on 2.5.1, so every playing candidate is listed" };
@@ -1114,7 +1131,17 @@ async function sequenceExtras(ctx: ToolContext, sequence: number, settings: Reco
     }
   }
   const res = await configureSequence(held, { sequence, ...settings } as ConfigureSequenceArgs);
-  steps.push({ name: "sequence_settings", status: res.outcome === "succeeded" ? "succeeded" : res.outcome === "unknown" ? "unknown" : "failed", op: "gma3_configure_sequence", detail: { verification: res.verification.status }, ...(res.outcome === "succeeded" ? {} : { error: res.summary }) });
+  // A partial configuration with an unanswered write is uncertain, not failed (review round 2): the wrapper keeps that,
+  // so a batch around this call stops, and the completed and unknown writes stay visible.
+  const nestedUnknown = res.steps.filter((st) => st.status === "unknown" && st.kind !== "read");
+  const status = res.outcome === "succeeded" ? "succeeded" : res.outcome === "unknown" || nestedUnknown.length ? "unknown" : "failed";
+  steps.push({
+    name: "sequence_settings",
+    status,
+    op: "gma3_configure_sequence",
+    detail: { outcome: res.outcome, verification: res.verification.status, written: res.steps.filter((st) => st.status === "succeeded" && st.kind !== "read").map((st) => st.name), ...(nestedUnknown.length ? { unknown: nestedUnknown.map((st) => st.name) } : {}) },
+    ...(status === "succeeded" ? {} : { error: res.summary }),
+  });
   verifications.push(res.verification);
   if (res.warnings?.length) warnings.push(...res.warnings);
   extra.sequenceSettings = { outcome: res.outcome, verification: res.verification.status, ...(res.intended ? { intended: res.intended } : {}) };
