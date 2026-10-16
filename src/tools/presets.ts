@@ -34,7 +34,10 @@
 import { z } from "zod";
 import { BridgeError, type Gma3Bridge } from "../bridge.js";
 import { json, operation, type RegisterTools, type ToolContext } from "./context.js";
+import { BATCH_NOTE, batchItems, batchOptionShape, batchRefused } from "../batch.js";
+import { storePresetsFromContent } from "./presetbatch.js";
 import { expandFixtures } from "./groups.js";
+import { ATTRIBUTE_UNIT_NAMES, type AttributeUnit } from "./fixtures.js";
 import {
   asRead,
   buildResult,
@@ -903,10 +906,12 @@ export const registerPresetTools: RegisterTools = (server, ctx) => {
         "existing: refuse (default) | merge | overwrite. fixtures: the scope; every active programmer value must belong to these fixtures (a fixture includes its cells) and each must have one; attributes (optional): exact attribute filter (an activation group, e.g. all ColorRGB_*, is activated as a whole); layers (default [absolute]; also relative, fade, delay, phaser) must cover every value's layers. " +
         "Anything else in the programmer is refused, because the console stores every active value regardless of the selection. Also refused: universal mode with values that differ between fixtures, embed without a preset reference in the programmer, attributes a feature-group pool's input filter would drop (store into an All pool 21-25 or pass input_filter: false), a locked preset. " +
         "embed (default false) stores references to the presets active in the programmer; matricks (default false) the selection MAtricks; keep_activation (default false); input_filter overrides the operator default for this store only. The command always carries /Programmer /Active, the mode, /Merge or /Overwrite, /Embed, /MAtricks, /KeepActivation and /NoConfirmation, so the operator's store preferences decide nothing and are not changed (read before and after); Look cannot be overridden per store, so the tool refuses while the operator's StoreLook preference is on. " +
-        "Requires exclusive: true (not for preview). verify (default true) reads the stored rows back and checks each programmer value by mode, value, layers and reference, unexpected content, the preset's mode, dependencies (recursively; incomplete inspection is reported) and that the store preferences are unchanged. Needs bridge 0.22.0.",
+        "Requires exclusive: true (not for preview). verify (default true) reads the stored rows back and checks each programmer value by mode, value, layers and reference, unexpected content, the preset's mode, dependencies (recursively; incomplete inspection is reported) and that the store preferences are unchanged. Needs bridge 0.22.0. " +
+        "Batch form (presets): each preset from explicit content instead of the programmer: fixtures (ids or ranges: the target and the scope) with presets, intensity and/or values, or looks. They are built one by one in the console's Preview environment (its own programmer; the operator's Normal programmer and the output are not touched, checked before and after): from an empty Preview programmer, each look is checked right after its commands, then this tool's store, checks and read-back run there. A preset that fails does not stop the others. " +
+        BATCH_NOTE,
       inputSchema: {
-        preset: z.string().describe('Target preset "<pool>.<number>", e.g. "4.12" or "23.1".'),
-        fixtures: z.array(z.union([z.string(), z.number()])).describe('Scope: fixture ids or "a Thru b" ranges; every programmer value must belong to them.'),
+        preset: z.string().optional().describe('Target preset "<pool>.<number>", e.g. "4.12" or "23.1". Required unless presets is given.'),
+        fixtures: z.array(z.union([z.string(), z.number()])).optional().describe('Scope: fixture ids or "a Thru b" ranges; every programmer value must belong to them. Required unless presets is given (it is then the default target of every preset\'s content).'),
         mode: z.enum(MODES).optional().describe("Preset mode the data is stored in."),
         force: z.enum(["global", "universal"]).optional().describe("Forced conversion of an existing preset instead of mode (needs existing: merge)."),
         existing: z.enum(["refuse", "merge", "overwrite"]).optional().describe("What to do when the preset exists (default refuse)."),
@@ -920,8 +925,36 @@ export const registerPresetTools: RegisterTools = (server, ctx) => {
         exclusive: z.boolean().optional().describe("Required (true) unless preview: nobody else changes the programmer while the tool runs."),
         preview: z.boolean().optional().describe("Only read, check and return the planned command (default false)."),
         verify: z.boolean().optional().describe("Read back and check the stored content (default true)."),
+        presets: z
+          .array(
+            z.object({
+              preset: z.string().describe('"<pool>.<number>".'),
+              name: z.string().optional(),
+              mode: z.enum(MODES).optional(),
+              existing: z.enum(["refuse", "merge", "overwrite"]).optional(),
+              fixtures: z.array(z.union([z.string(), z.number()])).optional().describe("The content's target and the preset's scope: fixture ids or ranges (default: the call's fixtures)."),
+              presets: z.array(z.object({ pool: z.number(), preset: z.union([z.number(), z.string()]) })).optional().describe("Presets applied first (At Preset); stored as values unless embed: true."),
+              intensity: z.number().optional().describe("Intensity 0..100 percent."),
+              values: z.array(z.object({ attribute: z.string(), value: z.number(), unit: z.enum(ATTRIBUTE_UNIT_NAMES as [AttributeUnit, ...AttributeUnit[]]).optional() })).optional(),
+              looks: z.array(z.object({ fixtures: z.array(z.union([z.string(), z.number()])).optional(), presets: z.array(z.object({ pool: z.number(), preset: z.union([z.number(), z.string()]) })).optional(), intensity: z.number().optional(), values: z.array(z.object({ attribute: z.string(), value: z.number(), unit: z.enum(ATTRIBUTE_UNIT_NAMES as [AttributeUnit, ...AttributeUnit[]]).optional() })).optional() })).optional().describe("Several looks (each its own fixtures), instead of fixtures/presets/intensity/values."),
+              attributes: z.array(z.string()).optional(),
+              layers: z.array(z.enum(LAYERS)).optional(),
+              embed: z.boolean().optional(),
+              input_filter: z.boolean().optional(),
+            }),
+          )
+          .optional()
+          .describe("Batch form: several presets, each from explicit content (built in Preview; the programmer is not stored)."),
+        ...batchOptionShape,
       },
     },
-    async (args) => operation(() => storePreset(ctx, args as StorePresetArgs)),
+    async (args) =>
+      operation(async () => {
+        const a = args as Record<string, unknown>;
+        if (a.presets === undefined) return storePreset(ctx, a as unknown as StorePresetArgs);
+        const split = batchItems(a, "presets", ["preset", "name", "looks"]);
+        if ("errors" in split) return batchRefused("store_preset", "presets", split.errors);
+        return storePresetsFromContent(ctx, split.items, { detail: a.detail === true, verify: a.verify !== false, stopOnFailure: a.stop_on_failure === true });
+      }),
   );
 };

@@ -42,6 +42,7 @@ import {
 import { Validator, ValidationError, attributeName, cueNumber, finiteNumber, fixtureSelection, objectName, objectNumber, oneOf, percent, timeSeconds } from "../validate.js";
 import { cueRef, exists } from "./common.js";
 import { operation, type RegisterTools, type ToolContext } from "./context.js";
+import { BATCH_NOTE, batchOptionShape, compactResult, duplicates, runBatchCall } from "../batch.js";
 import { TIME_NORMALIZERS, TIMING_PROPS, TRIGGERS, TRIGGER_KEYS, type TimingKey, type TriggerKey } from "./cues.js";
 import {
   ATTRIBUTE_UNITS,
@@ -146,7 +147,7 @@ function validateLook(v: Validator, raw: unknown, path: string, defaultFixtures:
 }
 
 /** The looks of a cue: `looks`, or the shorthand fields (fixtures, presets, intensity, values) as one look. */
-function validateLooks(v: Validator, raw: Record<string, unknown>, path: string, defaultFixtures: string | undefined): LookSpec[] {
+export function validateLooks(v: Validator, raw: Record<string, unknown>, path: string, defaultFixtures: string | undefined): LookSpec[] {
   const shorthand = ["presets", "intensity", "values", "fixtures"].some((k) => raw[k] !== undefined);
   if (raw.looks !== undefined) {
     if (shorthand) v.fail(`${path}: give looks, or fixtures/presets/intensity/values, not both`);
@@ -308,37 +309,65 @@ const worst = (list: Verification[], checked: string): Verification => {
   return { status: "matched", checked };
 };
 
+/** One object built in Preview: its looks, then the steps that store it (run only after every look applied). */
+export interface PreviewItem {
+  /** Step-name prefix, "cue 3: " or "preset 4.12: ". */
+  prefix: string;
+  looks: LookSpec[];
+  /** The store and what follows it (name, timing). The first step is the store: its status is the item's. */
+  store: Array<{ name: string; run: StepFn }>;
+}
+
+export type PreviewItemStatus = "stored" | "failed" | "unknown" | "not_attempted";
+
+export interface PreviewItemReport {
+  status: PreviewItemStatus;
+  /** The look checks in the programmer before the store (not_requested without verify). */
+  verification: Verification;
+  looks?: Array<{ fixtures: string; presets: string[]; verification: string; detail?: string }>;
+  error?: string;
+  /** This item's steps (looks, store), in order. */
+  steps: StepResult[];
+  /** The store step itself succeeded (the object exists even when a later step of the item failed). */
+  storeSucceeded: boolean;
+}
+
+export interface PreviewBuild {
+  /** Every step: inspection, the items' steps, leaving Preview and the Normal programmer check. */
+  steps: StepResult[];
+  readBack: StepResult[];
+  warnings: string[];
+  items: PreviewItemReport[];
+  /** Did the build get past the read-only inspection (something was sent)? */
+  sent: boolean;
+  /** Preview was left cleanly (every cleanup step succeeded) and the console was then read in Normal. */
+  backInNormal: boolean;
+  normalProgrammer: "untouched" | "changed" | "unknown" | "not_entered";
+}
+
 /**
- * Inspect (read-only; nothing is sent when it fails), build every cue in Preview, leave Preview, check the Normal
- * programmer, then read every stored cue back. Runs inside the caller's mutation lock span.
+ * Inspect (read-only; nothing is sent when it fails), then build every item in the Preview environment: from an empty
+ * Preview programmer, its looks in order with a programmer check after each command, then its store steps. Preview is
+ * left whatever happened, and the Normal programmer is checked to be untouched. Runs inside the caller's mutation lock
+ * span. `inspect` puts the caller's own read-only checks first.
+ *
+ * An item whose look did not apply, or whose store steps did not all succeed, stops the build (the items already stored
+ * stay), unless `continueAfterFailure`: then the next item starts again from a confirmed, cleared Preview programmer.
+ * An item with an unknown step stops the build either way.
  */
-export async function buildCueBatch(ctx: ToolContext, b: Batch): Promise<BatchResult> {
+export async function buildInPreview(ctx: ToolContext, o: { items: PreviewItem[]; verify: boolean; noun: string; inspect?: Array<{ name: string; run: StepFn }>; continueAfterFailure?: boolean }): Promise<PreviewBuild> {
   const { bridge } = ctx;
   const t = ctx.requestTimeoutMs;
   const warnings: string[] = [];
   const readBack: StepResult[] = [];
-  const reports: CueReport[] = b.cues.map((c) => ({ cue: c.cue, status: "not_attempted", verification: unavailable("not attempted") }));
+  const reports: PreviewItemReport[] = o.items.map(() => ({ status: "not_attempted", verification: unavailable("not attempted"), steps: [], storeSucceeded: false }));
   const presets = new Map<string, { addrNative: string; label: string }>();
   let normalBefore: ProgrammerSnapshot | undefined;
-  let existing: CueListEntry[] | null = null;
 
-  // 1. Inspection: the sequence and its cues, every preset, attribute and fixture expression, the Normal programmer.
-  const allLooks = b.cues.flatMap((c) => c.looks);
+  // 1. Inspection: the caller's checks, every preset, attribute and fixture expression, the Normal programmer.
+  const allLooks = o.items.flatMap((c) => c.looks);
   const inspect = await runSteps([
-    {
-      name: "read_sequence",
-      run: async () => {
-        try {
-          existing = await readCueList(bridge, b.sequence, t);
-        } catch (err) {
-          return asRead(stepFromError("read_sequence", err, { op: "children" }));
-        }
-        const have = new Set((existing ?? []).map((c) => c.no));
-        const clash = b.cues.filter((c) => have.has(Number(c.cue))).map((c) => c.cue);
-        if (b.mode === "create" && clash.length) return failedRead("read_sequence", `Sequence ${b.sequence} already has cue(s) ${clash.join(", ")}; nothing was sent. Use mode merge or overwrite, or other cue numbers`, { existing: clash });
-        return asRead({ name: "read_sequence", status: "succeeded", op: "children", detail: { exists: existing !== null, cues: existing?.length ?? 0, ...(clash.length ? { replaced: clash } : {}) } });
-      },
-    },
+    ...(o.inspect ?? []),
     {
       name: "check_presets",
       run: async () => {
@@ -386,7 +415,7 @@ export async function buildCueBatch(ctx: ToolContext, b: Batch): Promise<BatchRe
       run: async () => {
         try {
           const env = await environmentOf(bridge, t);
-          if (env.environment !== "Normal") return failedRead("read_normal_programmer", `the console is in the ${env.environment ?? "unknown"} environment; the cues are built in Preview and the build must start from Normal (gma3_phaser_release leaves Preview)`);
+          if (env.environment !== "Normal") return failedRead("read_normal_programmer", `the console is in the ${env.environment ?? "unknown"} environment; the ${o.noun} are built in Preview and the build must start from Normal (gma3_phaser_release leaves Preview)`);
           normalBefore = await snapshotProgrammer(bridge);
           if (!normalBefore.complete) return failedRead("read_normal_programmer", `the Normal programmer could not be read completely (${normalBefore.reason}), so it could not be checked afterwards; nothing was sent`);
           return asRead({ name: "read_normal_programmer", status: "succeeded", op: "programmer", detail: { environment: env.environment, values: normalBefore.values.size } });
@@ -397,10 +426,7 @@ export async function buildCueBatch(ctx: ToolContext, b: Batch): Promise<BatchRe
     },
   ]);
   const steps: StepResult[] = [...inspect.steps];
-  const sequenceExisted = existing !== null;
-  if (inspect.outcome !== "succeeded") {
-    return { steps, readBack, warnings, cues: reports, sent: false, backInNormal: true, normalProgrammer: "not_entered", sequenceExisted, verification: unavailable("nothing was sent") };
-  }
+  if (inspect.outcome !== "succeeded") return { steps, readBack, warnings, items: reports, sent: false, backInNormal: true, normalProgrammer: "not_entered" };
 
   // 2. Build in Preview.
   let entered = false;
@@ -435,15 +461,15 @@ export async function buildCueBatch(ctx: ToolContext, b: Batch): Promise<BatchRe
       else building = true;
     } else stopped = true;
 
-    for (let i = 0; i < b.cues.length && !stopped; i++) {
-      const c = b.cues[i];
+    for (let i = 0; i < o.items.length && !stopped; i++) {
+      const item = o.items[i];
       const report = reports[i];
-      const pre = `cue ${c.cue}: `;
+      const pre = item.prefix;
       const lookChecks: Verification[] = [];
       report.looks = [];
       const plan: Array<{ name: string; run: StepFn }> = [];
       if (i > 0) {
-        // The programmer keeps the previous cue's values after its store. ClearAll only after Preview is confirmed.
+        // The programmer keeps the previous item's values after its store. ClearAll only after Preview is confirmed.
         plan.push({
           name: `${pre}confirm_preview`,
           run: async () => {
@@ -458,11 +484,11 @@ export async function buildCueBatch(ctx: ToolContext, b: Batch): Promise<BatchRe
         });
         plan.push({ name: `${pre}clear`, run: () => commandStep(bridge, `${pre}clear`, "ClearAll", t) });
       }
-      c.looks.forEach((look, j) => {
+      item.looks.forEach((look, j) => {
         const lp = `${pre}look ${j + 1} `;
         plan.push({ name: `${lp}clear_selection`, run: () => commandStep(bridge, `${lp}clear_selection`, "ClearSelection", t) });
         plan.push({ name: `${lp}select`, run: () => commandStep(bridge, `${lp}select`, look.fixtures, t) });
-        const entry: NonNullable<CueReport["looks"]>[number] = { fixtures: look.fixtures, presets: look.presets.map((p) => p.ref), verification: b.verify ? "matched" : "not_requested" };
+        const entry: NonNullable<PreviewItemReport["looks"]>[number] = { fixtures: look.fixtures, presets: look.presets.map((p) => p.ref), verification: o.verify ? "matched" : "not_requested" };
         report.looks!.push(entry);
         const parts: Verification[] = [];
         // A check right after the command it verifies: a later preset in the same look may take over an earlier one's
@@ -476,35 +502,31 @@ export async function buildCueBatch(ctx: ToolContext, b: Batch): Promise<BatchRe
             const all = worst(parts, `look ${j + 1} on ${look.fixtures} in the programmer`);
             entry.verification = all.status;
             if (all.detail) entry.detail = all.detail;
-            if (v.status === "mismatched") return { name, kind: "read", status: "failed", op: "programmer", error: `${what} did not apply, so cue ${c.cue} was not stored: ${v.detail}` };
+            if (v.status === "mismatched") return { name, kind: "read", status: "failed", op: "programmer", error: `${what} did not apply, so ${pre.replace(/: $/, "")} was not stored: ${v.detail}` };
             return asRead({ name, status: "succeeded", op: "programmer", detail: { verification: v.status } });
           },
         });
         for (const p of look.presets) {
           plan.push({ name: `${lp}apply ${p.ref}`, run: () => commandStep(bridge, `${lp}apply ${p.ref}`, `At ${p.ref}`, t) });
-          if (b.verify) plan.push(check(`${lp}check ${p.ref}`, p.ref, async () => (await verifyPresetLink(bridge, presets.get(p.ref) as { addrNative: string; label: string }, readBack)).verification));
+          if (o.verify) plan.push(check(`${lp}check ${p.ref}`, p.ref, async () => (await verifyPresetLink(bridge, presets.get(p.ref) as { addrNative: string; label: string }, readBack)).verification));
         }
         if (look.intensity !== undefined) plan.push({ name: `${lp}intensity`, run: () => commandStep(bridge, `${lp}intensity`, `At ${formatValue(look.intensity as number)}`, t) });
         look.values.forEach((x) => plan.push({ name: `${lp}${x.attribute}`, run: () => commandStep(bridge, `${lp}${x.attribute}`, attributeCommand(x.attribute, x.value, x.unit ? ATTRIBUTE_UNITS[x.unit].keyword : undefined), t) }));
         const exp = expectationsOf(look);
-        if (b.verify && exp.length) plan.push(check(`${lp}check values`, "the look's values", async () => (await verifyProgrammer(bridge, exp, readBack, warnings)).verification));
+        if (o.verify && exp.length) plan.push(check(`${lp}check values`, "the look's values", async () => (await verifyProgrammer(bridge, exp, readBack, warnings)).verification));
       });
-      plan.push({ name: `${pre}store`, run: () => commandStep(bridge, `${pre}store`, storeCommand(b.sequence, c.cue, b.mode), t) });
-      const part0 = cueRef(b.sequence, c.cue, 0);
-      const cueObj = cueRef(b.sequence, c.cue);
-      if (c.name !== undefined) plan.push(setStep(bridge, `${pre}name`, part0, "Name", c.name, t));
-      for (const [k, val] of Object.entries(c.timing) as Array<[keyof CueSpec["timing"], number]>) plan.push(setStep(bridge, `${pre}${k}`, part0, TIMING_PROPS[k], val, t));
-      if (c.trigger) plan.push(setStep(bridge, `${pre}trigger`, cueObj, "TrigType", TRIGGERS[c.trigger], t));
-      if (c.time !== undefined) plan.push(setStep(bridge, `${pre}trigger_time`, cueObj, "TrigTime", c.time, t));
+      plan.push(...item.store);
 
       const run = await runSteps(plan);
       steps.push(...run.steps);
-      const store = run.steps.find((s) => s.name === `${pre}store`);
+      report.steps = run.steps;
+      const store = run.steps.find((s) => s.name === item.store[0]?.name);
       const bad = run.steps.find((s) => s.status !== "succeeded" && s.status !== "skipped");
+      report.storeSucceeded = store?.status === "succeeded";
       report.status = store?.status === "succeeded" ? (bad ? "failed" : "stored") : store?.status === "unknown" ? "unknown" : "failed";
       if (bad) report.error = `${bad.name}: ${bad.error ?? bad.status}`;
-      report.verification = b.verify ? worst(lookChecks, "looks") : notRequested();
-      if (bad) stopped = true;
+      report.verification = o.verify ? worst(lookChecks, "looks") : notRequested();
+      if (bad && (!o.continueAfterFailure || bad.status === "unknown")) stopped = true;
     }
   } finally {
     // Leave Preview whatever happened, once it may have been entered.
@@ -524,7 +546,7 @@ export async function buildCueBatch(ctx: ToolContext, b: Batch): Promise<BatchRe
     }
   }
 
-  let normalProgrammer: BatchResult["normalProgrammer"] = entered ? "unknown" : "not_entered";
+  let normalProgrammer: PreviewBuild["normalProgrammer"] = entered ? "unknown" : "not_entered";
   const cleanupSteps = steps.filter((x) => ["confirm_preview_end", "release_preview_programmer", "preview_off"].includes(x.name));
   let backInNormal = !entered;
   if (entered && normalBefore) {
@@ -533,11 +555,56 @@ export async function buildCueBatch(ctx: ToolContext, b: Batch): Promise<BatchRe
       backInNormal = env.environment === "Normal" && cleanupSteps.every((x) => x.status === "succeeded");
       const after = await snapshotProgrammer(bridge);
       if (env.environment === "Normal" && after.complete) normalProgrammer = sameProgrammer(normalBefore, after) ? "untouched" : "changed";
-      steps.push(asRead({ name: "check_normal_programmer", status: normalProgrammer === "untouched" ? "succeeded" : "failed", op: "programmer", ...(normalProgrammer === "untouched" ? {} : { error: env.environment !== "Normal" ? `the console is in the ${env.environment ?? "unknown"} environment; run gma3_phaser_release` : !after.complete ? "the Normal programmer could not be read completely" : "the Normal programmer changed while the cues were built (another operator, or a command that reached Normal)" }) }));
+      steps.push(asRead({ name: "check_normal_programmer", status: normalProgrammer === "untouched" ? "succeeded" : "failed", op: "programmer", ...(normalProgrammer === "untouched" ? {} : { error: env.environment !== "Normal" ? `the console is in the ${env.environment ?? "unknown"} environment; run gma3_phaser_release` : !after.complete ? "the Normal programmer could not be read completely" : `the Normal programmer changed while the ${o.noun} were built (another operator, or a command that reached Normal)` }) }));
     } catch (err) {
       steps.push(asRead(stepFromError("check_normal_programmer", err, { op: "programmer" })));
     }
   }
+  return { steps, readBack, warnings, items: reports, sent: true, backInNormal, normalProgrammer };
+}
+
+/**
+ * Inspect (read-only; nothing is sent when it fails), build every cue in Preview, leave Preview, check the Normal
+ * programmer, then read every stored cue back. Runs inside the caller's mutation lock span.
+ */
+export async function buildCueBatch(ctx: ToolContext, b: Batch): Promise<BatchResult> {
+  const { bridge } = ctx;
+  const t = ctx.requestTimeoutMs;
+  let existing: CueListEntry[] | null = null;
+  const readSequence = {
+    name: "read_sequence",
+    run: async (): Promise<StepResult> => {
+      try {
+        existing = await readCueList(bridge, b.sequence, t);
+      } catch (err) {
+        return asRead(stepFromError("read_sequence", err, { op: "children" }));
+      }
+      const list = existing as CueListEntry[] | null;
+      const have = new Set((list ?? []).map((c) => c.no));
+      const clash = b.cues.filter((c) => have.has(Number(c.cue))).map((c) => c.cue);
+      if (b.mode === "create" && clash.length) return failedRead("read_sequence", `Sequence ${b.sequence} already has cue(s) ${clash.join(", ")}; nothing was sent. Use mode merge or overwrite, or other cue numbers`, { existing: clash });
+      return asRead({ name: "read_sequence", status: "succeeded", op: "children", detail: { exists: list !== null, cues: list?.length ?? 0, ...(clash.length ? { replaced: clash } : {}) } });
+    },
+  };
+  const items: PreviewItem[] = b.cues.map((c) => {
+    const pre = `cue ${c.cue}: `;
+    const part0 = cueRef(b.sequence, c.cue, 0);
+    const cueObj = cueRef(b.sequence, c.cue);
+    const store: Array<{ name: string; run: StepFn }> = [{ name: `${pre}store`, run: () => commandStep(bridge, `${pre}store`, storeCommand(b.sequence, c.cue, b.mode), t) }];
+    if (c.name !== undefined) store.push(setStep(bridge, `${pre}name`, part0, "Name", c.name, t));
+    for (const [k, val] of Object.entries(c.timing) as Array<[keyof CueSpec["timing"], number]>) store.push(setStep(bridge, `${pre}${k}`, part0, TIMING_PROPS[k], val, t));
+    if (c.trigger) store.push(setStep(bridge, `${pre}trigger`, cueObj, "TrigType", TRIGGERS[c.trigger], t));
+    if (c.time !== undefined) store.push(setStep(bridge, `${pre}trigger_time`, cueObj, "TrigTime", c.time, t));
+    return { prefix: pre, looks: c.looks, store };
+  });
+  const built = await buildInPreview(ctx, { items, verify: b.verify, noun: "cues", inspect: [readSequence] });
+  const { steps, readBack, warnings, normalProgrammer } = built;
+  const reports: CueReport[] = b.cues.map((c, i) => {
+    const r = built.items[i];
+    return { cue: c.cue, status: r.status, verification: r.verification, ...(r.looks ? { looks: r.looks } : {}), ...(r.error ? { error: r.error } : {}) };
+  });
+  const sequenceExisted = existing !== null;
+  if (!built.sent) return { steps, readBack, warnings, cues: reports, sent: false, backInNormal: true, normalProgrammer: "not_entered", sequenceExisted, verification: unavailable("nothing was sent") };
 
   // 3. The sequence name, once a cue was stored (the store creates the sequence).
   if (b.sequenceName !== undefined && reports.some((r) => r.status === "stored" || r.status === "unknown")) {
@@ -550,7 +617,7 @@ export async function buildCueBatch(ctx: ToolContext, b: Batch): Promise<BatchRe
     for (let i = 0; i < b.cues.length; i++) {
       const c = b.cues[i];
       const r = reports[i];
-      if (r.status === "not_attempted" || (r.status === "failed" && !steps.some((s) => s.name === `cue ${c.cue}: store` && s.status === "succeeded"))) continue;
+      if (r.status === "not_attempted" || (r.status === "failed" && !built.items[i].storeSucceeded)) continue;
       const expected: Record<string, unknown> = { Name: c.name, ...(c.trigger ? { TrigType: TRIGGERS[c.trigger] } : {}), ...(c.time !== undefined ? { TrigTime: c.time } : {}) };
       const timingExpected: Record<string, unknown> = Object.fromEntries(Object.entries(c.timing).map(([k, val]) => [TIMING_PROPS[k as keyof CueSpec["timing"]], val]));
       const checked = `cue ${c.cue} exists${c.name !== undefined ? ", its name" : ""}${Object.keys(timingExpected).length ? ", its timing" : ""}${c.trigger ? ", its trigger" : ""}`;
@@ -587,7 +654,7 @@ export async function buildCueBatch(ctx: ToolContext, b: Batch): Promise<BatchRe
           [...attempted.map((r) => ({ ...r.verification, detail: r.verification.detail ? `cue ${r.cue}: ${r.verification.detail}` : undefined })), ...(normalProgrammer === "changed" ? [{ status: "mismatched" as const, detail: "the Normal programmer changed during the build" }] : [])],
           `${attempted.length} cue(s): each look in the Preview programmer before its store, then the cue's existence, name, timing and trigger`,
         );
-  return { steps, readBack, warnings, cues: reports, sent: true, backInNormal, normalProgrammer, sequenceExisted, verification: overall };
+  return { steps, readBack, warnings, cues: reports, sent: true, backInNormal: built.backInNormal, normalProgrammer, sequenceExisted, verification: overall };
 }
 
 // ---------------------------------------------------------------------------
@@ -1015,6 +1082,40 @@ const triggerShape = {
   time: z.number().optional().describe("Trigger time in seconds (TrigTime)."),
 };
 
+/**
+ * The compact form of a store_cues / build_chase result (SU-12): compactResult's step filtering, one line per cue
+ * (its status and verification; the look details only for a cue that did not match), and the observed cycle as its
+ * cue order and step intervals instead of every sample.
+ */
+export function compactCueResult(r: OperationResult, detail: boolean): OperationResult {
+  if (detail) return r;
+  const out = compactResult(r, false);
+  if (Array.isArray(out.cues)) {
+    out.cues = (out.cues as CueReport[]).map((c) => {
+      const ok = c.verification.status === "matched" || c.verification.status === "not_requested";
+      return {
+        cue: c.cue,
+        status: c.status,
+        verification: c.verification.status,
+        ...(c.name !== undefined && c.name !== null ? { name: c.name } : {}),
+        ...(c.error ? { error: c.error } : {}),
+        ...(ok ? {} : { detail: c.verification.detail, looks: c.looks }),
+      };
+    });
+  }
+  const cycle = out.cycle as (Record<string, unknown> & { observed?: Array<{ cue: number }> }) | undefined;
+  if (cycle?.observed) {
+    const { observed, ...rest } = cycle;
+    out.cycle = { ...rest, observedCues: observed.map((o) => o.cue) };
+  }
+  return out;
+}
+
+const cueSchema = z.object({ cue: z.union([z.number(), z.string()]), name: z.string().optional(), ...contentShape, ...timingShape, ...triggerShape });
+
+const COMPACT_NOTE =
+  "The result is compact by default: outcome, verification, one line per cue (look details only for a cue that did not match), the observed cycle as its cue order and step intervals, and only the steps that did not succeed (with a count of the rest); detail: true returns every step, every look and every sample.";
+
 const BUILD_NOTE =
   "Built in the console's Preview environment: its own programmer and selection, so nothing is output and the operator's Normal programmer is untouched (checked before and after). Each cue starts from an empty programmer (ClearAll, sent only in Preview), its looks are applied in order (presets, then intensity, then values; a later look wins on shared fixtures), each look is checked in the programmer (preset links, values per fixture and cell), then the cue is stored. " +
   "A look that did not apply stops the batch before that cue is stored; the cues already stored stay (nothing is undone or retried) and the result lists every cue with its status. A cue's stored values cannot be read back on 2.5.1; the cue's existence, name, timing and trigger are. A cue stored without a name takes the preset's name. Requires exclusive: true.";
@@ -1026,18 +1127,41 @@ export const registerCueListTools: RegisterTools = (server, ctx) => {
       title: "Store a list of cues from explicit content",
       description:
         "Store several cues of one sequence in one call, each from explicit content: a look (fixtures with presets, intensity and/or attribute values) or several looks, with an optional name, timing and trigger per cue. mode create refuses (nothing sent) when any of the cues exists; merge and overwrite store into existing cues. The store creates the sequence when it does not exist; sequence_name names it. " +
-        BUILD_NOTE,
+        BUILD_NOTE +
+        " " +
+        COMPACT_NOTE +
+        " Batch form (sequences): several sequences, each {sequence, sequence_name, mode, fixtures, cues}, each built in its own Preview session with these checks. " +
+        BATCH_NOTE,
       inputSchema: {
-        sequence: z.number().describe("Sequence number."),
+        sequence: z.number().optional().describe("Sequence number. Required unless sequences is given."),
         sequence_name: z.string().optional(),
-        mode: z.enum(["create", "merge", "overwrite"]),
+        mode: z.enum(["create", "merge", "overwrite"]).optional().describe("Required (per sequence or for the whole batch)."),
         fixtures: z.string().optional().describe("Default target for looks that do not name their own fixtures."),
-        cues: z.array(z.object({ cue: z.union([z.number(), z.string()]), name: z.string().optional(), ...contentShape, ...timingShape, ...triggerShape })).describe(`1 to ${MAX_CUES} cues, stored in the order given.`),
+        cues: z.array(cueSchema).optional().describe(`1 to ${MAX_CUES} cues, stored in the order given. Required unless sequences is given.`),
         exclusive: z.boolean().optional().describe("Required (true)."),
         verify: z.boolean().optional(),
+        sequences: z
+          .array(z.object({ sequence: z.number(), sequence_name: z.string().optional(), mode: z.enum(["create", "merge", "overwrite"]).optional(), fixtures: z.string().optional(), cues: z.array(cueSchema) }))
+          .optional()
+          .describe("Batch form: several sequences, each {sequence, sequence_name, mode, fixtures, cues}."),
+        ...batchOptionShape,
       },
     },
-    (args) => operation(() => storeCues(ctx, args as Record<string, unknown>)),
+    (args) =>
+      operation(() => {
+        const a = args as Record<string, unknown>;
+        if (a.sequences === undefined) return storeCues(ctx, a).then((r) => compactCueResult(r, a.detail === true));
+        return runBatchCall(a, {
+          ctx,
+          operation: "store_cues",
+          listKey: "sequences",
+          identityKeys: ["sequence", "sequence_name", "cues"],
+          label: (it) => `Sequence ${String(it.sequence)}`,
+          key: (it) => `Sequence ${String(it.sequence)}`,
+          check: (items) => duplicates(items.map((it) => String(it.sequence))).map((n) => `Sequence ${n} appears more than once in sequences`),
+          run: (it, c) => storeCues(c, it),
+        });
+      }),
   );
 
   server.registerTool(
@@ -1070,7 +1194,8 @@ export const registerCueListTools: RegisterTools = (server, ctx) => {
       description:
         "Build a chase into an empty or new sequence: one cue per step (steps: each a look or looks with an optional name; or presets: one cue per preset on fixtures), every cue Time-triggered after step_seconds (or cycle_seconds / number of steps) with an optional crossfade, and Wrap Around on, so the last cue is followed by the first. " +
         BUILD_NOTE +
-        " Then, unless observe: false, PLAYS the chase (Goto cue 1, live output) and OBSERVES it over time on the server side (no Lua loop needed), sampling its current cue to verify one cycle: the cue order through the wrap and each step against step_seconds / the sequence's rate. A cycle longer than observe_max_seconds (default 45, at most 120; keep it under your client's request timeout) is observed from a late cue through the wrap instead. The chase is switched off afterwards unless leave_running: true.",
+        " Then, unless observe: false, PLAYS the chase (Goto cue 1, live output) and OBSERVES it over time on the server side (no Lua loop needed), sampling its current cue to verify one cycle: the cue order through the wrap and each step against step_seconds / the sequence's rate. A cycle longer than observe_max_seconds (default 45, at most 120; keep it under your client's request timeout) is observed from a late cue through the wrap instead. The chase is switched off afterwards unless leave_running: true. " +
+        COMPACT_NOTE,
       inputSchema: {
         sequence: z.number().describe("An empty or new sequence."),
         name: z.string().optional().describe("Sequence name."),
@@ -1085,8 +1210,9 @@ export const registerCueListTools: RegisterTools = (server, ctx) => {
         leave_running: z.boolean().optional(),
         exclusive: z.boolean().optional().describe("Required (true)."),
         verify: z.boolean().optional(),
+        detail: batchOptionShape.detail,
       },
     },
-    (args) => operation(() => buildChase(ctx, args as Record<string, unknown>)),
+    (args) => operation(() => buildChase(ctx, args as Record<string, unknown>).then((r) => compactCueResult(r, (args as Record<string, unknown>).detail === true))),
   );
 };

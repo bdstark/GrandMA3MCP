@@ -34,3 +34,15 @@ export class MutationLock {
     return this.depth > 0;
   }
 }
+
+/**
+ * The lock as seen from inside a span that already holds it (SU-12 review round 1): `run` executes at once. A batch
+ * takes the real lock once and gives its items a context with this view, so each item's single form, which takes the
+ * lock itself, runs inside the batch's span instead of queueing behind it (the lock is not reentrant) and no other
+ * mutation from this server can run between two items.
+ */
+export class HeldLock extends MutationLock {
+  override async run<T>(fn: () => Promise<T>): Promise<T> {
+    return fn();
+  }
+}

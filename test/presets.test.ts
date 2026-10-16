@@ -12,6 +12,7 @@ import {
   type PresetRow,
 } from "../src/tools/presets.ts";
 import { ValidationError } from "../src/validate.ts";
+import { SILENT } from "./helpers/fake-bridge.ts";
 
 /**
  * A model of the console objects SB-03 touches, with the onPC 2.5.1 behaviour the probe established
@@ -66,6 +67,25 @@ class Console {
   scanLimitations: string[] = [];
   scanIncomplete = false;
   commands: string[] = [];
+  /** Never answer a Name write (a lost reply after the store went through). */
+  silentNameSet = false;
+  /** SU-12: the Preview environment has its own programmer and selection; `prog` is the current environment's. */
+  env = "Normal";
+  private other: Array<ProgrammerRow & { active: boolean }> = [];
+  selection: string[] = [];
+
+  /** The fixture ids a selection command names ("Fixture 401 Thru 403 + Fixture 501.1"). */
+  private select(c: string): string[] {
+    return c.split("+").flatMap((part) => {
+      const m = part.trim().match(/^Fixture (\S+)(?: Thru (\S+))?$/);
+      if (!m) throw new Error(`unexpected selection ${c}`);
+      if (!m[2]) return [m[1]];
+      const [a, b] = [Number(m[1]), Number(m[2])];
+      const ids: string[] = [];
+      for (let n = Math.min(a, b); n <= Math.max(a, b); n++) if (FIXTURES[String(n)]) ids.push(String(n));
+      return ids;
+    });
+  }
 
   set(id: string, attr: string, value: number, extra: Partial<ProgrammerRow> = {}): this {
     const f = FIXTURES[id];
@@ -148,11 +168,21 @@ class Console {
       if (!f) throw new Error(`no object found for '${ref}'`);
       return { subfixtureIndex: f.sf, fixtureType: f.type, attributes: f.attrs.map((a) => ({ attribute: a, featureGroup: GROUP[a] })), subfixtures: (f.cells ?? []).map((c) => ({ name: c, addr: FIXTURES[c].addr, subfixtureIndex: FIXTURES[c].sf, childCount: 0 })) };
     });
-    h.fake.on("programmer", () => {
-      const rows = this.prog.filter((r) => r.active).map(({ active: _a, ...r }) => r);
-      return { rows, total: rows.length, count: rows.length, coverage: { complete: !this.scanIncomplete }, stats: { channelErrors: 0 }, limitations: this.scanLimitations };
+    h.fake.on("programmer", (args) => {
+      const sel = args.scope === "selection" ? new Set(this.selection.map((id) => FIXTURES[id].sf)) : null;
+      const rows = this.prog.filter((r) => r.active && (!sel || sel.has(r.subfixtureIndex))).map(({ active: _a, ...r }) => r);
+      const scanned = sel ? this.selection.map((id) => ({ subfixtureIndex: FIXTURES[id].sf, fid: id, name: `fx ${id}`, attributes: FIXTURES[id].attrs })) : undefined;
+      return { environment: this.env, rows, total: rows.length, count: rows.length, coverage: { complete: !this.scanIncomplete }, stats: { channelErrors: 0 }, limitations: this.scanLimitations, ...(scanned ? { scannedFixtures: scanned } : {}) };
+    });
+    h.fake.on("objects", (args) => {
+      const ref = String(args.ref);
+      const attr = ref.match(/^Attribute "(.+)"$/);
+      if (attr) return GROUP[attr[1]] ? { total: 1, items: [{ name: attr[1], class: "Attribute" }] } : { total: 0, items: [] };
+      const ids = this.select(ref);
+      return { total: ids.length, items: ids.map((id) => ({ name: `fx ${id}`, class: "Fixture" })) };
     });
     h.fake.on("set", (args) => {
+      if (this.silentNameSet && args.property === "Name") return SILENT;
       const key = String(args.ref).replace(/^Preset /, "");
       const p = this.presets.get(key)!;
       if (args.property === "Name" && !p.lock) p.name = String(args.value);
@@ -162,6 +192,18 @@ class Console {
       const c = String(args.command);
       this.commands.push(c);
       if (c.startsWith("Store Preset")) return { feedback: this.store(c) };
+      let m: RegExpMatchArray | null;
+      if (c === "Preview On" || c === "Preview Off") {
+        const want = c === "Preview On" ? "Preview" : "Normal";
+        if (this.env !== want) [this.prog, this.other, this.env, this.selection] = [this.other, this.prog, want, []];
+        return { feedback: "OK" };
+      }
+      if (c === "ClearAll") { if (this.env !== "Preview") throw new Error("ClearAll in Normal"); this.prog = []; this.selection = []; return { feedback: "OK" }; }
+      if (c === "ClearSelection") { this.selection = []; return { feedback: "OK" }; }
+      if (c.startsWith("Fixture ")) { this.selection.push(...this.select(c)); return { feedback: "OK" }; }
+      const setAll = (attr: string, value: number) => { for (const id of this.selection) if (FIXTURES[id].attrs.includes(attr)) this.set(id, attr, value); };
+      if ((m = c.match(/^At ([\d.]+)$/))) { setAll("Dimmer", Number(m[1])); return { feedback: "OK" }; }
+      if ((m = c.match(/^Attribute "(\w+)" At Absolute Percent ([\d.]+)$/))) { setAll(m[1], Number(m[2])); return { feedback: "OK" }; }
       throw new Error(`unexpected command ${c}`);
     });
   }
@@ -500,4 +542,83 @@ test("with embed on, a stored step reference where the programmer step had none 
   const v = (st: PresetRow) => verifyStored({ rows: [prow], stored: [st], mode: "selective", forced: false, merge: false, embed: true, types: {} }).join();
   assert.equal(v(srow()), "");
   assert.match(v(srow({ valid: true, addrNative: "P.4.9" })), /step 2: a reference to P\.4\.9 was stored although the programmer step had none/);
+});
+
+// ---------------------------------------------------------------------------
+// SU-12 batch form: presets from explicit content, built in Preview
+// ---------------------------------------------------------------------------
+
+test("store_preset batch: each preset built in Preview from its content, stored and read back; one refused fails alone; Normal untouched", async () => {
+  con.set("402", "Dimmer", 33); // the operator's own Normal programmer value
+  const { result, isError } = await store({
+    mode: "selective",
+    presets: [
+      { preset: "4.1", name: "Red", fixtures: ["401 Thru 402"], values: [{ attribute: "ColorRGB_R", value: 100, unit: "percent" }] },
+      { preset: "4.2", fixtures: [403], intensity: 50 },
+      { preset: "23.1", looks: [{ fixtures: [401], intensity: 30 }, { fixtures: [403], values: [{ attribute: "ColorRGB_B", value: 40, unit: "percent" }] }] },
+    ],
+  });
+  assert.equal(isError, true, "one preset was refused");
+  assert.equal(result.outcome, "partial");
+  assert.deepEqual(result.items.map((i: any) => `${i.target}:${i.outcome}:${i.verification}`), ["Preset 4.1:succeeded:matched", "Preset 4.2:failed:unavailable", "Preset 23.1:succeeded:matched"]);
+  assert.match(result.items[1].summary, /input filter/i, result.items[1].summary);
+  assert.deepEqual(con.presets.get("4.1")!.rows.map((r) => `${r.fixture} ${r.attribute}=${r.value}`), ["401 ColorRGB_R=100", "402 ColorRGB_R=100"]);
+  assert.equal(con.presets.get("4.1")!.name, "Red");
+  assert.equal(con.presets.has("4.2"), false);
+  assert.deepEqual(con.presets.get("23.1")!.rows.map((r) => `${r.fixture} ${r.attribute}=${r.value}`), ["401 Dimmer=30", "403 ColorRGB_B=40"], "the third preset holds only its own looks");
+  assert.equal(result.normalProgrammer, "untouched");
+  assert.equal(con.env, "Normal");
+  assert.deepEqual(con.prog.map((r) => `${r.fid} ${r.attribute}=${r.value} ${r.active}`), ["402 Dimmer=33 true"], "the Normal programmer is as it was");
+  assert.equal(con.commands[0], "Preview On");
+  assert.deepEqual(con.commands.slice(-2), ["ClearAll", "Preview Off"]);
+  assert.equal(con.commands.filter((c) => c === "ClearAll").length, 3, "cleared between presets and at the end, only in Preview");
+});
+
+test("store_preset batch: content errors, duplicates, preview and a missing exclusive refuse the call before anything is sent", async () => {
+  for (const [args, re] of [
+    [{ mode: "selective", presets: [{ preset: "4.1", fixtures: [401] }] }, /give presets, intensity and\/or values/],
+    [{ mode: "selective", presets: [{ preset: "4.1", intensity: 10 }] }, /fixtures must be a non-empty list of fixture ids/],
+    [{ mode: "selective", presets: [{ preset: "4.1", fixtures: [401], intensity: 10 }, { preset: "4.1", fixtures: [402], intensity: 10 }] }, /preset 4\.1 appears more than once/],
+    [{ mode: "selective", preview: true, presets: [{ preset: "4.1", fixtures: [401], intensity: 10 }] }, /preview is not available in the batch form/],
+    [{ presets: [{ preset: "4.1", fixtures: [401], intensity: 10 }] }, /give exactly one of mode/],
+    [{ mode: "selective", presets: [{ preset: "4.x", fixtures: [401], intensity: 10 }] }, /presets\[0\]: preset/],
+  ] as const) {
+    const r = await store(args as Record<string, unknown>);
+    assert.equal(r.isError, true);
+    assert.match(r.result.validationErrors.join(" "), re, JSON.stringify(r.result.validationErrors));
+  }
+  const noExcl = await h.callJson("gma3_store_preset", { mode: "selective", presets: [{ preset: "4.1", fixtures: [401], intensity: 10 }] });
+  assert.match(noExcl.result.validationErrors.join(" "), /exclusive must be true/);
+  assert.equal(sent(), 0);
+});
+
+test("store_preset batch (review round 1): a store whose name write got no reply stops the build; the next preset is not stored", async () => {
+  con.silentNameSet = true;
+  const { result } = await store({
+    mode: "selective",
+    presets: [
+      { preset: "23.1", name: "First", fixtures: [401], intensity: 40 },
+      { preset: "23.2", fixtures: [402], intensity: 60 },
+    ],
+  });
+  assert.deepEqual(result.items.map((i: any) => i.outcome), ["partial", "not_attempted"], JSON.stringify(result.items));
+  assert.equal(con.presets.has("23.1"), true);
+  assert.equal(con.presets.has("23.2"), false, "nothing more is stored after an uncertain step");
+  assert.equal(con.env, "Normal", "Preview is still left");
+});
+
+test("store_preset batch (review round 1): stop_on_failure stops after the first preset that does not succeed", async () => {
+  const { result } = await store({
+    mode: "selective",
+    stop_on_failure: true,
+    presets: [
+      { preset: "4.2", fixtures: [403], intensity: 50 },
+      { preset: "23.1", fixtures: [401], intensity: 30 },
+    ],
+  });
+  assert.deepEqual(result.items.map((i: any) => i.outcome), ["failed", "not_attempted"], JSON.stringify(result.items));
+  assert.match(result.items[1].summary, /stop_on_failure is set/);
+  assert.equal(con.presets.has("23.1"), false);
+  assert.equal(con.env, "Normal");
+  assert.deepEqual(con.commands.slice(-2), ["ClearAll", "Preview Off"], "Preview cleanup still runs");
 });

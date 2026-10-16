@@ -81,6 +81,20 @@ cue. The look check is the evidence that the programmer held the right values at
 Tracking is the sequence's own setting: with Tracking on, a cue's stored values track into later cues that do not
 store those attributes.
 
+### Batch form and compact results (SU-12)
+
+`sequences: [{sequence, sequence_name, mode, fixtures, cues}]` stores cues in several sequences; each sequence is its
+own Preview build with the steps above, and `mode`, `fixtures` and `exclusive` may be given once for all. A sequence
+listed twice is refused. See [Batch forms](README.md#batch-forms-su-12).
+
+The results of `gma3_store_cues` and `gma3_build_chase` are compact by default:
+- one line per cue: `{cue, status, verification, name}`, with `error`, `detail` and `looks` only for a cue that did
+  not match;
+- the observed cycle with `observedCues` (the cue order seen) and `intervalsMs` instead of every sample;
+- only the steps that did not succeed, with `stepCounts` for the rest.
+
+`detail: true` returns every step, look and sample. An 18-step chase's compact result is about 4 KB.
+
 ## gma3_edit_cues
 
 Edits existing cues of one sequence in one call:

@@ -4,6 +4,8 @@ import { startHarness, type Harness } from "./helpers/tool-harness.ts";
 import {
   registerGroupTools,
   expandArrangement,
+  rowOffsets,
+  type Arrangement,
   expandFixtures,
   explicitItems,
   analyzeGrid,
@@ -218,13 +220,40 @@ test("fixture ids and ranges expand and normalise; bad ids and ranges are refuse
   assert.deepEqual(expandFixtures("f", "99999999"), ["99999999"]);
   assert.equal(expandFixtures("f", "1 Thru 512").length, 512);
   assert.equal(expandFixtures("f", "99999488 Thru 99999999").length, 512);
+  // SU-12: a range runs in its own direction (the Festoon's string listed from its far end).
+  assert.deepEqual(expandFixtures("f", "404 Thru 401"), ["404", "403", "402", "401"]);
+  assert.deepEqual(expandFixtures("f", "402.36 Thru 402.34"), ["402.36", "402.35", "402.34"]);
+  assert.equal(expandFixtures("f", "512 Thru 1").length, 512);
   for (const bad of [
-    "404 Thru 401", "501.1 Thru 502.2", "501 Thru 501.3", "Group 3", "4a", "", 0, 1.5, "1 Thru 9999",
+    "513 Thru 1", "501.1 Thru 502.2", "501 Thru 501.3", "Group 3", "4a", "", 0, 1.5, "1 Thru 9999",
     // Unbounded parts are refused before any expansion (2^53 cannot be incremented).
     "9007199254740992 Thru 9007199254740992", 9007199254740992, "1.9007199254740992", "100000000", 100000000, "1.100000", "1.1.1.1.1.1.1.1.1",
   ]) {
     assert.throws(() => expandFixtures("f", bad), ValidationError, String(bad));
   }
+});
+
+test("SU-12: rows of different lengths spread over one width; start and center pack them; too long a row is refused", () => {
+  // Spread: first and last fixture at the edges, the rest as evenly as whole cells allow.
+  assert.deepEqual(rowOffsets(5, 9, "spread"), [0, 2, 4, 6, 8]);
+  assert.deepEqual(rowOffsets(3, 8, "spread"), [0, 4, 7]);
+  assert.deepEqual(rowOffsets(1, 7, "spread"), [3]);
+  assert.deepEqual(rowOffsets(4, 4, "spread"), [0, 1, 2, 3]);
+  assert.deepEqual(rowOffsets(2, 6, "center"), [2, 3]);
+  assert.deepEqual(rowOffsets(2, 6, "start"), [0, 1]);
+  for (let n = 1; n <= 12; n++) for (let w = n; w <= 14; w++) assert.equal(new Set(rowOffsets(n, w, "spread")).size, n, `${n} in ${w}: no shared cell`);
+
+  const items = expandArrangement({ type: "rows", rows: [["101 Thru 105"], ["204 Thru 202"], [301]], origin: { x: 1, y: 2 } } as Arrangement);
+  assert.deepEqual(items, [
+    { fixture: "101", x: 1, y: 2, z: 0 }, { fixture: "102", x: 2, y: 2, z: 0 }, { fixture: "103", x: 3, y: 2, z: 0 }, { fixture: "104", x: 4, y: 2, z: 0 }, { fixture: "105", x: 5, y: 2, z: 0 },
+    { fixture: "204", x: 1, y: 3, z: 0 }, { fixture: "203", x: 3, y: 3, z: 0 }, { fixture: "202", x: 5, y: 3, z: 0 },
+    { fixture: "301", x: 3, y: 4, z: 0 },
+  ]);
+  const wide = expandArrangement({ type: "rows", rows: [[1, 2], [3]], width: 5, align: "center", step_y: -1 } as Arrangement);
+  assert.deepEqual(wide.map((i) => `${i.fixture}@${i.x}/${i.y}`), ["1@1/0", "2@2/0", "3@2/-1"]);
+  assert.throws(() => expandArrangement({ type: "rows", rows: [["1 Thru 6"]], width: 5 } as Arrangement), /6 fixtures, more than the width of 5/);
+  assert.throws(() => expandArrangement({ type: "rows", rows: [] } as unknown as Arrangement), /non-empty list of rows/);
+  assert.throws(() => expandArrangement({ type: "rows", rows: [[1]], align: "left" } as unknown as Arrangement), /align must be spread, start or center/);
 });
 
 test("row, rectangle and mirror helpers expand into explicit cells", () => {
@@ -360,6 +389,36 @@ test("store_group refuses an existing group without overwrite, overwrites with /
   const locked = await h.callJson("gma3_store_group", { group: 905, items: [{ fixture: 402, x: 0, y: 0 }], overwrite: true, exclusive: true });
   assert.equal(locked.isError, true);
   assert.match(locked.result.steps[0].error, /is locked/);
+  assert.equal(mutations().length, 0);
+});
+
+test("store_group batch (SU-12): groups stored one after the other with compact specs; an existing one fails alone", async () => {
+  con.groups.set(906, { name: "Keep", lock: "", preserve: "Yes", cells: [{ id: "701", x: 0, y: 0, z: 0 }] });
+  const { result, isError } = await h.callJson("gma3_store_group", {
+    exclusive: true,
+    groups: [
+      { group: 905, name: "Row", arrangement: { type: "row", fixtures: ["402 Thru 401"] } },
+      { group: 906, items: [{ fixture: 401, x: 0, y: 0 }] },
+      { group: 907, arrangement: { type: "rows", rows: [["401 Thru 402"], [701]], width: 3 } },
+    ],
+  });
+  assert.equal(isError, true);
+  assert.equal(result.outcome, "partial");
+  assert.deepEqual(result.items.map((i: any) => `${i.target}:${i.outcome}:${i.verification}`), ["Group 905:succeeded:matched", "Group 906:failed:not_requested", "Group 907:succeeded:matched"]);
+  assert.match(result.items[1].summary, /already exists; pass overwrite: true/);
+  assert.deepEqual(con.groups.get(906)!.cells.map((c) => c.id), ["701"], "the refused group is untouched");
+  assert.deepEqual(con.groups.get(905)!.cells.map((c) => `${c.id}@${c.x}`).sort(), ["401@1", "402@0"], "the reversed range runs downwards");
+  assert.deepEqual(con.groups.get(907)!.cells.map((c) => `${c.id}@${c.x}/${c.y}`).sort(), ["401@0/0", "402@2/0", "701@1/1"], "the shorter row is spread over the width");
+  assert.equal(con.groups.get(905)!.name, "Row");
+});
+
+test("store_group batch (SU-12): a group listed twice or a top-level group refuses the call; exclusive applies to every item", async () => {
+  const dup = await h.callJson("gma3_store_group", { exclusive: true, groups: [{ group: 905, items: [{ fixture: 401, x: 0, y: 0 }] }, { group: 905, items: [{ fixture: 402, x: 0, y: 0 }] }] });
+  assert.match(dup.result.validationErrors.join(" "), /Group 905 appears more than once/);
+  const top = await h.callJson("gma3_store_group", { group: 905, exclusive: true, groups: [{ group: 906, items: [{ fixture: 401, x: 0, y: 0 }] }] });
+  assert.match(top.result.validationErrors.join(" "), /give group in each item/);
+  const noExcl = await h.callJson("gma3_store_group", { groups: [{ group: 905, items: [{ fixture: 401, x: 0, y: 0 }] }] });
+  assert.match(noExcl.result.items[0].summary, /exclusive must be true/);
   assert.equal(mutations().length, 0);
 });
 
