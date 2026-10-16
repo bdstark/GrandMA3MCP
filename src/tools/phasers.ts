@@ -500,6 +500,12 @@ export const sameAngle = (a: unknown, b: unknown, tol = 0.05): boolean => {
 };
 const norm360 = (x: number) => Math.round((((x % 360) + 360) % 360) * 100) / 100;
 
+/** One grid row in the console's packed `gridpos`: y * 2^18 + x (showtest2, 2026-10-16: two rows of 24 read 0..23 and
+ * 262144..262167, four rows of 72 up to 786503). */
+const GRID_ROW = 262144;
+/** The grid X of a packed `gridpos` (the phase spreads over X only; rows that share an X share the phase). */
+export const gridX = (pos: number): number => ((pos % GRID_ROW) + GRID_ROW) % GRID_ROW;
+
 /**
  * The phase a fixture gets: from -> to over its position k of n along grid X, with the repetition applied as the
  * selection MAtricks does it (SB-02: groups repeat every g, wings mirror within each wing, blocks hold b together).
@@ -549,9 +555,10 @@ export function verifyBuild(input: {
   }
   const bySf = new Map<number, BuildRow[]>();
   for (const r of input.rows) bySf.set(r.subfixtureIndex, [...(bySf.get(r.subfixtureIndex) ?? []), r]);
-  // Grid X positions of the scope (the raw position: the MAtricks used while the phase was set is reset by then).
+  // Grid X positions of the scope (the raw position: the MAtricks used while the phase was set is reset by then),
+  // unpacked from y * 2^18 + x so a group with several rows spreads over X like the console does.
   const posOf = new Map<number, number>();
-  for (const r of input.rows) if (input.scope.has(r.subfixtureIndex) && typeof r.phaser?.gridPos === "number") posOf.set(r.subfixtureIndex, r.phaser.gridPos);
+  for (const r of input.rows) if (input.scope.has(r.subfixtureIndex) && typeof r.phaser?.gridPos === "number") posOf.set(r.subfixtureIndex, gridX(r.phaser.gridPos));
   const positions = [...posOf.values()];
   const minPos = positions.length ? Math.min(...positions) : 0;
   const span = positions.length ? Math.max(...positions) - minPos + 1 : 1;

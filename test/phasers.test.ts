@@ -1,7 +1,7 @@
 import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { startHarness, type Harness } from "./helpers/tool-harness.ts";
-import { registerPhaserTools, parseStep, parsePhaser, expandTemplate, effectCommands, expectedPhase, verifyBuild, fingerprint, planEffect, invertValue, summarizePhases, variantOf, sameAngle, type Effect } from "../src/tools/phasers.ts";
+import { registerPhaserTools, parseStep, parsePhaser, expandTemplate, effectCommands, expectedPhase, verifyBuild, fingerprint, planEffect, invertValue, summarizePhases, variantOf, sameAngle, gridX, type Effect } from "../src/tools/phasers.ts";
 import type { ProgrammerRow } from "../src/tools/presets.ts";
 import { ValidationError } from "../src/validate.ts";
 import { SILENT } from "./helpers/fake-bridge.ts";
@@ -634,4 +634,62 @@ test("SU-13 review round 3: with shuffle a participating channel without a phase
   const p2 = verifyBuild({ effect: e, rows: nul as never, scope, implied: new Set(), stepPresets: [] }).problems.join(" | ");
   assert.match(p2, /1 ColorRGB_R: no phase read/);
   assert.match(p2, /2: its attributes are out of phase \(Dimmer 180, ColorRGB_R 270\)/);
+});
+
+// showtest2 (2026-10-16): on a group with several grid rows the console packs `gridpos` as y * 2^18 + x and spreads the
+// phase over X only. The check read the packed value as X and reported correct builds as failed.
+const ROW = 262144;
+const gridRows = (rows: number, width: number, phaseOf: (x: number) => number, attribute = "ColorRGB_R") => {
+  const out: Array<{ subfixtureIndex: number; attribute: string; stepCount: number; steps: Array<{ absolute: number }>; phaser: { gridPos: number; phase: number } }> = [];
+  const scope = new Map<number, string>();
+  for (let y = 0; y < rows; y++) for (let x = 0; x < width; x++) {
+    const sf = 1 + y * width + x;
+    scope.set(sf, `${201 + y}.${x + 1}`);
+    out.push({ subfixtureIndex: sf, attribute, stepCount: 2, steps: [{ absolute: 100 }, { absolute: 0 }], phaser: { gridPos: y * ROW + x, phase: phaseOf(x) } });
+  }
+  return { rows: out, scope };
+};
+const colourEffect = (phaser: Effect["phaser"]): Effect => ({ unit: "percent", steps: [{ values: { ColorRGB_R: { absolute: 100 } } }, { values: { ColorRGB_R: { absolute: 0 } } }], phaser });
+
+test("gridX unpacks the console's y * 2^18 + x grid position", () => {
+  assert.equal(gridX(0), 0);
+  assert.equal(gridX(23), 23);
+  assert.equal(gridX(262144), 0);
+  assert.equal(gridX(262167), 23);
+  assert.equal(gridX(3 * ROW + 71), 71);
+});
+
+test("showtest2: a follow phase on two rows that share an X range verifies when the console phases follow X", () => {
+  // Group 3: two rows of 24 cells, phase 0 Thru 345 (15° per X); both rows read the same phase at the same X.
+  const e = colourEffect({ phase: { from: 0, to: 345 } });
+  const { rows, scope } = gridRows(2, 24, (x) => x * 15);
+  assert.deepEqual(verifyBuild({ effect: e, rows, scope, implied: new Set(), stepPresets: [] }).problems, []);
+  // A wrong phase in the second row is still caught, reported at its X.
+  const bad = rows.map((r) => (r.subfixtureIndex === 24 + 6 ? { ...r, phaser: { ...r.phaser, phase: 0 } } : r));
+  assert.match(verifyBuild({ effect: e, rows: bad, scope, implied: new Set(), stepPresets: [] }).problems.join(" | "), /^202\.6 ColorRGB_R: phase 75° expected \(grid position 5 of 24\), 0 read$/);
+});
+
+test("showtest2: a mirrored phase on a 4-row grid with a 72-wide spread verifies over X", () => {
+  // Group 8: four rows, X 0..71 (the last cell packed as 3 * 2^18 + 71); wings 2 mirror 0 Thru 175 within each half of 36.
+  const e = colourEffect({ phase: { from: 0, to: 175 }, repeat: { kind: "wings", count: 2 } });
+  const mirrored = (x: number) => expectedPhase({ from: 0, to: 175 }, x, 72, { kind: "wings", count: 2 });
+  assert.equal(mirrored(0), 0);
+  assert.equal(mirrored(71), 0);
+  assert.equal(mirrored(35), 175);
+  const { rows, scope } = gridRows(4, 72, mirrored);
+  assert.deepEqual(verifyBuild({ effect: e, rows, scope, implied: new Set(), stepPresets: [] }).problems, []);
+  // A plain follow over the same 72 columns: 201.1 at packed 262144 (row 2, X 0) expects 0°, not 119.99°.
+  const follow = colourEffect({ phase: { from: 0, to: 355 } });
+  const f = gridRows(4, 72, (x) => (355 * x) / 71);
+  assert.deepEqual(verifyBuild({ effect: follow, rows: f.rows, scope: f.scope, implied: new Set(), stepPresets: [] }).problems, []);
+});
+
+test("showtest2: a shuffled phase on two rows compares the set of phases over X", () => {
+  // Every X appears in both rows, so each phase of the unshuffled spread is expected twice.
+  const e = colourEffect({ phase: { from: 0, to: 270 }, shuffle: 3 });
+  const perm = [2, 0, 3, 1];
+  const { rows, scope } = gridRows(2, 4, (x) => perm[x] * 90);
+  assert.deepEqual(verifyBuild({ effect: e, rows, scope, implied: new Set(), stepPresets: [] }).problems, []);
+  const wrong = rows.map((r) => (r.subfixtureIndex === 5 ? { ...r, phaser: { ...r.phaser, phase: 90 } } : r));
+  assert.match(verifyBuild({ effect: e, rows: wrong, scope, implied: new Set(), stepPresets: [] }).problems.join(), /shuffled phases: expected the set 0, 0, 90, 90, 180, 180, 270, 270 over the fixtures, read 0, 0, 90, 90, 90, 180, 270, 270/);
 });
