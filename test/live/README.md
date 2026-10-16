@@ -40,6 +40,7 @@ Guard rails, enforced by `test/live/live.ts`:
 | Every fixture type and patched fixture, read only; at least one fixture with cells (`GMA3_LIVE_REQUIRE_CELLS=0` skips that) | SU-07 type-structure test (bridge 0.28.0) |
 | Two top-level fixtures from `GMA3_LIVE_POSITION_FIDS` (default 1, 2): position, rotation and mesh mirroring changed and restored | SU-04 position tests |
 | One fixture with a multi-function channel from `GMA3_LIVE_DECIMAL_TARGET` (`"<fid>:<attribute>"`; default the first patched fixture with one, Pan and Tilt skipped); the programmer cleared | SU-11 decimal read-back test |
+| Two movers (`GMA3_LIVE_SU13_MOVERS`, default 301,302), a cell row (`GMA3_LIVE_SU13_CELLS`, default 401.1 Thru 401.40) and a whole rig with Dimmer (`GMA3_LIVE_SU13_RIG`); Presets 23.951–23.959 (must not exist; deleted at the end); built in Preview, ClearAll at the end | SU-13 phaser builder test |
 | Fixture types Generic Fog and Fan (imported, then removed; their attributes stay), fixture FID 994 from the first free block at 3.001 (also needs `GMA3_LIVE_EXCLUSIVE=1`) | SU-03 fixture-type import tests (bridge 0.26.0; committed with no undo) |
 
 Each live test file documents the exact objects it creates at the top of the file.

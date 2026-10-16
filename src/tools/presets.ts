@@ -166,7 +166,8 @@ export const MODES = ["selective", "global", "universal"] as const;
 export type Mode = (typeof MODES)[number];
 const MODE_OPTION: Record<Mode, string> = { selective: "/Selective", global: "/Global", universal: "/Universal" };
 const FORCE_OPTION = { global: "/ForceGlobal", universal: "/ForceUniversal" } as const;
-const MAX_SCOPE = 256;
+/** SU-13: as many fixtures as gma3_build_phaser takes (a whole rig, cells included). */
+const MAX_SCOPE = 1024;
 /** Percent tolerance when comparing stored and programmer values. */
 const TOLERANCE = 0.05;
 

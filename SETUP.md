@@ -535,6 +535,23 @@ builder set the step transitions while the steps were still being created, so on
 30 presets had to be rebuilt. Checking the phase spread took a `gma3_programmer` read of about 21,000 lines, parsed
 in Python.
 
+**Status:** implemented, no bridge change ([docs/tools/phasers.md](docs/tools/phasers.md#whole-rig-variants-mirror-and-several-effects-su-13),
+probe record [su-13-phaser-builder-macos-2.5.1.md](docs/probes/su-13-phaser-builder-macos-2.5.1.md), live test
+`test/live/phaser-builder.live.ts` 1/1 on macOS onPC 2.5.1).
+- Up to 1024 fixtures or cells, of several types (`gma3_store_preset`'s scope cap matches).
+- `variants` (sync, follow, mirror) into consecutive named presets.
+- `mirror` inverts attributes on every second wing.
+- Phase as `{from, to}`, `{from, step}` or `"spread"`, and `shuffle`.
+- Position shapes (circle, figure8, cone, fan, bounce) and dimmer patterns (runner, comet, alternate, thirds, fill,
+  sparkle). A scanner is not expressible as one phaser.
+- `effects`: several effects built in one Preview session, one line per preset.
+- A compact phase summary per preset, and a compact result by default (140 fixtures: 3.5 KB).
+- `measure` explained.
+- Steps refuse widths above the console's 3200 %.
+
+The SU-12 dependency ("several effects per call") is met inside the tool; it can move to `src/batch.ts` once SU-12 is
+merged.
+
 ### Acceptance criteria
 
 - No tool-side cap below what the console handles; a whole-rig effect over several fixture types in one call.
