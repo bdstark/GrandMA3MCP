@@ -32,6 +32,7 @@ import {
   requestStep,
   runSteps,
   stepFromError,
+  timeToSeconds,
   unavailable,
   validationFailure,
   type OperationResult,
@@ -59,6 +60,9 @@ import {
   type ProgrammerSnapshot,
 } from "./fixtures.js";
 import { cueNo, readSequenceRate } from "./speed.js";
+import { effectAttributes, effectCommands, parsePhaser, parseStep, verifyBuild, type Effect, type Unit } from "./phasers.js";
+import { SEQUENCE_SETTINGS, configureSequence, findReferences, settingValue, type ConfigureSequenceArgs } from "./playback.js";
+import { HeldLock } from "../mutations.js";
 
 export const MAX_CUES = 100;
 export const MAX_LOOKS = 16;
@@ -89,11 +93,15 @@ export interface LookSpec {
   presets: PresetSpec[];
   intensity?: number;
   values: ValueSpec[];
+  /** SU-14: a phaser built on the look's fixtures (steps and phaser layers, as gma3_build_phaser takes them). */
+  phaser?: Effect;
 }
 export interface CueSpec {
   cue: string;
   name?: string;
   looks: LookSpec[];
+  /** SU-14: the cue's command (Part 0 Command), run when the cue is called. */
+  command?: string;
   timing: Partial<Record<Exclude<TimingKey, "snap_delay">, number>>;
   trigger?: TriggerKey;
   time?: number;
@@ -110,9 +118,43 @@ function validatePreset(v: Validator, raw: unknown, path: string): PresetSpec | 
   return { pool, preset, ref: presetRef(pool, preset) };
 }
 
-/** A look: a target and what to give it. Presets first, then intensity, then values (later commands win). */
+/** SU-14: a cue command: one command line (several statements separated by ;), no quotes problems, no control characters. */
+export function cueCommand(field: string, value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") throw new ValidationError(`${field} must be a command line (a string)`, field);
+  const c = value.trim();
+  if (/[\u0000-\u001f\u007f]/.test(c)) throw new ValidationError(`${field} must be one line without control characters`, field);
+  if (c.length > 1024) throw new ValidationError(`${field} is longer than 1024 characters`, field);
+  if ((c.match(/"/g) ?? []).length % 2 === 1) throw new ValidationError(`${field} has an unbalanced quote`, field);
+  return c;
+}
+
+/** SU-14: a look's phaser: steps (2-16) and phaser layers, in percent or physical units (gma3_build_phaser's step form). */
+function validateLookPhaser(v: Validator, raw: unknown, path: string): Effect | undefined {
+  if (raw === undefined) return undefined;
+  const r = (raw ?? {}) as Record<string, unknown>;
+  if (r.template !== undefined) {
+    v.fail(`${path}: a look's phaser takes steps and phaser (templates are built with gma3_build_phaser into a preset, which the look can then recall)`);
+    return undefined;
+  }
+  const unit = (r.unit ?? "percent") as Unit;
+  if (unit !== "percent" && unit !== "physical") v.fail(`${path}.unit must be percent or physical`);
+  if (!Array.isArray(r.steps) || r.steps.length < 2 || r.steps.length > 16) {
+    v.fail(`${path}.steps must hold 2-16 steps (a phaser has at least two)`);
+    return undefined;
+  }
+  const steps = r.steps.map((st, i) => v.check(() => parseStep(`${path}.steps[${i}]`, st, unit)));
+  if (steps.some((st) => st?.preset)) v.fail(`${path}: a look's phaser steps take values, not presets`);
+  const phaser = v.check(() => parsePhaser(r.phaser));
+  // The forms that depend on the fixture count and order (SU-13) are built by gma3_build_phaser into a preset.
+  if (phaser && (phaser.phaseStep || phaser.phaseSpread || phaser.shuffle !== undefined)) v.fail(`${path}.phaser: a look's phaser takes phase {from, to}; a phase step, "spread" or shuffle is built with gma3_build_phaser into a preset, which the look can recall`);
+  if (!phaser || !steps.every((st): st is NonNullable<typeof st> => !!st)) return undefined;
+  return { steps, phaser, unit };
+}
+
+/** A look: a target and what to give it. Presets first, then intensity, then values (later commands win), then a phaser. */
 function validateLook(v: Validator, raw: unknown, path: string, defaultFixtures: string | undefined): LookSpec | undefined {
-  const r = (raw ?? {}) as { fixtures?: unknown; presets?: unknown; intensity?: unknown; values?: unknown };
+  const r = (raw ?? {}) as { fixtures?: unknown; presets?: unknown; intensity?: unknown; values?: unknown; phaser?: unknown };
   let fixtures: string | undefined;
   if (r.fixtures !== undefined) fixtures = v.check(() => fixtureSelection(`${path}.fixtures`, r.fixtures));
   else if (defaultFixtures) fixtures = defaultFixtures;
@@ -141,14 +183,21 @@ function validateLook(v: Validator, raw: unknown, path: string, defaultFixtures:
         if (attribute && value !== undefined) values.push({ attribute, value, ...(unit ? { unit } : {}) });
       });
   }
-  if (presets.length === 0 && intensity === undefined && values.length === 0 && v.ok) v.fail(`${path}: give presets, intensity and/or values`);
+  const phaser = validateLookPhaser(v, r.phaser, `${path}.phaser`);
+  if (phaser) for (const a of Object.keys(phaser.steps.flatMap((st) => Object.keys(st.values)).reduce((m, k) => ({ ...m, [k]: 1 }), {} as Record<string, number>))) {
+    if (values.some((x) => x.attribute.toLowerCase() === a.toLowerCase()) || (a.toLowerCase() === "dimmer" && intensity !== undefined)) v.fail(`${path}: ${a} is both a static value and a phaser attribute: give it once`);
+  }
+  if (presets.length === 0 && intensity === undefined && values.length === 0 && !phaser && v.ok) v.fail(`${path}: give presets, intensity, values and/or a phaser`);
   if (!fixtures) return undefined;
-  return { fixtures, presets, intensity, values };
+  return { fixtures, presets, intensity, values, ...(phaser ? { phaser } : {}) };
 }
 
-/** The looks of a cue: `looks`, or the shorthand fields (fixtures, presets, intensity, values) as one look. */
-export function validateLooks(v: Validator, raw: Record<string, unknown>, path: string, defaultFixtures: string | undefined): LookSpec[] {
-  const shorthand = ["presets", "intensity", "values", "fixtures"].some((k) => raw[k] !== undefined);
+/**
+ * The looks of a cue: `looks`, or the shorthand fields (fixtures, presets, intensity, values, phaser) as one look.
+ * `allowEmpty`: a cue with a command may have no look at all (a command-only cue, stored from an empty programmer).
+ */
+export function validateLooks(v: Validator, raw: Record<string, unknown>, path: string, defaultFixtures: string | undefined, allowEmpty = false): LookSpec[] {
+  const shorthand = ["presets", "intensity", "values", "phaser"].some((k) => raw[k] !== undefined) || (raw.fixtures !== undefined && !allowEmpty);
   if (raw.looks !== undefined) {
     if (shorthand) v.fail(`${path}: give looks, or fixtures/presets/intensity/values, not both`);
     if (!Array.isArray(raw.looks) || raw.looks.length === 0) {
@@ -159,18 +208,19 @@ export function validateLooks(v: Validator, raw: Record<string, unknown>, path: 
     return raw.looks.slice(0, MAX_LOOKS).flatMap((l, i) => validateLook(v, l, `${path}.looks[${i}]`, defaultFixtures) ?? []);
   }
   if (!shorthand) {
-    v.fail(`${path}: give its content (presets, intensity, values or looks)`);
+    if (allowEmpty) return [];
+    v.fail(`${path}: give its content (presets, intensity, values, phaser or looks), or a command`);
     return [];
   }
   const look = validateLook(v, raw, path, defaultFixtures);
   return look ? [look] : [];
 }
 
-function validateTrigger(v: Validator, rawTrigger: unknown, rawTime: unknown, path: string): { trigger?: TriggerKey; time?: number } {
+function validateTrigger(v: Validator, rawTrigger: unknown, rawTime: unknown, path: string, timeFromSaved = false): { trigger?: TriggerKey; time?: number } {
   const trigger = v.check(() => oneOf(`${path}trigger`, rawTrigger, TRIGGER_KEYS, { optional: true }));
   const time = v.check(() => timeSeconds(`${path}time`, rawTime, { optional: true }));
   if (time !== undefined && trigger === undefined) v.fail(`${path}time needs a trigger ("time" or "follow")`);
-  if (trigger === "time" && time === undefined) v.fail(`${path}time (seconds) is required for trigger "time"`);
+  if (trigger === "time" && time === undefined && !timeFromSaved) v.fail(`${path}time (seconds) is required for trigger "time" (or restore_times: true to set the saved ones)`);
   if ((trigger === "go" || trigger === "sound" || trigger === "bpm") && time !== undefined) v.fail(`${path}time is not applicable to trigger "${trigger}"`);
   return { trigger, time };
 }
@@ -199,11 +249,12 @@ function validateCues(v: Validator, raw: unknown, defaultFixtures: string | unde
     const path = `cues[${i}]`;
     const cue = v.check(() => cueNumber(`${path}.cue`, r.cue));
     const name = v.check(() => objectName(`${path}.name`, r.name, { optional: true }));
-    const looks = validateLooks(v, r, path, defaultFixtures);
+    const command = v.check(() => cueCommand(`${path}.command`, r.command));
+    const looks = validateLooks(v, r, path, defaultFixtures, command !== undefined);
     const timing = validateTiming(v, r, `${path}.`);
     const trig = validateTrigger(v, r.trigger, r.time, `${path}.`);
     if (cue && out.some((x) => Number(x.cue) === Number(cue))) v.fail(`${path}: cue ${cue} appears twice`);
-    if (cue) out.push({ cue, name, looks, timing, ...trig });
+    if (cue) out.push({ cue, name, looks, ...(command !== undefined ? { command } : {}), timing, ...trig });
   });
   return out;
 }
@@ -258,6 +309,8 @@ interface Batch {
   mode: StoreMode;
   cues: CueSpec[];
   verify: boolean;
+  /** SU-14: delete every existing cue first (the sequence object, and so its executor assignments, stay). */
+  replace?: boolean;
 }
 
 type CueStatus = "stored" | "failed" | "unknown" | "not_attempted";
@@ -293,6 +346,55 @@ function storeCommand(sequence: number, cue: string, mode: StoreMode): string {
 function setStep(bridge: Gma3Bridge, name: string, ref: string, property: string, value: string | number, t: number): { name: string; run: StepFn } {
   const args = { ref, property, value: typeof value === "number" ? String(value) : value };
   return { name, run: () => requestStep(bridge, name, "set", args, (res) => ({ name, status: "succeeded", op: "set", detail: { ...args, result: res } }), t) };
+}
+
+/**
+ * SU-14: check a look's phaser in the programmer: every (sub)fixture of the look that has the phaser's attributes holds
+ * them with the requested steps, step timing and phaser layers, the phase spread over the selection grid (as
+ * gma3_build_phaser checks it). Other attributes of the cue (a look's intensity or values) are not judged here; the
+ * activation-group siblings that came with the phaser (same step count) are.
+ */
+/** A look's fixtures (top level, by their root FID) and which of them have every phaser attribute on themselves or a cell. */
+async function phaserCoverage(bridge: Gma3Bridge, fixtures: string, attrs: string[], t: number): Promise<{ supported: Map<number, string>; unsupported: string[]; complete: boolean }> {
+  const scan = (await bridge.request("programmer", { scope: "fixtures", fixtures, limit: 1, maxChannels: 50000 }, t)) as {
+    scannedFixtures?: Array<{ subfixtureIndex?: number; fid?: string | null; name?: string | null; rootFid?: string | null; attributes?: string[] }>;
+    coverage?: { complete?: boolean };
+    fixturesTruncated?: boolean;
+  };
+  const supported = new Map<number, string>();
+  const roots = new Map<string, boolean>();
+  for (const e of scan.scannedFixtures ?? []) {
+    const root = e.rootFid && e.rootFid !== "None" ? e.rootFid : e.fid && e.fid !== "None" ? e.fid : (e.name ?? "?");
+    const has = attrs.every((a) => (e.attributes ?? []).includes(a));
+    roots.set(root, (roots.get(root) ?? false) || has);
+    if (has && typeof e.subfixtureIndex === "number") supported.set(e.subfixtureIndex, e.fid && e.fid !== "None" ? e.fid : e.name ?? String(e.subfixtureIndex));
+  }
+  return { supported, unsupported: [...roots].filter(([, ok]) => !ok).map(([r]) => r), complete: scan.coverage?.complete !== false && scan.fixturesTruncated !== true };
+}
+
+async function checkLookPhaser(bridge: Gma3Bridge, fixtures: string, effect: Effect, t: number): Promise<Verification> {
+  const checked = `the phaser on ${fixtures} in the programmer (steps, step timing, phaser layers, phase per fixture)`;
+  try {
+    const scan = (await bridge.request("programmer", { scope: "fixtures", fixtures, limit: 5000, maxChannels: 50000 }, t)) as {
+      rows?: Array<Record<string, unknown> & { subfixtureIndex: number; attribute?: string; stepCount?: number }>;
+      scannedFixtures?: Array<{ subfixtureIndex?: number; fid?: string | null; name?: string | null; attributes?: string[] }>;
+      coverage?: { complete?: boolean };
+    };
+    if (scan.coverage?.complete === false) return unavailable("the programmer scan of the look's fixtures was incomplete", checked);
+    const attrs = effectAttributes(effect);
+    // Every fixture of the look must be covered (review round 1): one without the attributes is a mismatch, not left out.
+    const cov = await phaserCoverage(bridge, fixtures, attrs, t);
+    const scope = cov.supported;
+    if (cov.unsupported.length) return { status: "mismatched", checked, detail: `fixture(s) ${cov.unsupported.join(", ")} of ${fixtures} have no ${attrs.join(", ")}, so they hold no phaser` };
+    if (scope.size === 0) return { status: "mismatched", checked, detail: `no fixture of ${fixtures} has ${attrs.join(", ")}` };
+    const n = effect.steps.length;
+    const rows = (scan.rows ?? []).filter((r) => scope.has(r.subfixtureIndex) && (attrs.includes(String(r.attribute)) || (r.stepCount ?? 1) === n));
+    const implied = new Set(rows.map((r) => String(r.attribute)).filter((a) => !attrs.includes(a)));
+    const b = verifyBuild({ effect, rows: rows as never, scope, implied, stepPresets: [] });
+    return b.problems.length ? { status: "mismatched", checked, detail: b.problems.join("; ") } : { status: "matched", checked };
+  } catch (err) {
+    return unavailable(`the phaser could not be read back: ${err instanceof Error ? err.message : String(err)}`, checked);
+  }
 }
 
 /** The expectations of a look's attribute values (intensity is Dimmer in percent), for verifyProgrammer. */
@@ -355,7 +457,7 @@ export interface PreviewBuild {
  * stay), unless `continueAfterFailure`: then the next item starts again from a confirmed, cleared Preview programmer.
  * An item with an unknown step stops the build either way.
  */
-export async function buildInPreview(ctx: ToolContext, o: { items: PreviewItem[]; verify: boolean; noun: string; inspect?: Array<{ name: string; run: StepFn }>; continueAfterFailure?: boolean }): Promise<PreviewBuild> {
+export async function buildInPreview(ctx: ToolContext, o: { items: PreviewItem[]; verify: boolean; noun: string; inspect?: Array<{ name: string; run: StepFn }>; prepare?: () => Array<{ name: string; run: StepFn }>; continueAfterFailure?: boolean }): Promise<PreviewBuild> {
   const { bridge } = ctx;
   const t = ctx.requestTimeoutMs;
   const warnings: string[] = [];
@@ -411,6 +513,24 @@ export async function buildInPreview(ctx: ToolContext, o: { items: PreviewItem[]
       },
     },
     {
+      // SU-14 review round 1: every fixture of a look with a phaser (or one of its cells) has the phaser's attributes;
+      // otherwise the console would answer OK and leave it out. Checked before anything is sent.
+      name: "check_phaser_fixtures",
+      run: async () => {
+        try {
+          for (const look of allLooks.filter((l) => l.phaser)) {
+            const attrs = effectAttributes(look.phaser as Effect);
+            const cov = await phaserCoverage(bridge, look.fixtures, attrs, t);
+            if (!cov.complete) return failedRead("check_phaser_fixtures", `the fixtures of ${look.fixtures} could not all be read; nothing was sent`);
+            if (cov.unsupported.length) return failedRead("check_phaser_fixtures", `fixture(s) ${cov.unsupported.join(", ")} of ${look.fixtures} have no ${attrs.join(", ")} (nor any cell with them), so the phaser would leave them out; nothing was sent`, { unsupported: cov.unsupported });
+          }
+          return asRead({ name: "check_phaser_fixtures", status: "succeeded", op: "programmer" });
+        } catch (err) {
+          return asRead(stepFromError("check_phaser_fixtures", err, { op: "programmer" }));
+        }
+      },
+    },
+    {
       name: "read_normal_programmer",
       run: async () => {
         try {
@@ -458,7 +578,17 @@ export async function buildInPreview(ctx: ToolContext, o: { items: PreviewItem[]
       ]);
       steps.push(...check.steps);
       if (check.outcome !== "succeeded") stopped = true;
-      else building = true;
+      else {
+        // From here the Preview programmer is confirmed empty and holds only our values: it is released at the end.
+        building = true;
+        if (o.prepare) {
+          // The caller's destructive preparation (replace: delete the old cues) runs only once Preview is confirmed
+          // usable and empty, right before the first item is built (review round 1); a refusal leaves Preview untouched.
+          const prep = await runSteps(o.prepare());
+          steps.push(...prep.steps);
+          if (prep.outcome !== "succeeded") stopped = true;
+        }
+      }
     } else stopped = true;
 
     for (let i = 0; i < o.items.length && !stopped; i++) {
@@ -514,6 +644,21 @@ export async function buildInPreview(ctx: ToolContext, o: { items: PreviewItem[]
         look.values.forEach((x) => plan.push({ name: `${lp}${x.attribute}`, run: () => commandStep(bridge, `${lp}${x.attribute}`, attributeCommand(x.attribute, x.value, x.unit ? ATTRIBUTE_UNITS[x.unit].keyword : undefined), t) }));
         const exp = expectationsOf(look);
         if (o.verify && exp.length) plan.push(check(`${lp}check values`, "the look's values", async () => (await verifyProgrammer(bridge, exp, readBack, warnings)).verification));
+        if (look.phaser) {
+          const effect = look.phaser;
+          const commands = effectCommands(effect);
+          plan.push({
+            name: `${lp}phaser`,
+            run: async () => {
+              for (const c of commands) {
+                const st = await commandStep(bridge, `${lp}phaser`, c, t);
+                if (st.status !== "succeeded") return { ...st, error: `${c}: ${st.error}` };
+              }
+              return { name: `${lp}phaser`, status: "succeeded", op: "cmd", detail: { commands: commands.length } };
+            },
+          });
+          if (o.verify) plan.push(check(`${lp}check phaser`, "the look's phaser", () => checkLookPhaser(bridge, look.fixtures, effect, t)));
+        }
       });
       plan.push(...item.store);
 
@@ -581,7 +726,7 @@ export async function buildCueBatch(ctx: ToolContext, b: Batch): Promise<BatchRe
       }
       const list = existing as CueListEntry[] | null;
       const have = new Set((list ?? []).map((c) => c.no));
-      const clash = b.cues.filter((c) => have.has(Number(c.cue))).map((c) => c.cue);
+      const clash = b.replace ? [] : b.cues.filter((c) => have.has(Number(c.cue))).map((c) => c.cue);
       if (b.mode === "create" && clash.length) return failedRead("read_sequence", `Sequence ${b.sequence} already has cue(s) ${clash.join(", ")}; nothing was sent. Use mode merge or overwrite, or other cue numbers`, { existing: clash });
       return asRead({ name: "read_sequence", status: "succeeded", op: "children", detail: { exists: list !== null, cues: list?.length ?? 0, ...(clash.length ? { replaced: clash } : {}) } });
     },
@@ -595,9 +740,40 @@ export async function buildCueBatch(ctx: ToolContext, b: Batch): Promise<BatchRe
     for (const [k, val] of Object.entries(c.timing) as Array<[keyof CueSpec["timing"], number]>) store.push(setStep(bridge, `${pre}${k}`, part0, TIMING_PROPS[k], val, t));
     if (c.trigger) store.push(setStep(bridge, `${pre}trigger`, cueObj, "TrigType", TRIGGERS[c.trigger], t));
     if (c.time !== undefined) store.push(setStep(bridge, `${pre}trigger_time`, cueObj, "TrigTime", c.time, t));
+    if (c.command !== undefined) store.push(setStep(bridge, `${pre}command`, part0, "Command", c.command, t));
     return { prefix: pre, looks: c.looks, store };
   });
-  const built = await buildInPreview(ctx, { items, verify: b.verify, noun: "cues", inspect: [readSequence] });
+  // replace: every existing cue is deleted once everything was checked (Delete ... Cue 1 Thru keeps the sequence object,
+  // its settings and its executor assignments: live 2026-10-15), and the sequence must read empty before the build.
+  const deleteSteps = (): Array<{ name: string; run: StepFn }> => {
+    const list = (existing as CueListEntry[] | null) ?? [];
+    if (!list.length) return [];
+    // One step per request, so a refusal after earlier deletions keeps them in the result (review round 1).
+    const out: Array<{ name: string; run: StepFn }> = list
+      .filter((c) => c.no < 1)
+      .map((c) => {
+        const name = `delete_cue_${fmtNo(c.no)}`;
+        return { name, run: () => commandStep(bridge, name, `Delete ${cueRef(b.sequence, fmtNo(c.no))} /NoConfirmation`, t) };
+      });
+    if (list.some((c) => c.no >= 1)) out.push({ name: "delete_cues_from_1", run: () => commandStep(bridge, "delete_cues_from_1", `Delete Sequence ${b.sequence} Cue 1 Thru /NoConfirmation`, t) });
+    out.push({
+      name: "check_cues_deleted",
+      run: async () => {
+        try {
+          const after = await readCueList(bridge, b.sequence, t);
+          if (after === null) return failedRead("check_cues_deleted", `Sequence ${b.sequence} is gone after deleting its cues; nothing was built`);
+          if (after.length) return failedRead("check_cues_deleted", `Sequence ${b.sequence} still has cue(s) ${after.map((c) => fmtNo(c.no)).join(", ")} after the delete; nothing was built`, { remaining: after.map((c) => fmtNo(c.no)) });
+          return asRead({ name: "check_cues_deleted", status: "succeeded", op: "children", detail: { deleted: list.map((c) => fmtNo(c.no)) } });
+        } catch (err) {
+          return asRead(stepFromError("check_cues_deleted", err, { op: "children" }));
+        }
+      },
+    });
+    return out;
+  };
+  // replace: every existing cue is deleted once everything was checked and Preview is confirmed usable (Delete ... Cue 1
+  // Thru keeps the sequence object, its settings and its executor assignments: live 2026-10-15).
+  const built = await buildInPreview(ctx, { items, verify: b.verify, noun: "cues", inspect: [readSequence], ...(b.replace ? { prepare: deleteSteps } : {}) });
   const { steps, readBack, warnings, normalProgrammer } = built;
   const reports: CueReport[] = b.cues.map((c, i) => {
     const r = built.items[i];
@@ -619,8 +795,11 @@ export async function buildCueBatch(ctx: ToolContext, b: Batch): Promise<BatchRe
       const r = reports[i];
       if (r.status === "not_attempted" || (r.status === "failed" && !built.items[i].storeSucceeded)) continue;
       const expected: Record<string, unknown> = { Name: c.name, ...(c.trigger ? { TrigType: TRIGGERS[c.trigger] } : {}), ...(c.time !== undefined ? { TrigTime: c.time } : {}) };
-      const timingExpected: Record<string, unknown> = Object.fromEntries(Object.entries(c.timing).map(([k, val]) => [TIMING_PROPS[k as keyof CueSpec["timing"]], val]));
-      const checked = `cue ${c.cue} exists${c.name !== undefined ? ", its name" : ""}${Object.keys(timingExpected).length ? ", its timing" : ""}${c.trigger ? ", its trigger" : ""}`;
+      const timingExpected: Record<string, unknown> = {
+        ...Object.fromEntries(Object.entries(c.timing).map(([k, val]) => [TIMING_PROPS[k as keyof CueSpec["timing"]], val])),
+        ...(c.command !== undefined ? { Command: c.command } : {}),
+      };
+      const checked = `cue ${c.cue} exists${c.name !== undefined ? ", its name" : ""}${Object.keys(c.timing).length ? ", its timing" : ""}${c.trigger ? ", its trigger" : ""}${c.command !== undefined ? ", its command" : ""}`;
       let props: Verification;
       try {
         const cueRes = (await bridge.request("objects", { ref: cueRef(b.sequence, c.cue), fields: ["Name", "TrigType", "TrigTime"], limit: 1 }, t)) as { items?: Array<{ fields?: Record<string, unknown> }> };
@@ -801,20 +980,281 @@ function batchResult(op: string, target: Record<string, unknown>, r: BatchResult
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// SU-14: preset ranges, replace, sequence settings and overrides
+// ---------------------------------------------------------------------------
+
+interface PresetRange {
+  pool: number;
+  from: number;
+  to: number;
+}
+
+/** `{pool, from, to}`: a range of presets in one pool (at most MAX_CUES numbers). */
+export function validatePresetRange(v: Validator, raw: unknown, path: string): PresetRange | undefined {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  const pool = v.check(() => finiteNumber(`${path}.pool`, r.pool, { integer: true, min: 1, max: 9999 }));
+  const from = v.check(() => finiteNumber(`${path}.from`, r.from, { integer: true, min: 1, max: 99999 }));
+  const to = v.check(() => finiteNumber(`${path}.to`, r.to, { integer: true, min: 1, max: 99999 }));
+  if (from !== undefined && to !== undefined && to < from) v.fail(`${path}: to must not be below from`);
+  if (from !== undefined && to !== undefined && to - from + 1 > MAX_CUES) v.fail(`${path}: at most ${MAX_CUES} presets`);
+  return pool !== undefined && from !== undefined && to !== undefined ? { pool, from, to } : undefined;
+}
+
+/**
+ * The presets of a range that exist, in number order, with their names (one objects read). The console takes the
+ * range as `Preset 21.11 Thru 14` (live 2026-10-15): `Thru 21.14` resolves nothing and `Thru Preset 21.14` runs on
+ * past the end, so the numbers are also filtered here.
+ */
+async function readPresetRange(bridge: Gma3Bridge, r: PresetRange, t: number): Promise<Array<{ no: number; name: string }>> {
+  const res = (await bridge.request("objects", { ref: `Preset ${r.pool}.${r.from} Thru ${r.to}`, fields: ["No", "Name"], limit: MAX_CUES + 1 }, t).catch((err: unknown) => {
+    if (/no objects? found|not found/i.test(err instanceof Error ? err.message : String(err))) return { items: [] };
+    throw err;
+  })) as { items?: Array<{ name?: string; index?: number; fields?: Record<string, unknown> }> };
+  const out: Array<{ no: number; name: string }> = [];
+  for (const it of res.items ?? []) {
+    const no = Number(String(it.fields?.No ?? it.index ?? "").match(/^\d+/)?.[0]);
+    if (Number.isInteger(no) && no >= r.from && no <= r.to) out.push({ no, name: String(it.fields?.Name ?? it.name ?? "") });
+  }
+  return out.sort((a, b) => a.no - b.no);
+}
+
+/** Cues for a preset range: one per existing preset, numbered from `first`, named after the preset. */
+function presetCues(found: Array<{ no: number; name: string }>, r: PresetRange, fixtures: string, first: number, extra: (k: number) => Partial<CueSpec>): CueSpec[] {
+  return found.map((p, k) => ({
+    cue: String(first + k),
+    ...(p.name ? { name: p.name } : {}),
+    looks: [{ fixtures, presets: [{ pool: r.pool, preset: p.no, ref: presetRef(r.pool, p.no) }], values: [] }],
+    timing: {},
+    ...extra(k),
+  }));
+}
+
+/** The executors a sequence is assigned to (by address); null when it cannot be read. */
+async function assignmentsOf(bridge: Gma3Bridge, sequence: number, t: number): Promise<string[] | null> {
+  try {
+    const o = (await bridge.request("objects", { ref: `Sequence ${sequence}`, fields: ["Name"], limit: 1 }, t)) as { items?: Array<{ addr?: string }> };
+    const addr = o.items?.[0]?.addr;
+    if (!addr) return [];
+    const refs = await findReferences(bridge, addr, t);
+    return refs.complete ? refs.executors.map((e) => e.ref).sort() : null;
+  } catch {
+    return null;
+  }
+}
+
+const PRIORITY_RANK: Record<string, number> = { lowest: 0, low: 1, ltp: 2, high: 3, highest: 4, htp: 5, swap: 6, super: 7 };
+const rankOf = (p: unknown) => PRIORITY_RANK[String(p ?? "").trim().toLowerCase()] ?? 2;
+
+/**
+ * The running sequences an override would switch off: playing (HasActivePlayback), lower priority than `priority`,
+ * Off When Overridden on, not the sequence itself. They switch off only where the override plays on the same fixtures;
+ * cue contents cannot be read on 2.5.1, so every candidate is listed.
+ */
+async function overrideCandidates(bridge: Gma3Bridge, sequence: number, priority: string, t: number): Promise<{ sequences: Array<{ sequence: number; name: string; priority: string }>; complete: boolean; unread?: string[] }> {
+  const res = (await bridge.request("objects", { ref: "Sequence Thru", fields: ["No", "Priority", "OffWhenOverridden"], limit: 500 }, t)) as { total?: number; items?: Array<{ name?: string; fields?: Record<string, unknown> }> };
+  const out: Array<{ sequence: number; name: string; priority: string }> = [];
+  // Discovery is complete only when every sequence could be judged (review round 2): an unreadable number, priority,
+  // Off When Overridden or playback state never excludes a sequence silently.
+  const unread: string[] = [];
+  if ((res.total ?? 0) > (res.items?.length ?? 0)) unread.push(`${(res.total ?? 0) - (res.items?.length ?? 0)} sequence(s) beyond the listing`);
+  for (const it of res.items ?? []) {
+    const no = Number(String(it.fields?.No ?? "").match(/^\d+/)?.[0]);
+    if (!Number.isInteger(no)) {
+      unread.push(`"${it.name ?? "?"}" (number unreadable)`);
+      continue;
+    }
+    if (no === sequence) continue;
+    const prio = String(it.fields?.Priority ?? "").trim().toLowerCase();
+    const owo = String(it.fields?.OffWhenOverridden ?? "").trim().toLowerCase();
+    if (!(prio in PRIORITY_RANK) || (owo !== "yes" && owo !== "no")) {
+      unread.push(`Sequence ${no} (priority or Off When Overridden unreadable)`);
+      continue;
+    }
+    if (PRIORITY_RANK[prio] >= rankOf(priority) || owo !== "yes") continue;
+    try {
+      const o = (await bridge.request("object", { ref: `Sequence ${no}`, properties: false }, t)) as { hasActivePlayback?: unknown };
+      if (typeof o?.hasActivePlayback !== "boolean") unread.push(`Sequence ${no} (playback state unreadable)`);
+      else if (o.hasActivePlayback) out.push({ sequence: no, name: String(it.name ?? ""), priority: String(it.fields?.Priority ?? "") });
+    } catch {
+      unread.push(`Sequence ${no} (playback state not read)`);
+    }
+  }
+  return { sequences: out, complete: unread.length === 0, ...(unread.length ? { unread } : {}) };
+}
+
+/**
+ * After a build: the sequence's settings (gma3_configure_sequence, in the same lock span) and, for a priority above
+ * LTP, the running sequences it would switch off, with Off When Overridden turned off on them when `protect`.
+ */
+async function sequenceExtras(ctx: ToolContext, sequence: number, settings: Record<string, unknown> | undefined, protect: boolean, steps: StepResult[], warnings: string[]): Promise<{ extra: Record<string, unknown>; verifications: Verification[]; ready: boolean }> {
+  const held: ToolContext = { ...ctx, mutations: new HeldLock() };
+  const extra: Record<string, unknown> = {};
+  const verifications: Verification[] = [];
+  if (!settings) return { extra, verifications, ready: true };
+  /** Not ready: the requested protection did not fully succeed, so the override is neither configured nor played. */
+  const notReady = (reason: string) => {
+    steps.push({ name: "sequence_settings", status: "skipped", error: `not attempted: ${reason}` });
+    verifications.push({ status: "mismatched", checked: "the running sequences' protection", detail: reason });
+    extra.sequenceSettings = { outcome: "not_attempted", reason };
+    return { extra, verifications, ready: false };
+  };
+  const priority = typeof settings.priority === "string" ? settings.priority : undefined;
+  if (priority && rankOf(priority) > PRIORITY_RANK.ltp) {
+    try {
+      const c = await overrideCandidates(ctx.bridge, sequence, priority, ctx.requestTimeoutMs);
+      steps.push(asRead({ name: "read_running_sequences", status: "succeeded", op: "objects", detail: { candidates: c.sequences.length, complete: c.complete } }));
+      const protectedOnes: number[] = [];
+      extra.override = { priority, wouldSwitchOff: c.sequences, complete: c.complete, protected: protectedOnes };
+      if (protect) {
+        // Protection must be complete and confirmed before the override is configured or played (review round 1).
+        if (!c.complete) return notReady(`the running sequences could not all be judged (${(c.unread ?? []).join("; ")}), so their protection is not complete`);
+        for (const r of c.sequences) {
+          const res = await configureSequence(held, { sequence: r.sequence, off_when_overridden: false } as ConfigureSequenceArgs);
+          const ok = res.outcome === "succeeded" && res.verification.status === "matched";
+          steps.push({ name: `protect_sequence_${r.sequence}`, status: ok ? "succeeded" : res.outcome === "unknown" || res.steps.some((st) => st.status === "unknown" && st.kind !== "read") ? "unknown" : "failed", op: "gma3_configure_sequence", ...(ok ? {} : { error: res.summary }) });
+          verifications.push(res.verification);
+          if (!ok) return notReady(`Off When Overridden could not be confirmed off on Sequence ${r.sequence} (${res.outcome}, read-back ${res.verification.status})`);
+          protectedOnes.push(r.sequence);
+        }
+      } else if (!c.complete) {
+        warnings.push(`the running sequences could not all be judged (${(c.unread ?? []).join("; ")}); the override may switch off more than listed`);
+      }
+      if (!protect && c.sequences.length) {
+        warnings.push(`Sequence ${sequence} plays at priority ${priority}: where it plays on the same fixtures it switches off ${c.sequences.map((r) => `Sequence ${r.sequence} "${r.name}"`).join(", ")} (Off When Overridden is on); pass protect_running: true to turn Off When Overridden off on them`);
+      }
+      extra.override = { priority, wouldSwitchOff: c.sequences, complete: c.complete, protected: protectedOnes, note: "a running sequence of lower priority with Off When Overridden on is switched off where the override plays on the same fixtures; cue contents cannot be read on 2.5.1, so every playing candidate is listed" };
+    } catch (err) {
+      steps.push(asRead(stepFromError("read_running_sequences", err, { op: "objects" })));
+      if (protect) return notReady("the running sequences could not be read, so they could not be protected");
+      warnings.push("the running sequences could not be read, so the override's effect on them is not known");
+    }
+  }
+  const res = await configureSequence(held, { sequence, ...settings } as ConfigureSequenceArgs);
+  // A partial configuration with an unanswered write is uncertain, not failed (review round 2): the wrapper keeps that,
+  // so a batch around this call stops, and the completed and unknown writes stay visible.
+  const nestedUnknown = res.steps.filter((st) => st.status === "unknown" && st.kind !== "read");
+  const status = res.outcome === "succeeded" ? "succeeded" : res.outcome === "unknown" || nestedUnknown.length ? "unknown" : "failed";
+  steps.push({
+    name: "sequence_settings",
+    status,
+    op: "gma3_configure_sequence",
+    detail: { outcome: res.outcome, verification: res.verification.status, written: res.steps.filter((st) => st.status === "succeeded" && st.kind !== "read").map((st) => st.name), ...(nestedUnknown.length ? { unknown: nestedUnknown.map((st) => st.name) } : {}) },
+    ...(status === "succeeded" ? {} : { error: res.summary }),
+  });
+  verifications.push(res.verification);
+  if (res.warnings?.length) warnings.push(...res.warnings);
+  extra.sequenceSettings = { outcome: res.outcome, verification: res.verification.status, ...(res.intended ? { intended: res.intended } : {}) };
+  return { extra, verifications, ready: res.outcome === "succeeded" && res.verification.status !== "mismatched" };
+}
+
+/** A mutation step without a reply (its effect on the console is not known). */
+const uncertainStep = (steps: StepResult[]) => steps.find((st) => st.status === "unknown" && st.kind !== "read");
+
+/**
+ * Before a destructive replace: the settings would be accepted by gma3_configure_sequence (its preview: sequence,
+ * locks, master names), read-only. A new sequence has nothing to check yet.
+ */
+async function settingsPreflight(ctx: ToolContext, sequence: number, settings: Record<string, unknown>): Promise<StepResult> {
+  const held: ToolContext = { ...ctx, mutations: new HeldLock() };
+  const res = await configureSequence(held, { sequence, ...settings, preview: true } as ConfigureSequenceArgs);
+  return res.outcome === "succeeded" ? asRead({ name: "check_sequence_settings", status: "succeeded", op: "gma3_configure_sequence" }) : failedRead("check_sequence_settings", `the sequence settings would not apply (${res.summary}); nothing was sent`);
+}
+
+/** Validate sequence_settings: the gma3_configure_sequence settings (lock and preview are not taken here). */
+function validateSequenceSettings(v: Validator, raw: unknown): Record<string, unknown> | undefined {
+  if (raw === undefined) return undefined;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    v.fail("sequence_settings must be an object of gma3_configure_sequence settings");
+    return undefined;
+  }
+  const entries = Object.entries(raw as Record<string, unknown>);
+  if (!entries.length) v.fail("sequence_settings is empty: give at least one setting, or leave it out");
+  const bad = entries.map(([k]) => k).filter((k) => !(k in SEQUENCE_SETTINGS));
+  if (bad.length) v.fail(`sequence_settings: ${bad.join(", ")} ${bad.length === 1 ? "is" : "are"} not a sequence setting (${Object.keys(SEQUENCE_SETTINGS).join(", ")})`);
+  // Every value is checked before anything is sent (review round 1): a bad value must not surface after a rebuild.
+  for (const [k, value] of entries) {
+    if (!(k in SEQUENCE_SETTINGS)) continue;
+    if (value === undefined || value === null) v.fail(`sequence_settings.${k} has no value`);
+    else v.check(() => settingValue(`sequence_settings.${k}`, SEQUENCE_SETTINGS[k], value));
+  }
+  return raw as Record<string, unknown>;
+}
+
 export async function storeCues(ctx: ToolContext, raw: Record<string, unknown>): Promise<OperationResult> {
   const op = "store_cues";
+  const { bridge } = ctx;
+  const t = ctx.requestTimeoutMs;
   const v = new Validator();
   const sequence = v.check(() => objectNumber("sequence", raw.sequence));
-  const mode = v.check(() => oneOf("mode", raw.mode, ["create", "merge", "overwrite"] as const));
+  const replace = raw.replace === true;
+  const mode = replace && raw.mode === undefined ? "create" : v.check(() => oneOf("mode", raw.mode, ["create", "merge", "overwrite"] as const));
+  if (replace && mode !== "create") v.fail("replace rebuilds the sequence from its cues: mode is create (or leave it out)");
   const sequenceName = v.check(() => objectName("sequence_name", raw.sequence_name, { optional: true }));
   const defaultFixtures = raw.fixtures === undefined ? undefined : v.check(() => fixtureSelection("fixtures", raw.fixtures));
-  const cues = validateCues(v, raw.cues, defaultFixtures);
+  let cues: CueSpec[] = [];
+  let range: PresetRange | undefined;
+  let firstCue = 1;
+  if ((raw.cues === undefined) === (raw.presets === undefined)) v.fail("give exactly one of cues (a list) or presets ({pool, from, to}: one cue per preset)");
+  else if (raw.presets !== undefined) {
+    range = validatePresetRange(v, raw.presets, "presets");
+    firstCue = v.check(() => finiteNumber("first_cue", raw.first_cue, { integer: true, min: 1, max: 9999, optional: true })) ?? 1;
+    if (!defaultFixtures) v.fail("presets needs fixtures (the target every preset is recalled on)");
+  } else cues = validateCues(v, raw.cues, defaultFixtures);
+  const timing = range ? validateTiming(v, raw, "") : {};
+  const trig = range ? validateTrigger(v, raw.trigger, raw.time, "") : {};
+  const settings = validateSequenceSettings(v, raw.sequence_settings);
+  const protect = raw.protect_running === true;
+  if (protect && !settings?.priority) v.fail("protect_running applies to an override: give sequence_settings.priority above ltp");
   if (raw.exclusive !== true) v.fail(EXCLUSIVE_REASON);
-  const target = { sequence: raw.sequence, cues: cues.map((c) => c.cue), mode: raw.mode };
+  const target: Record<string, unknown> = { sequence: raw.sequence, ...(range ? { presets: `${range.pool}.${range.from} Thru ${range.pool}.${range.to}` } : { cues: cues.map((c) => c.cue) }), mode: mode ?? raw.mode, ...(replace ? { replace } : {}) };
   if (!v.ok || sequence === undefined || !mode) return validationFailure(op, target, v.errors);
   return ctx.mutations.run(async () => {
-    const r = await buildCueBatch(ctx, { sequence, sequenceName, mode, cues, verify: raw.verify !== false });
-    return batchResult(op, { sequence, cues: cues.map((c) => c.cue), mode }, r, { sequenceExisted: r.sequenceExisted });
+    const pre: StepResult[] = [];
+    const warnings: string[] = [];
+    if (range) {
+      try {
+        const found = await readPresetRange(bridge, range, t);
+        pre.push(asRead({ name: "read_preset_range", status: found.length ? "succeeded" : "failed", op: "objects", detail: { found: found.map((p) => p.no) }, ...(found.length ? {} : { error: `no preset exists in ${range.pool}.${range.from} Thru ${range.pool}.${range.to}; nothing was sent` }) }));
+        if (!found.length) return buildResult({ operation: op, target, steps: pre, verification: unavailable("nothing was sent") });
+        const missing = range.to - range.from + 1 - found.length;
+        if (missing) warnings.push(`${missing} number(s) in the range hold no preset and get no cue`);
+        cues = presetCues(found, range, defaultFixtures as string, firstCue, () => ({ timing, ...trig }));
+      } catch (err) {
+        pre.push(asRead(stepFromError("read_preset_range", err, { op: "objects" })));
+        return buildResult({ operation: op, target, steps: pre, verification: unavailable("nothing was sent") });
+      }
+    }
+    if (replace && settings && (await readCueList(bridge, sequence, t).catch(() => null)) !== null) {
+      const chk = await settingsPreflight(ctx, sequence, settings);
+      pre.push(chk);
+      if (chk.status !== "succeeded") return buildResult({ operation: op, target, steps: pre, verification: unavailable("nothing was sent") });
+    }
+    const before = replace ? await assignmentsOf(bridge, sequence, t) : null;
+    const r = await buildCueBatch(ctx, { sequence, sequenceName, mode, cues, verify: raw.verify !== false, replace });
+    r.steps.unshift(...pre);
+    r.warnings.push(...warnings);
+    const extra: Record<string, unknown> = { sequenceExisted: r.sequenceExisted };
+    let verification = r.verification;
+    if (replace && r.sent) {
+      const after = await assignmentsOf(bridge, sequence, t);
+      const kept = before !== null && after !== null && before.every((x) => after.includes(x));
+      extra.assignments = { before, after, kept: before === null || after === null ? null : kept };
+      if (before !== null && after !== null && !kept) verification = worst([verification, { status: "mismatched", detail: `the executor assignments changed: ${before.join(", ") || "none"} before, ${after.join(", ") || "none"} after` }], "cues and executor assignments");
+    }
+    // The settings only after a complete build with no uncertain step (review round 1): later mutations are not sent
+    // after a step whose effect is unknown, or onto a sequence whose build failed.
+    const uncertain = uncertainStep(r.steps);
+    if (settings && r.cues.every((c) => c.status === "stored") && !uncertain) {
+      const s2 = await sequenceExtras(ctx, sequence, settings, protect, r.steps, r.warnings);
+      Object.assign(extra, s2.extra);
+      verification = worst([verification, ...s2.verifications], `${verification.checked ?? "the cues"} and the sequence settings`);
+    } else if (settings) {
+      const reason = uncertain ? `step '${uncertain.name}' got no reply, so the console's state is not known` : "not every cue was stored";
+      r.steps.push({ name: "sequence_settings", status: "skipped", error: `not attempted: ${reason}` });
+      extra.sequenceSettings = { outcome: "not_attempted", reason };
+    }
+    return batchResult(op, { sequence, cues: cues.map((c) => c.cue), mode, ...(replace ? { replace } : {}) }, r, extra, verification);
   });
 }
 
@@ -834,6 +1274,28 @@ function selectCues(list: CueListEntry[], pick: { cues?: string[]; from?: string
 
 const fmtNo = (n: number): string => String(Number(n.toFixed(3)));
 
+/** SU-14: trigger times saved in the sequence's Note while its cues trigger otherwise: `[gma3-mcp trigtimes 1=2.5 2=4]`. */
+const TRIG_MARKER = /\s*\[gma3-mcp trigtimes([^\]]*)\]/;
+
+export function parseTrigMarker(note: unknown): Map<string, number> {
+  const m = String(note ?? "").match(TRIG_MARKER);
+  const out = new Map<string, number>();
+  for (const part of (m?.[1] ?? "").trim().split(/\s+/).filter(Boolean)) {
+    const [cue, time] = part.split("=");
+    const n = Number(time);
+    if (cue && Number.isFinite(n)) out.set(fmtNo(Number(cue)), n);
+  }
+  return out;
+}
+
+/** The Note with the marker replaced (or appended, or removed when the map is empty); the rest of the note is kept. */
+export function writeTrigMarker(note: unknown, times: Map<string, number>): string {
+  const rest = String(note ?? "").replace(TRIG_MARKER, "").trim();
+  if (!times.size) return rest;
+  const marker = `[gma3-mcp trigtimes ${[...times].sort((a, b) => Number(a[0]) - Number(b[0])).map(([c, t2]) => `${c}=${formatValue(t2)}`).join(" ")}]`;
+  return rest ? `${rest} ${marker}` : marker;
+}
+
 export async function editCues(ctx: ToolContext, raw: Record<string, unknown>): Promise<OperationResult> {
   const op = "edit_cues";
   const { bridge } = ctx;
@@ -850,7 +1312,7 @@ export async function editCues(ctx: ToolContext, raw: Record<string, unknown>): 
   const from = v.check(() => cueNumber("from", raw.from, { optional: true }));
   const to = v.check(() => cueNumber("to", raw.to, { optional: true }));
   if (from !== undefined && to !== undefined && Number(from) > Number(to)) v.fail("from must not be after to");
-  const trig = validateTrigger(v, raw.trigger, raw.time, "");
+  const trig = validateTrigger(v, raw.trigger, raw.time, "", raw.restore_times === true);
   const timing: Partial<Record<TimingKey, number>> = validateTiming(v, raw, "");
   const snap = v.check(() => timeSeconds("snap_delay", raw.snap_delay, { optional: true }));
   if (snap !== undefined) timing.snap_delay = snap;
@@ -859,12 +1321,28 @@ export async function editCues(ctx: ToolContext, raw: Record<string, unknown>): 
     if (!Array.isArray(raw.names) || raw.names.length === 0) v.fail("names must be a non-empty list (one per cue, in cue order)");
     else names = raw.names.map((n, i) => v.check(() => objectName(`names[${i}]`, n)) ?? "");
   }
-  if (!trig.trigger && Object.keys(timing).length === 0 && !names) v.fail("give a trigger, timing (fade, delay, out_fade, out_delay, snap_delay) and/or names");
+  // SU-14: a command for every selected cue, or one per cue (in cue order).
+  const command = v.check(() => cueCommand("command", raw.command));
+  let commands: string[] | undefined;
+  if (raw.commands !== undefined) {
+    if (command !== undefined) v.fail("give command (the same for every cue) or commands (one per cue), not both");
+    if (!Array.isArray(raw.commands) || raw.commands.length === 0) v.fail("commands must be a non-empty list (one per cue, in cue order)");
+    else commands = raw.commands.map((c, i) => v.check(() => cueCommand(`commands[${i}]`, c)) ?? "");
+  }
+  const keepTimes = raw.keep_times === true;
+  const restoreTimes = raw.restore_times === true;
+  if (keepTimes && (!trig.trigger || trig.trigger === "time")) v.fail("keep_times saves the trigger times that a switch away from Time sets to 0: give trigger go, follow, sound or bpm");
+  if (restoreTimes && trig.trigger !== "time") v.fail('restore_times brings the saved trigger times back: give trigger "time" (time is the fallback for cues without a saved time)');
+  if (!trig.trigger && Object.keys(timing).length === 0 && !names && command === undefined && !commands) v.fail("give a trigger, timing (fade, delay, out_fade, out_delay, snap_delay), names and/or a command");
   const target = { sequence: raw.sequence, ...(cueList ? { cues: cueList } : raw.all ? { all: true } : { from: raw.from, to: raw.to }) };
   if (!v.ok || sequence === undefined) return validationFailure(op, target, v.errors);
 
   return ctx.mutations.run(async () => {
     let selected: CueListEntry[] = [];
+    /** Each selected cue's trigger before the edit (read when the trigger changes). */
+    const before = new Map<string, { type: string; time: number | null }>();
+    let note = "";
+    const restored = new Map<string, number>();
     const inspect = await runSteps([
       {
         name: "read_cues",
@@ -876,7 +1354,36 @@ export async function editCues(ctx: ToolContext, raw: Record<string, unknown>): 
             if ("error" in pick) return failedRead("read_cues", `${pick.error}; nothing was sent`);
             if (pick.cues.length > MAX_CUES) return failedRead("read_cues", `${pick.cues.length} cues selected; at most ${MAX_CUES} per call`);
             if (names && names.length !== pick.cues.length) return failedRead("read_cues", `${names.length} name(s) for ${pick.cues.length} cue(s) (${pick.cues.map((c) => fmtNo(c.no)).join(", ")}); give one name per cue`);
+            if (commands && commands.length !== pick.cues.length) return failedRead("read_cues", `${commands.length} command(s) for ${pick.cues.length} cue(s) (${pick.cues.map((c) => fmtNo(c.no)).join(", ")}); give one command per cue`);
             selected = pick.cues;
+            if (trig.trigger) {
+              for (const c of selected) {
+                const r = (await bridge.request("objects", { ref: cueRef(sequence, fmtNo(c.no)), fields: ["TrigType", "TrigTime"], limit: 1 }, t)) as { items?: Array<{ fields?: Record<string, unknown> }> };
+                const f = r.items?.[0]?.fields ?? {};
+                const type = String(f.TrigType ?? "");
+                const time = timeToSeconds(f.TrigTime);
+                // keep_times saves what it reads: an unreadable trigger is refused, never taken as nothing to keep.
+                if (keepTimes && (!type || (type.toLowerCase() === "time" && time === null))) return failedRead("read_cues", `the trigger of cue ${fmtNo(c.no)} could not be read (${JSON.stringify(f.TrigType ?? null)} / ${JSON.stringify(f.TrigTime ?? null)}), so its time cannot be kept; nothing was sent`);
+                before.set(fmtNo(c.no), { type, time });
+              }
+            }
+            if (keepTimes || restoreTimes) {
+              const sq = (await bridge.request("objects", { ref: `Sequence ${sequence}`, fields: ["Note"], limit: 1 }, t)) as { items?: Array<{ fields?: Record<string, unknown> }> };
+              const raw2 = sq.items?.[0]?.fields?.Note;
+              if (raw2 === undefined || raw2 === null) return failedRead("read_cues", `the Note of Sequence ${sequence} could not be read, so saved trigger times cannot be kept or found; nothing was sent`);
+              note = String(raw2);
+            }
+            if (restoreTimes) {
+              const saved = parseTrigMarker(note);
+              const missing: string[] = [];
+              for (const c of selected) {
+                const no = fmtNo(c.no);
+                const time = saved.get(no) ?? trig.time;
+                if (time === undefined) missing.push(no);
+                else restored.set(no, time);
+              }
+              if (missing.length) return failedRead("read_cues", `no saved trigger time for cue(s) ${missing.join(", ")} in Sequence ${sequence}'s Note and no time given; nothing was sent`);
+            }
             return asRead({ name: "read_cues", status: "succeeded", op: "children", detail: { cues: selected.map((c) => fmtNo(c.no)) } });
           } catch (err) {
             return asRead(stepFromError("read_cues", err, { op: "children" }));
@@ -887,8 +1394,40 @@ export async function editCues(ctx: ToolContext, raw: Record<string, unknown>): 
     const steps = [...inspect.steps];
     const reports: CueReport[] = [];
     const readBack: StepResult[] = [];
+    // SU-14: a switch away from Time sets TrigTime to 0 (live 2026-10-15), and a switch back keeps the 0: report what is
+    // wiped and, with keep_times, save it in the sequence's Note first.
+    const wiped = trig.trigger && trig.trigger !== "time" ? [...before].filter(([, b]) => b.type.toLowerCase() === "time" && (b.time ?? 0) > 0).map(([cue, b]) => ({ cue, time: b.time as number })) : [];
+    let stopAll = false;
+    if (inspect.outcome === "succeeded" && keepTimes && wiped.length) {
+      const saved = parseTrigMarker(note);
+      for (const w of wiped) saved.set(w.cue, w.time);
+      const wanted = writeTrigMarker(note, saved);
+      const kept = await runSteps([
+        setStep(bridge, "keep_trig_times", `Sequence ${sequence}`, "Note", wanted, t),
+        {
+          // The saved times are the only copy once the trigger changes: they are read back before anything else
+          // (review round 1). A console that ignores or rewrites the write stops the edit here.
+          name: "check_trig_times_kept",
+          run: async () => {
+            try {
+              const sq = (await bridge.request("objects", { ref: `Sequence ${sequence}`, fields: ["Note"], limit: 1 }, t)) as { items?: Array<{ fields?: Record<string, unknown> }> };
+              const got = sq.items?.[0]?.fields?.Note;
+              if (got === undefined || got === null) return failedRead("check_trig_times_kept", "the Note could not be read back; the triggers were not changed");
+              const back = parseTrigMarker(got);
+              const same = String(got).trim() === wanted.trim() && wiped.every((w) => back.get(w.cue) === w.time);
+              return same ? asRead({ name: "check_trig_times_kept", status: "succeeded", op: "objects" }) : failedRead("check_trig_times_kept", `the Note reads ${JSON.stringify(got)}, not the saved times; the triggers were not changed`);
+            } catch (err) {
+              return asRead(stepFromError("check_trig_times_kept", err, { op: "objects" }));
+            }
+          },
+        },
+      ]);
+      steps.push(...kept.steps);
+      if (kept.outcome !== "succeeded") stopAll = true;
+      else note = wanted;
+    }
     if (inspect.outcome === "succeeded") {
-      let stopped = false;
+      let stopped = stopAll;
       for (let i = 0; i < selected.length; i++) {
         const no = fmtNo(selected[i].no);
         const report: CueReport = { cue: no, status: "not_attempted", verification: unavailable("not attempted") };
@@ -901,7 +1440,10 @@ export async function editCues(ctx: ToolContext, raw: Record<string, unknown>): 
         if (names) plan.push(setStep(bridge, `${pre}name`, part0, "Name", names[i], t));
         for (const [k, val] of Object.entries(timing) as Array<[TimingKey, number]>) plan.push(setStep(bridge, `${pre}${k}`, part0, TIMING_PROPS[k], val, t));
         if (trig.trigger) plan.push(setStep(bridge, `${pre}trigger`, cueObj, "TrigType", TRIGGERS[trig.trigger], t));
-        if (trig.time !== undefined) plan.push(setStep(bridge, `${pre}trigger_time`, cueObj, "TrigTime", trig.time, t));
+        const cueTime = restored.get(no) ?? trig.time;
+        if (cueTime !== undefined) plan.push(setStep(bridge, `${pre}trigger_time`, cueObj, "TrigTime", cueTime, t));
+        const cueCommandText = commands?.[i] ?? command;
+        if (cueCommandText !== undefined) plan.push(setStep(bridge, `${pre}command`, part0, "Command", cueCommandText, t));
         const run = await runSteps(plan);
         steps.push(...run.steps);
         const bad = run.steps.find((s) => s.status !== "succeeded" && s.status !== "skipped");
@@ -914,8 +1456,8 @@ export async function editCues(ctx: ToolContext, raw: Record<string, unknown>): 
           report.verification = raw.verify === false ? notRequested() : unavailable("nothing was sent for this cue");
           continue;
         }
-        const expected: Record<string, unknown> = { ...(names ? { Name: names[i] } : {}), ...(trig.trigger ? { TrigType: TRIGGERS[trig.trigger] } : {}), ...(trig.time !== undefined ? { TrigTime: trig.time } : {}) };
-        const timingExpected = Object.fromEntries(Object.entries(timing).map(([k, val]) => [TIMING_PROPS[k as TimingKey], val]));
+        const expected: Record<string, unknown> = { ...(names ? { Name: names[i] } : {}), ...(trig.trigger ? { TrigType: TRIGGERS[trig.trigger] } : {}), ...(cueTime !== undefined ? { TrigTime: cueTime } : {}) };
+        const timingExpected: Record<string, unknown> = { ...Object.fromEntries(Object.entries(timing).map(([k, val]) => [TIMING_PROPS[k as TimingKey], val])), ...(cueCommandText !== undefined ? { Command: cueCommandText } : {}) };
         const checked = `cue ${no}: ${[...Object.keys(expected), ...Object.keys(timingExpected)].join(", ")}`;
         try {
           const c = (await bridge.request("objects", { ref: cueObj, fields: ["Name", "TrigType", "TrigTime"], limit: 1 }, t)) as { items?: Array<{ fields?: Record<string, unknown> }> };
@@ -934,10 +1476,21 @@ export async function editCues(ctx: ToolContext, raw: Record<string, unknown>): 
         }
       }
     }
+    // restore_times: only the cues whose restored time was read back leave the Note's marker (the rest of the note
+    // and every unconfirmed entry stay, as recovery data), and nothing is written after a step without a reply.
+    const confirmed = reports.filter((r) => r.status === "stored" && r.verification.status === "matched").map((r) => r.cue);
+    const unsure = steps.find((st) => st.status === "unknown" && st.kind !== "read");
+    if (restoreTimes && confirmed.length && !unsure) {
+      const saved = parseTrigMarker(note);
+      for (const c of confirmed) saved.delete(c);
+      const cleaned = await runSteps([setStep(bridge, "clear_saved_trig_times", `Sequence ${sequence}`, "Note", writeTrigMarker(note, saved), t)]);
+      steps.push(...cleaned.steps);
+    } else if (restoreTimes && unsure) steps.push({ name: "clear_saved_trig_times", status: "skipped", error: `not attempted: step '${unsure.name}' got no reply; the saved times stay in the Note` });
     const attempted = reports.filter((r) => r.status !== "not_attempted");
     const verification =
       raw.verify === false ? notRequested() : attempted.length === 0 ? unavailable("nothing was sent") : worst(attempted.map((r) => ({ ...r.verification, detail: r.verification.detail ? `cue ${r.cue}: ${r.verification.detail}` : undefined })), `${attempted.length} cue(s): the properties that were written`);
-    const result = buildResult({ operation: op, target: { sequence, cues: selected.map((c) => fmtNo(c.no)) }, steps, verification, extra: { cues: reports, edited: reports.filter((r) => r.status === "stored").length } });
+    const warnings = wiped.length && !keepTimes ? [`switching to ${TRIGGERS[trig.trigger as TriggerKey]} set the trigger time of ${wiped.length} Time cue(s) to 0 (${wiped.map((w) => `${w.cue}: ${formatValue(w.time)} s`).join(", ")}); a switch back to Time keeps the 0. Pass keep_times: true to save them in the sequence's Note, and restore_times: true on the way back`] : [];
+    const result = buildResult({ operation: op, target: { sequence, cues: selected.map((c) => fmtNo(c.no)) }, steps, verification, warnings, extra: { cues: reports, edited: reports.filter((r) => r.status === "stored").length, ...(wiped.length ? { wipedTrigTimes: wiped, trigTimesKept: keepTimes && !stopAll } : {}), ...(restoreTimes ? { restoredTrigTimes: Object.fromEntries(restored) } : {}) } });
     result.steps.push(...readBack);
     return result;
   });
@@ -953,13 +1506,20 @@ export async function buildChase(ctx: ToolContext, raw: Record<string, unknown>)
   const defaultFixtures = raw.fixtures === undefined ? undefined : v.check(() => fixtureSelection("fixtures", raw.fixtures));
   // Steps: `steps` (each a look, or looks, with an optional name), or `presets` (one cue per preset on `fixtures`).
   let rawSteps: Array<Record<string, unknown>> = [];
+  let range: PresetRange | undefined;
   if ((raw.steps === undefined) === (raw.presets === undefined)) v.fail("give exactly one of steps or presets");
-  else if (raw.presets !== undefined) {
-    if (!Array.isArray(raw.presets)) v.fail("presets must be a list");
-    else rawSteps = raw.presets.map((p) => ({ presets: [p] }));
-  } else if (!Array.isArray(raw.steps)) v.fail("steps must be a list");
+  else if (raw.presets !== undefined && !Array.isArray(raw.presets)) {
+    // SU-14: a preset range {pool, from, to}: one step per existing preset, resolved once the lock is held.
+    range = validatePresetRange(v, raw.presets, "presets");
+    if (!defaultFixtures) v.fail("presets needs fixtures (the target every preset is recalled on)");
+  } else if (raw.presets !== undefined) rawSteps = (raw.presets as unknown[]).map((p) => ({ presets: [p] }));
+  else if (!Array.isArray(raw.steps)) v.fail("steps must be a list");
   else rawSteps = raw.steps as Array<Record<string, unknown>>;
   if (rawSteps.length && (rawSteps.length < 2 || rawSteps.length > MAX_CUES)) v.fail(`a chase needs 2 to ${MAX_CUES} steps`);
+  const replace = raw.replace === true;
+  const settings = validateSequenceSettings(v, raw.sequence_settings);
+  const protect = raw.protect_running === true;
+  if (protect && !settings?.priority) v.fail("protect_running applies to an override: give sequence_settings.priority above ltp");
   const stepS = v.check(() => finiteNumber("step_seconds", raw.step_seconds, { min: 0.2, max: 3600, optional: true }));
   const cycleS = v.check(() => finiteNumber("cycle_seconds", raw.cycle_seconds, { min: 0.4, max: 360000, optional: true }));
   if ((stepS === undefined) === (cycleS === undefined)) v.fail("give exactly one of step_seconds (time per cue) or cycle_seconds (time for the whole loop)");
@@ -969,26 +1529,45 @@ export async function buildChase(ctx: ToolContext, raw: Record<string, unknown>)
   const budget = v.check(() => finiteNumber("observe_max_seconds", raw.observe_max_seconds, { min: 5, max: OBSERVE_MAX_S, optional: true })) ?? OBSERVE_DEFAULT_S;
   const leaveRunning = raw.leave_running === true;
   if (raw.exclusive !== true) v.fail(EXCLUSIVE_REASON);
-  const step = stepS ?? (cycleS !== undefined && rawSteps.length ? Number((cycleS / rawSteps.length).toFixed(3)) : 0);
+  let step = stepS ?? (cycleS !== undefined && rawSteps.length ? Number((cycleS / rawSteps.length).toFixed(3)) : 0);
   if (cycleS !== undefined && rawSteps.length && step < 0.2) v.fail(`cycle_seconds gives ${step} s per step; the minimum is 0.2 s`);
-  const cues: CueSpec[] = [];
+  let cues: CueSpec[] = [];
   rawSteps.forEach((s, i) => {
     const r = (s ?? {}) as Record<string, unknown>;
     const path = raw.presets !== undefined ? `presets[${i}]` : `steps[${i}]`;
-    const looks = validateLooks(v, Object.fromEntries(Object.entries(r).filter(([k]) => k !== "name")), path, defaultFixtures);
+    const command = v.check(() => cueCommand(`${path}.command`, r.command));
+    const looks = validateLooks(v, Object.fromEntries(Object.entries(r).filter(([k]) => k !== "name" && k !== "command")), path, defaultFixtures, command !== undefined);
     const stepName = v.check(() => objectName(`${path}.name`, r.name, { optional: true }));
-    cues.push({ cue: String(i + 1), name: stepName, looks, timing: fade !== undefined ? { fade } : {}, trigger: "time", time: step });
+    cues.push({ cue: String(i + 1), name: stepName, looks, ...(command !== undefined ? { command } : {}), timing: fade !== undefined ? { fade } : {}, trigger: "time", time: step });
   });
-  const target = { sequence: raw.sequence, steps: rawSteps.length, stepSeconds: step };
+  const target: Record<string, unknown> = { sequence: raw.sequence, ...(range ? { presets: `${range.pool}.${range.from} Thru ${range.pool}.${range.to}` } : { steps: rawSteps.length }), stepSeconds: step, ...(replace ? { replace } : {}) };
   if (!v.ok || sequence === undefined) return validationFailure(op, target, v.errors);
 
   return ctx.mutations.run(async () => {
-    // A chase is a whole sequence: refuse one that already has cues (stale cues past the last step would join the loop).
     const pre: StepResult[] = [];
+    if (range) {
+      try {
+        const found = await readPresetRange(bridge, range, t);
+        const ok = found.length >= 2;
+        pre.push(asRead({ name: "read_preset_range", status: ok ? "succeeded" : "failed", op: "objects", detail: { found: found.map((p) => p.no) }, ...(ok ? {} : { error: `${found.length} preset(s) exist in ${range.pool}.${range.from} Thru ${range.pool}.${range.to}; a chase needs at least two; nothing was sent` }) }));
+        if (!ok) return buildResult({ operation: op, target: { sequence }, steps: pre, verification: unavailable("nothing was sent") });
+        if (cycleS !== undefined) step = Number((cycleS / found.length).toFixed(3));
+        if (step < 0.2) {
+          pre.push(asRead({ name: "check_step_time", status: "failed", op: "objects", error: `cycle_seconds gives ${step} s per step for ${found.length} presets; the minimum is 0.2 s; nothing was sent` }));
+          return buildResult({ operation: op, target: { sequence }, steps: pre, verification: unavailable("nothing was sent") });
+        }
+        cues = presetCues(found, range, defaultFixtures as string, 1, () => ({ timing: fade !== undefined ? { fade } : {}, trigger: "time", time: step }));
+      } catch (err) {
+        pre.push(asRead(stepFromError("read_preset_range", err, { op: "objects" })));
+        return buildResult({ operation: op, target: { sequence }, steps: pre, verification: unavailable("nothing was sent") });
+      }
+    }
+    // A chase is a whole sequence: refuse one that already has cues (stale cues past the last step would join the loop),
+    // unless replace: then they are deleted first and the sequence (and its executor assignments) stays.
     try {
       const list = await readCueList(bridge, sequence, t);
-      if (list && list.length) {
-        pre.push(failedRead("check_sequence_empty", `Sequence ${sequence} already has ${list.length} cue(s); a chase is built into an empty or new sequence (edit an existing one with gma3_store_cues mode overwrite and gma3_edit_cues). Nothing was sent`));
+      if (list && list.length && !replace) {
+        pre.push(failedRead("check_sequence_empty", `Sequence ${sequence} already has ${list.length} cue(s); a chase is built into an empty or new sequence, or pass replace: true to delete its cues first (the sequence and its executor assignments stay). Nothing was sent`));
         return buildResult({ operation: op, target: { sequence }, steps: pre, verification: unavailable("nothing was sent") });
       }
       pre.push(asRead({ name: "check_sequence_empty", status: "succeeded", op: "children", detail: { exists: list !== null } }));
@@ -996,11 +1575,19 @@ export async function buildChase(ctx: ToolContext, raw: Record<string, unknown>)
       pre.push(asRead(stepFromError("check_sequence_empty", err, { op: "children" })));
       return buildResult({ operation: op, target: { sequence }, steps: pre, verification: unavailable("nothing was sent") });
     }
-    const r = await buildCueBatch(ctx, { sequence, sequenceName: name, mode: "create", cues, verify });
+    if (replace && settings && (await readCueList(bridge, sequence, t).catch(() => null)) !== null) {
+      const chk = await settingsPreflight(ctx, sequence, settings);
+      pre.push(chk);
+      if (chk.status !== "succeeded") return buildResult({ operation: op, target: { sequence }, steps: pre, verification: unavailable("nothing was sent") });
+    }
+    const assignedBefore = replace ? await assignmentsOf(bridge, sequence, t) : null;
+    const r = await buildCueBatch(ctx, { sequence, sequenceName: name, mode: "create", cues, verify, replace });
     r.steps.unshift(...pre);
     const allStored = r.cues.every((c) => c.status === "stored");
     const extra: Record<string, unknown> = { stepSeconds: step, cycleSeconds: Number((step * cues.length).toFixed(3)) };
     if (!allStored) return batchResult(op, { sequence, steps: cues.length }, r, { ...extra, cycle: { watched: false, reason: "not every cue was stored" } });
+    const unsure = uncertainStep(r.steps);
+    if (unsure) return batchResult(op, { sequence, steps: cues.length }, r, { ...extra, cycle: { watched: false, reason: `step '${unsure.name}' got no reply; nothing more was sent` } });
     // Nothing more is sent unless Preview was left cleanly and the console is confirmed back in Normal: a Goto from
     // anywhere else would play the chase on a console in an unknown state.
     if (!r.backInNormal) return batchResult(op, { sequence, steps: cues.length }, r, { ...extra, cycle: { watched: false, reason: "the console was not confirmed back in the Normal environment after the build (run gma3_phaser_release); Wrap Around was not set and the chase was not played" } });
@@ -1017,6 +1604,20 @@ export async function buildChase(ctx: ToolContext, raw: Record<string, unknown>)
       configVerification = unavailable(`WrapAround read-back failed: ${err instanceof Error ? err.message : String(err)}`, "WrapAround");
     }
     if (wrap.outcome !== "succeeded") return batchResult(op, { sequence, steps: cues.length }, r, { ...extra, cycle: { watched: false, reason: "Wrap Around could not be set" } }, worst([r.verification, configVerification], "cues and Wrap Around"));
+    // SU-14: replace keeps the executor assignments; the sequence settings (and an override's effect) in the same span.
+    if (replace) {
+      const after = await assignmentsOf(bridge, sequence, t);
+      const kept = assignedBefore !== null && after !== null && assignedBefore.every((x) => after.includes(x));
+      extra.assignments = { before: assignedBefore, after, kept: assignedBefore === null || after === null ? null : kept };
+      if (assignedBefore !== null && after !== null && !kept) configVerification = worst([configVerification, { status: "mismatched", detail: `the executor assignments changed: ${assignedBefore.join(", ") || "none"} before, ${after.join(", ") || "none"} after` }], "Wrap Around and executor assignments");
+    }
+    if (settings) {
+      const s2 = await sequenceExtras(ctx, sequence, settings, protect, r.steps, r.warnings);
+      Object.assign(extra, s2.extra);
+      configVerification = worst([configVerification, ...s2.verifications], "Wrap Around and the sequence settings");
+      // An override whose protection or settings did not succeed is not played (review round 1).
+      if (!s2.ready) return batchResult(op, { sequence, steps: cues.length }, r, { ...extra, cycle: { watched: false, reason: "the sequence settings (or the running sequences' protection) did not succeed, so the chase was not played" } }, worst([r.verification, configVerification], "cues, Wrap Around and the sequence settings"));
+    }
 
     // One observed cycle (a playback: Goto, sample, Off).
     let cycleVerification: Verification = notRequested();
@@ -1068,6 +1669,14 @@ const lookShape = {
   presets: z.array(presetSchema).optional().describe(`Presets applied in order (At Preset), up to ${MAX_PRESETS_PER_LOOK}.`),
   intensity: z.number().optional().describe("Intensity 0..100 percent (At <value>)."),
   values: z.array(valueSchema).optional().describe(`Attribute values (Attribute ... At Absolute), up to ${MAX_ATTRIBUTES}; applied after the presets.`),
+  phaser: z
+    .object({
+      steps: z.array(z.object({ values: z.record(z.string(), z.union([z.number(), z.object({ absolute: z.number().optional(), relative: z.number().optional() })])), width: z.number().optional(), transition: z.number().optional(), accel: z.number().optional(), decel: z.number().optional() })).describe("2-16 steps: attribute -> value (absolute) or {absolute, relative}, plus step timing."),
+      phaser: z.object({ speed_bpm: z.number().optional(), phase: z.union([z.object({ from: z.number(), to: z.number() }), z.object({ from: z.number().optional(), step: z.number() }), z.literal("spread")]).optional(), measure: z.number().optional(), speed_master: z.number().optional(), repeat: z.object({ groups: z.number().optional(), wings: z.number().optional(), blocks: z.number().optional() }).optional(), shuffle: z.number().optional() }).optional(),
+      unit: z.enum(["percent", "physical"]).optional(),
+    })
+    .optional()
+    .describe("A phaser on the look's fixtures, as gma3_build_phaser takes steps and phaser (measure = beats per cycle); built after the look's other values and checked per fixture, step and layer."),
 };
 const lookSchema = z.object(lookShape);
 const contentShape = { ...lookShape, looks: z.array(lookSchema).optional().describe(`Several looks (each its own fixtures) in one cue, up to ${MAX_LOOKS}, applied in order; instead of the shorthand fields.`) };
@@ -1111,7 +1720,13 @@ export function compactCueResult(r: OperationResult, detail: boolean): Operation
   return out;
 }
 
-const cueSchema = z.object({ cue: z.union([z.number(), z.string()]), name: z.string().optional(), ...contentShape, ...timingShape, ...triggerShape });
+const commandSchema = z.string().optional().describe('The cue\'s command (Part 0 Command), run when the cue is called, e.g. "Go+ Macro 20". A cue with a command needs no look.');
+const cueSchema = z.object({ cue: z.union([z.number(), z.string()]), name: z.string().optional(), command: commandSchema, ...contentShape, ...timingShape, ...triggerShape });
+const presetRangeSchema = z.object({ pool: z.number(), from: z.number(), to: z.number() });
+const sequenceSettingsShape = {
+  sequence_settings: z.record(z.string(), z.unknown()).optional().describe("Sequence settings applied after the build, as gma3_configure_sequence takes them (priority, off_when_overridden, wrap_around, ...)."),
+  protect_running: z.boolean().optional().describe("With a priority above ltp: turn Off When Overridden off on the running sequences the override would switch off (default false: they are listed in a warning)."),
+};
 
 const COMPACT_NOTE =
   "The result is compact by default: outcome, verification, one line per cue (look details only for a cue that did not match), the observed cycle as its cue order and step intervals, and only the steps that did not succeed (with a count of the rest); detail: true returns every step, every look and every sample.";
@@ -1126,7 +1741,8 @@ export const registerCueListTools: RegisterTools = (server, ctx) => {
     {
       title: "Store a list of cues from explicit content",
       description:
-        "Store several cues of one sequence in one call, each from explicit content: a look (fixtures with presets, intensity and/or attribute values) or several looks, with an optional name, timing and trigger per cue. mode create refuses (nothing sent) when any of the cues exists; merge and overwrite store into existing cues. The store creates the sequence when it does not exist; sequence_name names it. " +
+        "Store several cues of one sequence in one call, each from explicit content: a look (fixtures with presets, intensity, attribute values and/or a phaser) or several looks, with an optional name, timing, trigger and command per cue; a cue with a command needs no look (stored empty). mode create refuses (nothing sent) when any of the cues exists; merge and overwrite store into existing cues. The store creates the sequence when it does not exist; sequence_name names it. " +
+        "presets {pool, from, to} (instead of cues): one cue per existing preset of the range on fixtures, named after it, with the call's timing and trigger. replace: true deletes the existing cues first (the sequence object, its settings and executor assignments stay, checked). sequence_settings (as gma3_configure_sequence) are applied after the build in the same call; a priority above ltp lists the running sequences it would switch off (Off When Overridden on), and protect_running: true turns that off on them. " +
         BUILD_NOTE +
         " " +
         COMPACT_NOTE +
@@ -1137,7 +1753,13 @@ export const registerCueListTools: RegisterTools = (server, ctx) => {
         sequence_name: z.string().optional(),
         mode: z.enum(["create", "merge", "overwrite"]).optional().describe("Required (per sequence or for the whole batch)."),
         fixtures: z.string().optional().describe("Default target for looks that do not name their own fixtures."),
-        cues: z.array(cueSchema).optional().describe(`1 to ${MAX_CUES} cues, stored in the order given. Required unless sequences is given.`),
+        cues: z.array(cueSchema).optional().describe(`1 to ${MAX_CUES} cues, stored in the order given. Required unless sequences or presets is given.`),
+        presets: presetRangeSchema.optional().describe("One cue per existing preset of the range on fixtures, numbered from first_cue, named after the preset (instead of cues)."),
+        first_cue: z.number().optional().describe("With presets: the first cue number (default 1)."),
+        ...timingShape,
+        ...triggerShape,
+        replace: z.boolean().optional().describe("Delete every existing cue first, then store (mode create); the sequence and its executor assignments stay."),
+        ...sequenceSettingsShape,
         exclusive: z.boolean().optional().describe("Required (true)."),
         verify: z.boolean().optional(),
         sequences: z
@@ -1169,7 +1791,9 @@ export const registerCueListTools: RegisterTools = (server, ctx) => {
     {
       title: "Set trigger, timing and names on a range of cues",
       description:
-        "Edit existing cues of a sequence in one call: the same trigger (TrigType/TrigTime), the same timing (Part 0 CueInFade, CueInDelay, CueOutFade, CueOutDelay, SnapDelay) and/or one name per cue. Choose the cues with exactly one of cues (a list), from/to (a range, either end optional) or all: true; names are given in cue order, one per cue. " +
+        "Edit existing cues of a sequence in one call: the same trigger (TrigType/TrigTime), the same timing (Part 0 CueInFade, CueInDelay, CueOutFade, CueOutDelay, SnapDelay), one name per cue, and/or a command (command for all, commands one per cue). " +
+        "A switch from Time to another trigger sets each cue's TrigTime to 0 on the console, and a switch back keeps the 0: the result lists the wiped times (wipedTrigTimes); keep_times: true saves them in the sequence's Note first ([gma3-mcp trigtimes 1=2.5 ...]), and trigger time with restore_times: true sets them back and removes them from the note. " +
+        "Choose the cues with exactly one of cues (a list), from/to (a range, either end optional) or all: true; names are given in cue order, one per cue. " +
         "Refuses (nothing sent) when the sequence or a listed cue does not exist, or the number of names differs. One Set() per property, cue by cue; stops at the first failure and reports every cue. Reads the written properties back per cue. Stored values and the programmer are not touched.",
       inputSchema: {
         sequence: z.number(),
@@ -1181,6 +1805,10 @@ export const registerCueListTools: RegisterTools = (server, ctx) => {
         ...timingShape,
         snap_delay: z.number().optional(),
         names: z.array(z.string()).optional().describe("One name per selected cue, in cue order."),
+        command: z.string().optional().describe("The same command (Part 0 Command) on every selected cue."),
+        commands: z.array(z.string()).optional().describe("One command per selected cue, in cue order."),
+        keep_times: z.boolean().optional().describe("With a trigger other than time: save the trigger times the switch sets to 0 in the sequence's Note."),
+        restore_times: z.boolean().optional().describe("With trigger time: set each cue's saved trigger time from the sequence's Note (time is the fallback) and remove them from it."),
         verify: z.boolean().optional(),
       },
     },
@@ -1192,16 +1820,18 @@ export const registerCueListTools: RegisterTools = (server, ctx) => {
     {
       title: "Build a looping chase and watch one cycle",
       description:
-        "Build a chase into an empty or new sequence: one cue per step (steps: each a look or looks with an optional name; or presets: one cue per preset on fixtures), every cue Time-triggered after step_seconds (or cycle_seconds / number of steps) with an optional crossfade, and Wrap Around on, so the last cue is followed by the first. " +
+        "Build a chase into an empty or new sequence (or replace: true to rebuild one, keeping its executor assignments): one cue per step (steps: each a look or looks, a phaser in a look, an optional name and command; or presets: one cue per preset on fixtures, a list or a range {pool, from, to}), every cue Time-triggered after step_seconds (or cycle_seconds / number of steps) with an optional crossfade, and Wrap Around on, so the last cue is followed by the first. " +
         BUILD_NOTE +
-        " Then, unless observe: false, PLAYS the chase (Goto cue 1, live output) and OBSERVES it over time on the server side (no Lua loop needed), sampling its current cue to verify one cycle: the cue order through the wrap and each step against step_seconds / the sequence's rate. A cycle longer than observe_max_seconds (default 45, at most 120; keep it under your client's request timeout) is observed from a late cue through the wrap instead. The chase is switched off afterwards unless leave_running: true. " +
+        " sequence_settings and protect_running as in gma3_store_cues. Then, unless observe: false, PLAYS the chase (Goto cue 1, live output) and OBSERVES it over time on the server side (no Lua loop needed), sampling its current cue to verify one cycle: the cue order through the wrap and each step against step_seconds / the sequence's rate. A cycle longer than observe_max_seconds (default 45, at most 120; keep it under your client's request timeout) is observed from a late cue through the wrap instead. The chase is switched off afterwards unless leave_running: true. " +
         COMPACT_NOTE,
       inputSchema: {
         sequence: z.number().describe("An empty or new sequence."),
         name: z.string().optional().describe("Sequence name."),
         fixtures: z.string().optional().describe("Target for every step that does not name its own fixtures."),
-        presets: z.array(presetSchema).optional().describe("One cue per preset, on fixtures (instead of steps)."),
-        steps: z.array(z.object({ name: z.string().optional(), ...contentShape })).optional().describe(`2 to ${MAX_CUES} steps, one cue each.`),
+        presets: z.union([z.array(presetSchema), presetRangeSchema]).optional().describe("One cue per preset on fixtures (instead of steps): a list, or a range {pool, from, to} of the presets that exist, each cue named after its preset."),
+        steps: z.array(z.object({ name: z.string().optional(), command: commandSchema, ...contentShape })).optional().describe(`2 to ${MAX_CUES} steps, one cue each; a step with a command needs no look.`),
+        replace: z.boolean().optional().describe("Rebuild a sequence that has cues: delete them first (the sequence and its executor assignments stay, checked). Default false: such a sequence is refused."),
+        ...sequenceSettingsShape,
         step_seconds: z.number().optional().describe("Time per step (each cue's TrigTime), at least 0.2 s."),
         cycle_seconds: z.number().optional().describe("Time for the whole loop, divided over the steps (instead of step_seconds)."),
         fade: z.number().optional().describe("Crossfade per cue in seconds (CueInFade); it does not lengthen the step."),

@@ -147,7 +147,7 @@ export function functionName(field: string, value: unknown, allowed: readonly st
   return hit;
 }
 
-function settingValue(field: string, def: SettingDef, value: unknown): string | undefined {
+export function settingValue(field: string, def: SettingDef, value: unknown): string | undefined {
   if (value === undefined || value === null) return undefined;
   if (def.kind === "bool") {
     if (typeof value !== "boolean") throw new ValidationError(`${field} must be true or false`, field);
@@ -739,7 +739,7 @@ async function resolveMasterNames(bridge: Gma3Bridge, wanted: Record<string, str
   return asRead({ name: "resolve_masters", status: "succeeded", op: "children", detail: resolved });
 }
 
-interface ConfigureSequenceArgs extends Record<string, unknown> {
+export interface ConfigureSequenceArgs extends Record<string, unknown> {
   sequence: number;
   lock?: boolean;
   unlock?: boolean;

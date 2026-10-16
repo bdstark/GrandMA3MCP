@@ -95,6 +95,30 @@ The results of `gma3_store_cues` and `gma3_build_chase` are compact by default:
 
 `detail: true` returns every step, look and sample. An 18-step chase's compact result is about 4 KB.
 
+### Commands, preset ranges, replace, phasers in looks, settings and overrides (SU-14)
+
+- **Commands.** `command` per cue (`gma3_store_cues`, `gma3_build_chase` steps) or `command` / `commands` in
+  `gma3_edit_cues`. The command lives on the cue's Part 0 (`Command`) and is read back. A cue with a command needs no
+  look: it is stored from the empty Preview programmer, as a clock or a switch cue.
+- **Preset ranges.** `presets: {pool, from, to}` stores one cue per existing preset of the range on `fixtures`,
+  numbered from `first_cue` and named after the preset, with the call's timing and trigger. In `gma3_build_chase`,
+  `presets` takes a range too. The console reads the range as `Preset 21.11 Thru 14`.
+- **`replace: true`** deletes every existing cue (`Delete Sequence N Cue 1 Thru`, one step per request) once
+  everything else has been checked and Preview is confirmed usable and empty, right before the build. A refused build
+  keeps the old cues. With `sequence_settings`, an existing sequence first gets `gma3_configure_sequence`'s read-only
+  preview. The sequence object, its settings and its executor assignments stay; the assignments are
+  compared before and after (`assignments.kept`). `gma3_build_chase` otherwise refuses a sequence that has cues.
+- **A phaser in a look.** `phaser: {steps, phaser, unit}`, the step form of `gma3_build_phaser` (`measure` = beats per
+  cycle). It is built on the look's fixtures after the look's presets, intensity and values, then checked in the
+  programmer per fixture (cells included), step, layer and phase. An attribute is given once: as a static value or in
+  the phaser. Templates are built with `gma3_build_phaser` into a preset, which a look can recall.
+- **`sequence_settings`** (as `gma3_configure_sequence` takes them) are applied after the build in the same lock span.
+  With a priority above LTP, the result's `override` lists the running sequences of lower priority with Off When
+  Overridden on. They are switched off where the override plays on the same fixtures; cue contents cannot be read, so
+  every playing candidate is listed. `protect_running: true` turns Off When Overridden off on them. The scan must be complete (every sequence's number, priority, Off When
+  Overridden and, for a candidate, its playback state readable) and every protection must succeed and read back; otherwise the override's settings are not applied and a chase is not played. Settings are
+  only applied after a complete build with no step that went unanswered.
+
 ## gma3_edit_cues
 
 Edits existing cues of one sequence in one call:
@@ -107,6 +131,16 @@ The cues are chosen with exactly one of `cues` (a list), `from` / `to` (a range,
 range is empty, or when the number of names differs from the number of cues. It sends one `set` per property, cue by
 cue, stops at the first failure, and reads the written properties back per cue. Stored values and the programmer are
 not touched.
+
+### Trigger times when switching triggers (SU-14)
+
+A switch from Time to another trigger sets each cue's TrigTime to 0 on the console, and a switch back to Time keeps the
+0. `gma3_edit_cues` lists the times it wipes (`wipedTrigTimes`) and warns. With `keep_times: true` they are first
+saved in the sequence's Note as `[gma3-mcp trigtimes 1=2.5 2=4]` (the rest of the note stays). `trigger: "time"` with
+`restore_times: true` sets each cue's saved time (`time`, if given, is the fallback for cues without one) and removes
+those entries from the note. The saved marker is read back before any trigger changes (a write the console
+ignores stops the edit), an unreadable Note or trigger is refused, and only entries whose restored time read back are
+removed.
 
 ## gma3_build_chase
 
