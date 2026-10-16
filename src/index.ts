@@ -30,6 +30,7 @@ import { registerCueListTools } from "./tools/cuelists.js";
 import { registerTypeStructureTools } from "./tools/typestructure.js";
 import { registerCellLayoutTools } from "./tools/celllayout.js";
 import { registerDmxOutputTools } from "./tools/dmxoutput.js";
+import { registerVariableTools } from "./tools/variables.js";
 
 const env = process.env;
 const bridge = new Gma3Bridge({
@@ -189,7 +190,8 @@ server.registerTool(
       COMMAND_FALLBACK_NOTE +
       "Execute a grandMA3 command-line command exactly as it would be typed (without Please/Enter). " +
       'Examples: "Go+ Sequence 1", "Fixture 1 Thru 10 At 50", "Store Cue 2 /Merge /NoConfirmation", "ClearAll", "FaderMaster Page 1.201 At 75 Fade 2". ' +
-      "Returns the command line feedback (OK, Syntax Error, Illegal Command). Commands that produce output (List, etc.) print to the console history, not here; use gma3_get_object / gma3_list_children to read data. " +
+      "Returns the command line feedback (OK, Syntax Error, Illegal Command). Commands that produce output (List, GetGlobalVariable, etc.) print to the console history, not here; use gma3_get_object / gma3_list_children to read data. " +
+      "$variables expand in commands sent through the bridge, outside quotes (SU-15 probe: Label Sequence 940 $name named the sequence after the variable); a user variable shadows a global one, and a command with a missing $variable does nothing. Read and set them with gma3_variables / gma3_set_variable. " +
       'Via "osc" the command is sent fire-and-forget over OSC and no feedback is available.',
     inputSchema: {
       command: z.string().describe("The command, e.g. 'Go+ Sequence 1'"),
@@ -628,6 +630,7 @@ registerCueListTools(server, toolContext);
 registerTypeStructureTools(server, toolContext);
 registerCellLayoutTools(server, toolContext);
 registerDmxOutputTools(server, toolContext);
+registerVariableTools(server, toolContext);
 
 server.registerResource(
   "cheatsheet",

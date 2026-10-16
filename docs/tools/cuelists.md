@@ -99,7 +99,8 @@ The results of `gma3_store_cues` and `gma3_build_chase` are compact by default:
 
 - **Commands.** `command` per cue (`gma3_store_cues`, `gma3_build_chase` steps) or `command` / `commands` in
   `gma3_edit_cues`. The command lives on the cue's Part 0 (`Command`) and is read back. A cue with a command needs no
-  look: it is stored from the empty Preview programmer, as a clock or a switch cue.
+  look: it is stored from the empty Preview programmer, as a clock or a switch cue. Its `$variables` must exist or be
+  set by an earlier cue command, checked before anything is sent (SU-15, [variables.md](variables.md)).
 - **Preset ranges.** `presets: {pool, from, to}` stores one cue per existing preset of the range on `fixtures`,
   numbered from `first_cue` and named after the preset, with the call's timing and trigger. In `gma3_build_chase`,
   `presets` takes a range too. The console reads the range as `Preset 21.11 Thru 14`.

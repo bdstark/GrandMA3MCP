@@ -63,6 +63,7 @@ import { cueNo, readSequenceRate } from "./speed.js";
 import { effectAttributes, effectCommands, parsePhaser, parseStep, verifyBuild, type Effect, type Unit } from "./phasers.js";
 import { SEQUENCE_SETTINGS, configureSequence, findReferences, settingValue, type ConfigureSequenceArgs } from "./playback.js";
 import { HeldLock } from "../mutations.js";
+import { VarTracker, variablePresence, variableRefs } from "./variables.js";
 
 export const MAX_CUES = 100;
 export const MAX_LOOKS = 16;
@@ -116,6 +117,32 @@ function validatePreset(v: Validator, raw: unknown, path: string): PresetSpec | 
   else v.fail(`${path}.preset must be a number or a name without quotes`);
   if (pool === undefined || preset === undefined) return undefined;
   return { pool, preset, ref: presetRef(pool, preset) };
+}
+
+/**
+ * SU-15: the $variables of cue commands (in cue order) exist as a user or global variable, or are set by an earlier
+ * statement or cue command (SetGlobalVariable / SetUserVariable). A command with a missing $variable does nothing on
+ * the console, so it is refused before anything is sent.
+ */
+export async function checkCommandVariables(bridge: Gma3Bridge, commands: Array<{ label: string; command: string }>, t: number): Promise<StepResult> {
+  const name = "check_variables";
+  const names = commands.flatMap((c) => variableRefs(c.command).map((r) => r.name));
+  if (!names.length) return asRead({ name, status: "succeeded", op: "vars.get", detail: { variables: 0 } });
+  // In cue order, statement by statement: set/delete effects of earlier commands (a no-value Set*Variable deletes),
+  // otherwise the console's variables (review round 1).
+  const tracker = new VarTracker(await variablePresence(bridge, names, t));
+  const checks = tracker.check(commands.map((c) => ({ command: c.command, runs: true, checked: true })));
+  const missing: string[] = [];
+  const unknown: Array<{ error?: string }> = [];
+  checks.forEach((list, i) => {
+    for (const r of list) {
+      if (r.status === "missing") missing.push(`$${r.name} (${commands[i].label})`);
+      if (r.status === "unknown") unknown.push(r);
+    }
+  });
+  if (missing.length) return failedRead(name, `variable(s) ${[...new Set(missing)].join(", ")} do not exist as a user or global variable when the command runs (a command with a missing $variable does nothing); set them with gma3_set_variable first; nothing was sent`);
+  if (unknown.length) return failedRead(name, `the $variables could not be checked (${unknown[0].error}); nothing was sent`);
+  return asRead({ name, status: "succeeded", op: "vars.get", detail: { variables: [...new Set(names)] } });
 }
 
 /** SU-14: a cue command: one command line (several statements separated by ;), no quotes problems, no control characters. */
@@ -773,7 +800,11 @@ export async function buildCueBatch(ctx: ToolContext, b: Batch): Promise<BatchRe
   };
   // replace: every existing cue is deleted once everything was checked and Preview is confirmed usable (Delete ... Cue 1
   // Thru keeps the sequence object, its settings and its executor assignments: live 2026-10-15).
-  const built = await buildInPreview(ctx, { items, verify: b.verify, noun: "cues", inspect: [readSequence], ...(b.replace ? { prepare: deleteSteps } : {}) });
+  // Playback follows cue numbers, not the order the cues were given: the $variable dependencies are judged in cue-number
+  // order (review round 2); storage and the report keep the given order.
+  const byNumber = [...b.cues].sort((a, b2) => Number(a.cue) - Number(b2.cue));
+  const checkVars = { name: "check_variables", run: () => checkCommandVariables(bridge, byNumber.filter((c) => c.command !== undefined).map((c) => ({ label: `cue ${c.cue}`, command: c.command as string })), t) };
+  const built = await buildInPreview(ctx, { items, verify: b.verify, noun: "cues", inspect: [readSequence, checkVars], ...(b.replace ? { prepare: deleteSteps } : {}) });
   const { steps, readBack, warnings, normalProgrammer } = built;
   const reports: CueReport[] = b.cues.map((c, i) => {
     const r = built.items[i];
@@ -1356,6 +1387,11 @@ export async function editCues(ctx: ToolContext, raw: Record<string, unknown>): 
             if (names && names.length !== pick.cues.length) return failedRead("read_cues", `${names.length} name(s) for ${pick.cues.length} cue(s) (${pick.cues.map((c) => fmtNo(c.no)).join(", ")}); give one name per cue`);
             if (commands && commands.length !== pick.cues.length) return failedRead("read_cues", `${commands.length} command(s) for ${pick.cues.length} cue(s) (${pick.cues.map((c) => fmtNo(c.no)).join(", ")}); give one command per cue`);
             selected = pick.cues;
+            if (commands || command !== undefined) {
+              const pairs = selected.map((c, k) => ({ no: c.no, label: `cue ${fmtNo(c.no)}`, command: commands?.[k] ?? (command as string) }));
+              const vc = await checkCommandVariables(bridge, [...pairs].sort((a, b2) => a.no - b2.no), t);
+              if (vc.status !== "succeeded") return failedRead("read_cues", vc.error ?? "the $variables could not be checked");
+            }
             if (trig.trigger) {
               for (const c of selected) {
                 const r = (await bridge.request("objects", { ref: cueRef(sequence, fmtNo(c.no)), fields: ["TrigType", "TrigTime"], limit: 1 }, t)) as { items?: Array<{ fields?: Record<string, unknown> }> };

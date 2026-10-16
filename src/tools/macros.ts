@@ -24,6 +24,7 @@
 import { z } from "zod";
 import type { Gma3Bridge } from "../bridge.js";
 import { exists } from "./common.js";
+import { VarTracker, variablePresence, variableRefs } from "./variables.js";
 import { json, operation, type RegisterTools, type ToolContext } from "./context.js";
 import { BATCH_NOTE, batchOptionShape, duplicates, runBatchCall } from "../batch.js";
 import {
@@ -306,10 +307,16 @@ export function storedBy(lines: RefLine[]): Set<string> {
 export async function checkReferences(bridge: Gma3Bridge, n: number, lines: RefLine[], firstLine: number, prior: RefLine[] = []): Promise<LineCheck[]> {
   const cache = new Map<string, Awaited<ReturnType<typeof exists>>>();
   const created = storedBy(prior);
+  // SU-15: $variables, judged in order: set/delete effects of executable lines (prior lines first, then these, statement
+  // by statement) and the console's variables for the rest (review round 1: a no-value Set*Variable deletes).
+  const tracker = new VarTracker(await variablePresence(bridge, [...prior, ...lines].flatMap((l) => variableRefs(l.command).map((r) => r.name))));
+  tracker.check(prior.map((l) => ({ command: l.command, runs: executes(l), checked: false })));
+  const varChecks = tracker.check(lines.map((l) => ({ command: l.command, runs: executes(l), checked: !l.raw })));
   const out: LineCheck[] = [];
   for (const [i, l] of lines.entries()) {
     const { refs, skipped } = references(l.command);
     const check: LineCheck = { line: firstLine + i, raw: !!l.raw, refs: [], skipped };
+    for (const r of varChecks[i]) check.refs.push({ ref: `$${r.name}`, status: r.status, ...(r.error ? { error: r.error } : {}) });
     for (const r of refs) {
       const key = r.ref.toLowerCase();
       if (!l.raw) {

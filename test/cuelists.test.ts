@@ -1008,3 +1008,34 @@ test("SU-14 review 2: an unreadable playback state or priority makes discovery i
     await h.close();
   }
 });
+
+test("SU-15: cue commands' $variables must exist or be set by an earlier cue command; edit_cues checks them too", async () => {
+  const { h, c } = await setup();
+  try {
+    const vars = new Set(["HexCol"]);
+    h.fake.on("vars.get", (a) => ({ items: (a.names as string[]).map((n) => ({ name: n, exists: a.scope === "global" && vars.has(n) })) }));
+    const bad = await h.callJson("gma3_store_cues", { sequence: 991, mode: "create", exclusive: true, cues: [{ cue: 1, command: "Goto Sequence $HexCol Cue $HexCue" }] });
+    assert.equal(bad.isError, true);
+    assert.match(errors(bad), /\$HexCue \(cue 1\) do not exist/);
+    assert.deepEqual(c.commands, [], "nothing was sent");
+    const ok = await h.callJson("gma3_store_cues", { sequence: 991, mode: "create", exclusive: true, cues: [{ cue: 1, command: 'SetGlobalVariable "HexCue" 2' }, { cue: 2, command: "Goto Sequence $HexCol Cue $HexCue" }] });
+    assert.equal(ok.isError, false, JSON.stringify(ok.result).slice(0, 1500));
+    // Review round 1: a cue command that deletes the variable (no value) leaves later uses missing.
+    const del = await h.callJson("gma3_store_cues", { sequence: 992, mode: "create", exclusive: true, cues: [{ cue: 1, command: 'SetGlobalVariable "Gone"; Go+ Macro $Gone' }] });
+    assert.match(errors(del), /\$Gone \(cue 1\) do not exist/);
+    const del2 = await h.callJson("gma3_store_cues", { sequence: 992, mode: "create", exclusive: true, cues: [{ cue: 1, command: 'DeleteGlobalVariable "HexCol"' }, { cue: 2, command: "Go+ Macro $HexCol" }] });
+    assert.match(errors(del2), /\$HexCol \(cue 2\) do not exist/);
+    // Review round 2: dependencies follow cue numbers, not the order given (decimal cue numbers too).
+    const later = await h.callJson("gma3_store_cues", { sequence: 993, mode: "create", exclusive: true, cues: [{ cue: 2, command: 'SetGlobalVariable "Later" 5' }, { cue: 1.5, command: "Go+ Macro $Later" }] });
+    assert.match(errors(later), /\$Later \(cue 1\.5\) do not exist/, "a higher-numbered cue does not satisfy a lower one given after it");
+    const valid = await h.callJson("gma3_store_cues", { sequence: 994, mode: "create", exclusive: true, cues: [{ cue: 2.5, command: "Go+ Macro $Early" }, { cue: 1.25, command: 'SetGlobalVariable "Early" 1' }] });
+    assert.equal(valid.isError, false, errors(valid));
+    assert.deepEqual(c.seqs.get(994)!.cues.map((x) => x.no), [1.25, 2.5]);
+    const delFirst = await h.callJson("gma3_store_cues", { sequence: 995, mode: "create", exclusive: true, cues: [{ cue: 3, command: "Go+ Macro $HexCol" }, { cue: 0.5, command: 'DeleteGlobalVariable "HexCol"' }] });
+    assert.match(errors(delFirst), /\$HexCol \(cue 3\) do not exist/, "a delete in a lower-numbered cue applies first");
+    const edit = await h.callJson("gma3_edit_cues", { sequence: 991, cues: [1], command: "Go+ Macro $Nope" });
+    assert.match(errors(edit), /\$Nope \(cue 1\) do not exist/);
+  } finally {
+    await h.close();
+  }
+});
