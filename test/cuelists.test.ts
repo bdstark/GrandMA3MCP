@@ -935,3 +935,16 @@ test("SU-14 review 1: each deletion is its own step; a refused one keeps the ear
     await h.close();
   }
 });
+
+test("SU-14 after SU-13: a look's phaser refuses the count-dependent forms (phase step, spread, shuffle) instead of dropping them", async () => {
+  const { h, c } = await setup();
+  try {
+    for (const phaser of [{ phase: { step: 90 } }, { phase: "spread" }, { phase: { from: 0, to: 90 }, shuffle: 3 }]) {
+      const r = await h.callJson("gma3_store_cues", { sequence: 984, mode: "create", exclusive: true, cues: [{ cue: 1, fixtures: "101 + 102", phaser: { steps: [{ values: { Dimmer: 100 } }, { values: { Dimmer: 0 } }], phaser } }] });
+      assert.match(r.result.validationErrors.join(" "), /a look's phaser takes phase \{from, to\}/, JSON.stringify(phaser));
+    }
+    assert.deepEqual(c.commands, []);
+  } finally {
+    await h.close();
+  }
+});

@@ -36,7 +36,9 @@ that reads back exactly: `[gma3-mcp trigtimes 1=2.5 2=4]`), and `restore_times` 
 
 `Assign Sequence 940 At Page 90.220`, then `Delete Sequence 940 Cue 1 Thru /NoConfirmation`. The sequence keeps only
 `OffCue` and `CueZero`, and the executor still holds Sequence 940. `replace: true` uses this, so the sequence object,
-its settings and its executor assignments stay.
+its settings and its executor assignments stay. Since review round 1 the delete is sent from inside the Preview
+environment, once Preview is confirmed usable and empty. The live rerun showed that it works there too: the assignment
+on Page 90.220 was kept.
 
 ## Preset ranges
 

@@ -146,6 +146,8 @@ function validateLookPhaser(v: Validator, raw: unknown, path: string): Effect | 
   const steps = r.steps.map((st, i) => v.check(() => parseStep(`${path}.steps[${i}]`, st, unit)));
   if (steps.some((st) => st?.preset)) v.fail(`${path}: a look's phaser steps take values, not presets`);
   const phaser = v.check(() => parsePhaser(r.phaser));
+  // The forms that depend on the fixture count and order (SU-13) are built by gma3_build_phaser into a preset.
+  if (phaser && (phaser.phaseStep || phaser.phaseSpread || phaser.shuffle !== undefined)) v.fail(`${path}.phaser: a look's phaser takes phase {from, to}; a phase step, "spread" or shuffle is built with gma3_build_phaser into a preset, which the look can recall`);
   if (!phaser || !steps.every((st): st is NonNullable<typeof st> => !!st)) return undefined;
   return { steps, phaser, unit };
 }
@@ -1643,7 +1645,7 @@ const lookShape = {
   phaser: z
     .object({
       steps: z.array(z.object({ values: z.record(z.string(), z.union([z.number(), z.object({ absolute: z.number().optional(), relative: z.number().optional() })])), width: z.number().optional(), transition: z.number().optional(), accel: z.number().optional(), decel: z.number().optional() })).describe("2-16 steps: attribute -> value (absolute) or {absolute, relative}, plus step timing."),
-      phaser: z.object({ speed_bpm: z.number().optional(), phase: z.object({ from: z.number(), to: z.number() }).optional(), measure: z.number().optional(), speed_master: z.number().optional(), repeat: z.object({ groups: z.number().optional(), wings: z.number().optional(), blocks: z.number().optional() }).optional() }).optional(),
+      phaser: z.object({ speed_bpm: z.number().optional(), phase: z.union([z.object({ from: z.number(), to: z.number() }), z.object({ from: z.number().optional(), step: z.number() }), z.literal("spread")]).optional(), measure: z.number().optional(), speed_master: z.number().optional(), repeat: z.object({ groups: z.number().optional(), wings: z.number().optional(), blocks: z.number().optional() }).optional(), shuffle: z.number().optional() }).optional(),
       unit: z.enum(["percent", "physical"]).optional(),
     })
     .optional()
