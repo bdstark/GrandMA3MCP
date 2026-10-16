@@ -71,7 +71,8 @@ executor assignment, fader levels and sequence activity without Lua, input or a 
 `gma3_command` also supports write-only OSC when OSC input is configured in onPC. Automatic fallback
 happens only if the bridge cannot be reached before dispatch; a command with an uncertain result is
 never automatically replayed. `gma3_start_bridge` can start an already-imported plugin over OSC.
-OSC is optional for the normal bridge setup and is not forwarded by an SSH tunnel.
+OSC is optional for the normal bridge setup and is not forwarded by an SSH tunnel. `gma3_osc`, `gma3_configure_osc` and
+`gma3_test_osc_input` read, configure and test the console's OSC (see [docs/tools/osc.md](docs/tools/osc.md)).
 
 ## Before using it in a show
 

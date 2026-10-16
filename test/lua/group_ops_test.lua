@@ -136,7 +136,7 @@ end
 -------------------------------------------------------------------------------
 
 local r = request("ping")
-check("ping reports bridge 0.30.0", r.ok and r.result.bridgeVersion == "0.32.0", J(r))
+check("ping reports bridge 0.30.0", r.ok and r.result.bridgeVersion == "0.33.0", J(r))
 
 r = request("group.read", { ref = "Group 900" })
 local it = r.ok and r.result.items or {}

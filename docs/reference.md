@@ -32,6 +32,7 @@
 | `gma3_sequences`, `gma3_cues`, `gma3_executors`, `gma3_fixtures`, `gma3_pool` | Convenience views; sequences carry the current cue, and `gma3_cues` reads several sequences ([docs](tools/live-reads.md)) |
 | `gma3_help` | Read a page of the grandMA3 manual shipped with onPC |
 | `gma3_start_bridge` | Start the plugin over OSC when the bridge is down |
+| `gma3_osc`, `gma3_configure_osc`, `gma3_test_osc_input` | Read and configure OSC input and output (who can send commands, where output goes), and prove input works with a loopback test ([docs](tools/osc.md)) |
 
 Workflow tools (shared result model, see [below](#workflow-tools); details in [`tools/`](tools/)):
 
