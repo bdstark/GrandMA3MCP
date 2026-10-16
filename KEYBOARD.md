@@ -55,7 +55,7 @@ harness-tested (67 + 11 bridge checks). The surface defaults, its startup/status
 live qualification of the surface path are the mtpnxk side of KB-15 and are not done here; no new console path is
 qualified by this change (the mixed backend has not run on the console).
 
-This document expands the initial request from `mtpnxk-client-pico` into dependency-ordered features
+This document expands the initial request from `gma3-surface` into dependency-ordered features
 and acceptance criteria, following the format of [FEATURES.md](FEATURES.md). The originating project's
 `docs/handoff.md` and `docs/ma3-feedback.md` describe its consumer context and feedback schema; those
 files are external references, not files supplied or independently reviewed as part of this document.
@@ -694,7 +694,7 @@ executor and fader queries where their semantics already fit; do not duplicate t
   interactive input and arbitrary Lua disabled.
 - Bound polling rate, response size and per-frame work. Document that multiple reads are not an atomic
   snapshot against other console activity.
-- Before surface integration, review `mtpnxk-client-pico/docs/ma3-feedback.md` and document the mapping
+- Before surface integration, review `gma3-surface/docs/ma3-feedback.md` and document the mapping
   from reusable reader results to that schema. Keep device LED/message formatting in the consumer.
 
 ### KB-06 results (feedback readers; macOS, onPC 2.5.1.0, 2026-10-09)
@@ -731,7 +731,7 @@ is capped at 64 items and 32 executors/sequences per request. *Read-only access:
 set, needs neither Lua nor input, opens no session and touches no console state; `lastcommand` and `MASTATE` are
 documented as observations only. *Surface mapping:* written from the reader results in
 [docs/tools/feedback.md](docs/tools/feedback.md#mapping-to-the-mtpnxk-surface-feedback-schema); the external
-`mtpnxk-client-pico/docs/ma3-feedback.md` was not available in this workspace and the mapping must be reconciled
+`gma3-surface/docs/ma3-feedback.md` was not available in this workspace and the mapping must be reconciled
 against it before KB-07. LED colours, blinking and device messages stay in the consumer.
 
 **Verified by harness** (`npm test`: 132 module checks, 362 bridge checks, `feedback.test.ts`, `kb06-probe.test.ts`,

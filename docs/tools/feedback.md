@@ -92,7 +92,7 @@ at the rate the consumer needs, not faster than it can act on; a surface consume
 
 ## Mapping to the mtpnxk surface feedback schema
 
-`mtpnxk-client-pico/docs/ma3-feedback.md` is the surface project's own schema. **It was not available in this
+`gma3-surface/docs/ma3-feedback.md` is the surface project's own schema. **It was not available in this
 workspace when KB-06 was implemented** (the file is external to this repository), so the mapping below is written
 from the reader results and must be reconciled against that document before KB-07 starts. LED colours, blinking
 and device message formats stay in the surface consumer; the module hands over observations only.
