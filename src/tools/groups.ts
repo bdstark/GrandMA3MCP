@@ -1142,13 +1142,14 @@ export const registerGroupTools: RegisterTools = (server, ctx) => {
       operation(() =>
         (args as Record<string, unknown>).groups !== undefined
           ? runBatchCall(args as Record<string, unknown>, {
+              ctx,
               operation: "store_group",
               listKey: "groups",
               identityKeys: ["group", "items", "arrangement", "name"],
               label: (it) => `Group ${String(it.group)}`,
               key: (it) => `Group ${String(it.group)}`,
               check: (items) => duplicates(items.map((it) => String(it.group))).map((g) => `Group ${g} appears more than once in groups`),
-              run: (it) => storeGroup(ctx, it as unknown as StoreGroupArgs),
+              run: (it, c) => storeGroup(c, it as unknown as StoreGroupArgs),
             })
           : storeGroup(ctx, args as StoreGroupArgs),
       ),

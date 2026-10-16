@@ -7,13 +7,18 @@
  *     (its `key`): once an item on that object did not succeed, the later ones on it are not attempted, because
  *     they were planned against a state that did not happen. `stop_on_failure: true` stops at the first item that
  *     did not succeed.
- *   - An item whose outcome is `unknown` (the request reached the bridge but no answer came back) stops the
- *     batch: the console's state is not known, so nothing more is sent. Nothing is retried.
+ *   - An item with an uncertain step stops the batch: a mutation request that reached the bridge without an answer
+ *     (status unknown), whether the item's outcome is `unknown` or `partial` (an earlier step of it succeeded). The
+ *     console's state is not known, so nothing more is sent. Nothing is retried.
+ *   - The whole batch runs in one span of this server's mutation lock: no other mutation from this server runs
+ *     between two items (each item's single form runs with a held view of the lock).
  *   - The result is per item: `items` has one line each (outcome, verification, summary). `detail: true` adds each
  *     item's full result with its steps. The batch outcome is `succeeded` only when every item succeeded,
  *     `partial` when some work was done, and the verification is `matched` only when every item matched.
  */
 import { z } from "zod";
+import { HeldLock } from "./mutations.js";
+import type { ToolContext } from "./tools/context.js";
 import type { ExecutionOutcome, OperationResult, StepResult, StepStatus, Verification, VerificationOutcome } from "./results.js";
 import { stepFromError, validationFailure } from "./results.js";
 
@@ -69,6 +74,12 @@ export interface BatchLine {
 export const itemOk = (r: OperationResult): boolean => r.outcome === "succeeded" && r.verification.status !== "mismatched";
 
 /**
+ * A result whose console effect is not known: its outcome is unknown, or one of its mutation steps got no reply (a
+ * partial result can hold one after earlier steps succeeded). Read steps change nothing and do not count.
+ */
+export const hasUncertainStep = (r: OperationResult): boolean => r.outcome === "unknown" || r.steps.some((s) => s.status === "unknown" && s.kind !== "read");
+
+/**
  * Split a batch call into its items: `args[listKey]` is the list, and every other argument except the batch
  * options is a default for each item (an item's own fields win). Identity fields (the object an item acts on)
  * must be given per item. Returns the merged items, or the reasons the call is refused.
@@ -93,12 +104,15 @@ export function batchRefused(operation: string, listKey: string, errors: string[
 }
 
 export interface BatchCall {
+  /** The tool's context: the batch takes its mutation lock once, and each item runs with a held view of it. */
+  ctx: ToolContext;
   operation: string;
   listKey: string;
   identityKeys: string[];
   label: (item: Record<string, unknown>, index: number) => string;
   key?: (item: Record<string, unknown>) => string | undefined;
-  run: (item: Record<string, unknown>) => Promise<OperationResult>;
+  /** One item through the single form, with the context to use (its lock is the batch's held span). */
+  run: (item: Record<string, unknown>, ctx: ToolContext) => Promise<OperationResult>;
   /** Checks across items (duplicates); any reason refuses the whole call before anything is sent. */
   check?: (items: Array<Record<string, unknown>>) => string[];
 }
@@ -109,10 +123,13 @@ export async function runBatchCall(args: Record<string, unknown>, c: BatchCall):
   if ("errors" in split) return batchRefused(c.operation, c.listKey, split.errors);
   const errors = c.check?.(split.items) ?? [];
   if (errors.length) return batchRefused(c.operation, c.listKey, errors);
-  return runBatch(
-    c.operation,
-    split.items.map((item, i) => ({ label: c.label(item, i), key: c.key?.(item), run: () => c.run(item) })),
-    { stopOnFailure: args.stop_on_failure === true, detail: args.detail === true },
+  const held: ToolContext = { ...c.ctx, mutations: new HeldLock() };
+  return c.ctx.mutations.run(() =>
+    runBatch(
+      c.operation,
+      split.items.map((item, i) => ({ label: c.label(item, i), key: c.key?.(item), run: () => c.run(item, held) })),
+      { stopOnFailure: args.stop_on_failure === true, detail: args.detail === true },
+    ),
   );
 }
 
@@ -147,7 +164,7 @@ export async function runBatch(operation: string, items: BatchItem[], o: BatchOp
       result = { operation, target: { item: item.label }, outcome: step.status === "unknown" ? "unknown" : "failed", verification: { status: "not_requested" }, steps: [step], summary: `${item.label}: ${step.error ?? "failed"}` };
     }
     entries.push({ label: item.label, result });
-    if (result.outcome === "unknown") halted = `not attempted: item ${i + 1} (${item.label}) has an unknown outcome, so the console's state is not known`;
+    if (hasUncertainStep(result)) halted = `not attempted: item ${i + 1} (${item.label}) has a step without a reply that may have changed the console, so its state is not known`;
     else if (!itemOk(result)) {
       if (item.key !== undefined) failedKeys.set(item.key, i + 1);
       if (o.stopOnFailure) halted = `not attempted: item ${i + 1} (${item.label}) did not succeed and stop_on_failure is set`;
@@ -160,6 +177,7 @@ const truncate = (s: string, n: number): string => (s.length > n ? `${s.slice(0,
 
 function stepStatusOf(e: BatchEntry): StepStatus {
   if (!e.result) return "skipped";
+  if (hasUncertainStep(e.result)) return "unknown";
   switch (e.result.outcome) {
     case "succeeded":
       return "succeeded";

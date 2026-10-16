@@ -1001,13 +1001,14 @@ export const registerPlaybackTools: RegisterTools = (server, ctx) => {
         const expanded = expandSequenceList(a.sequences);
         if ("error" in expanded) return batchRefused("configure_sequence", "sequences", [expanded.error]);
         return runBatchCall({ ...a, sequences: expanded.numbers.map((sequence) => ({ sequence })) }, {
+          ctx,
           operation: "configure_sequence",
           listKey: "sequences",
           identityKeys: ["sequence"],
           label: (it) => `Sequence ${String(it.sequence)}`,
           key: (it) => `Sequence ${String(it.sequence)}`,
           check: (items) => duplicates(items.map((it) => String(it.sequence))).map((n) => `Sequence ${n} is listed more than once in sequences`),
-          run: (it) => configureSequence(ctx, it as ConfigureSequenceArgs),
+          run: (it, c) => configureSequence(c, it as ConfigureSequenceArgs),
         });
       }),
   );

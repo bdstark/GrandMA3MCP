@@ -558,3 +558,13 @@ test("assign batch: a target listed twice, or a top-level executor, refuses the 
   assert.match(top.result.validationErrors.join(" "), /give executor in each item/);
   assert.deepEqual(h.fake.requests, []);
 });
+
+test("assign batch (review round 1): a partial item with an unanswered label stops the batch; the next target is not assigned", async () => {
+  world.labelFeedback = SILENT;
+  const { result } = await h.callJson("gma3_assign_to_executor", { page: 1, assignments: [{ sequence: 5, executor: 201, label: "Front" }, { sequence: 7, executor: 202 }] });
+  assert.equal(result.items[0].outcome, "partial", JSON.stringify(result.items[0]));
+  assert.equal(result.items[1].outcome, "not_attempted");
+  assert.match(result.items[1].summary, /item 1 .* has a step without a reply that may have changed the console/);
+  assert.equal(result.steps[0].status, "unknown", "the item's uncertainty is kept in its step");
+  assert.deepEqual(h.fake.commands, ["Assign Sequence 5 At Page 1.201", 'Label Page 1.201 "Front"'], "Page 1.202 was never assigned");
+});

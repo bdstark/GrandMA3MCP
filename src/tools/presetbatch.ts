@@ -9,7 +9,7 @@
  * preset that fails does not stop the others; an unknown step stops the build. Preview is left at the end and the
  * Normal programmer is checked to be unchanged.
  */
-import { MAX_BATCH_ITEMS, duplicates, summarizeBatch, type BatchEntry } from "../batch.js";
+import { MAX_BATCH_ITEMS, duplicates, hasUncertainStep, summarizeBatch, type BatchEntry } from "../batch.js";
 import { asRead, buildResult, validationFailure, type OperationResult, type StepFn, type StepResult, type Verification } from "../results.js";
 import { Validator } from "../validate.js";
 import type { ToolContext } from "./context.js";
@@ -92,7 +92,7 @@ export function validatePresetItems(items: Array<Record<string, unknown>>): { it
 }
 
 /** Store the validated items: one Preview build, one gma3_store_preset run per preset, a batch result per preset. */
-export async function storePresetsFromContent(ctx: ToolContext, merged: Array<Record<string, unknown>>, o: { detail: boolean; verify: boolean }): Promise<OperationResult> {
+export async function storePresetsFromContent(ctx: ToolContext, merged: Array<Record<string, unknown>>, o: { detail: boolean; verify: boolean; stopOnFailure?: boolean }): Promise<OperationResult> {
   const checked = validatePresetItems(merged);
   if ("errors" in checked) return validationFailure(OP, { presets: "refused" }, checked.errors);
   const items = checked.items;
@@ -105,11 +105,14 @@ export async function storePresetsFromContent(ctx: ToolContext, merged: Array<Re
         const r = "operation" in prep ? prep : await prep.body();
         stored[i] = r;
         const ok = r.outcome === "succeeded" && r.verification.status !== "mismatched";
-        return { name: `${pre}store`, status: ok ? "succeeded" : r.outcome === "unknown" ? "unknown" : "failed", op: "gma3_store_preset", detail: { outcome: r.outcome, verification: r.verification.status }, ...(ok ? {} : { error: r.summary }) };
+        // A store whose own steps include one without a reply (its name write, say) is uncertain, not failed: the build
+        // stops there (review round 1).
+        const status = hasUncertainStep(r) ? "unknown" : ok ? "succeeded" : "failed";
+        return { name: `${pre}store`, status, op: "gma3_store_preset", detail: { outcome: r.outcome, verification: r.verification.status }, ...(status === "succeeded" ? {} : { error: r.summary }) };
       };
       return { prefix: pre, looks: p.looks, store: [{ name: `${pre}store`, run }] };
     });
-    const built = await buildInPreview(ctx, { items: preview, verify: o.verify, noun: "presets", inspect: [], continueAfterFailure: true });
+    const built = await buildInPreview(ctx, { items: preview, verify: o.verify, noun: "presets", inspect: [], continueAfterFailure: o.stopOnFailure !== true });
     const common = built.steps.filter((s) => !items.some((p) => s.name.startsWith(`preset ${p.preset}: `)));
     if (!built.sent) {
       return buildResult({ operation: OP, target: { presets: items.map((p) => p.preset) }, steps: common, verification: { status: "unavailable", detail: "nothing was sent" }, summary: `${OP} was not performed; nothing was sent: ${common.find((s) => s.status !== "succeeded")?.error ?? "the inspection failed"}`, warnings: built.warnings });
@@ -117,7 +120,7 @@ export async function storePresetsFromContent(ctx: ToolContext, merged: Array<Re
     const entries: BatchEntry[] = items.map((p, i) => {
       const label = `Preset ${p.preset}`;
       const report = built.items[i];
-      if (report.status === "not_attempted") return { label, skipped: "not attempted: the build stopped before this preset (see the build steps)" };
+      if (report.status === "not_attempted") return { label, skipped: o.stopOnFailure ? "not attempted: an earlier preset did not succeed and stop_on_failure is set" : "not attempted: the build stopped before this preset (an uncertain step, or see the build steps)" };
       const store = stored[i];
       const lookSteps = report.steps.filter((s) => s.name !== `preset ${p.preset}: store`);
       if (!store) {

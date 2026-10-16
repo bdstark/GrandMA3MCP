@@ -954,7 +954,7 @@ export const registerPresetTools: RegisterTools = (server, ctx) => {
         if (a.presets === undefined) return storePreset(ctx, a as unknown as StorePresetArgs);
         const split = batchItems(a, "presets", ["preset", "name", "looks"]);
         if ("errors" in split) return batchRefused("store_preset", "presets", split.errors);
-        return storePresetsFromContent(ctx, split.items, { detail: a.detail === true, verify: a.verify !== false });
+        return storePresetsFromContent(ctx, split.items, { detail: a.detail === true, verify: a.verify !== false, stopOnFailure: a.stop_on_failure === true });
       }),
   );
 };

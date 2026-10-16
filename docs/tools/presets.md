@@ -131,7 +131,8 @@ The presets are built one by one in the console's Preview environment, as `gma3_
 Normal programmer), Preview On and an empty Preview programmer, then per preset ClearAll (only in Preview), its looks
 with a programmer check after each, and this tool's own store, checks and read-back with `environment: Preview`.
 Preview is left at the end and the Normal programmer must be unchanged. A preset that is refused or does not match
-does not stop the others; an unknown step stops the build. The result has one line per preset (`items`), the build's
+does not stop the others unless `stop_on_failure: true`; a step without a reply (an unanswered name write after the
+store, say) stops the build, with the remaining presets `not_attempted` and Preview still left. The result has one line per preset (`items`), the build's
 own steps (`build`) and `normalProgrammer`. See [Batch forms](README.md#batch-forms-su-12).
 
 On bridge 0.30.0 the programmer scan of all fixtures misses subfixture index 0 (the first patched fixture when the

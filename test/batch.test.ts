@@ -77,7 +77,7 @@ test("runBatch: an unknown outcome stops the rest, which are not attempted", asy
   assert.equal(r.outcome, "partial");
   const items = r.items as Array<{ outcome: string; summary: string }>;
   assert.equal(items[2].outcome, "not_attempted");
-  assert.match(items[2].summary, /item 2 \(b\) has an unknown outcome/);
+  assert.match(items[2].summary, /item 2 \(b\) has a step without a reply that may have changed the console/);
   assert.equal(r.steps[2].status, "skipped");
 });
 

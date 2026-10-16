@@ -66,12 +66,15 @@ The rules (`src/batch.ts`):
 - Items run in order and nothing is retried. An item that fails does not stop independent items. Once an item on an
   object did not succeed, the later items on the same object are not attempted, because they were planned against a
   state that did not happen (edits on one macro). `stop_on_failure: true` stops at the first item that does not
-  succeed. An item whose outcome is `unknown` stops the batch, because the console's state is not known.
+  succeed. An item with an uncertain step stops the batch, because the console's state is not known: an outcome
+  `unknown`, or a mutation step without a reply inside a `partial` item (an assignment whose label got no answer). Its
+  line keeps the uncertainty (`unknown` step), and the remaining items are `not_attempted`.
 - The result has one line per item in `items` (outcome, verification, summary) and one step per item. The batch is
   `succeeded` only when every item succeeded, `partial` when some work was done; `matched` only when every item
   matched, `mismatched` when any did. `detail: true` adds each item's full result.
-- Each item takes this server's mutation lock for itself, so another tool call from this server can run between two
-  items (each item checks before it acts). The preset batch is the exception: it is one Preview build under one lock.
+- The whole batch call holds this server's mutation lock once: no other mutation from this server runs between two
+  items (each item's single form runs with a held view of the lock, which is not reentrant). Edits planned against
+  shifted macro lines therefore stay on the planned lines.
 
 `gma3_store_cues` and `gma3_build_chase` results are compact by default: one line per cue (look details only for a cue
 that did not match), the observed cycle as its cue order and step intervals, and only the steps that did not succeed

@@ -558,13 +558,14 @@ export const registerExecutorTools: RegisterTools = (server, ctx) => {
       operation(() =>
         (args as Record<string, unknown>).assignments !== undefined
           ? runBatchCall(args as Record<string, unknown>, {
+              ctx,
               operation: "assign_to_executor",
               listKey: "assignments",
               identityKeys: ["sequence", "executor", "label"],
               label: (it) => `Sequence ${String(it.sequence)} -> Page ${String(it.page)}.${String(it.executor)}`,
               key: (it) => `Page ${String(it.page)}.${String(it.executor)}`,
               check: (items) => duplicates(items.map((it) => `Page ${String(it.page)}.${String(it.executor)}`)).map((x) => `${x} is a target more than once in assignments`),
-              run: (it) => assignToExecutor(ctx, it as unknown as AssignArgs),
+              run: (it, c) => assignToExecutor(c, it as unknown as AssignArgs),
             })
           : assignToExecutor(ctx, args as AssignArgs),
       ),

@@ -1062,13 +1062,14 @@ export const registerMacroTools: RegisterTools = (server, ctx) => {
       operation(() =>
         (args as Record<string, unknown>).macros !== undefined
           ? runBatchCall(args as Record<string, unknown>, {
+              ctx,
               operation: "store_macro",
               listKey: "macros",
               identityKeys: ["macro", "lines", "name", "note"],
               label: (it) => `Macro ${String(it.macro)}`,
               key: (it) => `Macro ${String(it.macro)}`,
               check: (items) => duplicates(items.map((it) => String(it.macro))).map((m) => `Macro ${m} appears more than once in macros`),
-              run: (it) => storeMacro(ctx, it as unknown as StoreArgs),
+              run: (it, c) => storeMacro(c, it as unknown as StoreArgs),
             })
           : storeMacro(ctx, args),
       ),
@@ -1110,12 +1111,13 @@ export const registerMacroTools: RegisterTools = (server, ctx) => {
       operation(() =>
         (args as Record<string, unknown>).edits !== undefined
           ? runBatchCall(args as Record<string, unknown>, {
+              ctx,
               operation: "edit_macro_line",
               listKey: "edits",
               identityKeys: ["action", "line", "to", "command"],
               label: (it) => `Macro ${String(it.macro)} line ${String(it.line)} ${String(it.action)}`,
               key: (it) => `Macro ${String(it.macro)}`,
-              run: (it) => editMacroLine(ctx, it as unknown as EditArgs),
+              run: (it, c) => editMacroLine(c, it as unknown as EditArgs),
             })
           : editMacroLine(ctx, args),
       ),

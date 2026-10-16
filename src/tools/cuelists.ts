@@ -1152,13 +1152,14 @@ export const registerCueListTools: RegisterTools = (server, ctx) => {
         const a = args as Record<string, unknown>;
         if (a.sequences === undefined) return storeCues(ctx, a).then((r) => compactCueResult(r, a.detail === true));
         return runBatchCall(a, {
+          ctx,
           operation: "store_cues",
           listKey: "sequences",
           identityKeys: ["sequence", "sequence_name", "cues"],
           label: (it) => `Sequence ${String(it.sequence)}`,
           key: (it) => `Sequence ${String(it.sequence)}`,
           check: (items) => duplicates(items.map((it) => String(it.sequence))).map((n) => `Sequence ${n} appears more than once in sequences`),
-          run: (it) => storeCues(ctx, it),
+          run: (it, c) => storeCues(c, it),
         });
       }),
   );

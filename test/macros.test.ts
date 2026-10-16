@@ -408,6 +408,20 @@ test("edit_macro_line batch: edits run in order against the shifted lines; later
   assert.equal(result.outcome, "partial");
 });
 
+test("edit_macro_line batch (review round 1): a concurrent mutation from this server never runs between the batch's edits", async () => {
+  con.macro(901, ["a", "b", "c"].map((x) => ({ command: `Echo ${x}` })));
+  const batch = h.callJson("gma3_edit_macro_line", { edits: [{ macro: 901, action: "insert", line: 1, command: "Echo first" }, { macro: 901, action: "remove", line: 4 }] });
+  // Queued while the batch runs: with one lock span per item it would land between the two edits and shift the lines.
+  await new Promise((r) => setImmediate(r));
+  const other = h.callJson("gma3_edit_macro_line", { macro: 901, action: "insert", line: 1, command: "Echo other" });
+  const [b, o] = await Promise.all([batch, other]);
+  assert.deepEqual(b.result.items.map((i: any) => i.outcome), ["succeeded", "succeeded"]);
+  assert.equal(o.result.outcome, "succeeded");
+  const edits = con.commands.filter((c) => /^(Insert|Delete) Macro/.test(c));
+  assert.deepEqual(edits, ["Insert Macro 901.1", "Delete Macro 901.4 /NoConfirmation", "Insert Macro 901.1"], "the batch's two edits, then the other call");
+  assert.deepEqual(con.macros.get(901)!.lines.map((l) => l.command), ["Echo other", "Echo first", "Echo a", "Echo b"], "line 4 of the batch was the planned one (Echo c)");
+});
+
 // ---------------------------------------------------------------------------
 // gma3_run_macro and gma3_macros
 // ---------------------------------------------------------------------------

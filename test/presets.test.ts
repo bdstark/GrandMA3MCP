@@ -12,6 +12,7 @@ import {
   type PresetRow,
 } from "../src/tools/presets.ts";
 import { ValidationError } from "../src/validate.ts";
+import { SILENT } from "./helpers/fake-bridge.ts";
 
 /**
  * A model of the console objects SB-03 touches, with the onPC 2.5.1 behaviour the probe established
@@ -66,6 +67,8 @@ class Console {
   scanLimitations: string[] = [];
   scanIncomplete = false;
   commands: string[] = [];
+  /** Never answer a Name write (a lost reply after the store went through). */
+  silentNameSet = false;
   /** SU-12: the Preview environment has its own programmer and selection; `prog` is the current environment's. */
   env = "Normal";
   private other: Array<ProgrammerRow & { active: boolean }> = [];
@@ -179,6 +182,7 @@ class Console {
       return { total: ids.length, items: ids.map((id) => ({ name: `fx ${id}`, class: "Fixture" })) };
     });
     h.fake.on("set", (args) => {
+      if (this.silentNameSet && args.property === "Name") return SILENT;
       const key = String(args.ref).replace(/^Preset /, "");
       const p = this.presets.get(key)!;
       if (args.property === "Name" && !p.lock) p.name = String(args.value);
@@ -586,4 +590,35 @@ test("store_preset batch: content errors, duplicates, preview and a missing excl
   const noExcl = await h.callJson("gma3_store_preset", { mode: "selective", presets: [{ preset: "4.1", fixtures: [401], intensity: 10 }] });
   assert.match(noExcl.result.validationErrors.join(" "), /exclusive must be true/);
   assert.equal(sent(), 0);
+});
+
+test("store_preset batch (review round 1): a store whose name write got no reply stops the build; the next preset is not stored", async () => {
+  con.silentNameSet = true;
+  const { result } = await store({
+    mode: "selective",
+    presets: [
+      { preset: "23.1", name: "First", fixtures: [401], intensity: 40 },
+      { preset: "23.2", fixtures: [402], intensity: 60 },
+    ],
+  });
+  assert.deepEqual(result.items.map((i: any) => i.outcome), ["partial", "not_attempted"], JSON.stringify(result.items));
+  assert.equal(con.presets.has("23.1"), true);
+  assert.equal(con.presets.has("23.2"), false, "nothing more is stored after an uncertain step");
+  assert.equal(con.env, "Normal", "Preview is still left");
+});
+
+test("store_preset batch (review round 1): stop_on_failure stops after the first preset that does not succeed", async () => {
+  const { result } = await store({
+    mode: "selective",
+    stop_on_failure: true,
+    presets: [
+      { preset: "4.2", fixtures: [403], intensity: 50 },
+      { preset: "23.1", fixtures: [401], intensity: 30 },
+    ],
+  });
+  assert.deepEqual(result.items.map((i: any) => i.outcome), ["failed", "not_attempted"], JSON.stringify(result.items));
+  assert.match(result.items[1].summary, /stop_on_failure is set/);
+  assert.equal(con.presets.has("23.1"), false);
+  assert.equal(con.env, "Normal");
+  assert.deepEqual(con.commands.slice(-2), ["ClearAll", "Preview Off"], "Preview cleanup still runs");
 });
