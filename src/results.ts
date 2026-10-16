@@ -93,6 +93,7 @@ export const NEGATIVE_FEEDBACK = [
   /illegal (value|argument|parameter|keyword|range)/i,
   /unknown (command|keyword|object|property|attribute)/i,
   /not allowed/i,
+  /not executed/i,
   /no (such|valid)\b/i,
   /does not exist/i,
   /doesn'?t exist/i,

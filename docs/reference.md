@@ -27,11 +27,12 @@
 | `gma3_objects` | Resolve a range like `Fixture 1 Thru 20` to objects with property values. Page and executor lists are expanded by the bridge (v0.20.0, [below](#page-and-executor-ranges-plugin-v0200)) |
 | `gma3_dump` | Raw `Dump()` text of an object |
 | `gma3_set_property` | `Set()` a property |
-| `gma3_playback` | Go+, Go-, Pause, Off, Top, Flash, Load, ... on a sequence or executor; reads the playback state back a frame later ([docs](tools/live-reads.md)) |
+| `gma3_playback` | Go+, Go-, Pause, Off, Top, Flash, Load, ReSync, ... on a sequence or executor; reads the playback state back a frame later ([docs](tools/live-reads.md), [resync](tools/tempo-sync.md#resync)) |
 | `gma3_set_fader` / `gma3_get_fader` | Fader levels via `SetFader` / `GetFader` |
 | `gma3_sequences`, `gma3_cues`, `gma3_executors`, `gma3_fixtures`, `gma3_pool` | Convenience views; sequences carry the current cue, and `gma3_cues` reads several sequences ([docs](tools/live-reads.md)) |
 | `gma3_help` | Read a page of the grandMA3 manual shipped with onPC |
 | `gma3_start_bridge` | Start the plugin over OSC when the bridge is down |
+| `gma3_tempo_sync_status`, `gma3_configure_tempo_sync` | The tempo-sync plugin (bdstark/gma3-beat-sync): whether it is imported and running, its readings, and its configuration, read back; `gma3_playback` `resync` realigns running phasers ([docs](tools/tempo-sync.md)) |
 | `gma3_show_files`, `gma3_save_show` | List the show files and save the show under the current or a new name; another show's file needs `overwrite: true`; SaveShow's own confirmation is answered ([docs](tools/show.md)) |
 | `gma3_osc`, `gma3_configure_osc`, `gma3_test_osc_input` | Read and configure OSC input and output (who can send commands, where output goes), and prove input works with a loopback test ([docs](tools/osc.md)) |
 

@@ -8,7 +8,7 @@ import { helpDir, helpVersion, listHelpPages, lookupHelp } from "./help.js";
 import { CHEATSHEET } from "./cheatsheet.js";
 import { MutationLock } from "./mutations.js";
 import { serverBuild } from "./buildinfo.js";
-import type { ToolContext } from "./tools/context.js";
+import { operation, type ToolContext } from "./tools/context.js";
 import { registerFixtureTools } from "./tools/fixtures.js";
 import { COMMAND_FALLBACK_NOTE, LUA_FALLBACK_NOTE, serverInstructions } from "./discovery.js";
 import { registerCueTools } from "./tools/cues.js";
@@ -33,6 +33,7 @@ import { registerDmxOutputTools } from "./tools/dmxoutput.js";
 import { registerVariableTools } from "./tools/variables.js";
 import { registerOscTools } from "./tools/osc.js";
 import { registerShowTools } from "./tools/show.js";
+import { registerTempoSyncTools, resyncPlayback, RESYNC_NOTE } from "./tools/temposync.js";
 import { annotatePlayback, readTargetState, registerLiveStateTools, stateAfterFrame } from "./tools/livestate.js";
 
 const env = process.env;
@@ -428,6 +429,7 @@ const playbackActions = {
   learn: "Learn",
   rate1: "Rate1",
   speed1: "Speed1",
+  resync: "ReSync",
 } as const;
 
 server.registerTool(
@@ -437,7 +439,8 @@ server.registerTool(
     description:
       "Trigger a playback function on a sequence or executor. Equivalent to commands like 'Go+ Sequence 1', 'Off Executor 201', 'Load Sequence 1 Cue 5'. " +
       "Targets: 'Sequence 3', 'Executor 201', 'Page 2.201', 'Sequence 1 Cue 4' (for load/go to a cue), 'Master 3.1', 'Macro 5', 'Group 2'. " +
-      "For a Sequence or Executor target the playback state is read back a frame after the command (playbackState: active, currentCue {no, name}, or lastCue after Off; needs bridge 0.32.0 for the cue).",
+      "For a Sequence or Executor target the playback state is read back a frame after the command (playbackState: active, currentCue {no, name}, or lastCue after Off; needs bridge 0.32.0 for the cue). " +
+      `resync: ReSync for 'Sequence 1', 'Sequence 1 + 11 Thru 19' (every sequence must exist; each one's state is read back) or an executor. ${RESYNC_NOTE}`,
     inputSchema: {
       action: z.enum(Object.keys(playbackActions) as [keyof typeof playbackActions, ...(keyof typeof playbackActions)[]]),
       target: z.string().describe("Object the action applies to, e.g. 'Sequence 1' or 'Executor 201'"),
@@ -445,8 +448,11 @@ server.registerTool(
     },
   },
   async ({ action, target, fade }) =>
-    run(() =>
-      mutations.run(async () => {
+    // SU-17: ReSync checks every sequence of a list or range, and reads each one back (its own result model).
+    action === "resync"
+      ? operation(() => resyncPlayback(toolContext, target))
+      : run(() =>
+        mutations.run(async () => {
         const cmd = `${playbackActions[action]} ${target}${fade !== undefined ? ` Fade ${fade}` : ""}`;
         const res = (await bridge.request("cmd", { command: cmd })) as Record<string, unknown>;
         // SU-16: the state a frame later, as the console shows it (a fade keeps running; only the cue and activity are read).
@@ -664,6 +670,7 @@ registerVariableTools(server, toolContext);
 registerLiveStateTools(server, toolContext);
 registerOscTools(server, toolContext);
 registerShowTools(server, toolContext);
+registerTempoSyncTools(server, toolContext);
 
 server.registerResource(
   "cheatsheet",

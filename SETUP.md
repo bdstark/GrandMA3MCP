@@ -728,6 +728,18 @@ through the console (its published status and its configuration), as two separat
   actions, read back. Both say plainly when the plugin is not installed or not running.
 - No OSC or console network change is involved.
 
+**Status:** implemented with no bridge change ([docs/tools/tempo-sync.md](docs/tools/tempo-sync.md), probe record
+[su-17-resync-tempo-sync-macos-2.5.1.md](docs/probes/su-17-resync-tempo-sync-macos-2.5.1.md), live test
+`test/live/tempo-sync.live.ts` 4/4 on macOS onPC 2.5.1).
+- `gma3_playback` `resync`: sequences, lists and ranges, each checked first. ReSync is sent once, and each
+  sequence's state is read back. Phasers are realigned gradually (the manual); a running chase kept its cue and
+  step timing (measured).
+- `gma3_tempo_sync_status`: whether the plugin is imported and running (by its State and the age of its Updated
+  against the console clock), its readings, and its configuration. It says plainly when the plugin is not imported
+  or not running, and how to start it.
+- `gma3_configure_tempo_sync`: master, quantum, start/stop, resync list, event and beat commands, actions, tempo
+  threshold and lead, validated and read back. Interfaces (multicast) is refused as a network setting.
+
 ## SU-18 — OSC configuration
 
 **Request:** Read and configure the console's OSC input and output.
