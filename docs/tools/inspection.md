@@ -91,7 +91,7 @@ Programmer content per UI channel.
 
 | Parameter | Type | Meaning |
 | --- | --- | --- |
-| `scope` | `all` / `selection` / `fixtures` | Explicit. `all` = patch indices `1 .. GetSubfixtureCount()-1` (unselected fixtures included); `selection` = `SelectionTable()`; `fixtures` = the range below. |
+| `scope` | `all` / `selection` / `fixtures` | Explicit. `all` = patch indices `0 .. GetSubfixtureCount()-1` (unselected fixtures included; index 0 is the first patched fixture, or MA's Universal fixture in a show that has one; bridge 0.30.0 and older skipped index 0); `selection` = `SelectionTable()`; `fixtures` = the range below. |
 | `fixtures` | string | Required for scope `fixtures`: `"1 Thru 5"`, `"101 + 103"`, `"Fixture 4.1"`. Groups are refused (ObjectList would return the group object). Compound fixtures are expanded into their subfixture indices. |
 | `max_channels` | integer | Scan budget in UI channels per request (default 5000, max 50000). |
 | `limit`, `offset` | integer | Pagination over the rows (default 200, max 5000). |

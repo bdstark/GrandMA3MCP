@@ -351,6 +351,78 @@ test("insert, set, move (upward moves only) and remove, each verified against th
 });
 
 // ---------------------------------------------------------------------------
+// SU-12 batch forms
+// ---------------------------------------------------------------------------
+
+test("store_macro batch: each macro gets the single form's checks and read-back; a failed one does not stop the rest", async () => {
+  con.macro(902, [{ command: "Echo old" }], "Old");
+  const { result, isError } = await h.callJson("gma3_store_macro", {
+    mode: "create",
+    macros: [
+      { macro: 901, name: "One", lines: [{ command: "Echo one" }] },
+      { macro: 902, lines: [{ command: "Echo two" }] },
+      { macro: 903, lines: [{ command: "Echo three" }, { command: "Go+ Macro 901", wait: 1 }] },
+    ],
+  });
+  assert.equal(isError, true);
+  assert.equal(result.outcome, "partial");
+  assert.deepEqual(result.items.map((i: any) => `${i.target}:${i.outcome}:${i.verification}`), ["Macro 901:succeeded:matched", "Macro 902:failed:not_requested", "Macro 903:succeeded:matched"]);
+  assert.match(result.items[1].summary, /already exists \("Old", 1 lines\); use mode replace or append/);
+  assert.deepEqual(con.macros.get(902)!.lines.map((l) => l.command), ["Echo old"], "the refused macro is untouched");
+  assert.deepEqual(con.macros.get(903)!.lines.map((l) => l.command), ["Echo three", "Go+ Macro 901"], "a macro stored earlier in the batch resolves as a reference");
+  assert.equal(con.macros.get(901)!.name, "One");
+  assert.equal(result.items[0].result, undefined, "compact by default");
+  assert.deepEqual(runs(), []);
+});
+
+test("store_macro batch: duplicates, a top-level macro and an empty list are refused before anything is sent", async () => {
+  for (const [args, re] of [
+    [{ mode: "create", macros: [{ macro: 901, lines: [{ command: "Echo a" }] }, { macro: 901, lines: [{ command: "Echo b" }] }] }, /Macro 901 appears more than once/],
+    [{ macro: 901, mode: "create", macros: [{ macro: 902, lines: [{ command: "Echo a" }] }] }, /with macros, give macro in each item/],
+    [{ mode: "create", macros: [] }, /macros must be a non-empty list/],
+  ] as const) {
+    const r = await h.callJson("gma3_store_macro", args as Record<string, unknown>);
+    assert.equal(r.isError, true);
+    assert.match(r.result.validationErrors.join(" "), re);
+  }
+  assert.equal(con.commands.length, 0);
+});
+
+test("edit_macro_line batch: edits run in order against the shifted lines; later edits on a failed macro are skipped", async () => {
+  con.macro(901, ["a", "b"].map((x) => ({ command: `Echo ${x}` })));
+  con.macro(902, ["x"].map((x) => ({ command: `Echo ${x}` })));
+  const { result } = await h.callJson("gma3_edit_macro_line", {
+    edits: [
+      { macro: 901, action: "insert", line: 1, command: "Echo first" },
+      { macro: 901, action: "remove", line: 3 },
+      { macro: 902, action: "set", line: 1, command: "Go+ Sequence 404" },
+      { macro: 902, action: "remove", line: 1 },
+      { macro: 901, action: "set", line: 2, name: "kept" },
+    ],
+  });
+  assert.deepEqual(result.items.map((i: any) => i.outcome), ["succeeded", "succeeded", "failed", "not_attempted", "succeeded"]);
+  assert.match(result.items[3].summary, /item 3 on Macro 902 did not succeed/);
+  assert.deepEqual(con.macros.get(901)!.lines.map((l) => l.command), ["Echo first", "Echo a"]);
+  assert.equal(con.macros.get(901)!.lines[1].name, "kept");
+  assert.deepEqual(con.macros.get(902)!.lines.map((l) => l.command), ["Echo x"]);
+  assert.equal(result.outcome, "partial");
+});
+
+test("edit_macro_line batch (review round 1): a concurrent mutation from this server never runs between the batch's edits", async () => {
+  con.macro(901, ["a", "b", "c"].map((x) => ({ command: `Echo ${x}` })));
+  const batch = h.callJson("gma3_edit_macro_line", { edits: [{ macro: 901, action: "insert", line: 1, command: "Echo first" }, { macro: 901, action: "remove", line: 4 }] });
+  // Queued while the batch runs: with one lock span per item it would land between the two edits and shift the lines.
+  await new Promise((r) => setImmediate(r));
+  const other = h.callJson("gma3_edit_macro_line", { macro: 901, action: "insert", line: 1, command: "Echo other" });
+  const [b, o] = await Promise.all([batch, other]);
+  assert.deepEqual(b.result.items.map((i: any) => i.outcome), ["succeeded", "succeeded"]);
+  assert.equal(o.result.outcome, "succeeded");
+  const edits = con.commands.filter((c) => /^(Insert|Delete) Macro/.test(c));
+  assert.deepEqual(edits, ["Insert Macro 901.1", "Delete Macro 901.4 /NoConfirmation", "Insert Macro 901.1"], "the batch's two edits, then the other call");
+  assert.deepEqual(con.macros.get(901)!.lines.map((l) => l.command), ["Echo other", "Echo first", "Echo a", "Echo b"], "line 4 of the batch was the planned one (Echo c)");
+});
+
+// ---------------------------------------------------------------------------
 // gma3_run_macro and gma3_macros
 // ---------------------------------------------------------------------------
 

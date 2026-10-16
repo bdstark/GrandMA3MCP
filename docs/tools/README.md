@@ -44,6 +44,43 @@ The server sends instructions on every start (`src/discovery.ts`). They give:
 A stale build's warning (PR #45) comes first. The descriptions of `gma3_lua` and `gma3_command` start with the same
 pointer to the structured tools. `test/discovery.test.ts` keeps the map and the registered tools in step.
 
+## Batch forms (SU-12)
+
+Seven authoring tools take a list in one call. Give the list instead of the single object's fields; every other argument
+is a default for each item, and an item's own fields win.
+
+| Tool | List | Items |
+| --- | --- | --- |
+| `gma3_store_group` | `groups` | `{group, name, items \| arrangement, overwrite, ...}` |
+| `gma3_store_preset` | `presets` | `{preset, name, mode, existing, fixtures, presets, intensity, values \| looks, ...}`, built in Preview |
+| `gma3_store_macro` | `macros` | `{macro, mode, lines, name, note, cli}` |
+| `gma3_edit_macro_line` | `edits` | `{macro, action, line, ...}`, in order |
+| `gma3_assign_to_executor` | `assignments` | `{sequence, page, executor, replace, label}` |
+| `gma3_configure_sequence` | `sequences` | numbers and `"a Thru b"` ranges; the same settings on each |
+| `gma3_store_cues` | `sequences` | `{sequence, sequence_name, mode, fixtures, cues}` |
+
+The rules (`src/batch.ts`):
+- Each item runs through the single form, so it gets that form's checks before anything is sent and its own
+  read-back. Cross-item problems (an object listed twice, an identity field given for the whole call, more than 100
+  items) refuse the whole call before anything is sent.
+- Items run in order and nothing is retried. An item that fails does not stop independent items. Once an item on an
+  object did not succeed, the later items on the same object are not attempted, because they were planned against a
+  state that did not happen (edits on one macro). `stop_on_failure: true` stops at the first item that does not
+  succeed. An item with an uncertain step stops the batch, because the console's state is not known: an outcome
+  `unknown`, or a mutation step without a reply inside a `partial` item (an assignment whose label got no answer). Its
+  line keeps the uncertainty (`unknown` step), and the remaining items are `not_attempted`.
+- The result has one line per item in `items` (outcome, verification, summary) and one step per item. The batch is
+  `succeeded` only when every item succeeded, `partial` when some work was done; `matched` only when every item
+  matched, `mismatched` when any did. `detail: true` adds each item's full result.
+- The whole batch call holds this server's mutation lock once: no other mutation from this server runs between two
+  items (each item's single form runs with a held view of the lock, which is not reentrant). Edits planned against
+  shifted macro lines therefore stay on the planned lines.
+
+`gma3_store_cues` and `gma3_build_chase` results are compact by default: one line per cue (look details only for a cue
+that did not match), the observed cycle as its cue order and step intervals, and only the steps that did not succeed
+(with `stepCounts`). `detail: true` returns everything. The field test's 18-cue chase result was 66.6 KB; the compact
+one is about 4 KB (`test/live/batch.live.ts`).
+
 ## Serialisation caveat (applies to every mutating tool)
 
 Mutations issued by this MCP server run one at a time through a single lock, so a multi-command workflow is

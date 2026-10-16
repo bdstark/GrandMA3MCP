@@ -486,6 +486,18 @@ The group item lists were the cost, not the speed:
 Large results discouraged further calls: one `gma3_build_chase` result (18 cues) was 66.6 KB. The client saved it
 to a file, and the agent read it back with a shell and Python.
 
+**Status:** implemented, no bridge change ([docs/tools/README.md](docs/tools/README.md#batch-forms-su-12), probe
+record [su-12-batch-forms-macos-2.5.1.md](docs/probes/su-12-batch-forms-macos-2.5.1.md), live test
+`test/live/batch.live.ts` 1/1 on macOS onPC 2.5.1).
+- The seven tools take a list (`groups`, `presets`, `macros`, `edits`, `assignments`, `sequences`), run each item
+  through the single form, and report one line per item (`src/batch.ts`).
+- Presets in a list are built from explicit content in Preview.
+- Group specs gain reversed ranges and `rows` spread to a width. Cells in physical order wait for SU-19.
+- `gma3_store_cues` and `gma3_build_chase` results are compact by default: an 18-step chase is about 4 KB, against
+  66.6 KB in the field test.
+- The live run found that the bridge's programmer scan of all fixtures misses subfixture index 0. It is fixed
+  separately.
+
 ### Acceptance criteria
 
 - Each of these tools takes a list:

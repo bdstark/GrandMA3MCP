@@ -37,6 +37,19 @@ export const OBSERVING_TOOLS: ReadonlyArray<{ tool: string; what: string }> = [
   { tool: "gma3_timecode_transport", what: "a timecode show's cursor and the sequences it fires" },
 ];
 
+/** Tools with a batch form (SU-12): one call with a list, each item with the single form's checks and read-back. */
+export const BATCH_TOOLS: ReadonlyArray<{ tool: string; list: string }> = [
+  { tool: "gma3_store_group", list: "groups" },
+  { tool: "gma3_store_preset", list: "presets, each from explicit content" },
+  { tool: "gma3_store_macro", list: "macros" },
+  { tool: "gma3_edit_macro_line", list: "edits" },
+  { tool: "gma3_assign_to_executor", list: "assignments" },
+  { tool: "gma3_configure_sequence", list: "sequences, with ranges" },
+  { tool: "gma3_store_cues", list: "sequences" },
+];
+
+const BATCH_NOTE = `Many objects at once: ${BATCH_TOOLS.map((b) => `${b.tool} (${b.list})`).join(", ")} take a list in one call, with per-item checks, read-back and one result line per item; never loop over them in Lua.`;
+
 const OBSERVE_NOTE = `Watching over time: ${OBSERVING_TOOLS.map((o) => `${o.tool} (${o.what})`).join(", ")}. They sample on the server side; never write a Lua waiting or polling loop (each gma3_lua request is limited to about 5 s).`;
 
 /** The server instructions: sent on every start; a stale build's warning comes first. */
@@ -46,6 +59,7 @@ export function serverInstructions(staleWarning?: string): string {
     ...(staleWarning ? [staleWarning, ""] : []),
     "gma3-mcp controls a grandMA3 console. Use the structured tools for show work: they check before they act, never retry, report each step and read the result back. Map from task to tools:",
     map,
+    BATCH_NOTE,
     OBSERVE_NOTE,
     "Fallbacks, only for what no structured tool covers: gma3_command (one command line; gma3_help has the syntax) and gma3_lua (off by default on the console; short scripts only). gma3_status shows the bridge, its version and the build.",
   ].join("\n");
@@ -56,6 +70,7 @@ export const LUA_FALLBACK_NOTE =
   "FALLBACK: use a structured tool when one fits; they check, read back and need no Lua. Patch: gma3_patch_library, gma3_patch_import, gma3_patch_add, gma3_patch_set, gma3_patch_type_structure, gma3_place_fixtures, gma3_layout_cells. " +
   "Groups: gma3_store_group, gma3_configure_matricks. Presets: gma3_apply_preset, gma3_store_preset. Phasers: gma3_build_phaser. Looks: gma3_set_attributes. Cues: gma3_store_cues, gma3_edit_cues, gma3_build_chase, gma3_cue_contents. " +
   "Playback: gma3_configure_sequence, gma3_configure_executor, gma3_playback, gma3_goto_cue. Reads: gma3_objects, gma3_get_object, gma3_list_children, gma3_programmer. " +
+  `${BATCH_NOTE} ` +
   `${OBSERVE_NOTE} `;
 
 /** The pointer at the start of gma3_command's description. */

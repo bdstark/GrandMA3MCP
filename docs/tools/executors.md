@@ -95,6 +95,13 @@ current page.
 Result extras: `previous` and `resulting` (`{ empty, name, object: { name, class, addr, index } }`),
 `alreadyAssigned`, `replaced`, `command`, `sequenceName` (before), `sequenceNameAfter` (with label).
 
+### Batch form (SU-12)
+
+`assignments: [{sequence, page, executor, replace, label}]` assigns several sequences; `page` (and `replace`, `verify`)
+may be given once for all. Each target gets the checks above: an executor holding another object fails that item
+unless it has `replace: true`, and an executor already holding the sequence sends nothing. A target listed twice
+refuses the whole call. See [Batch forms](README.md#batch-forms-su-12).
+
 ## gma3_label_executor
 
 Label the object assigned to the executor at `Page <p>.<e>` (renames it; see the top of this page).

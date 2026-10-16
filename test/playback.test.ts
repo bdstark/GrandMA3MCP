@@ -412,6 +412,35 @@ test("configure_sequence writes settings, reads them back and lists every execut
   assert.equal(con.seqs.get(5)!.props.WrapAround, "No");
 });
 
+test("configure_sequence batch (SU-12): the same settings on numbers and ranges, each read back; a missing sequence fails alone", async () => {
+  con.seq(8, "Eight").seq(9, "Nine", { OffWhenOverridden: "No" });
+  const { result, isError } = await h.callJson("gma3_configure_sequence", { sequences: [5, "7 Thru 9"], off_when_overridden: true, kill_protect: true });
+  assert.equal(isError, false, JSON.stringify(result.items));
+  assert.equal(result.outcome, "succeeded");
+  assert.equal(result.verification.status, "matched");
+  assert.deepEqual(result.items.map((i: any) => i.target), ["Sequence 5", "Sequence 7", "Sequence 8", "Sequence 9"]);
+  assert.deepEqual(sets(), ["Sequence 5 KillProtect=Yes", "Sequence 7 KillProtect=Yes", "Sequence 8 KillProtect=Yes", "Sequence 9 OffWhenOverridden=Yes", "Sequence 9 KillProtect=Yes"]);
+  for (const n of [5, 7, 8, 9]) assert.equal(con.seqs.get(n)!.props.KillProtect, "Yes");
+
+  const missing = await h.callJson("gma3_configure_sequence", { sequences: ["9 Thru 11"], wrap_around: false });
+  assert.deepEqual(missing.result.items.map((i: any) => i.outcome), ["succeeded", "failed", "failed"]);
+  assert.equal(missing.result.outcome, "partial");
+});
+
+test("configure_sequence batch (SU-12): bad entries, duplicates after expansion and a top-level sequence are refused", async () => {
+  for (const [args, re] of [
+    [{ sequences: ["5 Thru x"], wrap_around: true }, /"5 Thru x" is not a sequence number/],
+    [{ sequences: ["5 Thru 7", 6], wrap_around: true }, /Sequence 6 is listed more than once/],
+    [{ sequences: [5], sequence: 5, wrap_around: true }, /give sequence in each item/],
+    [{ sequences: ["1 Thru 200"], wrap_around: true }, /more than 100 sequences/],
+  ] as const) {
+    const r = await h.callJson("gma3_configure_sequence", args as Record<string, unknown>);
+    assert.equal(r.isError, true);
+    assert.match(r.result.validationErrors.join(" "), re);
+  }
+  assert.deepEqual(sets(), []);
+});
+
 test("configure_sequence on a sequence used by one executor does not warn about sharing", async () => {
   const { result, isError } = await h.callJson("gma3_configure_sequence", { sequence: 7, wrap_around: false });
   assert.equal(isError, false, JSON.stringify(result));
