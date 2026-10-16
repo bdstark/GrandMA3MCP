@@ -819,6 +819,15 @@ dialog (KB-25 handles dialogs). This time it answered `OK`, and the bridge kept 
 - Report the file written, its size and time. Handle a confirmation dialog when one opens.
 - Read the show files that exist, so no shell is needed.
 
+**Status:** implemented in bridge 0.35.0 ([docs/tools/show.md](docs/tools/show.md), probe record
+[su-20-save-show-macos-2.5.1.md](docs/probes/su-20-save-show-macos-2.5.1.md), live test `test/live/save-show.live.ts`
+4/4 on macOS onPC 2.5.1).
+- `gma3_show_files` lists the shows folder (name, size, time; the bridge corrects DirList's local-time-as-UTC).
+- `gma3_save_show` saves under the current name (no dialog) or a new one. It answers SaveShow's own "Change show file
+  name?" and, with `overwrite: true`, "... and overwrite existing show file?" dialogs. It refuses another show's file
+  without `overwrite`, never answers another dialog, and reports the file written.
+- SaveShow is queued with CmdIndirect, so a dialog cannot stall the bridge.
+
 ## Recommended delivery order
 
 SU-01 and SU-02 first (bridges 0.25.1 and 0.25.2). Then SU-03: without import, a new show cannot be set up without Lua or a

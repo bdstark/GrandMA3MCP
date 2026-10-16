@@ -36,6 +36,9 @@ Live playback and value reads (SU-16, bridge 0.32.0): the current cue in `gma3_s
 sequences) and `gma3_executors`; read-back in `gma3_goto_cue` and `gma3_playback`; the compact `gma3_programmer`;
 `gma3_observe_values` ([live-reads.md](live-reads.md)).
 
+Saving the show (SU-20, bridge 0.35.0; `exclusive: true`, another show's file needs `overwrite: true`):
+`gma3_show_files`, `gma3_save_show` ([show.md](show.md)).
+
 Fixture-type data (SU-19, bridge 0.34.0): `cellOrder` and `wheels` in `gma3_patch_type_structure`
 ([patch.md](patch.md#cell-order-su-19)); `order: "dmx"` in `gma3_layout_cells`; `{cells_of, order}` in group lists.
 

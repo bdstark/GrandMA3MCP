@@ -1555,7 +1555,7 @@ do
   r = request("feedback.read", {}, nil, C)
   check("feedback.read without items is refused with a code", r.ok == false and r.code == "no-items", r.error)
   r = request("feedback.read", { readers = { "commandText", "lastCommand", "blind", "solo", "page", "freeze", "selectedSequence", "previewBar", "sequenceActive" }, displays = { 1, 2, 9 }, executors = { 201, 202 }, sequences = { 5, 6 } }, nil, C)
-  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.34.0" and r.result.module.version == feedbackModule.VERSION and r.result.identity.showFile == "mcp-test-disposable", J(r))
+  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.35.0" and r.result.module.version == feedbackModule.VERSION and r.result.identity.showFile == "mcp-test-disposable", J(r))
   local by = {}
   if r.ok then for _, it in ipairs(r.result.items) do by[it.key] = it end end
   check("feedback.read: command text and last command are raw observations", by.commandText and by.commandText.value == "Store " and by.lastCommand.value == "Go+ Sequence 5 : OK" and by.lastCommand.note:find("not confirmation"), J(by.lastCommand))
@@ -1668,7 +1668,7 @@ do
   end
   local C = { id = 71 }
   r = request("feedback.context", { executors = { 201, 202 } }, nil, C)
-  check("feedback.context answers with Lua and input disabled", r.ok and r.result.bridgeVersion == "0.34.0" and r.result.module.version == feedbackModule.VERSION and r.result.atomic == false and r.result.generation == 1 and r.result.generationChanged == false and r.result.identity.showFile == "mcp-test-disposable" and r.result.identity.dataPool.name == "Default", J(r))
+  check("feedback.context answers with Lua and input disabled", r.ok and r.result.bridgeVersion == "0.35.0" and r.result.module.version == feedbackModule.VERSION and r.result.atomic == false and r.result.generation == 1 and r.result.generationChanged == false and r.result.identity.showFile == "mcp-test-disposable" and r.result.identity.dataPool.name == "Default", J(r))
   check("feedback.context: authoritative display, bank/page, slots with availability and value", r.ok and r.result.authoritativeDisplay.rule == "configured" and r.result.encoder.value.bank.name == "Color" and r.result.encoder.value.page.name == "RGB" and r.result.slots.value.slots[1].name == "ColorRGB_R" and r.result.slots.value.slots[1].availability == "available" and r.result.slots.value.slots[1].absolute == 50 and r.result.slots.value.slots[1].unit == "None" and r.result.slots.value.slots[2].valueState == "empty" and r.result.executorPage.no == 1, J(r.result.slots))
   check("feedback.context: executor targets with functions, level and playback-target status", r.ok and #r.result.executors == 2 and r.result.executors[1].value.functions.keyPress == "Temp" and r.result.executors[1].value.level.value == 100 and r.result.executors[1].value.playbackTarget == true and r.result.executors[2].value.empty == true and r.result.executors[2].value.reserved == nil, J(r.result.executors))
   check("feedback.context: nested fields survive the serialiser depth bound", r.ok and type(r.result.slots.value.slots[1].feature) == "string" and type(r.result.executors[1].value.assigned.name) == "string")
@@ -2426,6 +2426,100 @@ do
   check("su18: Interface 0.0 (no interface matches PreferredIP) resolves to nothing; no lines is an empty array", r.ok and r.result.interface == "0.0" and r.result.interfaceResolved == nil and #r.result.lines == 0 and J(r):find('"lines":%[%]'), J(r))
 
   ShowData, Root, Enums.Roles = savedShowData, savedRoot, savedRoles
+end
+
+-------------------------------------------------------------------------------
+-- SU-20 (0.35.0): show.files / show.save / show.answer
+-------------------------------------------------------------------------------
+do
+  local saved = { Root = Root, GetPath = GetPath, DirList = DirList, CmdIndirect = CmdIndirect, GetTopModal = GetTopModal, Mouse = Mouse, Showfiles = Enums.PathType.Showfiles }
+  Enums.PathType.Showfiles = 19
+  local showFile = "Show A"
+  Root = function() return { MANetSocket = { Get = function(_, k) if k == "ShowFile" then return showFile end end } } end
+  GetPath = function(t) if t == 19 then return "/shows" end return "/other" end
+  -- DirList answers the local wall-clock time as if it were UTC (live).
+  local wall = os.time() + 3600
+  DirList = function(path, filter) assert(path == "/shows" and filter == "*.show") return { { name = "Show A.show", size = 1000, time = wall }, { name = "Other.show", size = 2000, time = wall - 60 } } end
+  local queued, clicks = {}, {}
+  CmdIndirect = function(c) queued[#queued + 1] = c end
+  Mouse = function(d, what, x, y) clicks[#clicks + 1] = what .. "@" .. tostring(d) end
+  -- A MessageBox as a UI tree: Title, Text and two Buttons.
+  local function ui(class, name, text, kids, rect)
+    return { name = name, Text = text, GetClass = function() return class end, IsVisible = function() return true end, IsEnabled = function() return true end,
+             UIChildren = function() return kids or {} end, Get = function(_, k) if k == "AbsRect" then return rect or { x = 0, y = 0, w = 10, h = 10 } end end, GetDisplayIndex = function() return 1 end }
+  end
+  local modal = nil
+  GetTopModal = function() return modal end
+  local msgbox = function(title, target) return ui("MessageBox", "MsgBox", nil, { ui("TitleBar", "Title", title), ui("TextBox", "Text", "Do you intend to change the show file name to\n'" .. (target or "Show B") .. "'?"), ui("Button", "Button 1", "OK", nil, { x = 100, y = 200, w = 40, h = 20 }), ui("Button", "Button 2", "Cancel") }) end
+
+  r = request("show.files", {})
+  check("su20: show.files lists the current show, the folder, the files with corrected time and wall-clock text, no modal", r.ok and r.result.current == "Show A" and r.result.path == "/shows" and r.result.listed == true and #r.result.files == 2 and r.result.files[1].name == "Show A" and r.result.files[1].file == "Show A.show" and r.result.files[1].size == 1000 and r.result.files[1].time == wall - r.result.utcOffset and r.result.files[1].localTime == os.date("!%Y-%m-%d %H:%M:%S", wall) and r.result.modal == false, J(r))
+  r = request("show.save", { name = "Show B" })
+  check("su20: show.save without exclusive is refused", r.ok == false and r.error:find("exclusive"), J(r))
+  r = request("show.save", { name = 'bad"name', exclusive = true })
+  check("su20: a name with a quote is refused before anything is queued", r.ok == false and r.error:find("bad%-name") and #queued == 0, J(r))
+  r = request("show.save", { name = "Show B.show", exclusive = true })
+  check("su20: show.save queues SaveShow \"name\" with CmdIndirect (.show dropped)", r.ok and r.result.command == 'SaveShow "Show B"' and queued[1] == 'SaveShow "Show B"', J({ r, queued }))
+  r = request("show.save", { exclusive = true })
+  check("su20: without a name it queues a plain SaveShow", r.ok and queued[2] == "SaveShow", J(queued))
+  modal = msgbox("Change show file name?")
+  r = request("show.files", {})
+  check("su20: show.files reports an open dialog's title, text and buttons", r.ok and r.result.modal.title == "Change show file name?" and r.result.modal.text:find("change the show file name") and r.result.modal.buttons[1] == "OK" and r.result.modal.display == 1, J(r))
+  r = request("show.save", { name = "X", exclusive = true })
+  check("su20: show.save refuses while a dialog is open", r.ok == false and r.error:find("modal%-open") and #queued == 2, J(r))
+  r = request("show.answer", { expectTitle = "Leaving the patch", button = "OK", exclusive = true })
+  check("su20: show.answer answers only SaveShow's own dialogs", r.ok == false and r.error:find("bad%-args") and #clicks == 0, J(r))
+  r = request("show.answer", { expectTitle = "Change show file name and overwrite existing show file?", expectTarget = "Show B", button = "OK", exclusive = true })
+  check("su20: show.answer refuses when the open dialog is not the expected one", r.ok == false and r.error:find("wrong%-modal") and #clicks == 0, J(r))
+  r = request("show.answer", { expectTitle = "Change show file name?", expectTarget = "Other", button = "OK", exclusive = true })
+  check("su20 review: a same-title dialog for another show is not answered", r.ok == false and r.error:find("wrong%-target") and #clicks == 0, J(r))
+  r = request("show.answer", { expectTitle = "Change show file name?", button = "OK", exclusive = true })
+  check("su20 review: show.answer needs the expected target", r.ok == false and r.error:find("bad%-args") and #clicks == 0, J(r))
+  r = request("show.answer", { expectTitle = "Change show file name?", expectTarget = "Show B", button = "OK", exclusive = true })
+  check("su20: show.answer clicks the OK button of the expected dialog naming the expected show", r.ok and r.result.clicked == "OK" and #clicks == 3 and clicks[1] == "move@1", J({ r, clicks }))
+  -- Review 2 of PR #66: "Joe's Show" contains "'s Show'"; the whole message binds the target.
+  local nclicks = #clicks
+  modal = ui("MessageBox", "MsgBox", nil, { ui("TitleBar", "Title", "Change show file name and overwrite existing show file?"), ui("TextBox", "Text", "You are going to change the show file name and overwrite the file with the name\n'Joe's Show' that already exists.\nDo you want to continue ?"), ui("Button", "Button 1", "OK"), ui("Button", "Button 2", "Cancel") })
+  r = request("show.answer", { expectTitle = "Change show file name and overwrite existing show file?", expectTarget = "s Show", button = "OK", exclusive = true })
+  check("su20 review 2: a dialog for Joe's Show is not answered for s Show", r.ok == false and r.error:find("wrong%-target") and #clicks == nclicks, J({ r, clicks }))
+  r = request("show.answer", { expectTitle = "Change show file name and overwrite existing show file?", expectTarget = "Joe's Show", button = "OK", exclusive = true })
+  check("su20 review 2: the same dialog is answered for its own complete name", r.ok and r.result.clicked == "OK" and #clicks == nclicks + 3, J({ r, clicks }))
+  -- Review 3 of PR #66: the name between the quotes is compared exactly; "Show  B" (two spaces) is not "Show B".
+  local overwriteBox = function(n) return ui("MessageBox", "MsgBox", nil, { ui("TitleBar", "Title", "Change show file name and overwrite existing show file?"), ui("TextBox", "Text", "You are going to change the show file name and overwrite the file with the name\n'" .. n .. "' that already exists.\nDo you want to continue ?"), ui("Button", "Button 1", "OK"), ui("Button", "Button 2", "Cancel") }) end
+  nclicks = #clicks
+  modal = overwriteBox("Show  B")
+  r = request("show.answer", { expectTitle = "Change show file name and overwrite existing show file?", expectTarget = "Show B", button = "OK", exclusive = true })
+  check("su20 review 3: a dialog for 'Show  B' is not answered for 'Show B'", r.ok == false and r.error:find("wrong%-target") and #clicks == nclicks, J({ r, clicks }))
+  modal = overwriteBox("Show B")
+  r = request("show.answer", { expectTitle = "Change show file name and overwrite existing show file?", expectTarget = "Show  B", button = "OK", exclusive = true })
+  check("su20 review 3: a dialog for 'Show B' is not answered for 'Show  B'", r.ok == false and r.error:find("wrong%-target") and #clicks == nclicks, J({ r, clicks }))
+  modal = overwriteBox("Show  B")
+  r = request("show.answer", { expectTitle = "Change show file name and overwrite existing show file?", expectTarget = "Show  B", button = "OK", exclusive = true })
+  check("su20 review 3: its own name, two spaces and all, is answered", r.ok and r.result.clicked == "OK" and #clicks == nclicks + 3, J({ r, clicks }))
+  modal = ui("MessageBox", "MsgBox", nil, { ui("TitleBar", "Title", "Change show file name?"), ui("TextBox", "Text", "Something else entirely 'Show B'?"), ui("Button", "Button 1", "OK") })
+  r = request("show.answer", { expectTitle = "Change show file name?", expectTarget = "Show B", button = "OK", exclusive = true })
+  check("su20 review 2: a message that is not the probed one is refused even when it quotes the name", r.ok == false and r.error:find("wrong%-target"), J(r))
+  modal = nil
+  r = request("show.answer", { expectTitle = "Change show file name?", expectTarget = "Show B", button = "OK", exclusive = true })
+  check("su20: show.answer with no dialog open is an error", r.ok == false and r.error:find("no%-modal"), J(r))
+  -- Review of PR #66: a modal lookup that fails is not "no dialog".
+  local nq = #queued
+  GetTopModal = function() error("lookup broke") end
+  r = request("show.files", {})
+  check("su20 review: a failed modal lookup is reported as unknown, not as no dialog", r.ok and r.result.modalKnown == false and r.result.modalError:find("lookup broke"), J(r))
+  r = request("show.save", { exclusive = true })
+  check("su20 review: show.save refuses while the modal state is unknown", r.ok == false and r.error:find("modal%-unknown") and #queued == nq, J(r))
+  r = request("show.answer", { expectTitle = "Change show file name?", expectTarget = "Show B", button = "OK", exclusive = true })
+  check("su20 review: show.answer refuses while the modal state is unknown", r.ok == false and r.error:find("modal%-unknown"), J(r))
+  GetTopModal = nil
+  r = request("show.files", {})
+  check("su20 review: a missing GetTopModal is unknown too", r.ok and r.result.modalKnown == false and r.result.modalError:find("not available"), J(r))
+  GetTopModal = function() return nil end
+  r = request("show.files", {})
+  check("su20 review: no dialog is known absence", r.ok and r.result.modalKnown == true and r.result.modal == false, J(r))
+
+  Root, GetPath, DirList, CmdIndirect, GetTopModal, Mouse = saved.Root, saved.GetPath, saved.DirList, saved.CmdIndirect, saved.GetTopModal, saved.Mouse
+  Enums.PathType.Showfiles = saved.Showfiles
 end
 
 print(string.format("%d passed, %d failed", passes, failures))

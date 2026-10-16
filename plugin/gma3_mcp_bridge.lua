@@ -154,7 +154,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.34.0"
+local VERSION      = "0.35.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -5233,6 +5233,157 @@ end)()
       if not ok then raise("[delete-failed] " .. name .. " could not be deleted: " .. tostring(err)) end
     end
     return { scope = args.scope, user = args.scope == "user" and user() or nil, before = before, after = read(h, name) }
+  end
+end)()
+
+-------------------------------------------------------------------------------
+-- SU-20 (0.35.0): saving the show (SETUP.md SU-20, docs/probes/su-20-save-show-macos-2.5.1.md).
+--   show.files    read-only: the current show name, the shows folder and its .show files (name, size, time), the
+--                 console's clock, and the top modal (title, text, buttons) when one is open
+--   show.save     queues SaveShow (current name) or SaveShow "name" with CmdIndirect: a dialog opened from the plugin
+--                 thread would stall the bridge, so the command lands on a later frame and the server polls
+--   show.answer   clicks OK or Cancel on one of SaveShow's own dialogs, only when the top modal's title is the one the
+--                 server expects ("Change show file name?" / "... and overwrite existing show file?")
+-- Live (onPC 2.5.1): SaveShow under the current name writes with no dialog; a new name asks "Change show file name?";
+-- an existing other file asks "Change show file name and overwrite existing show file?". OK writes at once.
+-------------------------------------------------------------------------------
+;(function()
+  local SAVE_TITLES = { ["Change show file name?"] = true, ["Change show file name and overwrite existing show file?"] = true }
+  -- Each dialog's message around the show name (live): the framing is compared with whitespace collapsed (it wraps),
+  -- the name between the first and the last quote exactly (apostrophes and every space kept): "Joe's Show" is not
+  -- "s Show", and "Show  B" is not "Show B" (reviews of PR #66). The framing text has no quote of its own.
+  local SAVE_FRAMES = {
+    ["Change show file name?"] = { "Do you intend to change the show file name to", "?" },
+    ["Change show file name and overwrite existing show file?"] = { "You are going to change the show file name and overwrite the file with the name", "that already exists. Do you want to continue ?" },
+  }
+  local function squash(t) return (tostring(t):gsub("%s+", " "):gsub("^ ", ""):gsub(" $", "")) end
+  -- The show name a dialog's message names, or nil when the message is not the expected one.
+  local function dialogTarget(title, text)
+    local frame = SAVE_FRAMES[title]
+    if not frame or type(text) ~= "string" then return nil end
+    local first = text:find("'", 1, true)
+    local last = text:match("^.*()'")
+    if not first or not last or last <= first then return nil end
+    if squash(text:sub(1, first - 1)) ~= frame[1] or squash(text:sub(last + 1)) ~= frame[2] then return nil end
+    return text:sub(first + 1, last - 1)
+  end
+  local function currentShow()
+    local ok, v = pcall(function() return Root().MANetSocket:Get("ShowFile") end)
+    return ok and v and tostring(v) or nil
+  end
+  -- The top modal: (row, handle) when one is open, (nil) when none is, (nil, nil, reason) when it cannot be read; a
+  -- failed lookup is never taken for "no dialog" (review of PR #66).
+  local function topModal()
+    if type(GetTopModal) ~= "function" then return nil, nil, "GetTopModal is not available" end
+    local ok, m = pcall(GetTopModal)
+    if not ok then return nil, nil, "GetTopModal failed: " .. tostring(m) end
+    if not m then return nil end
+    local r = { class = safeCall(m, "GetClass"), name = tostring(safeProp(m, "name")), buttons = {} }
+    pcall(function() r.display = m:GetDisplayIndex() end)
+    local function walk(h, d)
+      if d > 8 then return end
+      for _, c in ipairs(h:UIChildren() or {}) do
+        local vis = true
+        pcall(function() vis = c:IsVisible() end)
+        if vis then
+          local okT, tx = pcall(function() return c.Text end)
+          if okT and tx ~= nil and tx ~= "" then
+            if safeCall(c, "GetClass") == "Button" then r.buttons[#r.buttons + 1] = tostring(tx)
+            elseif c.name == "Title" then r.title = tostring(tx)
+            elseif c.name == "Text" then r.text = tostring(tx) end
+          end
+        end
+        walk(c, d + 1)
+      end
+    end
+    pcall(walk, m, 0)
+    r.buttons = emptyArray(r.buttons)
+    return r, m
+  end
+  local function showName(n)
+    if type(n) ~= "string" then raise("[bad-args] name must be text") end
+    n = n:gsub("%.show$", "")
+    if n == "" or #n > 128 or n:find('[%c"/\\:*?<>|]') or n:match("^%s") or n:match("%s$") then
+      raise('[bad-name] a show name is 1-128 characters without quotes, slashes, \\ : * ? < > | or control characters, and without leading or trailing spaces')
+    end
+    return n
+  end
+
+  -- DirList's time is the local wall-clock time written as if it were UTC (live: a file saved at 04:22:45 MDT reads
+  -- the epoch of 04:22:45 UTC, 6 h off). localTime is that wall-clock time; time is the real epoch, corrected by the
+  -- console's current UTC offset (a file from the other side of a DST change is an hour off).
+  local function utcOffset(now)
+    -- os.date("!*t") marks its table isdst = false, which os.time reads as standard time: carry the local DST flag.
+    local ok, off = pcall(function()
+      local u = os.date("!*t", now)
+      u.isdst = os.date("*t", now).isdst
+      return os.difftime(now, os.time(u))
+    end)
+    return ok and off or 0
+  end
+
+  ops["show.files"] = function(args)
+    local path = GetPath(Enums.PathType.Showfiles)
+    local files = {}
+    local now = os.time()
+    local off = utcOffset(now)
+    local ok, list = pcall(DirList, path, "*.show")
+    if ok and type(list) == "table" then
+      for _, e in ipairs(list) do
+        if type(e) == "table" and type(e.name) == "string" then
+          local wall = tonumber(e.time)
+          local name = e.name:gsub("%.show$", "")
+          files[#files + 1] = { name = name, file = e.name, size = tonumber(e.size), time = wall and (wall - off) or nil, localTime = wall and os.date("!%Y-%m-%d %H:%M:%S", wall) or nil }
+        end
+      end
+    end
+    local modal, _, modalError = topModal()
+    return { current = currentShow(), path = path, listed = ok and type(list) == "table", files = emptyArray(files), now = now, localNow = os.date("%Y-%m-%d %H:%M:%S", now), utcOffset = off, modal = modal or false, modalKnown = modalError == nil, modalError = modalError }
+  end
+
+  -- args: { name?, exclusive }
+  ops["show.save"] = function(args)
+    requireExclusive(args, "show.save")
+    local open, _, modalError = topModal()
+    if modalError then raise("[modal-unknown] whether a dialog is open cannot be read (" .. modalError .. "); SaveShow was not sent") end
+    if open then raise("[modal-open] a dialog is open on the console; SaveShow was not sent") end
+    local command = "SaveShow"
+    if args.name ~= nil then command = 'SaveShow "' .. showName(args.name) .. '"' end
+    CmdIndirect(command)
+    return { queued = true, command = command, now = os.time() }
+  end
+
+  -- args: { expectTitle, expectTarget, button = "OK" | "Cancel", exclusive }. The dialog must name the expected show
+  -- ('<name>' in its text, as the console writes it): a same-title dialog from another save is never answered.
+  ops["show.answer"] = function(args)
+    requireExclusive(args, "show.answer")
+    if args.button ~= "OK" and args.button ~= "Cancel" then raise("[bad-args] button must be OK or Cancel") end
+    if not SAVE_TITLES[args.expectTitle] then raise("[bad-args] expectTitle must be one of SaveShow's own dialogs") end
+    local target = showName(args.expectTarget)
+    local md, m, modalError = topModal()
+    if modalError then raise("[modal-unknown] the dialog cannot be read (" .. modalError .. "); nothing was clicked") end
+    if not md then raise("[no-modal] no dialog is open") end
+    if md.title ~= args.expectTitle then raise("[wrong-modal] the open dialog is " .. tostring(md.title) .. ", not " .. args.expectTitle .. "; nothing was clicked") end
+    if dialogTarget(args.expectTitle, md.text) ~= target then
+      raise("[wrong-target] the open dialog's message is not the one for '" .. target .. "' (" .. tostring(md.text) .. "); nothing was clicked")
+    end
+    local target
+    local function find(h)
+      for _, c in ipairs(h:UIChildren() or {}) do
+        local okB, isB = pcall(function() return c:GetClass() == "Button" and c.Text == args.button and c:IsVisible() and c:IsEnabled() end)
+        if okB and isB then target = c return end
+        find(c)
+        if target then return end
+      end
+    end
+    find(m)
+    if not target then raise("[no-button] the dialog has no visible, enabled " .. args.button .. " button") end
+    local r = target:Get("AbsRect")
+    local x, y = math.floor(r.x + r.w / 2), math.floor(r.y + r.h / 2)
+    Mouse(md.display, "move", x, y)
+    Mouse(md.display, "press", "Left")
+    Mouse(md.display, "release", "Left")
+    return { clicked = args.button, title = md.title, display = md.display }
   end
 end)()
 

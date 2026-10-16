@@ -28,6 +28,7 @@ export const TASK_TOOLS: ReadonlyArray<{ task: string; tools: readonly string[] 
   { task: "timecode shows", tools: ["gma3_build_timecode", "gma3_timecode_transport", "gma3_timecodes"] },
   { task: "DMX output: universes, grants, Art-Net and sACN (why output is missing)", tools: ["gma3_dmx_output", "gma3_configure_dmx_output", "gma3_dmx", "gma3_fixture_output"] },
   { task: "OSC input and output (external controllers and helpers sending commands)", tools: ["gma3_osc", "gma3_configure_osc", "gma3_test_osc_input"] },
+  { task: "save the show file (current or new name) and list the show files", tools: ["gma3_save_show", "gma3_show_files"] },
   { task: "read show data and live state", tools: ["gma3_objects", "gma3_get_object", "gma3_list_children", "gma3_programmer", "gma3_fixture_attributes", "gma3_cues", "gma3_sequences"] },
 ];
 
