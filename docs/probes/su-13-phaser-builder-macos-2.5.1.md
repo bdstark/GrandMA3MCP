@@ -39,6 +39,28 @@ The console keeps the phase within ±720 (with float noise: −539.99997854233).
 135, 0, 315, 90, 270, 180 by grid position. That is the set 0..315 in steps of 45, permuted. `gridposmatr` held the
 shuffled position, and the raw `gridpos` was unchanged. The check compares the set of phases.
 
+## One cycle: 0 Thru 360 (showtest2, 2026-10-16)
+
+`gma3_build_phaser` on Group 4 (72 festoon cells in one row), Dimmer, `phase: {from: 0, to: 360}`: the check failed
+with "402.35 Dimmer: phase 5.0704° expected (grid position 1 of 72), 5.0000023841858 read; 402.34 … 10.1408°
+expected, 10.000004768372 read". The console spread 0 Thru 360 as one cycle, 360/72 = 5° apart with the end left out,
+not 360/71 inclusive. Every other range read so far is inclusive (0 Thru 270 on 4, 0 Thru 315 on 8, 0 Thru 1260 on
+8, 0 Thru 12780 on 72), none of them a whole number of cycles. The check now expects one cycle for 0 Thru 360 and
+accepts either distribution for the other whole numbers of cycles, which have not been read.
+
+To settle those, on four cells in one row (gridpos 0..3, Preview, `GetProgPhaser`), each after `ClearAll`:
+
+| Command | One cycle | Inclusive |
+| --- | --- | --- |
+| `At Phase 0 Thru 720` | 0 / 180 / 360 / 540 | 0 / 240 / 480 / 720 |
+| `At Phase 360 Thru 0` | 360 / 270 / 180 / 90 | 360 / 240 / 120 / 0 |
+| `At Phase 90 Thru 450` | 90 / 180 / 270 / 360 | 90 / 210 / 330 / 450 |
+| `At Phase 0 Thru -360` | 0 / −90 / −180 / −270 | 0 / −120 / −240 / −360 |
+| `Set Selection MAtricks "XGroup" 2`, `At Phase 0 Thru 360`, `Reset Selection MAtricks` | 0 / 180 / 0 / 180 | 0 / 360 / 0 / 360 |
+| the same with `"XWings" 2` (wing size 2) and with `"XBlock" 2` | wings 0 / 180 / 180 / 0, blocks 0 / 0 / 180 / 180 | wings 0 / 360 / 360 / 0, blocks 0 / 0 / 360 / 360 |
+
+(Modulo 360, the inclusive column of a repeat reads 0 everywhere.)
+
 ## Wings of one fixture
 
 The mirror variant of a circle on two movers (wings 2, `At Phase 0 Thru 180`) read 180 on both movers: a wing of one

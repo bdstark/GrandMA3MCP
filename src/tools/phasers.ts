@@ -76,6 +76,9 @@ export interface PhaserLayers {
   phase?: { from: number; to: number };
   /** SU-13: a phase step per fixture (to = from + step x (n - 1)), resolved once the fixture count is known. */
   phaseStep?: { from: number; step: number };
+  /** The step the resolved phase came from: the request is that step between neighbours, so only the end-inclusive
+   * spread matches it (see phaseDistributions). */
+  phaseFromStep?: number;
   /** SU-13: an even spread over the fixtures (0 -> 360 x (n - 1) / n), resolved once the fixture count is known. */
   phaseSpread?: boolean;
   measure?: number;
@@ -370,6 +373,7 @@ export function planEffect(e: Effect, n: number): { effect: Effect; overrides: O
   const phaser: PhaserLayers = { ...e.phaser };
   if (phaser.phaseStep) {
     phaser.phase = { from: phaser.phaseStep.from, to: round3(phaser.phaseStep.from + phaser.phaseStep.step * Math.max(0, n - 1)) };
+    phaser.phaseFromStep = phaser.phaseStep.step;
     delete phaser.phaseStep;
   }
   if (phaser.phaseSpread) {
@@ -507,10 +511,37 @@ const GRID_ROW = 262144;
 export const gridX = (pos: number): number => ((pos % GRID_ROW) + GRID_ROW) % GRID_ROW;
 
 /**
- * The phase a fixture gets: from -> to over its position k of n along grid X, with the repetition applied as the
- * selection MAtricks does it (SB-02: groups repeat every g, wings mirror within each wing, blocks hold b together).
+ * How the console spreads a phase range over the positions:
+ *   - `inclusive`: from -> to, both ends used (step (to - from) / (span - 1)). Every range that is not a whole number of
+ *     cycles: 0 Thru 270 on 4 (SB-04), 0 Thru 1260 on 8 and 0 Thru 12780 on 72 (SU-13), 0 Thru 315 shuffled.
+ *   - `cycle`: the end is left out, so the last fixture does not repeat the first (step (to - from) / span). Live for
+ *     0 Thru 360 (showtest2, 2026-10-16: 72 festoon cells in one row read 0, 5, 10, ...: 360 / 72, not 360 / 71).
  */
-export function expectedPhase(phase: { from: number; to: number }, k: number, n: number, repeat?: PhaserLayers["repeat"]): number {
+export type PhaseDistribution = "inclusive" | "cycle";
+
+/**
+ * The distributions the check accepts for a phase, the first being the one reported on a mismatch. A range that is not
+ * a whole number of cycles is inclusive. 0 Thru 360 without a repetition is a cycle (shuffle permutes the same set).
+ * Every other whole number of cycles (0 Thru 720, 90 Thru 450, 360 Thru 0, 0 Thru 360 with groups, wings or blocks)
+ * has not been read on the console, so either distribution is accepted, consistently over the whole selection. A phase
+ * resolved from a step is the request's step between neighbours: inclusive only.
+ */
+export function phaseDistributions(ph: PhaserLayers): PhaseDistribution[] {
+  if (!ph.phase) return ["inclusive"];
+  const range = ph.phase.to - ph.phase.from;
+  const cycles = range / 360;
+  if (range === 0 || Math.abs(cycles - Math.round(cycles)) > 1e-9) return ["inclusive"];
+  if (ph.phaseFromStep !== undefined) return ["inclusive"];
+  if (ph.phase.from === 0 && ph.phase.to === 360 && !ph.repeat) return ["cycle"];
+  return ["cycle", "inclusive"];
+}
+
+/**
+ * The phase a fixture gets: from -> to over its position k of n along grid X, with the repetition applied as the
+ * selection MAtricks does it (SB-02: groups repeat every g, wings mirror within each wing, blocks hold b together), and
+ * the end used (inclusive) or left out (cycle, see PhaseDistribution).
+ */
+export function expectedPhase(phase: { from: number; to: number }, k: number, n: number, repeat?: PhaserLayers["repeat"], distribution: PhaseDistribution = "inclusive"): number {
   let idx = k;
   let span = n;
   if (repeat?.kind === "groups") { idx = k % repeat.count; span = Math.min(repeat.count, n); }
@@ -523,7 +554,19 @@ export function expectedPhase(phase: { from: number; to: number }, k: number, n:
     idx = Math.floor(k / size) % 2 === 1 ? size - 1 - pos : pos;
     span = size;
   } else if (repeat?.kind === "blocks") { idx = Math.floor(k / repeat.count); span = Math.ceil(n / repeat.count); }
+  if (distribution === "cycle") return phase.from + ((phase.to - phase.from) * idx) / span;
   return span > 1 ? phase.from + ((phase.to - phase.from) * idx) / (span - 1) : phase.from;
+}
+
+/**
+ * A phase step the console cannot hold in one At Phase command: the step resolved to exactly 0 Thru 360, which the
+ * console spreads as one even cycle (360 / n apart, not the step). Any range with the same phases modulo 360 is also a
+ * whole number of cycles, so there is no other form to send.
+ */
+export function phaseStepConflict(ph: PhaserLayers, n: number): string | undefined {
+  if (ph.phaseFromStep === undefined || !ph.phase || n < 2) return undefined;
+  if (ph.phase.from !== 0 || ph.phase.to !== 360 || ph.repeat) return undefined;
+  return `phase step ${formatValue(ph.phaseFromStep)} over ${n} fixtures makes At Phase 0 Thru 360, which the console spreads as one even cycle (${formatValue(round3(360 / n))}° apart, so the last fixture does not repeat the first), not ${formatValue(ph.phaseFromStep)}° apart; give phase {from, to} or "spread" for an even cycle, or another step`;
 }
 
 /**
@@ -562,6 +605,8 @@ export function verifyBuild(input: {
   const positions = [...posOf.values()];
   const minPos = positions.length ? Math.min(...positions) : 0;
   const span = positions.length ? Math.max(...positions) - minPos + 1 : 1;
+  // The rows whose phase is checked one by one (without shuffle), after every row has been seen.
+  const phased: Array<{ where: string; k: number; phase: unknown }> = [];
   for (const [sf, id] of input.scope) {
     const rows = bySf.get(sf) ?? [];
     if (!rows.length) { problems.push(`${id}: no programmer value (the effect was not applied)`); continue; }
@@ -595,9 +640,7 @@ export function verifyBuild(input: {
       if (ph.phase) {
         const pos = posOf.get(sf);
         if (pos === undefined) { problems.push(`${where}: the grid position was not read, so the phase cannot be checked`); continue; }
-        const want = expectedPhase(ph.phase, pos - minPos, span, ph.repeat);
-        if (ph.shuffle !== undefined) continue; // a shuffled distribution is checked as a whole below
-        if (!sameAngle(r.phaser?.phase, want)) problems.push(`${where}: phase ${formatValue(want)}° expected (grid position ${pos - minPos} of ${span}${ph.repeat ? `, ${ph.repeat.kind} ${ph.repeat.count}` : ""}), ${r.phaser?.phase ?? "none"} read`);
+        if (ph.shuffle === undefined) phased.push({ where, k: pos - minPos, phase: r.phaser?.phase });
       }
     }
   }
@@ -608,12 +651,29 @@ export function verifyBuild(input: {
   //     of a mixed rig has (RGBW's W next to RGB fixtures) takes whatever phase its fixture drew from the whole set, so
   //     it is checked against its fixture, not against a subset of the distribution (review round 2).
   const ph = effect.phaser;
+  // Each accepted distribution is tried over the whole selection; the first that matches every fixture passes,
+  // otherwise the mismatches against the first are reported.
+  const tryDistributions = (check: (d: PhaseDistribution) => string[]) => {
+    const tried = phaseDistributions(ph).map(check);
+    problems.push(...(tried.find((x) => !x.length) ?? tried[0]));
+  };
+  const how = (d: PhaseDistribution) => (d === "cycle" ? ", as one cycle" : "");
+  if (ph.phase && ph.shuffle === undefined) {
+    const phase = ph.phase;
+    tryDistributions((d) =>
+      phased.flatMap(({ where, k, phase: got }) => {
+        const want = expectedPhase(phase, k, span, ph.repeat, d);
+        return sameAngle(got, want) ? [] : [`${where}: phase ${formatValue(want)}° expected (grid position ${k} of ${span}${ph.repeat ? `, ${ph.repeat.kind} ${ph.repeat.count}` : ""}${how(d)}), ${got ?? "none"} read`];
+      }),
+    );
+  }
   if (ph.phase && ph.shuffle !== undefined) {
-    const want: number[] = [];
+    const phase = ph.phase;
+    const keys: number[] = [];
     const got: number[] = [];
     for (const [sf, id] of input.scope) {
       const pos = posOf.get(sf);
-      if (pos !== undefined) want.push(norm360(expectedPhase(ph.phase, pos - minPos, span, ph.repeat)));
+      if (pos !== undefined) keys.push(pos - minPos);
       // Every participating row must carry a phase (review round 3): a row without one is not silently left out.
       const all = bySf.get(sf) ?? [];
       const finite = (r: BuildRow) => typeof r.phaser?.phase === "number" && Number.isFinite(r.phaser.phase);
@@ -627,10 +687,12 @@ export function verifyBuild(input: {
       const off = rows.filter((r) => !sameAngle(r.phaser!.phase, phase));
       if (off.length) problems.push(`${id}: its attributes are out of phase (${rows.map((r) => `${r.attribute} ${norm360(r.phaser!.phase as number)}`).join(", ")})`);
     }
-    want.sort((x, y) => x - y);
     got.sort((x, y) => x - y);
-    const same = want.length === got.length && want.every((w, i) => sameAngle(w, got[i]));
-    if (!same) problems.push(`shuffled phases: expected the set ${want.join(", ")} over the fixtures, read ${got.join(", ")}`);
+    tryDistributions((d) => {
+      const want = keys.map((k) => norm360(expectedPhase(phase, k, span, ph.repeat, d))).sort((x, y) => x - y);
+      const same = want.length === got.length && want.every((w, i) => sameAngle(w, got[i]));
+      return same ? [] : [`shuffled phases: expected the set ${want.join(", ")} over the fixtures${how(d)}, read ${got.join(", ")}`];
+    });
   }
   // A step that calls a preset: every fixture references it in that step (on the preset's attributes), none another.
   input.stepPresets.forEach((sp, i) => {
@@ -1024,6 +1086,8 @@ export async function buildPhaser(ctx: ToolContext, raw: BuildArgs): Promise<Ope
               // Everything that depends on the fixture count and order: phase step and spread, mirror, spreads.
               const order = [...members].map((m, i) => ({ m, i })).sort((a, b) => a.m.x - b.m.x || a.i - b.i).map((x) => x.m);
               const planned = planEffect(effect, order.length);
+              const conflict = phaseStepConflict(planned.effect.phaser, order.length);
+              if (conflict) return failed(name, conflict);
               const select = group !== undefined ? ["ClearSelection", "Grid 0/0/0", `Group ${group}`] : ["ClearSelection", ...members.flatMap((m) => [`Grid ${m.x}/0/0`, m.ref])];
               const commands = effectCommands(planned.effect, planned.overrides, { all: select, some: (ms) => ["ClearSelection", ...ms.map((k) => order[k].ref)] });
               plans.set(job, { ...planned, commands, select, stepPresets, implied, members: order });
@@ -1355,7 +1419,7 @@ const stepSchema = z.object({
 const phaserSchema = z
   .object({
     speed_bpm: z.number().optional().describe("Playback speed in BPM."),
-    phase: z.union([z.object({ from: z.number(), to: z.number() }), z.object({ from: z.number().optional(), step: z.number() }), z.literal("spread")]).optional().describe('{from, to}, {from, step} (degrees per fixture) or "spread".'),
+    phase: z.union([z.object({ from: z.number(), to: z.number() }), z.object({ from: z.number().optional(), step: z.number() }), z.literal("spread")]).optional().describe('{from, to}, {from, step} (degrees per fixture) or "spread". {from: 0, to: 360} is one even cycle (360/n apart); other ranges use both ends.'),
     measure: z.number().optional().describe("Beats one phaser cycle lasts at the speed."),
     speed_master: z.number().optional(),
     repeat: z.object({ groups: z.number().optional(), wings: z.number().optional(), blocks: z.number().optional() }).optional(),
@@ -1374,7 +1438,7 @@ export const registerPhaserTools: RegisterTools = (server, ctx) => {
       title: "Build a phaser and store it as a preset",
       description:
         "Build a repeatable effect from structured steps and store it into Preset <pool>.<number>, reading every step back. Steps: per attribute an absolute and/or relative value (unit percent, or physical: degrees for Pan/Tilt) or a preset called into the step, plus step timing (width, transition, accel, decel). " +
-        "phaser: fixture distribution (phase {from, to} in degrees over the selection grid, from > to runs the other way; {from, step}: a phase step per fixture, e.g. step 180 between neighbours; \"spread\": 0 -> 360 x (n-1)/n; repeat {groups|wings|blocks: n} repeats it along X; shuffle: an XShuffle seed that permutes the phases) and playback speed (speed_bpm; measure = the number of beats one phaser cycle lasts at that speed, so the step widths, in percent of a beat, should add up to measure x 100; speed_master 1-16). These three are kept apart in the plan and the result. " +
+        "phaser: fixture distribution (phase {from, to} in degrees over the selection grid, from > to runs the other way; {from, step}: a phase step per fixture, e.g. step 180 between neighbours; \"spread\": 0 -> 360 x (n-1)/n; {from: 0, to: 360} is one even cycle (360/n apart, like \"spread\": the console leaves the end out so the last fixture does not repeat the first), any other range uses both ends (0 -> 270 on 4: 0, 90, 180, 270; other whole cycles such as 0 -> 720 or 360 -> 0 are not established and the check accepts either); repeat {groups|wings|blocks: n} repeats it along X; shuffle: an XShuffle seed that permutes the phases) and playback speed (speed_bpm; measure = the number of beats one phaser cycle lasts at that speed, so the step widths, in percent of a beat, should add up to measure x 100; speed_master 1-16). These three are kept apart in the plan and the result. " +
         "mirror {attributes, wings (default 2)}: the fixtures (grid order) are cut into wings and every second wing gets those attributes inverted (relative and physical values negated, percent 100 - v), e.g. the second beam's Pan. variants [sync, follow, mirror] build the versions of one effect into consecutive presets from preset, named \"<name> sync|follow|mirror\": sync without a phase spread, follow with the phase (default spread), mirror with the spread mirrored about the centre (wings 2) and Pan (or mirror.attributes) inverted on the second half. " +
         "Templates (instead of steps): dimmer_chase {on, off, speed_bpm, spread}, alternating_colors {colors: [{red, green, blue} or {preset}], x2, speed_bpm, snap}, pan_tilt {pan, tilt (degrees), speed_bpm, spread}: a relative circle around the current position. " +
         "Position shapes in physical degrees around center {pan, tilt}: circle and figure8 (size = radius), cone (tilt held at tilt, pan sweeping a full turn and back), fan (closed on the centre, then open over size degrees of pan from the first fixture to the last), bounce (tilt up and down by size); default 20 BPM. " +

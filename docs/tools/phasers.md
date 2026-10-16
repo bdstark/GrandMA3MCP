@@ -81,7 +81,15 @@ a template.
 - **No tool cap below the console's.** Up to 1024 fixtures or cells per effect, of several fixture types, as long as
   each has the effect's attributes (checked before anything is sent). `gma3_store_preset`'s scope cap rose to match.
 - **Phase forms.** `{from, to}` as before; `{from, step}` gives a phase step per fixture (`step: 180` on 72 cells sends
-  `At Phase 0 Thru 12780`); `"spread"` is 0 → 360·(n−1)/n. Phases are compared modulo 360. `shuffle: <seed>` sets the
+  `At Phase 0 Thru 12780`); `"spread"` is 0 → 360·(n−1)/n. Phases are compared modulo 360.
+- **One cycle.** The console spreads `At Phase 0 Thru 360` as one even cycle: the end is left out so the last fixture
+  does not repeat the first (360/n apart, the same phases as `"spread"`; showtest2: 72 cells read 0, 5, 10, …). Every
+  range that is not a whole number of cycles uses both ends (0 → 270 on four: 0, 90, 180, 270). Other whole numbers of
+  cycles (0 → 720, 360 → 0, 90 → 450, 0 → 360 with a repeat) have not been read on the console, so the check accepts
+  either distribution, the same one over the whole selection. A phase step that would send exactly `0 Thru 360`
+  (`step: 120` on four) is refused before anything is sent: the console would spread it 90° apart, and any range with
+  the same phases modulo 360 is also a whole cycle. A step that sends another whole number of cycles is checked as
+  the step. `shuffle: <seed>` sets the
   selection MAtricks XShuffle while the phase is set: the phases are permuted. The check requires every attribute of a
   fixture to share its phase, and the fixtures' phases over the whole selection to be the unshuffled set. A channel
   that only part of a mixed rig has (RGBW's W) is checked against its own fixture's phase.
@@ -133,7 +141,7 @@ a template.
      through its size) and its timing.
    - Each step preset is referenced by every fixture in its step, and no other preset is referenced there.
    - Speed, measure and speed master match, and every fixture has the expected phase for its grid position and the
-     repetition.
+     repetition (`0 Thru 360` as one cycle, see above).
    - Only activation-group siblings and attributes of step presets may be there in addition, and they are reported
      (their values come from the preset or the group; their timing and layers are checked as above).
 6. `store`: the `gma3_store_preset` body, run inside this tool's lock, from the Preview programmer. It uses the mode
