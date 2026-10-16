@@ -182,8 +182,9 @@ effect that is playing there. It is idempotent: from Normal without `clear_norma
   - MAgic presets and recipes (SB-05);
   - universal phasers (refused).
 - The phase check reads each fixture's grid position from the programmer and assumes the console spreads the phase
-  over grid X positions, gaps included. A group with gaps or rows may be reported as a mismatch rather than accepted
-  silently.
+  over grid X positions, gaps included. On a group with several rows the console packs the position as
+  y * 2^18 + x; the check unpacks X, so rows that share an X range share the expected phase. A group with gaps may be
+  reported as a mismatch rather than accepted silently.
 
 ## Live test
 
