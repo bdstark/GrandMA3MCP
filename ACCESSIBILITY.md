@@ -1,6 +1,6 @@
 # Accessibility
 
-GrandMA3MCP aims to make its documentation and programmatic interfaces usable by people with different
+gma3-mcp aims to make its documentation and programmatic interfaces usable by people with different
 abilities and ways of working. Accessibility is relevant even though this repository does not provide
 a graphical application of its own.
 
@@ -39,11 +39,11 @@ alternative interaction method. Discuss changes to those rules through the norma
 
 ## Report an accessibility barrier
 
-Use the [bug report template](https://github.com/bdstark/GrandMA3MCP/issues/new?template=bug_report.md)
+Use the [bug report template](https://github.com/bdstark/gma3-mcp/issues/new?template=bug_report.md)
 for an existing barrier or the
-[feature request template](https://github.com/bdstark/GrandMA3MCP/issues/new?template=feature_request.md)
+[feature request template](https://github.com/bdstark/gma3-mcp/issues/new?template=feature_request.md)
 for a proposed improvement. If the issue form itself is a barrier, or you prefer a private report, email
-**[bdstark@gmail.com](mailto:bdstark@gmail.com)** with the subject `GrandMA3MCP accessibility`.
+**[bdstark@gmail.com](mailto:bdstark@gmail.com)** with the subject `gma3-mcp accessibility`.
 
 Describe the task you were trying to complete, where you encountered the barrier, what happened and what
 would help. If relevant and comfortable to share, include the operating system, client, assistive

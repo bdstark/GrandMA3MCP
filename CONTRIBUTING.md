@@ -10,7 +10,7 @@ instead of a public issue or pull request.
 
 ## Report a bug or propose a feature
 
-Open a [GitHub issue](https://github.com/bdstark/GrandMA3MCP/issues). For bugs, include:
+Open a [GitHub issue](https://github.com/bdstark/gma3-mcp/issues). For bugs, include:
 
 - Repository commit, server and plugin versions; include module versions or the vendoring manifest for
   independent consumers.

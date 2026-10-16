@@ -11,8 +11,8 @@ Install grandMA3 onPC, Git and Node.js with npm. Node.js 22 is used by this proj
 image; the package requires Node.js 18 or newer. Launch onPC once to create its resource folders.
 
 ```powershell
-git clone https://github.com/bdstark/GrandMA3MCP.git
-Set-Location GrandMA3MCP
+git clone https://github.com/bdstark/gma3-mcp.git
+Set-Location gma3-mcp
 npm.cmd ci
 npm.cmd run build
 ```
@@ -85,7 +85,7 @@ the example paths. If a `gma3` entry already exists, edit it rather than adding 
 ```toml
 [mcp_servers.gma3]
 command = 'C:\Program Files\nodejs\node.exe'
-args = ['C:\Users\yourname\GrandMA3MCP\dist\index.js']
+args = ['C:\Users\yourname\gma3-mcp\dist\index.js']
 
 [mcp_servers.gma3.env]
 GMA3_INSTALL_DIR = 'C:\ProgramData\MALightingTechnology'
@@ -129,7 +129,7 @@ Preserve any existing environment entries, such as a custom bridge port. A compl
   "mcpServers": {
     "gma3": {
       "command": "node",
-      "args": ["C:\\path\\to\\GrandMA3MCP\\dist\\index.js"],
+      "args": ["C:\\path\\to\\gma3-mcp\\dist\\index.js"],
       "env": {
         "GMA3_INSTALL_DIR": "C:\\ProgramData\\MALightingTechnology"
       }

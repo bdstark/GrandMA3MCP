@@ -1,4 +1,4 @@
-# GrandMA3MCP hardkey, keyboard and feedback feature requests
+# gma3-mcp hardkey, keyboard and feedback feature requests
 
 Updated: 2026-10-09 after review of the KB-01 follow-up evidence and documentation through `e99f23c` (merged in `1069f1d`),
 after the KB-02 module packaging work, the KB-03 owned-session implementation on the fake backend, the KB-04 keyboard

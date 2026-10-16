@@ -3,7 +3,7 @@
 [README](../README.md) · [Live probe records](probes/README.md) · [Module integration](modules.md)
 
 This beta's reviewed source baseline is
-[`9da14544155f921c5dd4fd1cbb9a1ea4bd6f6e78`](https://github.com/bdstark/GrandMA3MCP/tree/9da14544155f921c5dd4fd1cbb9a1ea4bd6f6e78).
+[`9da14544155f921c5dd4fd1cbb9a1ea4bd6f6e78`](https://github.com/bdstark/gma3-mcp/tree/9da14544155f921c5dd4fd1cbb9a1ea4bd6f6e78).
 The tables distinguish recorded console behavior from tests using simulated console dependencies.
 Earlier probe records identify the component versions they exercised; they are not a claim that every
 probe was rerun against this exact revision. An installation guide is not qualification evidence.
@@ -39,7 +39,7 @@ console keyboard state; per-instance ownership does not provide cross-plugin arb
 
 | Environment or path | Evidence | What it establishes |
 | --- | --- | --- |
-| Ubuntu CI, Node.js 20 and 22, Lua 5.4 | [CI configuration](../.github/workflows/ci.yml), [successful run for the reviewed revision](https://github.com/bdstark/GrandMA3MCP/actions/runs/37956866987) | Clean dependency installation, TypeScript build and automated suite with Lua harnesses. This is not a Linux onPC qualification. |
+| Ubuntu CI, Node.js 20 and 22, Lua 5.4 | [CI configuration](../.github/workflows/ci.yml), [successful run for the reviewed revision](https://github.com/bdstark/gma3-mcp/actions/runs/37956866987) | Clean dependency installation, TypeScript build and automated suite with Lua harnesses. This is not a Linux onPC qualification. |
 | Local macOS review, Node.js 26.11.0 | Build, 251 automated tests (none skipped), 865 assertions across three Lua harnesses | Review-time checks against fake bridges and stubbed console APIs; no new live console mutations. |
 | Node.js 18 | Declared package minimum | Not included in the current CI matrix; prefer the documented Node.js 22 setup until the minimum is separately tested. |
 | Windows Node.js server | [Setup instructions](setup/windows.md) | No Windows CI job or current end-to-end qualification recorded. |

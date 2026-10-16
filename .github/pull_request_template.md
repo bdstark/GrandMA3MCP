@@ -1,6 +1,6 @@
 <!-- Keep this proportional to the change. Use N/A with a short explanation for irrelevant sections.
 Read CONTRIBUTING.md and CODE_OF_CONDUCT.md. For vulnerabilities, coordinate privately before a public PR:
-https://github.com/bdstark/GrandMA3MCP/security/advisories/new -->
+https://github.com/bdstark/gma3-mcp/security/advisories/new -->
 
 ## Problem and resulting behavior
 

@@ -5,7 +5,7 @@ title: ""
 ---
 
 <!-- See CONTRIBUTING.md and CODE_OF_CONDUCT.md. Security vulnerabilities belong in private reporting:
-https://github.com/bdstark/GrandMA3MCP/security/advisories/new -->
+https://github.com/bdstark/gma3-mcp/security/advisories/new -->
 
 ## Need and intended users
 

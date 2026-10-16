@@ -12,8 +12,8 @@ image; the package requires Node.js 18 or newer. Launch onPC once to create its 
 Run these commands in Terminal:
 
 ```bash
-git clone https://github.com/bdstark/GrandMA3MCP.git
-cd GrandMA3MCP
+git clone https://github.com/bdstark/gma3-mcp.git
+cd gma3-mcp
 npm ci
 npm run build
 ```
@@ -78,7 +78,7 @@ paths. If a `gma3` entry already exists, edit it rather than adding a duplicate:
 ```toml
 [mcp_servers.gma3]
 command = "/absolute/path/to/node"
-args = ["/Users/yourname/GrandMA3MCP/dist/index.js"]
+args = ["/Users/yourname/gma3-mcp/dist/index.js"]
 ```
 
 The desktop app shares this configuration with Codex clients on the same host. The repository's

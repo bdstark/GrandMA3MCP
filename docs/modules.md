@@ -925,7 +925,7 @@ manifest, not an automatic updater or a runtime dependency on GitHub.
 | `plugin/gma3_mcp_feedback.lua` | 0.6.0 | 1 | `2a42c1ae01973643e99cd328309e8dc5f3c2a59527accd6c132eba3679842f8a` |
 | `plugin/gma3_mcp_control.lua` | 0.5.0 | 1 | `2c5b9949b626a61d662970dd353a87ab264d0d9a1c39c3b27c3d8a85e263f50b` |
 
-1. Obtain the Lua files from that exact revision of `bdstark/GrandMA3MCP`, rather than a moving branch.
+1. Obtain the Lua files from that exact revision of `bdstark/gma3-mcp`, rather than a moving branch.
    Copy them unchanged with [LICENSE](../LICENSE) and the manifest into the surface package. The manifest's
    `revision` is the commit whose bytes the hashes name (the lock is updated in the commit after it).
 2. Verify each file against its manifest SHA-256 before packaging (for example, `shasum -a 256` on macOS,

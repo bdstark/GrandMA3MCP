@@ -5,7 +5,7 @@ title: ""
 ---
 
 <!-- Suspected vulnerability? Do not report it publicly. Use:
-https://github.com/bdstark/GrandMA3MCP/security/advisories/new
+https://github.com/bdstark/gma3-mcp/security/advisories/new
 Remove secrets, identifying show data and private paths. Do not upload production shows or proprietary files.
 See CONTRIBUTING.md and CODE_OF_CONDUCT.md before submitting. Use N/A or unknown where appropriate. -->
 
@@ -46,4 +46,4 @@ working revision, if known. For documentation bugs, a page link and correction m
 
 Describe the task and the barrier. Optionally include the client or assistive technology used and what
 alternative would help. No disability or medical information is needed. For private reports or if this
-template is a barrier, email bdstark@gmail.com with the subject `GrandMA3MCP accessibility`.
+template is a barrier, email bdstark@gmail.com with the subject `gma3-mcp accessibility`.

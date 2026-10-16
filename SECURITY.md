@@ -2,11 +2,11 @@
 
 ## Report a vulnerability privately
 
-Use GitHub's **[Report a vulnerability](https://github.com/bdstark/GrandMA3MCP/security/advisories/new)**
+Use GitHub's **[Report a vulnerability](https://github.com/bdstark/gma3-mcp/security/advisories/new)**
 to submit a private report. Private vulnerability reporting is enabled for this repository.
 
 If you cannot use GitHub private reporting, email the maintainer at
-**[bdstark@gmail.com](mailto:bdstark@gmail.com)** with the subject `GrandMA3MCP security report`.
+**[bdstark@gmail.com](mailto:bdstark@gmail.com)** with the subject `gma3-mcp security report`.
 Do not post exploit details in public issues, pull requests or discussions before the maintainer has
 had an opportunity to assess the report and coordinate disclosure.
 
@@ -24,7 +24,7 @@ own or are authorized to test, using a disposable show disconnected from product
 Reports and fixes are handled on a best-effort basis. There is no guaranteed response or remediation
 time, bounty program or commitment to backport fixes. If you have not received a response, follow up
 privately. Coordinate the timing and content of public disclosure with the maintainer where possible.
-Ordinary bugs and feature requests belong in [GitHub issues](https://github.com/bdstark/GrandMA3MCP/issues).
+Ordinary bugs and feature requests belong in [GitHub issues](https://github.com/bdstark/gma3-mcp/issues).
 
 ## Versions and downstream consumers
 

@@ -1,6 +1,6 @@
 # Code of conduct
 
-GrandMA3MCP welcomes people of all backgrounds and experience levels. Everyone participating in this
+gma3-mcp welcomes people of all backgrounds and experience levels. Everyone participating in this
 project is expected to help keep its community respectful, inclusive and safe.
 
 ## Expected behavior
@@ -24,7 +24,7 @@ may be considered when it directly affects participants' safety or ability to ta
 ## Report a concern
 
 Contact the maintainer privately at **[bdstark@gmail.com](mailto:bdstark@gmail.com)** with the subject
-`GrandMA3MCP conduct report`. Include what happened, relevant links or dates, and any immediate concerns
+`gma3-mcp conduct report`. Include what happened, relevant links or dates, and any immediate concerns
 or preferred follow-up. Share only information needed to understand the incident. You do not need to
 confront the person involved or post a public report.
 

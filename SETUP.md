@@ -96,11 +96,11 @@ The [SHOWS.md shared acceptance criteria](SHOWS.md#shared-acceptance-criteria) a
 
 **Depends on:** KB-26.
 
-**Repository:** GrandMA3MCP.
+**Repository:** gma3-mcp.
 
 **Lua changes:** Yes: the bridge's `patch.fingerprint`.
 
-**Status:** fixed in bridge 0.25.1 (PR GrandMA3MCP#46, merged). After five grandMA2 types were imported, the first
+**Status:** fixed in bridge 0.25.1 (PR gma3-mcp#46, merged). After five grandMA2 types were imported, the first
 `gma3_patch_add` refused to commit: FixtureTypes and AttributeDefinitions differed between the copy and the live
 patch. A property-by-property diff of the open copy (3,765 objects) found only console-derived values:
 `ATTRIBUTEINDEXOLD` on the 29 imported attributes (unset `4294967295` live, numbered in the copy) and the
@@ -120,11 +120,11 @@ and that class. Verified read-only against the same open copy: all nine collecti
 
 **Depends on:** KB-26.
 
-**Repository:** GrandMA3MCP.
+**Repository:** gma3-mcp.
 
 **Lua changes:** Yes: the bridge's `patch.add`.
 
-**Status:** done in bridge 0.25.2 (PR GrandMA3MCP#47, merged): `patch.add` calls `AddFixtures` once per fixture,
+**Status:** done in bridge 0.25.2 (PR gma3-mcp#47, merged): `patch.add` calls `AddFixtures` once per fixture,
 amount 1, each with its own FID and address. Reproduced without the bridge on an empty show and reported to MA Lighting (2026-10-14); the
 reproduction plugin and report are in [docs/probes/addfixtures-crash](docs/probes/addfixtures-crash/README.md).
 
@@ -175,7 +175,7 @@ show.
 
 **Depends on:** KB-26.
 
-**Repository:** GrandMA3MCP.
+**Repository:** gma3-mcp.
 
 **Lua changes:** Likely: a read-only library search, and an import op that runs `Import Library "<file>"` in the
 fixture-type destination with `CmdIndirect` and claims only the type it created (KB-25: number + name, one new type).
@@ -210,7 +210,7 @@ had to clean up after itself. A Desktop chat agent cannot run `find` at all.
 
 **Depends on:** KB-26.
 
-**Repository:** GrandMA3MCP.
+**Repository:** gma3-mcp.
 
 **Lua changes:** Not expected: live fixtures take `Set()` outside patch mode (KB-26 hooks). A probe must establish
 which properties are writable and how rotation reads back.
@@ -243,7 +243,7 @@ established).
 
 **Depends on:** FR-03, SB-03.
 
-**Repository:** GrandMA3MCP.
+**Repository:** gma3-mcp.
 
 **Lua changes:** No (one read-only addition to the programmer op: a recalled preset's link per row).
 
@@ -273,7 +273,7 @@ Percent 0` raw, and recalled `At Preset 2.1` and `Off Attribute "Pan" + "Tilt"` 
 
 **Depends on:** FR-04, FR-05, SB-01, SU-05.
 
-**Repository:** GrandMA3MCP.
+**Repository:** gma3-mcp.
 
 **Lua changes:** No.
 
@@ -301,7 +301,7 @@ another, and the sequences and cues named through Lua.
 
 **Depends on:** KB-26, FR-07.
 
-**Repository:** GrandMA3MCP.
+**Repository:** gma3-mcp.
 
 **Lua changes:** Likely: a read-only op over the type's modes, geometry and models.
 
@@ -329,7 +329,7 @@ and the wall washer's model size (1.04 m, needed to space a pair 1 ft apart).
 
 **Depends on:** SU-07.
 
-**Repository:** GrandMA3MCP.
+**Repository:** gma3-mcp.
 
 **Lua changes:** Likely.
 
@@ -364,7 +364,7 @@ the Festoon 2 RGB type's geometry, which moves every Festoon of that type, and m
 
 **Depends on:** FR-09.
 
-**Repository:** GrandMA3MCP.
+**Repository:** gma3-mcp.
 
 **Lua changes:** Possibly, for readback of universe settings.
 
@@ -392,7 +392,7 @@ No tool shows or configures universes, protocol output (Art-Net, sACN) or the gr
 
 **Depends on:** none.
 
-**Repository:** GrandMA3MCP.
+**Repository:** gma3-mcp.
 
 **Lua changes:** No.
 
@@ -401,7 +401,7 @@ No tool shows or configures universes, protocol output (Art-Net, sACN) or the gr
 - the tools that observe over time;
 - `gma3_command` and `gma3_lua` as fallbacks.
 
-A stale build's warning (PR GrandMA3MCP#45) comes first. The `gma3_lua` and `gma3_command` descriptions start by
+A stale build's warning (PR gma3-mcp#45) comes first. The `gma3_lua` and `gma3_command` descriptions start by
 naming the structured tools for patch, groups, presets, phasers, looks, cues and playback. `gma3_observe_tempo`,
 `gma3_build_chase`, `gma3_run_macro` and `gma3_timecode_transport` say they observe over time with no Lua loop.
 `test/discovery.test.ts` fails for an unregistered name in the map or an unmapped new tool
@@ -424,7 +424,7 @@ was not found. The `gma3_lua` description advertises the whole Lua API and names
 
 **Depends on:** SU-05, SU-07.
 
-**Repository:** GrandMA3MCP.
+**Repository:** gma3-mcp.
 
 **Lua changes:** Possibly. The programmer op may need each row's channel-function DMX range.
 
@@ -450,7 +450,7 @@ The agent recognised it as a unit artifact and carried on. The same mapping is u
 
 **Depends on:** SB-01, SB-02, SB-03, SB-07, SU-05, SU-06.
 
-**Repository:** GrandMA3MCP.
+**Repository:** gma3-mcp.
 
 **Lua changes:** No.
 
@@ -505,7 +505,7 @@ fixtures and cells.
 
 **Depends on:** SB-04, SU-12.
 
-**Repository:** GrandMA3MCP.
+**Repository:** gma3-mcp.
 
 **Lua changes:** Possibly, for a compact phaser read-back per fixture.
 
@@ -547,7 +547,7 @@ in Python.
 
 **Depends on:** SU-06, SU-13.
 
-**Repository:** GrandMA3MCP.
+**Repository:** gma3-mcp.
 
 **Lua changes:** No.
 
@@ -582,7 +582,7 @@ in Python.
 
 **Depends on:** SB-07.
 
-**Repository:** GrandMA3MCP.
+**Repository:** gma3-mcp.
 
 **Lua changes:** Possibly: a read-only op over `GlobalVars()` and `UserVars()`.
 
@@ -608,7 +608,7 @@ conclusion is unproven.
 
 **Depends on:** SU-06, SU-09.
 
-**Repository:** GrandMA3MCP.
+**Repository:** gma3-mcp.
 
 **Lua changes:** Possibly: a current-cue field in the sequence reads.
 
@@ -636,7 +636,7 @@ MCP tools.
 **Depends on:** SB-06, and the status and configuration interface of
 [bdstark/gma3-beat-sync](https://github.com/bdstark/gma3-beat-sync) (its BS-01 and BS-02).
 
-**Repository:** GrandMA3MCP for the tools. The sync engine is a console plugin in a separate GPL repository,
+**Repository:** gma3-mcp for the tools. The sync engine is a console plugin in a separate GPL repository,
 bdstark/gma3-beat-sync, which needs nothing from this one.
 
 **Lua changes:** No. The plugin publishes its own state.
@@ -666,7 +666,7 @@ through the console (its published status and its configuration), as two separat
 
 **Depends on:** SU-09.
 
-**Repository:** GrandMA3MCP.
+**Repository:** gma3-mcp.
 
 **Lua changes:** Likely: read and write `ShowData().OSCBase` and its data lines, whitelisted like `dmx.set`.
 
@@ -691,7 +691,7 @@ and checked the socket with `lsof`.
 
 **Depends on:** SU-07, SU-08.
 
-**Repository:** GrandMA3MCP.
+**Repository:** gma3-mcp.
 
 **Lua changes:** Likely: wheels in `patch.typeStructure`.
 
@@ -715,7 +715,7 @@ and checked the socket with `lsof`.
 
 **Depends on:** KB-25.
 
-**Repository:** GrandMA3MCP.
+**Repository:** gma3-mcp.
 
 **Lua changes:** Possibly: a read of the show files that exist.
 

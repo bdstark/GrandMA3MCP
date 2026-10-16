@@ -1,4 +1,4 @@
-# GrandMA3MCP feature requests and acceptance criteria
+# gma3-mcp feature requests and acceptance criteria
 
 ## Architecture requirements applying to every request
 

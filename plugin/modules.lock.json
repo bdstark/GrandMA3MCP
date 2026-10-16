@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "repository": "https://github.com/bdstark/GrandMA3MCP",
+  "repository": "https://github.com/bdstark/gma3-mcp",
   "revision": "4cbbb899ffbcf5572a4ec76feb85b7d193d0591b",
   "license": "MIT",
   "modules": [

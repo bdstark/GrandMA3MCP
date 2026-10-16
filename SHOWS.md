@@ -6,7 +6,7 @@ Identifiers SB-01 through SB-08 are provisional. Features appear after their dep
 
 ## Scope and architecture
 
-All eight features belong primarily in **GrandMA3MCP**. The control-surface repository needs changes only when exposing new controls or feedback.
+All eight features belong primarily in **gma3-mcp**. The control-surface repository needs changes only when exposing new controls or feedback.
 
 These workflows are not necessarily UI-only. grandMA3 documents command support for selection grids and preset storage options. Wrap Around belongs to the sequence, while fader and button functions belong to its executor assignment. Tools must preserve those distinctions.
 
@@ -27,7 +27,7 @@ These workflows are not necessarily UI-only. grandMA3 documents command support 
 
 **Depends on:** Existing executor assignment and cue tools.
 
-**Repository:** GrandMA3MCP.
+**Repository:** gma3-mcp.
 
 **Lua changes:** Not expected for configuration through existing commands/property access. Add Lua only if the probe identifies missing structured readback.
 
@@ -49,7 +49,7 @@ These workflows are not necessarily UI-only. grandMA3 documents command support 
 
 **Depends on:** Existing fixture/group access.
 
-**Repository:** GrandMA3MCP.
+**Repository:** gma3-mcp.
 
 **Lua changes:** Likely for structured selection-grid readback if existing object inspection cannot expose coordinates and order. Prefer existing commands for creation.
 
@@ -71,7 +71,7 @@ These workflows are not necessarily UI-only. grandMA3 documents command support 
 
 **Depends on:** Existing programmer inspection; SB-02 for grid-dependent presets.
 
-**Repository:** GrandMA3MCP.
+**Repository:** gma3-mcp.
 
 **Lua changes:** Not expected for storage options. Structured preset-content/reference inspection may require a narrow Lua reader.
 
@@ -93,7 +93,7 @@ These workflows are not necessarily UI-only. grandMA3 documents command support 
 
 **Depends on:** SB-02 and SB-03.
 
-**Repository:** GrandMA3MCP.
+**Repository:** gma3-mcp.
 
 **Lua changes:** Likely for detailed phaser inspection or manipulation not covered by qualified commands. Extend existing phaser/programmer readers rather than creating a parallel representation.
 
@@ -116,7 +116,7 @@ These workflows are not necessarily UI-only. grandMA3 documents command support 
 
 **Depends on:** SB-02 and SB-03; SB-04 for phaser recipes.
 
-**Repository:** GrandMA3MCP.
+**Repository:** gma3-mcp.
 
 **Lua changes:** Likely for structured recipe-line creation and inspection. Reuse property operations wherever the probe proves sufficient.
 
@@ -139,7 +139,7 @@ These workflows are not necessarily UI-only. grandMA3 documents command support 
 
 **Depends on:** SB-01; SB-04 for phaser integration.
 
-**Repositories:** GrandMA3MCP; optional control-surface integration in the surface repository.
+**Repositories:** gma3-mcp; optional control-surface integration in the surface repository.
 
 **Lua changes:** Not expected for basic master configuration if existing master/property operations suffice. New live synchronization feedback may require Lua.
 
@@ -162,7 +162,7 @@ These workflows are not necessarily UI-only. grandMA3 documents command support 
 
 **Depends on:** Existing object/property tools. Earlier SB features supply useful macro targets but are not mandatory dependencies.
 
-**Repository:** GrandMA3MCP.
+**Repository:** gma3-mcp.
 
 **Lua changes:** Not expected if macro-line creation and properties are accessible through existing operations.
 
@@ -184,7 +184,7 @@ These workflows are not necessarily UI-only. grandMA3 documents command support 
 
 **Depends on:** SB-01; SB-07 when macro events are supported.
 
-**Repository:** GrandMA3MCP.
+**Repository:** gma3-mcp.
 
 **Lua changes:** Likely for structured access to timecode hierarchy and events. Feasibility-gate writes before committing to full timeline editing.
 
