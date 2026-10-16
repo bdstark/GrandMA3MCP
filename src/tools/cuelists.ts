@@ -800,7 +800,10 @@ export async function buildCueBatch(ctx: ToolContext, b: Batch): Promise<BatchRe
   };
   // replace: every existing cue is deleted once everything was checked and Preview is confirmed usable (Delete ... Cue 1
   // Thru keeps the sequence object, its settings and its executor assignments: live 2026-10-15).
-  const checkVars = { name: "check_variables", run: () => checkCommandVariables(bridge, b.cues.filter((c) => c.command !== undefined).map((c) => ({ label: `cue ${c.cue}`, command: c.command as string })), t) };
+  // Playback follows cue numbers, not the order the cues were given: the $variable dependencies are judged in cue-number
+  // order (review round 2); storage and the report keep the given order.
+  const byNumber = [...b.cues].sort((a, b2) => Number(a.cue) - Number(b2.cue));
+  const checkVars = { name: "check_variables", run: () => checkCommandVariables(bridge, byNumber.filter((c) => c.command !== undefined).map((c) => ({ label: `cue ${c.cue}`, command: c.command as string })), t) };
   const built = await buildInPreview(ctx, { items, verify: b.verify, noun: "cues", inspect: [readSequence, checkVars], ...(b.replace ? { prepare: deleteSteps } : {}) });
   const { steps, readBack, warnings, normalProgrammer } = built;
   const reports: CueReport[] = b.cues.map((c, i) => {
@@ -1385,7 +1388,8 @@ export async function editCues(ctx: ToolContext, raw: Record<string, unknown>): 
             if (commands && commands.length !== pick.cues.length) return failedRead("read_cues", `${commands.length} command(s) for ${pick.cues.length} cue(s) (${pick.cues.map((c) => fmtNo(c.no)).join(", ")}); give one command per cue`);
             selected = pick.cues;
             if (commands || command !== undefined) {
-              const vc = await checkCommandVariables(bridge, selected.map((c, k) => ({ label: `cue ${fmtNo(c.no)}`, command: commands?.[k] ?? (command as string) })), t);
+              const pairs = selected.map((c, k) => ({ no: c.no, label: `cue ${fmtNo(c.no)}`, command: commands?.[k] ?? (command as string) }));
+              const vc = await checkCommandVariables(bridge, [...pairs].sort((a, b2) => a.no - b2.no), t);
               if (vc.status !== "succeeded") return failedRead("read_cues", vc.error ?? "the $variables could not be checked");
             }
             if (trig.trigger) {

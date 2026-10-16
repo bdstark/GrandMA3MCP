@@ -54,8 +54,9 @@ type} | {scope, name, delete: true}]`, see [Batch forms](README.md#batch-forms-s
   `Delete*Variable "x"`, deletes it: a later use is missing. The effects are followed in order, statement by statement;
   deleting a user variable uncovers a global one of the same name. A missing variable refuses the call before anything
   is sent; `raw: true` skips the check.
-- Cue commands (`gma3_store_cues`, `gma3_build_chase`, `gma3_edit_cues`) are checked the same way, in cue order: a
-  command setting a variable counts for the cues after it.
+- Cue commands (`gma3_store_cues`, `gma3_build_chase`, `gma3_edit_cues`) are checked the same way, in cue-number
+  order (the order playback follows, whatever order the cues were given in): a command that sets or deletes a variable
+  applies to the higher-numbered cues.
 - On a bridge older than 0.31.0 the check cannot be made, so a line or command with a `$variable` is refused with a
   hint to update the plugin.
 
