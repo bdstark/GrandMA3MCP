@@ -582,6 +582,16 @@ in Python.
   sync-off macro then switched back to Time with no times, so the clocks raced. `gma3_observe_tempo` found it, and the agent
   restored the times and rewrote the macro in Lua.
 
+**Status:** implemented, no bridge change ([docs/tools/cuelists.md](docs/tools/cuelists.md), probe record
+[su-14-cue-contents-macos-2.5.1.md](docs/probes/su-14-cue-contents-macos-2.5.1.md), live test
+`test/live/cue-contents.live.ts` 1/1 on macOS onPC 2.5.1).
+- Cue commands in all three tools, and command-only cues.
+- `presets: {pool, from, to}` ranges, named after the presets.
+- `replace: true`, keeping the executor assignments (checked).
+- A phaser in a look, in `gma3_build_phaser`'s step form. Templates and SU-13's forms come with SU-13.
+- `sequence_settings` and an override report, with `protect_running`.
+- Wiped trigger times reported, and `keep_times` / `restore_times`.
+
 ### Acceptance criteria
 
 - A `command` per cue in `gma3_store_cues`, `gma3_edit_cues` and `gma3_build_chase`, read back. Cues with a command
@@ -611,6 +621,10 @@ in Python.
 It concluded that `$variables` do not expand in commands sent through the bridge, and wrote that into its memory.
 Its test read `HasActivePlayback` straight after the `Goto`, which reads false for a frame (SU-06), so the
 conclusion is unproven.
+
+**Probe (run early, with SU-14):** `$variables` do expand in commands sent through the bridge's `cmd`
+(`Label Sequence 940 $mcpprobe` named it after the variable, and `Store Sequence $mcpprobe` created the sequence),
+[su-14-cue-contents-macos-2.5.1.md](docs/probes/su-14-cue-contents-macos-2.5.1.md#su-15-variables-in-commands-sent-through-the-bridge).
 
 ### Acceptance criteria
 

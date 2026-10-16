@@ -576,7 +576,7 @@ test("store_preset batch: each preset built in Preview from its content, stored 
 
 test("store_preset batch: content errors, duplicates, preview and a missing exclusive refuse the call before anything is sent", async () => {
   for (const [args, re] of [
-    [{ mode: "selective", presets: [{ preset: "4.1", fixtures: [401] }] }, /give presets, intensity and\/or values/],
+    [{ mode: "selective", presets: [{ preset: "4.1", fixtures: [401] }] }, /give presets, intensity, values/],
     [{ mode: "selective", presets: [{ preset: "4.1", intensity: 10 }] }, /fixtures must be a non-empty list of fixture ids/],
     [{ mode: "selective", presets: [{ preset: "4.1", fixtures: [401], intensity: 10 }, { preset: "4.1", fixtures: [402], intensity: 10 }] }, /preset 4\.1 appears more than once/],
     [{ mode: "selective", preview: true, presets: [{ preset: "4.1", fixtures: [401], intensity: 10 }] }, /preview is not available in the batch form/],

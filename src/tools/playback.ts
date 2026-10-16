@@ -739,7 +739,7 @@ async function resolveMasterNames(bridge: Gma3Bridge, wanted: Record<string, str
   return asRead({ name: "resolve_masters", status: "succeeded", op: "children", detail: resolved });
 }
 
-interface ConfigureSequenceArgs extends Record<string, unknown> {
+export interface ConfigureSequenceArgs extends Record<string, unknown> {
   sequence: number;
   lock?: boolean;
   unlock?: boolean;
