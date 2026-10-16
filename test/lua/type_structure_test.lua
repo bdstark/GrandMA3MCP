@@ -125,7 +125,31 @@ local function odd()
   return t
 end
 
-local WASHER, MOVER, ODD = washer(), par(), odd()
+-- SU-19 (0.34.0): a beam with wheels. Slot names display with the slot number ("Slot 2 'red'") but the object's name
+-- is plain; Color is "r,g,b,a"; a colour wheel converted from a grandMA2 library reads every slot white. The colour
+-- channel's function names its wheel (Wheel), its channel sets the slot they select (WheelSlotIndex), 24-bit hex DMX.
+local function beam()
+  local body = obj("Geometry", "Body", { PosX = 0, PosY = 0, PosZ = 0 }, {})
+  local W = "1.0000000000,1.0000000000,1.0000000000,1.0000000000"
+  local c1 = obj("Wheel", "C1", {}, { obj("Slot", "open", { Color = W }), obj("Slot", "colour 1", { Color = W }), obj("Slot", "colour 2", { Color = W }) })
+  local e = obj("Wheel", "E", {}, { obj("Slot", "open", { Color = W }), obj("Slot", "prism", { Color = W, MediaFileName = "GOBO/SHEHDS/x.png", Appearance = "Gobos.GoboImage 5" }) })
+  local cf = obj("ChannelFunction", "Color1 1", { Attribute = "Color1", DMXFrom = "000000", DMXTo = "7F7F7F" },
+    { obj("ChannelSet", "open", { DMXFrom = "000000", DMXTo = "0A0A0A", WheelSlotIndex = 1 }), obj("ChannelSet", "colour 1", { DMXFrom = "0B0B0B", DMXTo = "151515", WheelSlotIndex = 2 }) }, { Wheel = c1 })
+  local spin = obj("ChannelFunction", "Color1WheelSpin 2", { Attribute = "Color1WheelSpin", DMXFrom = "800000", DMXTo = "FFFFFF" }, { obj("ChannelSet", "stop", { DMXFrom = "C0C0C0", DMXTo = "C0C0C0" }) }, { Wheel = c1 })
+  local plain = obj("ChannelFunction", "Dimmer 1", { Attribute = "Dimmer" }, {})
+  local color = obj("DMXChannel", "Color1", { Coarse = 1, Fine = "None", Ultra = "None", DMXBreak = 1, Default = "<000000>" }, { obj("LogicalChannel", "Color1", {}, { cf, spin }) }, { Geometry = body })
+  local fx = obj("ChannelFunction", "Prism 1", { Attribute = "EFFECTWHEELSELECT", DMXFrom = "000000", DMXTo = "FFFFFF" }, { obj("ChannelSet", "prism", { DMXFrom = "080808", DMXTo = "FFFFFF", WheelSlotIndex = 2 }) }, { Wheel = e })
+  local effect = obj("DMXChannel", "Effect", { Coarse = 2, Fine = 3, Ultra = "None", DMXBreak = 1, Default = "<000000>" }, { obj("LogicalChannel", "Effect", {}, { fx }) }, { Geometry = body })
+  local dim = obj("DMXChannel", "Dimmer", { Coarse = 4, Fine = "None", Ultra = "None", DMXBreak = 1, Default = "<000000>" }, { obj("LogicalChannel", "Dimmer", {}, { plain }) }, { Geometry = body })
+  local m = obj("DMXMode", "Mode 0", { TotalFootprint = 4, DMXFootprint = "0,3,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1" }, { obj("DMXChannels", "DMXChannels", {}, { color, effect, dim }) }, { GeometryDirect = body })
+  m.no = 1
+  local t = obj("FixtureType", "Beam", { Manufacturer = "Test" }, { obj("DMXModes", "DMXModes", {}, { m }), obj("Geometries", "Geometries", {}, { body }), obj("Models", "Models", {}, {}), obj("Wheels", "Wheels", {}, { c1, e }) })
+  t.no = 4
+  t.DMXModes, t.Geometries, t.Models = t.kids[1], t.kids[2], t.kids[3]
+  return t
+end
+
+local WASHER, MOVER, ODD, BEAM = washer(), par(), odd(), beam()
 local function fixture(fid, t, m, kids)
   local f = obj("Fixture", "Fx " .. fid, { FID = fid, FixtureType = t.no .. " " .. t.name, Mode = m.name, Patch = "1.001", Break1 = "1.001" }, kids, { ModeDirect = m, FID = fid })
   return f
@@ -134,7 +158,7 @@ local wf = fixture(201, WASHER, WASHER.DMXModes.kids[1], { obj("SubFixture", "[I
 local mf = fixture(301, MOVER, MOVER.DMXModes.kids[1])
 local stage = obj("Stage", "Stage 1", {}, { obj("Fixtures", "Fixtures", {}, { wf, mf }) })
 stage.Fixtures = stage.kids[1]
-local LIVE = obj("Patch", "LivePatch", {}, { obj("FixtureTypes", "FixtureTypes", {}, { WASHER, MOVER, ODD }), obj("Stages", "Stages", {}, { stage }) })
+local LIVE = obj("Patch", "LivePatch", {}, { obj("FixtureTypes", "FixtureTypes", {}, { WASHER, MOVER, ODD, BEAM }), obj("Stages", "Stages", {}, { stage }) })
 LIVE.FixtureTypes, LIVE.Stages = LIVE.kids[1], LIVE.kids[2]
 ShowData = function() return { LivePatch = LIVE, Patch = obj("Patch", "Patch", {}, {}) } end
 Patch = function() return LIVE end
@@ -212,6 +236,35 @@ lim = r.ok and table.concat(r.result.limitations, " | ") or ""
 local c3
 for _, c in ipairs(r.ok and r.result.modes[1].channels or {}) do if c.channel == "C" then c3 = c end end
 check("a channel whose break cannot be read keeps no guessed break or address, and says so", c3 and c3["break"] == nil and c3.offset == nil and c3.addressUnknown == true and lim:find("the DMX break of channel C could not be read", 1, true) ~= nil and lim:find("no channel uses break 1: 3", 1, true) ~= nil, J(c3) .. " " .. lim)
+
+r = request("patch.typeStructure", { type = "Beam", mode = 1, geometry = false })
+local wh = r.ok and r.result.wheels or {}
+check("su19: wheels with slots: plain names, colours parsed, media and appearance", #wh == 2 and wh[1].name == "C1" and #wh[1].slots == 3 and wh[1].slots[2].name == "colour 1" and wh[1].slots[2].color.r == 1 and wh[1].slots[2].color.a == 1 and wh[2].slots[2].media == "GOBO/SHEHDS/x.png" and wh[2].slots[2].appearance == "Gobos.GoboImage 5" and wh[1].slots[1].media == nil, J(wh))
+local wfn = r.ok and r.result.wheelFunctions or {}
+check("su19: wheel channel functions beside the modes, tagged with the mode, with bits from Fine and each channel set's slot and DMX range", #wfn == 3 and wfn[1].mode == "Mode 0" and wfn[1].wheel == "C1" and wfn[1].attribute == "Color1" and wfn[1].bits == 8 and wfn[1].channelSets[2].slot == 2 and wfn[1].channelSets[2].dmxFrom == "0B0B0B" and wfn[2].channelSets[1].slot == nil and wfn[3].bits == 16 and wfn[3].wheel == "E", J(wfn))
+check("su19: no wheel functions are nested in the mode (the serialiser's depth bound)", r.ok and r.result.modes[1]._wheelFunctions == nil and r.result.modes[1].wheelFunctions == nil, J(r.result and r.result.modes))
+-- Review of PR #65: an unreadable Fine is an unknown resolution (never 8 bit), and says so.
+local effectCh = BEAM.DMXModes.kids[1].kids[1].kids[2]
+effectCh.pv.FINE = nil
+r = request("patch.typeStructure", { type = "Beam", mode = 1, geometry = false })
+local eff
+for _, f in ipairs(r.ok and r.result.wheelFunctions or {}) do if f.channel == "Effect" then eff = f end end
+check("su19 review: an unreadable Fine leaves the resolution unknown, with a limitation", eff and eff.bits == nil and table.concat(r.result.limitations, " | "):find("Fine / Ultra address could not be read", 1, true) ~= nil, J(eff))
+effectCh.pv.FINE = 3
+-- Review of PR #65: a cell whose break cannot be read is flagged, not ordered by its other breaks.
+local cellRef = WASHER.Geometries.kids[2].kids[1].kids[1]
+local brk = cellRef.kids[1]
+local savedPatch = brk.pv.DMXPATCH
+brk.pv.DMXPATCH = nil
+r = request("patch.typeStructure", { type = "Washer", mode = 1, geometry = false })
+local c1 = r.ok and r.result.modes[1].cellList[1] or {}
+check("su19 review: a cell with an unreadable break is flagged incomplete and named in the limitations", c1.breakOffsetsIncomplete == true and table.concat(r.result.limitations, " | "):find("cell Instance2: a break's DMX offset could not be read", 1, true) ~= nil, J(c1))
+brk.pv.DMXPATCH = savedPatch
+r = request("patch.typeStructure", { type = "Washer", mode = 1, geometry = false })
+check("su19 review: a readable cell carries no incomplete flag", r.ok and r.result.modes[1].cellList[1].breakOffsetsIncomplete == nil, J(r.ok and r.result.modes[1].cellList[1]))
+
+r = request("patch.typeStructure", { type = "Washer", mode = 1, geometry = false })
+check("su19: a type without wheels answers empty lists", r.ok and #r.result.wheels == 0 and #r.result.wheelFunctions == 0 and J(r.result):find('"wheels":%[%]') ~= nil, J(r.result and r.result.wheels))
 
 r = request("patch.types")
 local cellsOf = {}

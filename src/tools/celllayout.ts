@@ -18,6 +18,7 @@
  */
 import { z } from "zod";
 import { BridgeError } from "../bridge.js";
+import { dmxOrder, runs, type OrderCell } from "./cellorder.js";
 import { asRead, buildResult, notRequested, stepFromError, unavailable, validationFailure, type OperationResult, type StepResult, type Verification } from "../results.js";
 import { Validator, finiteNumber, objectName } from "../validate.js";
 import { operation, type RegisterTools, type ToolContext } from "./context.js";
@@ -218,6 +219,7 @@ export async function layoutCells(ctx: ToolContext, raw: Record<string, unknown>
   const scope = raw.scope === undefined ? "shared" : raw.scope === "shared" || raw.scope === "own" ? (raw.scope as "shared" | "own") : (v.fail('scope must be "shared" or "own"'), "shared");
   const count = raw.count === undefined ? undefined : v.check(() => finiteNumber("count", raw.count, { integer: true, min: 1, max: 10000 }));
   const rest = raw.rest === undefined ? "keep" : raw.rest === "keep" || raw.rest === "last" ? (raw.rest as "keep" | "last") : (v.fail('rest must be "keep" or "last"'), "keep");
+  const order = raw.order === undefined ? "index" : raw.order === "index" || raw.order === "dmx" ? (raw.order as "index" | "dmx") : (v.fail('order must be "index" or "dmx"'), "index");
   const preview = raw.preview === true;
   if (!preview && raw.exclusive !== true) v.fail("exclusive must be true: a cell layout is written into the fixture type with no undo (the result carries the previous positions), and an own layout runs a patch session; nobody else may use the console while it runs. preview: true needs no acknowledgement");
   let affects: number[] | undefined;
@@ -238,7 +240,7 @@ export async function layoutCells(ctx: ToolContext, raw: Record<string, unknown>
   if (!v.ok || fid === undefined || !path) return validationFailure(op, target, v.errors);
   // One lock span from the first read to the read-back: a queued mutation (a retype, another layout) cannot land
   // between the plan and the write. The patch session runs inside it (runSessionLocked: the lock is not reentrant).
-  return ctx.mutations.run(() => layoutCellsLocked(ctx, { op, target, fid, unit, path, scope, count, rest, preview, affects, ownFids, ownName, verify: raw.verify !== false }));
+  return ctx.mutations.run(() => layoutCellsLocked(ctx, { op, target, fid, unit, path, scope, count, rest, order, preview, affects, ownFids, ownName, verify: raw.verify !== false }));
 }
 
 interface LayoutJob {
@@ -250,6 +252,7 @@ interface LayoutJob {
   scope: "shared" | "own";
   count: number | undefined;
   rest: "keep" | "last";
+  order: "index" | "dmx";
   preview: boolean;
   affects: number[] | undefined;
   ownFids: number[];
@@ -258,7 +261,7 @@ interface LayoutJob {
 }
 
 async function layoutCellsLocked(ctx: ToolContext, job: LayoutJob): Promise<OperationResult> {
-  const { op, target, fid, unit, path, scope, count, rest, preview, affects, ownFids, ownName } = job;
+  const { op, target, fid, unit, path, scope, count, rest, order, preview, affects, ownFids, ownName } = job;
   const steps: StepResult[] = [];
   const t = ctx.requestTimeoutMs;
   let before: LayoutRead;
@@ -277,13 +280,33 @@ async function layoutCellsLocked(ctx: ToolContext, job: LayoutJob): Promise<Oper
   if (before.copyOpen) return fail("the patch copy is open (the Patch menu or an unfinished session); its commit would overwrite the positions. Close it at the console first");
   const n = Math.min(count ?? before.cells.length, before.cells.length);
   if (path.shape === "points" && (path.points?.length ?? 0) < n && rest === "keep" && count !== undefined && (path.points?.length ?? 0) < count) return fail(`path.points has ${path.points?.length} point(s) for count ${count}`);
-  const plan = planCells(before, path, path.shape === "points" ? Math.min(n, path.points?.length ?? 0) : n, rest);
+  // SU-19: order "dmx" walks the path in the cells' DMX (physical string) order instead of their cell numbers.
+  let walk = before;
+  let dmxRuns: string | undefined;
+  if (order === "dmx") {
+    try {
+      const ts = (await ctx.bridge.request("patch.typeStructure", { type: before.type.no, mode: before.mode.no, geometry: false, channelLimit: 1 }, t)) as { modes?: Array<{ cellList?: OrderCell[] }> };
+      const idx = dmxOrder(ts.modes?.[0]?.cellList ?? []);
+      steps.push(asRead({ name: "read_cell_order", status: "succeeded", op: "patch.typeStructure", detail: idx ? { dmx: runs(idx) } : undefined }));
+      if (!idx) return fail("a cell's DMX address could not be read, so the cells cannot be ordered by DMX");
+      const cells = idx.map((i) => before.cells.find((c) => c.index === i));
+      if (cells.length !== before.cells.length || cells.some((c) => !c)) return fail(`the type's ${idx.length} cells do not match the fixture's ${before.cells.length}`);
+      walk = { ...before, cells: cells as CellRow[] };
+      dmxRuns = runs(idx);
+    } catch (err) {
+      steps.push(asRead(stepFromError("read_cell_order", err, { op: "patch.typeStructure" })));
+      return buildResult({ operation: op, target, steps, verification: unavailable("nothing was sent") });
+    }
+  }
+  const plan = planCells(walk, path, path.shape === "points" ? Math.min(n, path.points?.length ?? 0) : n, rest);
   const affectedFids = fidList(before.affected);
   const previewOut = {
     type: before.type,
     mode: before.mode,
     cells: before.cells.length,
     placed: plan.length,
+    order,
+    ...(dmxRuns ? { cellOrder: `cells along the path in DMX order: ${dmxRuns}` } : {}),
     affected: before.affected,
     plan: plan.map((p) => ({ index: p.index, ...(p.x !== undefined ? { x: round(p.x, unit) } : {}), ...(p.y !== undefined ? { y: round(p.y, unit) } : {}), ...(p.z !== undefined ? { z: round(p.z, unit) } : {}) })),
     unit,
@@ -513,7 +536,8 @@ export const registerCellLayoutTools: RegisterTools = (server, ctx) => {
           points: z.array(z.object({ x: z.number().optional(), y: z.number().optional(), z: z.number().optional() })).optional(),
         }),
         unit: z.enum(UNIT_NAMES as [Unit, ...Unit[]]).optional(),
-        count: z.number().optional().describe("Place only the first count cells."),
+        count: z.number().optional().describe("Place only the first count cells (in the chosen order)."),
+        order: z.enum(["index", "dmx"]).optional().describe('The order the cells take along the path: "index" (cell numbers, default) or "dmx" (DMX address order: the physical order along a string, e.g. the Festoon 2-string mode 1-9, 19-29, 10-18, 30-40; see cellOrder in gma3_patch_type_structure).'),
         rest: z.enum(["keep", "last"]).optional().describe("The cells after count: keep their positions (default) or stack at the last placed one."),
         scope: z.enum(["shared", "own"]).optional(),
         affects: z.array(z.number()).optional().describe("shared: every FID that uses this layout (all of them move)."),

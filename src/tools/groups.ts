@@ -44,6 +44,8 @@
 import { z } from "zod";
 import { BridgeError, type Gma3Bridge } from "../bridge.js";
 import { readObjects } from "./common.js";
+import { resolveCellLists } from "./cellorder.js";
+import { HeldLock } from "../mutations.js";
 import { BATCH_NOTE, batchOptionShape, duplicates, runBatchCall } from "../batch.js";
 import { json, operation, type RegisterTools, type ToolContext } from "./context.js";
 import {
@@ -500,7 +502,31 @@ function setStep(ctx: ToolContext, name: string, ref: string, property: string, 
     }, ctx.requestTimeoutMs);
 }
 
+/**
+ * SU-19: resolve {cells_of} entries (a fixture's cells in DMX or cell-number order) through the console, then store.
+ * The result says what each entry stood for.
+ */
 export async function storeGroup(ctx: ToolContext, raw: StoreGroupArgs): Promise<OperationResult> {
+  const hasCellsOf = (x: unknown): boolean => (Array.isArray(x) ? x.some(hasCellsOf) : !!x && typeof x === "object" && ("cells_of" in x || Object.values(x).some((v) => Array.isArray(v) && hasCellsOf(v))));
+  if (!raw.arrangement || !hasCellsOf(raw.arrangement)) return storeGroupResolved(ctx, raw);
+  const resolveAndStore = async (c: ToolContext): Promise<OperationResult> => {
+    let resolved: Awaited<ReturnType<typeof resolveCellLists>>;
+    try {
+      resolved = await resolveCellLists(c, raw.arrangement);
+    } catch (err) {
+      return validationFailure("store_group", { group: raw.group }, [`cells_of: ${err instanceof Error ? err.message : String(err)}`]);
+    }
+    const result = await storeGroupResolved(c, { ...raw, arrangement: resolved.arrangement as Arrangement });
+    return { ...result, cellLists: resolved.resolved };
+  };
+  // A preview only reads. A store reads the cell order in the same lock span as its writes, so a queued retype or
+  // layout cannot land between the order read and the store (the lock is not reentrant: the span holds a HeldLock;
+  // in a batch the context already does).
+  if (raw.preview === true) return resolveAndStore(ctx);
+  return ctx.mutations.run(() => resolveAndStore({ ...ctx, mutations: new HeldLock() }));
+}
+
+async function storeGroupResolved(ctx: ToolContext, raw: StoreGroupArgs): Promise<OperationResult> {
   const op = "store_group";
   const v = new Validator();
   const group = v.check(() => objectNumber("group", raw.group, { max: 9999 }));
@@ -1035,19 +1061,27 @@ export async function configureMatricks(ctx: ToolContext, raw: ConfigureMatricks
 // ---------------------------------------------------------------------------
 
 const fixtureEntry = z.union([z.string(), z.number()]);
+/** SU-19: an arrangement list may hold {cells_of: fid, order: "dmx" | "index", reverse?}: that fixture's cells. */
+const listEntry = z.union([
+  z.string(),
+  z.number(),
+  z
+    .object({ cells_of: z.number(), order: z.enum(["dmx", "index"]).optional(), reverse: z.boolean().optional() })
+    .describe('A fixture\'s cells: {cells_of: 401, order: "dmx"} lists 401.k in DMX order, the physical order along the string (default), "index" in cell-number order; reverse: true runs it backwards.'),
+]);
 const originSchema = z.object({ x: z.number().optional(), y: z.number().optional(), z: z.number().optional() }).optional().describe("Grid cell of the first fixture (default 0/0/0).");
 const arrangementSchema = z
   .discriminatedUnion("type", [
     z.object({
       type: z.literal("row"),
-      fixtures: z.array(fixtureEntry).describe('Fixture ids along the row; "a Thru b" ranges expand in their own direction ("401 Thru 404", "501.12 Thru 501.1").'),
+      fixtures: z.array(listEntry).describe('Fixture ids along the row; "a Thru b" ranges expand in their own direction ("401 Thru 404", "501.12 Thru 501.1").'),
       origin: originSchema,
       step: z.number().optional().describe("Cells between neighbours (default 1; negative runs backwards)."),
       axis: z.enum(["x", "y", "z"]).optional().describe("Axis of the row (default x)."),
     }),
     z.object({
       type: z.literal("rectangle"),
-      fixtures: z.array(fixtureEntry).describe("Fixture ids, filled row by row."),
+      fixtures: z.array(listEntry).describe("Fixture ids, filled row by row."),
       columns: z.number().describe("Fixtures per row."),
       origin: originSchema,
       step_x: z.number().optional().describe("Cells between columns (default 1)."),
@@ -1056,14 +1090,14 @@ const arrangementSchema = z
     }),
     z.object({
       type: z.literal("mirror"),
-      left: z.array(fixtureEntry).describe("Left half, listed from the outer edge towards the centre."),
-      right: z.array(fixtureEntry).describe("Right half, listed from the outer edge towards the centre (same count as left); right[i] mirrors left[i]."),
+      left: z.array(listEntry).describe("Left half, listed from the outer edge towards the centre."),
+      right: z.array(listEntry).describe("Right half, listed from the outer edge towards the centre (same count as left); right[i] mirrors left[i]."),
       origin: originSchema,
       center_gap: z.number().optional().describe("Empty cells between the two halves (default 0)."),
     }),
     z.object({
       type: z.literal("rows"),
-      rows: z.array(z.array(fixtureEntry)).describe('Rows top to bottom, each a list of fixture ids or ranges ("402.36 Thru 402.1" runs downwards); rows may differ in length.'),
+      rows: z.array(z.array(listEntry)).describe('Rows top to bottom, each a list of fixture ids or ranges ("402.36 Thru 402.1" runs downwards); rows may differ in length.'),
       width: z.number().optional().describe("Cells per row (default: the longest row)."),
       align: z.enum(["spread", "start", "center"]).optional().describe("spread (default): first and last fixture at the row's edges, the rest evenly; start: packed from the left; center: packed in the middle."),
       origin: originSchema,

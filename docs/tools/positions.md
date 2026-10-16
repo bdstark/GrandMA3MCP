@@ -100,6 +100,7 @@ with `gma3_place_fixtures`; moving the cells of one fixture alone needs a layout
 | `path` | `shape` and its parameters (below), in `unit` |
 | `unit` | `m` (default), `cm`, `mm`, `ft`, `in` |
 | `count`, `rest` | place only the first `count` cells; the rest `keep` their positions (default) or stack at the `last` placed one |
+| `order` | the order the cells take along the path: `index` (cell numbers, default) or `dmx` (DMX address order, the physical order along a string; SU-19, see [cell order](patch.md#cell-order-su-19)). The Festoon's 2-string mode then needs no hand-computed points |
 | `scope` | `shared` (default) or `own` |
 | `affects` | shared: every FID that uses the layout, exactly (`preview` lists them) |
 | `own` | own: `name` of the new type, `fixtures` that get it (default: the fixture) |

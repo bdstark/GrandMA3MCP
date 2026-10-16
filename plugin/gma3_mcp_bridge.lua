@@ -154,7 +154,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.33.0"
+local VERSION      = "0.34.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -4393,6 +4393,69 @@ do
     return row
   end
 
+  -- SU-19 (0.34.0): the type's wheels. A slot's Name displays as "Slot 2 'colour 1'" (live), so the name is the object's
+  -- own; Color is "r,g,b,a" in 0..1; MediaFileName / Appearance name a gobo image. A grandMA2-library type reads every
+  -- slot white (no colours in the type).
+  local function colorOf(o)
+    local v = displayProp(o, "Color")
+    if not v then return nil end
+    local r, g, b, a = v:match("^%s*([%d%.]+)%s*,%s*([%d%.]+)%s*,%s*([%d%.]+)%s*,?%s*([%d%.]*)")
+    if not r then return nil end
+    return { r = tonumber(r), g = tonumber(g), b = tonumber(b), a = tonumber(a) or 1 }
+  end
+  local function wheelRows(t, limitations)
+    local out = {}
+    local ok, err = pcall(function()
+      local ws = t.Wheels
+      if not ws then return end
+      for i, w in ipairs(ws:Children()) do
+        local slots = {}
+        for j, sl in ipairs(w:Children()) do
+          local media = displayProp(sl, "MediaFileName")
+          local app = displayProp(sl, "Appearance")
+          slots[#slots + 1] = { index = j, name = tostring(safeProp(sl, "name")), color = colorOf(sl), media = (media and media ~= "") and media or nil, appearance = (app and app ~= "") and app or nil }
+        end
+        out[#out + 1] = { index = i, name = tostring(safeProp(w, "name")), slots = emptyArray(slots) }
+      end
+    end)
+    if not ok then limitations[#limitations + 1] = "the type's wheels could not be read: " .. tostring(err) end
+    return emptyArray(out)
+  end
+  -- The channel functions of a mode that drive a wheel, with each channel set that selects a slot (WheelSlotIndex) and
+  -- its DMX range (24-bit hex as displayed; the server converts to the channel's resolution).
+  -- Whether a channel has a Fine / Ultra address: true (a number), false (an explicit None or empty), nil (unreadable:
+  -- unknown, never taken for absent).
+  local function present(c, k)
+    local v = displayProp(c, k)
+    if v == nil then return nil end
+    if v:match("^%s*%d+") then return true end
+    if v:match("^%s*$") or v:match("^%s*None%s*$") then return false end
+    return nil
+  end
+  local function wheelFunctions(m, limitations, modeName)
+    local out = {}
+    for _, c in ipairs(m.DMXChannels:Children()) do
+      local fine, ultra = present(c, "Fine"), present(c, "Ultra")
+      local bits
+      if ultra == true then bits = 24 elseif fine == true and ultra == false then bits = 16 elseif fine == false and ultra == false then bits = 8 end
+      for _, lc in ipairs(c:Children()) do
+        for _, cf in ipairs(lc:Children()) do
+          local w = handleOf(cf, "Wheel")
+          if w then
+            local sets = {}
+            for _, cs in ipairs(cf:Children()) do
+              local slot = tonumber(displayProp(cs, "WheelSlotIndex") or "")
+              sets[#sets + 1] = { name = tostring(safeProp(cs, "name")), slot = slot, dmxFrom = displayProp(cs, "DMXFrom"), dmxTo = displayProp(cs, "DMXTo") }
+            end
+            if bits == nil then limitations[#limitations + 1] = "mode " .. modeName .. ", channel " .. tostring(safeProp(c, "name")) .. ": whether it has a Fine / Ultra address could not be read; its wheel slot ranges are given without a resolution" end
+            out[#out + 1] = { channel = tostring(safeProp(c, "name")), logicalChannel = tostring(safeProp(lc, "name")), attribute = displayProp(cf, "Attribute"), channelFunction = tostring(safeProp(cf, "name")), wheel = tostring(safeProp(w, "name")), bits = bits, dmxFrom = displayProp(cf, "DMXFrom"), dmxTo = displayProp(cf, "DMXTo"), channelSets = emptyArray(sets) }
+          end
+        end
+      end
+    end
+    return emptyArray(out)
+  end
+
   -- One mode: footprint, breaks, root geometry, cells (the geometry references under the root, in tree order)
   -- and its DMX channels expanded per cell: a channel on a referenced (template) geometry repeats in every cell at
   -- the cell's break offset + its own offset - 1; a channel on a geometry inside the root is at its own offset.
@@ -4411,14 +4474,16 @@ do
       local function walk(o)
         for _, c in ipairs(o:Children()) do
           if safeCall(c, "GetClass") == "GeometryReference" then
-            local offsets = {}
+            local offsets, incomplete = {}, false
             for _, b in ipairs(c:Children()) do
               if safeCall(b, "GetClass") == "Break" then
                 local br, at = displayNumber(b, "DMXBreak"), displayNumber(b, "DMXPatch")
-                if br and at then offsets[br] = at end
+                -- SU-19 review: a break that cannot be read is reported, never dropped silently (an ordering by the
+                -- remaining breaks would be a guess).
+                if br and at then offsets[br] = at else incomplete = true end
               end
             end
-            refs[#refs + 1] = { ref = c, index = #refs + 1, name = tostring(safeProp(c, "name")), template = handleOf(c, "Geometry"), offsets = offsets }
+            refs[#refs + 1] = { ref = c, index = #refs + 1, name = tostring(safeProp(c, "name")), template = handleOf(c, "Geometry"), offsets = offsets, incomplete = incomplete }
           end
           walk(c)
         end
@@ -4434,6 +4499,10 @@ do
       for b, at in pairs(r.offsets) do br[#br + 1] = b .. ":" .. at end
       table.sort(br)
       row.breakOffsets = table.concat(br, ",")
+      if r.incomplete then
+        row.breakOffsetsIncomplete = true
+        limitations[#limitations + 1] = "mode " .. info.name .. ", cell " .. r.name .. ": a break's DMX offset could not be read; the cell's address (and the DMX cell order) is unknown"
+      end
       cells[#cells + 1] = row
     end
     info.cells = #refs
@@ -4532,6 +4601,10 @@ do
     if dup > 0 then limitations[#limitations + 1] = "mode " .. info.name .. ": " .. dup .. " DMX address(es) are used by more than one channel" end
     info.channels = emptyArray(rows)
     info.channelsTruncated = truncated
+    -- Kept beside the mode (res.wheelFunctions, tagged with the mode): nested in it, the channel sets would pass the
+    -- serialiser's depth bound.
+    local okW, wf = pcall(wheelFunctions, m, limitations, info.name)
+    if okW then info._wheelFunctions = wf else limitations[#limitations + 1] = "mode " .. info.name .. ": the wheel channel functions could not be read: " .. tostring(wf) end
     return info
   end
 
@@ -4549,7 +4622,12 @@ do
     else
       for _, m in ipairs(t.DMXModes:Children()) do modes[#modes + 1] = modeStructure(m, limitations, channelLimit) end
     end
-    local res = { side = args.side or "live", type = { no = safeProp(t, "no"), name = tostring(safeProp(t, "name")), manufacturer = displayProp(t, "Manufacturer"), shortName = displayProp(t, "ShortName"), source = displayProp(t, "Source") }, modes = emptyArray(modes) }
+    local wfs = {}
+    for _, md in ipairs(modes) do
+      for _, f in ipairs(md._wheelFunctions or {}) do f.mode = md.name; wfs[#wfs + 1] = f end
+      md._wheelFunctions = nil
+    end
+    local res = { side = args.side or "live", type = { no = safeProp(t, "no"), name = tostring(safeProp(t, "name")), manufacturer = displayProp(t, "Manufacturer"), shortName = displayProp(t, "ShortName"), source = displayProp(t, "Source") }, modes = emptyArray(modes), wheels = wheelRows(t, limitations), wheelFunctions = emptyArray(wfs) }
     if args.geometry ~= false then
       local nodes = {}
       local function walk(o, depth, parent)

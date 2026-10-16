@@ -340,3 +340,38 @@ test("layoutPositions: widely spaced cells on many tiny legs are computed direct
   assert.ok(pos.every((p) => Number.isFinite(p.x!) && Number.isFinite(p.y!)) && z.every((p) => Number.isFinite(p.x!)));
   assert.ok(near(pos[0].x!, 0) && near(pos[0].y!, 0) && near(pos[3].x!, 0), "leg_step 0: the path never advances");
 });
+
+test("SU-19: layout_cells order dmx walks the path in the cells' DMX order", async () => {
+  const { h } = await setup();
+  try {
+    // DMX order 3, 1, 4, 2: the first point of the path goes to cell 3.
+    h.fake.on("patch.typeStructure", () => ({ modes: [{ cellList: [{ index: 1, breakOffsets: "1:4" }, { index: 2, breakOffsets: "1:10" }, { index: 3, breakOffsets: "1:1" }, { index: 4, breakOffsets: "1:7" }] }] }));
+    const r = await h.callJson("gma3_layout_cells", { fixture: 401, path: { shape: "line", spacing: 1 }, order: "dmx", preview: true });
+    assert.equal(r.isError, false, r.text);
+    assert.deepEqual(r.result.plan.map((p: any) => [p.index, p.x]), [[3, 0], [1, 1], [4, 2], [2, 3]]);
+    assert.match(r.result.cellOrder, /DMX order: 3, 1, 4, 2/);
+    const plain = await h.callJson("gma3_layout_cells", { fixture: 401, path: { shape: "line", spacing: 1 }, preview: true });
+    assert.deepEqual(plain.result.plan.map((p: any) => p.index), [1, 2, 3, 4], "index order stays the default");
+    h.fake.on("patch.typeStructure", () => ({ modes: [{ cellList: [{ index: 1, breakOffsets: "1:4" }, { index: 2 }, { index: 3, breakOffsets: "1:1" }, { index: 4, breakOffsets: "1:7" }] }] }));
+    const bad = await h.callJson("gma3_layout_cells", { fixture: 401, path: { shape: "line", spacing: 1 }, order: "dmx", preview: true });
+    assert.match(bad.text, /DMX address could not be read/);
+    const v = await h.callJson("gma3_layout_cells", { fixture: 401, path: { shape: "line", spacing: 1 }, order: "physical", preview: true });
+    assert.equal(v.isError, true);
+    assert.match(v.text, /order/);
+  } finally {
+    await h.close();
+  }
+});
+
+test("SU-19 review 1: layout_cells order dmx refuses a cell whose break could not be read", async () => {
+  const { h, w } = await setup();
+  try {
+    h.fake.on("patch.typeStructure", () => ({ modes: [{ cellList: [{ index: 1, breakOffsets: "2:10", breakOffsetsIncomplete: true }, { index: 2, breakOffsets: "1:5,2:20" }, { index: 3, breakOffsets: "1:1" }, { index: 4, breakOffsets: "1:7" }] }] }));
+    const r = await h.callJson("gma3_layout_cells", { fixture: 401, path: { shape: "line", spacing: 1 }, order: "dmx", affects: [401, 402, 403], exclusive: true });
+    assert.equal(r.result.outcome, "failed");
+    assert.match(r.text, /DMX address could not be read/);
+    assert.equal(w.writes.length, 0);
+  } finally {
+    await h.close();
+  }
+});
