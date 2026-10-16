@@ -4423,10 +4423,21 @@ do
   end
   -- The channel functions of a mode that drive a wheel, with each channel set that selects a slot (WheelSlotIndex) and
   -- its DMX range (24-bit hex as displayed; the server converts to the channel's resolution).
-  local function wheelFunctions(m)
+  -- Whether a channel has a Fine / Ultra address: true (a number), false (an explicit None or empty), nil (unreadable:
+  -- unknown, never taken for absent).
+  local function present(c, k)
+    local v = displayProp(c, k)
+    if v == nil then return nil end
+    if v:match("^%s*%d+") then return true end
+    if v:match("^%s*$") or v:match("^%s*None%s*$") then return false end
+    return nil
+  end
+  local function wheelFunctions(m, limitations, modeName)
     local out = {}
     for _, c in ipairs(m.DMXChannels:Children()) do
-      local bits = (displayNumber(c, "Ultra") and 24) or (displayNumber(c, "Fine") and 16) or 8
+      local fine, ultra = present(c, "Fine"), present(c, "Ultra")
+      local bits
+      if ultra == true then bits = 24 elseif fine == true and ultra == false then bits = 16 elseif fine == false and ultra == false then bits = 8 end
       for _, lc in ipairs(c:Children()) do
         for _, cf in ipairs(lc:Children()) do
           local w = handleOf(cf, "Wheel")
@@ -4436,7 +4447,8 @@ do
               local slot = tonumber(displayProp(cs, "WheelSlotIndex") or "")
               sets[#sets + 1] = { name = tostring(safeProp(cs, "name")), slot = slot, dmxFrom = displayProp(cs, "DMXFrom"), dmxTo = displayProp(cs, "DMXTo") }
             end
-            out[#out + 1] = { channel = tostring(safeProp(c, "name")), attribute = displayProp(cf, "Attribute"), channelFunction = tostring(safeProp(cf, "name")), wheel = tostring(safeProp(w, "name")), bits = bits, dmxFrom = displayProp(cf, "DMXFrom"), dmxTo = displayProp(cf, "DMXTo"), channelSets = emptyArray(sets) }
+            if bits == nil then limitations[#limitations + 1] = "mode " .. modeName .. ", channel " .. tostring(safeProp(c, "name")) .. ": whether it has a Fine / Ultra address could not be read; its wheel slot ranges are given without a resolution" end
+            out[#out + 1] = { channel = tostring(safeProp(c, "name")), logicalChannel = tostring(safeProp(lc, "name")), attribute = displayProp(cf, "Attribute"), channelFunction = tostring(safeProp(cf, "name")), wheel = tostring(safeProp(w, "name")), bits = bits, dmxFrom = displayProp(cf, "DMXFrom"), dmxTo = displayProp(cf, "DMXTo"), channelSets = emptyArray(sets) }
           end
         end
       end
@@ -4462,14 +4474,16 @@ do
       local function walk(o)
         for _, c in ipairs(o:Children()) do
           if safeCall(c, "GetClass") == "GeometryReference" then
-            local offsets = {}
+            local offsets, incomplete = {}, false
             for _, b in ipairs(c:Children()) do
               if safeCall(b, "GetClass") == "Break" then
                 local br, at = displayNumber(b, "DMXBreak"), displayNumber(b, "DMXPatch")
-                if br and at then offsets[br] = at end
+                -- SU-19 review: a break that cannot be read is reported, never dropped silently (an ordering by the
+                -- remaining breaks would be a guess).
+                if br and at then offsets[br] = at else incomplete = true end
               end
             end
-            refs[#refs + 1] = { ref = c, index = #refs + 1, name = tostring(safeProp(c, "name")), template = handleOf(c, "Geometry"), offsets = offsets }
+            refs[#refs + 1] = { ref = c, index = #refs + 1, name = tostring(safeProp(c, "name")), template = handleOf(c, "Geometry"), offsets = offsets, incomplete = incomplete }
           end
           walk(c)
         end
@@ -4485,6 +4499,10 @@ do
       for b, at in pairs(r.offsets) do br[#br + 1] = b .. ":" .. at end
       table.sort(br)
       row.breakOffsets = table.concat(br, ",")
+      if r.incomplete then
+        row.breakOffsetsIncomplete = true
+        limitations[#limitations + 1] = "mode " .. info.name .. ", cell " .. r.name .. ": a break's DMX offset could not be read; the cell's address (and the DMX cell order) is unknown"
+      end
       cells[#cells + 1] = row
     end
     info.cells = #refs
@@ -4585,7 +4603,7 @@ do
     info.channelsTruncated = truncated
     -- Kept beside the mode (res.wheelFunctions, tagged with the mode): nested in it, the channel sets would pass the
     -- serialiser's depth bound.
-    local okW, wf = pcall(wheelFunctions, m)
+    local okW, wf = pcall(wheelFunctions, m, limitations, info.name)
     if okW then info._wheelFunctions = wf else limitations[#limitations + 1] = "mode " .. info.name .. ": the wheel channel functions could not be read: " .. tostring(wf) end
     return info
   end

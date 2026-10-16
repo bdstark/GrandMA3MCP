@@ -125,3 +125,46 @@ test("resolveCellLists: {cells_of} becomes the fixture's cell ids in DMX order (
     await h.close();
   }
 });
+
+// --- review of PR #65 ------------------------------------------------------------------------------
+
+test("review 1: no DMX order from a cell whose break could not be read, or from a malformed address", () => {
+  // Cell 1's break-1 offset is unreadable (bridge flag), its break 2 reads 10; cell 2 reads 1:5,2:20.
+  assert.equal(dmxOrder([{ index: 1, breakOffsets: "2:10", breakOffsetsIncomplete: true }, { index: 2, breakOffsets: "1:5,2:20" }]), null);
+  assert.equal(dmxOrder([{ index: 1, breakOffsets: "1:x,2:5" }, { index: 2, breakOffsets: "1:4" }]), null, "a malformed pair is not filtered away");
+  assert.equal(cellOrderView([{ index: 1, breakOffsets: "2:10", breakOffsetsIncomplete: true }, { index: 2, breakOffsets: "1:5" }], true)!.dmx, null);
+});
+
+test("review 1: path steps need all three coordinates (an unknown Z is not a zero)", () => {
+  assert.equal(pathSteps([{ index: 1, posX: 0, posY: 0, posZ: 0 }, { index: 2, posX: 0, posY: 0 }], [1, 2]), null);
+  assert.equal(pathSteps([{ index: 1, posX: 0, posY: 0, posZ: null }, { index: 2, posX: 0, posY: 0, posZ: 1 }], [1, 2]), null);
+  assert.deepEqual(pathSteps([{ index: 1, posX: 0, posY: 0, posZ: 0 }, { index: 2, posX: 0, posY: 0, posZ: 1 }], [1, 2]), { min: 1, max: 1, mean: 1 });
+});
+
+test("review 1: wheel functions of the same name on two channels stay distinct; an unknown resolution gives no numbers", () => {
+  const set = { name: "red", slot: 2, dmxFrom: "0B0B0B", dmxTo: "151515" };
+  const [w] = wheelsView({
+    wheels: [{ index: 1, name: "C1", slots: [{ index: 1, name: "open", color: white }, { index: 2, name: "red", color: { r: 1, g: 0, b: 0, a: 1 } }] }],
+    wheelFunctions: [
+      { mode: "M", channel: "CellA_Color1", logicalChannel: "Color1", attribute: "Color1", channelFunction: "Color1 1", wheel: "C1", bits: 8, dmxFrom: "000000", dmxTo: "7F7F7F", channelSets: [set] },
+      { mode: "M", channel: "CellB_Color1", logicalChannel: "Color1", attribute: "Color1", channelFunction: "Color1 1", wheel: "C1", bits: null, dmxFrom: "000000", dmxTo: "7F7F7F", channelSets: [set] },
+    ],
+  });
+  assert.deepEqual(w.functions.map((f) => f.channel), ["CellA_Color1", "CellB_Color1"]);
+  const b = w.functions[1];
+  assert.deepEqual([b.bits, b.dmxFrom, b.dmxTo], [null, null, null]);
+  const sel = w.slots[1].selectedBy;
+  assert.deepEqual(sel.map((x) => [x.channel, x.bits, x.dmxFrom]), [["CellA_Color1", 8, 11], ["CellB_Color1", null, null]]);
+  assert.equal(dmxAt("0B0B0B", undefined), null);
+});
+
+test("review 1: {cells_of} on a fixture with an unreadable break is refused", async () => {
+  const h = await startHarness(registerTypeStructureTools);
+  try {
+    h.fake.on("patch.cellLayout", () => ({ type: { no: 4, name: "F" }, mode: { no: 5, name: "m" }, cells: [{ index: 1 }, { index: 2 }] }));
+    h.fake.on("patch.typeStructure", () => ({ modes: [{ cellList: [{ index: 1, breakOffsets: "2:10", breakOffsetsIncomplete: true }, { index: 2, breakOffsets: "1:5,2:20" }] }] }));
+    await assert.rejects(resolveCellLists(h.ctx, { type: "row", fixtures: [{ cells_of: 401 }] }), /DMX address could not be read/);
+  } finally {
+    await h.close();
+  }
+});

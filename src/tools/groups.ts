@@ -45,6 +45,7 @@ import { z } from "zod";
 import { BridgeError, type Gma3Bridge } from "../bridge.js";
 import { readObjects } from "./common.js";
 import { resolveCellLists } from "./cellorder.js";
+import { HeldLock } from "../mutations.js";
 import { BATCH_NOTE, batchOptionShape, duplicates, runBatchCall } from "../batch.js";
 import { json, operation, type RegisterTools, type ToolContext } from "./context.js";
 import {
@@ -508,14 +509,21 @@ function setStep(ctx: ToolContext, name: string, ref: string, property: string, 
 export async function storeGroup(ctx: ToolContext, raw: StoreGroupArgs): Promise<OperationResult> {
   const hasCellsOf = (x: unknown): boolean => (Array.isArray(x) ? x.some(hasCellsOf) : !!x && typeof x === "object" && ("cells_of" in x || Object.values(x).some((v) => Array.isArray(v) && hasCellsOf(v))));
   if (!raw.arrangement || !hasCellsOf(raw.arrangement)) return storeGroupResolved(ctx, raw);
-  let resolved: Awaited<ReturnType<typeof resolveCellLists>>;
-  try {
-    resolved = await resolveCellLists(ctx, raw.arrangement);
-  } catch (err) {
-    return validationFailure("store_group", { group: raw.group }, [`cells_of: ${err instanceof Error ? err.message : String(err)}`]);
-  }
-  const result = await storeGroupResolved(ctx, { ...raw, arrangement: resolved.arrangement as Arrangement });
-  return { ...result, cellLists: resolved.resolved };
+  const resolveAndStore = async (c: ToolContext): Promise<OperationResult> => {
+    let resolved: Awaited<ReturnType<typeof resolveCellLists>>;
+    try {
+      resolved = await resolveCellLists(c, raw.arrangement);
+    } catch (err) {
+      return validationFailure("store_group", { group: raw.group }, [`cells_of: ${err instanceof Error ? err.message : String(err)}`]);
+    }
+    const result = await storeGroupResolved(c, { ...raw, arrangement: resolved.arrangement as Arrangement });
+    return { ...result, cellLists: resolved.resolved };
+  };
+  // A preview only reads. A store reads the cell order in the same lock span as its writes, so a queued retype or
+  // layout cannot land between the order read and the store (the lock is not reentrant: the span holds a HeldLock;
+  // in a batch the context already does).
+  if (raw.preview === true) return resolveAndStore(ctx);
+  return ctx.mutations.run(() => resolveAndStore({ ...ctx, mutations: new HeldLock() }));
 }
 
 async function storeGroupResolved(ctx: ToolContext, raw: StoreGroupArgs): Promise<OperationResult> {

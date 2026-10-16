@@ -667,3 +667,25 @@ test("SU-19: store_group preview expands {cells_of, order: dmx} through the cons
   assert.equal(none.isError, true);
   assert.match(none.result.validationErrors.join(" "), /cells_of: Fixture 401 has no cells/);
 });
+
+test("SU-19 review 1: the cell order is read inside the store's lock span (single and batch)", async () => {
+  h.fake.on("patch.cellLayout", () => ({ type: { no: 7, name: "Strip" }, mode: { no: 1, name: "3 cell" }, cells: [{ index: 1 }, { index: 2 }, { index: 3 }] }));
+  h.fake.on("patch.typeStructure", () => ({ modes: [{ cellList: [{ index: 1, breakOffsets: "1:4" }, { index: 2, breakOffsets: "1:7" }, { index: 3, breakOffsets: "1:1" }] }] }));
+  const reads = () => h.fake.requests.filter((r) => r.op === "patch.cellLayout").length;
+  for (const args of [
+    { group: 907, arrangement: { type: "row", fixtures: [{ cells_of: 501 }] }, exclusive: true },
+    { groups: [{ group: 908, arrangement: { type: "row", fixtures: [{ cells_of: 501 }] } }], exclusive: true },
+  ]) {
+    const before = reads();
+    let release!: () => void;
+    // An earlier mutation (a retype, a layout) holds the lock.
+    const earlier = h.ctx.mutations.run(() => new Promise<void>((r) => (release = r)));
+    const store = h.callJson("gma3_store_group", args as Record<string, unknown>);
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(reads(), before, `the cell order is not read while another mutation holds the lock (${JSON.stringify(args).slice(0, 40)})`);
+    release();
+    await earlier;
+    await store;
+    assert.ok(reads() > before, "read once the lock is free");
+  }
+});

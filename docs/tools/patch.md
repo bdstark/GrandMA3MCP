@@ -248,7 +248,10 @@ carries `cellOrder`:
 - `stepsInDmxOrder` and `stepsInCellNumberOrder`: the distance between neighbouring cells, from the type's own
   positions, in `unit`. In DMX order the Festoon steps one 2 ft pitch at a time (the last four bulbs are bunched); in
   cell-number order it jumps up to 7.2 ft.
-- No order is given when a cell's DMX address cannot be read.
+- No order is given when a cell's DMX address is not fully known. That covers a break the bridge could not read (the
+  cell carries `breakOffsetsIncomplete` and a limitation names it), a malformed offset, or none at all. The other
+  breaks are never used to guess. `gma3_layout_cells` and `{cells_of}` then refuse before anything is written.
+- The steps need all three coordinates of both cells. An unreadable coordinate gives no steps, never a zero.
 
 Use the order with `gma3_layout_cells` `order: "dmx"` ([positions.md](positions.md#gma3_layout_cells)) and with
 `{cells_of: <fid>, order: "dmx"}` in group lists ([groups.md](groups.md#compact-specs-and-the-batch-form-su-12)).
@@ -258,8 +261,10 @@ Evidence: the [SU-19 record](../probes/su-19-fixture-type-data-macos-2.5.1.md).
 
 `wheels` lists the type's wheels. Each wheel has:
 - `kind`: `color` (a Color attribute drives it, or the wheel is named like one), `gobo`, or `other`.
-- `functions`: the channel functions that drive it, per mode: channel, attribute, and the DMX range in the
-  channel's resolution.
+- `functions`: the channel functions that drive it, per mode and channel, since function names are scoped to their
+  logical channel: channel, attribute, and the DMX range in the channel's resolution.
+- `bits`: 8, 16 or 24, from whether the channel has a Fine / Ultra address. If that can't be read (as opposed to an
+  explicit None), `bits` and every DMX number are `null`, and a limitation says so.
 - `slots`: name, `color` (`{r, g, b, a}` in 0..1), `media` and `appearance` (a gobo image), and `selectedBy`. That
   is the channel sets whose WheelSlotIndex picks the slot: mode, channel, attribute, set name, and `dmxFrom` /
   `dmxTo` in the channel's resolution (8-bit: the colour wheel's "colour 1" is 11-21).

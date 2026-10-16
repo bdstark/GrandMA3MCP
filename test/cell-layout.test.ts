@@ -362,3 +362,16 @@ test("SU-19: layout_cells order dmx walks the path in the cells' DMX order", asy
     await h.close();
   }
 });
+
+test("SU-19 review 1: layout_cells order dmx refuses a cell whose break could not be read", async () => {
+  const { h, w } = await setup();
+  try {
+    h.fake.on("patch.typeStructure", () => ({ modes: [{ cellList: [{ index: 1, breakOffsets: "2:10", breakOffsetsIncomplete: true }, { index: 2, breakOffsets: "1:5,2:20" }, { index: 3, breakOffsets: "1:1" }, { index: 4, breakOffsets: "1:7" }] }] }));
+    const r = await h.callJson("gma3_layout_cells", { fixture: 401, path: { shape: "line", spacing: 1 }, order: "dmx", affects: [401, 402, 403], exclusive: true });
+    assert.equal(r.result.outcome, "failed");
+    assert.match(r.text, /DMX address could not be read/);
+    assert.equal(w.writes.length, 0);
+  } finally {
+    await h.close();
+  }
+});

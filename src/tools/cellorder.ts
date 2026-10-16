@@ -13,19 +13,29 @@ export interface OrderCell {
   index: number;
   name?: string;
   breakOffsets?: string;
+  /** The bridge could not read one of the cell's breaks (0.34.0 review): its lowest address is unknown. */
+  breakOffsetsIncomplete?: boolean;
   posX?: number | null;
   posY?: number | null;
   posZ?: number | null;
 }
 
-/** The first (lowest) break and that break's offset of a cell ("1:61,2:1" -> [1, 61]); null when unreadable. */
+/**
+ * The first (lowest) break and that break's offset of a cell ("1:61,2:1" -> [1, 61]). null when the cell's address is
+ * not fully known: a break the bridge could not read, a malformed pair, or no pair at all (never a guess from the rest).
+ */
 function firstAddress(c: OrderCell): [number, number] | null {
-  const pairs = String(c.breakOffsets ?? "")
-    .split(",")
-    .map((p) => p.split(":").map(Number))
-    .filter((p) => p.length === 2 && p.every((x) => Number.isFinite(x)))
-    .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-  return pairs.length ? [pairs[0][0], pairs[0][1]] : null;
+  if (c.breakOffsetsIncomplete) return null;
+  const text = String(c.breakOffsets ?? "").trim();
+  if (!text) return null;
+  const pairs: Array<[number, number]> = [];
+  for (const part of text.split(",")) {
+    const m = part.trim().match(/^(\d+):(\d+)$/);
+    if (!m) return null;
+    pairs.push([Number(m[1]), Number(m[2])]);
+  }
+  pairs.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  return pairs[0];
 }
 
 /** Cell indices in DMX order, or null when a cell's address cannot be read (no order is guessed). */
@@ -56,8 +66,9 @@ export function pathSteps(cells: OrderCell[], order: number[]): { min: number; m
   for (let i = 1; i < order.length; i++) {
     const a = by.get(order[i - 1]);
     const b = by.get(order[i]);
-    if (!a || !b || [a.posX, a.posY, b.posX, b.posY].some((x) => typeof x !== "number")) return null;
-    d.push(Math.hypot((b.posX as number) - (a.posX as number), (b.posY as number) - (a.posY as number), ((b.posZ ?? 0) as number) - ((a.posZ ?? 0) as number)));
+    // All three coordinates must be readable: an unknown Z is not a zero (review of PR #65).
+    if (!a || !b || [a.posX, a.posY, a.posZ, b.posX, b.posY, b.posZ].some((x) => typeof x !== "number" || !Number.isFinite(x))) return null;
+    d.push(Math.hypot((b.posX as number) - (a.posX as number), (b.posY as number) - (a.posY as number), (b.posZ as number) - (a.posZ as number)));
   }
   if (!d.length) return null;
   const r = (x: number) => Math.round(x * 1e4) / 1e4;
