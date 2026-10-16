@@ -154,7 +154,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.30.1"
+local VERSION      = "0.31.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -5070,6 +5070,77 @@ end)()
     local row = entryRow(args.protocol, i, e)
     col:Remove(i)
     return { removed = row, count = col:Count() }
+  end
+end)()
+
+-- SU-15 (0.31.0): console variables, read by name (2.5.1 has no way to enumerate them: the Variables object has no
+-- children, an export holds no values, and GetGlobalVariable "*" only prints into the command-line history).
+-- SetVar/DelVar keep the type (integer, double, text) and avoid command-line quoting. User variables are the plugin
+-- user's (the bridge's user), and a user variable shadows a global one of the same name in $references (live).
+;(function()
+  local function set(scope)
+    if scope == "global" then return GlobalVars() end
+    if scope == "user" then return UserVars() end
+    raise("[bad-args] scope must be global or user")
+  end
+  local function varName(n)
+    if type(n) ~= "string" or n == "" or #n > 256 or n:find("[%c]") then raise("[bad-args] a variable name is a non-empty string of at most 256 characters without control characters") end
+    return n
+  end
+  local function read(h, name)
+    local packed = table.pack(GetVar(h, name))
+    if packed.n == 0 or packed[1] == nil then return { name = name, exists = false } end
+    local v = packed[1]
+    local kind = math.type(v) == "integer" and "integer" or math.type(v) == "float" and "double" or type(v) == "string" and "text" or type(v)
+    return { name = name, exists = true, value = v, type = kind }
+  end
+  local function user()
+    local ok, u = pcall(function() return CurrentUser() end)
+    return ok and u and safeProp(u, "name") or nil
+  end
+
+  -- args: { scope = "global" | "user", names = [string, ...] }
+  ops["vars.get"] = function(args)
+    local h = set(args.scope)
+    if type(args.names) ~= "table" or #args.names == 0 or #args.names > 500 then raise("[bad-args] names must list 1-500 variable names") end
+    local items = {}
+    for i, n in ipairs(args.names) do items[i] = read(h, varName(n)) end
+    return { scope = args.scope, user = args.scope == "user" and user() or nil, items = items }
+  end
+
+  -- args: { scope, name, value, type = "integer" | "double" | "text" }
+  ops["vars.set"] = function(args)
+    local h = set(args.scope)
+    local name = varName(args.name)
+    local v
+    if args.type == "integer" then
+      v = math.tointeger(args.value)
+      if v == nil then raise("[bad-args] value must be an integer for type integer") end
+    elseif args.type == "double" then
+      if type(args.value) ~= "number" then raise("[bad-args] value must be a number for type double") end
+      v = args.value + 0.0
+    elseif args.type == "text" then
+      if type(args.value) ~= "string" then raise("[bad-args] value must be a string for type text") end
+      v = args.value
+    else
+      raise("[bad-args] type must be integer, double or text")
+    end
+    local before = read(h, name)
+    local ok, err = pcall(function() SetVar(h, name, v) end)
+    if not ok then raise("[set-failed] " .. name .. " could not be set: " .. tostring(err)) end
+    return { scope = args.scope, user = args.scope == "user" and user() or nil, before = before, after = read(h, name) }
+  end
+
+  -- args: { scope, name }
+  ops["vars.delete"] = function(args)
+    local h = set(args.scope)
+    local name = varName(args.name)
+    local before = read(h, name)
+    if before.exists then
+      local ok, err = pcall(function() DelVar(h, name) end)
+      if not ok then raise("[delete-failed] " .. name .. " could not be deleted: " .. tostring(err)) end
+    end
+    return { scope = args.scope, user = args.scope == "user" and user() or nil, before = before, after = read(h, name) }
   end
 end)()
 

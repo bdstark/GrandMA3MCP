@@ -643,6 +643,14 @@ conclusion is unproven.
 (`Label Sequence 940 $mcpprobe` named it after the variable, and `Store Sequence $mcpprobe` created the sequence),
 [su-14-cue-contents-macos-2.5.1.md](docs/probes/su-14-cue-contents-macos-2.5.1.md#su-15-variables-in-commands-sent-through-the-bridge).
 
+**Status:** implemented in bridge 0.31.0 ([docs/tools/variables.md](docs/tools/variables.md), probe record
+[su-15-console-variables-macos-2.5.1.md](docs/probes/su-15-console-variables-macos-2.5.1.md), live test
+`test/live/variables.live.ts` 1/1 on macOS onPC 2.5.1).
+- `gma3_variables` reads typed global and user variables by name, plus every `$variable` the macros reference.
+  Variables cannot be enumerated on 2.5.1.
+- `gma3_set_variable` sets with a type or deletes, reads back, and has a batch form.
+- `$variables` are checked in macro lines and cue commands, and the expansion result is documented in `gma3_command`.
+
 ### Acceptance criteria
 
 - A probe settles whether the bridge's `cmd` expands `$variables`, with a read-back a frame later. Document the

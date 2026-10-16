@@ -106,6 +106,13 @@ accept_console_form?, preview?, verify?}`.
 
 Every line is read back and compared with the expected result of the action.
 
+### `$variables` (SU-15)
+
+A `$variable` outside quotes in a line is checked like an object reference: it must exist as a user or global variable
+(bridge 0.31.0), or be set by an earlier executable line or statement (`SetGlobalVariable` / `SetUserVariable`). It
+appears in `references` as `$name` with status `exists`, `created_earlier`, `missing` or `unknown`. See
+[variables.md](variables.md).
+
 ### Batch forms (SU-12)
 
 - `gma3_store_macro` with `macros: [{macro, mode, lines, name, note, cli}]`: several macros, each with this tool's

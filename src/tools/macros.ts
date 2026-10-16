@@ -24,6 +24,7 @@
 import { z } from "zod";
 import type { Gma3Bridge } from "../bridge.js";
 import { exists } from "./common.js";
+import { resolveVariables, variableRefs, variablesSet } from "./variables.js";
 import { json, operation, type RegisterTools, type ToolContext } from "./context.js";
 import { BATCH_NOTE, batchOptionShape, duplicates, runBatchCall } from "../batch.js";
 import {
@@ -306,10 +307,27 @@ export function storedBy(lines: RefLine[]): Set<string> {
 export async function checkReferences(bridge: Gma3Bridge, n: number, lines: RefLine[], firstLine: number, prior: RefLine[] = []): Promise<LineCheck[]> {
   const cache = new Map<string, Awaited<ReturnType<typeof exists>>>();
   const created = storedBy(prior);
+  // SU-15: $variables, resolved once for every checked line; a variable set by an executable line (or an earlier
+  // statement of the same line) counts as created, as a Store does for objects.
+  const setVars = new Set<string>();
+  for (const l of prior) if (executes(l)) for (const sv of variablesSet(l.command)) setVars.add(sv.name);
+  const varNames = lines.filter((l) => !l.raw).flatMap((l) => variableRefs(l.command).map((r) => r.name));
+  const vars = await resolveVariables(bridge, varNames);
   const out: LineCheck[] = [];
   for (const [i, l] of lines.entries()) {
     const { refs, skipped } = references(l.command);
     const check: LineCheck = { line: firstLine + i, raw: !!l.raw, refs: [], skipped };
+    const sets = variablesSet(l.command);
+    for (const r of variableRefs(l.command)) {
+      if (l.raw) continue;
+      const ref = `$${r.name}`;
+      if (setVars.has(r.name) || sets.some((sv) => sv.name === r.name && sv.statement < r.statement)) check.refs.push({ ref, status: "created_earlier" });
+      else {
+        const e = vars.get(r.name);
+        check.refs.push(e?.status === "exists" ? { ref, status: "exists" } : e?.status === "missing" ? { ref, status: "missing" } : { ref, status: "unknown", error: e?.error ?? "not checked" });
+      }
+    }
+    if (executes(l)) for (const sv of sets) setVars.add(sv.name);
     for (const r of refs) {
       const key = r.ref.toLowerCase();
       if (!l.raw) {

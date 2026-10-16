@@ -30,6 +30,8 @@ the live test procedure on a disposable show.
 | Macros as show actions (SB-07; authoring never runs a macro) | `gma3_macros`, `gma3_store_macro`, `gma3_edit_macro_line`, `gma3_run_macro` | [macros.md](macros.md) |
 | Timecode shows (SB-08, bridge 0.25.0; building never plays or records) | `gma3_timecodes`, `gma3_build_timecode`, `gma3_timecode_transport` | [timecode.md](timecode.md) |
 
+Console variables (SU-15, bridge 0.31.0): `gma3_variables`, `gma3_set_variable` ([variables.md](variables.md)).
+
 `AGENT-RULES.md` records the implementation rules every area follows (bridge-only, no retries, shared
 validation and result helpers, serialised mutations, documentation and test requirements).
 
@@ -58,6 +60,7 @@ is a default for each item, and an item's own fields win.
 | `gma3_assign_to_executor` | `assignments` | `{sequence, page, executor, replace, label}` |
 | `gma3_configure_sequence` | `sequences` | numbers and `"a Thru b"` ranges; the same settings on each |
 | `gma3_store_cues` | `sequences` | `{sequence, sequence_name, mode, fixtures, cues}` |
+| `gma3_set_variable` | `variables` | `{scope, name, value, type}` or `{scope, name, delete: true}` (SU-15) |
 
 The rules (`src/batch.ts`):
 - Each item runs through the single form, so it gets that form's checks before anything is sent and its own

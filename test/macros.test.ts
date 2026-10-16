@@ -422,6 +422,18 @@ test("edit_macro_line batch (review round 1): a concurrent mutation from this se
   assert.deepEqual(con.macros.get(901)!.lines.map((l) => l.command), ["Echo other", "Echo first", "Echo a", "Echo b"], "line 4 of the batch was the planned one (Echo c)");
 });
 
+test("SU-15: $variables in macro lines must exist (user or global), unless an earlier line sets them; raw lines are not checked", async () => {
+  const vars = new Map<string, number | string>([["HexCol", 11]]);
+  h.fake.on("vars.get", (a) => ({ items: (a.names as string[]).map((n) => (a.scope === "global" && vars.has(n) ? { name: n, exists: true, value: vars.get(n), type: "integer" } : { name: n, exists: false })) }));
+  const missing = await store({ mode: "create", lines: [{ command: "Echo $HexCol" }, { command: "Echo $HexCue" }] });
+  assert.equal(missing.isError, true);
+  assert.match(JSON.stringify(missing.result), /\$HexCue does not exist/);
+  assert.equal(con.commands.length, 0, "nothing was sent");
+  const created = await store({ mode: "create", lines: [{ command: 'SetGlobalVariable "HexCue" 3' }, { command: "Echo $HexCol $HexCue" }, { command: "Echo $Later", raw: true }] });
+  assert.equal(created.isError, false, JSON.stringify(created.result).slice(0, 1500));
+  assert.deepEqual(created.result.references[1].refs.map((r: any) => `${r.ref}:${r.status}`), ["$HexCol:exists", "$HexCue:created_earlier"]);
+});
+
 // ---------------------------------------------------------------------------
 // gma3_run_macro and gma3_macros
 // ---------------------------------------------------------------------------
