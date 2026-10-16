@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { FakeBridge } from "./helpers/fake-bridge.ts";
 import { startMcpServer } from "./helpers/mcp-server.ts";
-import { COMMAND_FALLBACK_NOTE, LUA_FALLBACK_NOTE, OBSERVING_TOOLS, TASK_TOOLS, serverInstructions } from "../src/discovery.ts";
+import { BATCH_TOOLS, COMMAND_FALLBACK_NOTE, LUA_FALLBACK_NOTE, OBSERVING_TOOLS, TASK_TOOLS, serverInstructions } from "../src/discovery.ts";
 
 /**
  * SU-10: the server instructions map tasks to the structured tools, gma3_lua and gma3_command point at them, and the
@@ -61,6 +61,21 @@ test("gma3_lua and gma3_command start by pointing at the structured tools; the o
   for (const area of ["gma3_patch_add", "gma3_store_group", "gma3_apply_preset", "gma3_build_phaser", "gma3_store_cues", "gma3_configure_sequence", "gma3_observe_tempo"]) assert.ok(desc("gma3_lua").includes(area), `gma3_lua names ${area}`);
   assert.match(desc("gma3_command"), /^FALLBACK for a command no structured tool covers/);
   for (const n of ["gma3_observe_tempo", "gma3_run_macro", "gma3_timecode_transport", "gma3_build_chase"]) assert.match(desc(n), /OBSERVES/, `${n} says it observes over time`);
+});
+
+test("SU-12: the instructions and gma3_lua name every batch form, and each of those tools describes its list", () => {
+  const text = client.getInstructions() ?? "";
+  const desc = (n: string) => tools.find((t) => t.name === n)?.description ?? "";
+  const schema = (n: string) => JSON.stringify((tools.find((t) => t.name === n) as { inputSchema?: unknown })?.inputSchema ?? {});
+  assert.match(text, /Many objects at once: .*never loop over them in Lua/);
+  for (const b of BATCH_TOOLS) {
+    assert.ok(text.includes(`${b.tool} (${b.list})`), `instructions name ${b.tool}`);
+    assert.ok(desc("gma3_lua").includes(b.tool), `gma3_lua names ${b.tool}`);
+    assert.match(desc(b.tool), /Batch form/, `${b.tool} describes its batch form`);
+    const key = b.list.split(/[ ,]/)[0];
+    assert.ok(schema(b.tool).includes(`"${key}"`), `${b.tool} has a ${key} list`);
+    assert.ok(schema(b.tool).includes('"detail"'), `${b.tool} takes detail`);
+  }
 });
 
 test("a stale build's warning comes before the map", () => {

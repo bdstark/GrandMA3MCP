@@ -44,6 +44,7 @@
 import { z } from "zod";
 import { BridgeError, type Gma3Bridge } from "../bridge.js";
 import { readObjects } from "./common.js";
+import { BATCH_NOTE, batchOptionShape, duplicates, runBatchCall } from "../batch.js";
 import { json, operation, type RegisterTools, type ToolContext } from "./context.js";
 import {
   asRead,
@@ -114,7 +115,8 @@ export function fixtureId(field: string, value: unknown): string {
 
 /**
  * The ids of one helper list entry: a single id, or "a Thru b" with ids of the same depth that differ only in the
- * last part ("401 Thru 404", "501.1 Thru 501.12").
+ * last part ("401 Thru 404", "501.1 Thru 501.12"). A range runs in its own direction: "402.36 Thru 402.1" lists the
+ * cells from 36 down to 1 (SU-12).
  */
 export function expandFixtures(field: string, value: unknown): string[] {
   if (typeof value === "string") {
@@ -127,12 +129,15 @@ export function expandFixtures(field: string, value: unknown): string[] {
       }
       const from = Number(a[a.length - 1]);
       const to = Number(b[b.length - 1]);
-      if (to < from) throw new ValidationError(`${field}: a range must ascend (got ${describe(value)}); list the ids in the order you want them`, field);
-      if (to - from + 1 > MAX_ITEMS) throw new ValidationError(`${field}: a range may hold at most ${MAX_ITEMS} ids`, field);
+      if (Math.abs(to - from) + 1 > MAX_ITEMS) throw new ValidationError(`${field}: a range may hold at most ${MAX_ITEMS} ids`, field);
       const prefix = a.slice(0, -1);
+      const dir = to < from ? -1 : 1;
       const out: string[] = [];
       // Bounded twice: the parts are validated safe integers, and the loop never runs past MAX_ITEMS.
-      for (let n = from; n <= to && out.length < MAX_ITEMS; n++) out.push([...prefix, String(n)].join("."));
+      for (let n = from; dir > 0 ? n <= to : n >= to; n += dir) {
+        if (out.length >= MAX_ITEMS) break;
+        out.push([...prefix, String(n)].join("."));
+      }
       return out;
     }
   }
@@ -177,12 +182,25 @@ function checkBounds(field: string, items: GridItem[]): void {
 export type Arrangement =
   | { type: "row"; fixtures: unknown[]; origin?: unknown; step?: unknown; axis?: unknown }
   | { type: "rectangle"; fixtures: unknown[]; columns: unknown; origin?: unknown; step_x?: unknown; step_y?: unknown; serpentine?: unknown }
-  | { type: "mirror"; left: unknown[]; right: unknown[]; origin?: unknown; center_gap?: unknown };
+  | { type: "mirror"; left: unknown[]; right: unknown[]; origin?: unknown; center_gap?: unknown }
+  | { type: "rows"; rows: unknown[]; width?: unknown; align?: unknown; origin?: unknown; step_y?: unknown };
+
+/**
+ * The x offsets of a row of `n` fixtures in `width` cells: spread (first and last at the edges, the rest as evenly
+ * as whole cells allow), start (packed from the left) or center (packed in the middle, extra cell on the right).
+ */
+export function rowOffsets(n: number, width: number, align: "spread" | "start" | "center"): number[] {
+  if (align === "start") return Array.from({ length: n }, (_, i) => i);
+  if (align === "center") return Array.from({ length: n }, (_, i) => Math.floor((width - n) / 2) + i);
+  if (n === 1) return [Math.floor((width - 1) / 2)];
+  // The spacing is at least one cell (n <= width), so rounding never puts two fixtures in one cell.
+  return Array.from({ length: n }, (_, i) => Math.round((i * (width - 1)) / (n - 1)));
+}
 
 /** Expand a helper into the explicit coordinate list it stands for. */
 export function expandArrangement(a: Arrangement): GridItem[] {
   const field = "arrangement";
-  if (!a || typeof a !== "object") throw new ValidationError(`${field} must be an object with a type (row, rectangle or mirror)`, field);
+  if (!a || typeof a !== "object") throw new ValidationError(`${field} must be an object with a type (row, rectangle, mirror or rows)`, field);
   const o = origin(`${field}.origin`, a.origin);
   let items: GridItem[];
   switch (a.type) {
@@ -220,8 +238,25 @@ export function expandArrangement(a: Arrangement): GridItem[] {
       ];
       break;
     }
+    case "rows": {
+      if (!Array.isArray(a.rows) || a.rows.length === 0) throw new ValidationError(`${field}.rows must be a non-empty list of rows, each a list of fixture ids or "a Thru b" ranges`, field);
+      const rows = a.rows.map((r, i) => fixtureList(`${field}.rows[${i}]`, r));
+      const longest = Math.max(...rows.map((r) => r.length));
+      const width = a.width === undefined || a.width === null ? longest : finiteNumber(`${field}.width`, a.width, { integer: true, min: 1, max: MAX_ITEMS })!;
+      const align = a.align ?? "spread";
+      if (align !== "spread" && align !== "start" && align !== "center") throw new ValidationError(`${field}.align must be spread, start or center`, field);
+      const sy = step(`${field}.step_y`, a.step_y);
+      rows.forEach((r, i) => {
+        if (r.length > width) throw new ValidationError(`${field}.rows[${i}] has ${r.length} fixtures, more than the width of ${width} cells`, field);
+      });
+      items = rows.flatMap((r, row) => {
+        const xs = rowOffsets(r.length, width, align);
+        return r.map((fixture, i) => ({ fixture, x: o.x + xs[i], y: o.y + row * sy, z: o.z }));
+      });
+      break;
+    }
     default:
-      throw new ValidationError(`${field}.type must be row, rectangle or mirror (got ${describe((a as { type?: unknown }).type)})`, field);
+      throw new ValidationError(`${field}.type must be row, rectangle, mirror or rows (got ${describe((a as { type?: unknown }).type)})`, field);
   }
   if (items.length > MAX_ITEMS) throw new ValidationError(`${field} expands to ${items.length} fixtures; at most ${MAX_ITEMS} per group`, field);
   checkBounds(field, items);
@@ -471,7 +506,7 @@ export async function storeGroup(ctx: ToolContext, raw: StoreGroupArgs): Promise
   const group = v.check(() => objectNumber("group", raw.group, { max: 9999 }));
   const name = v.check(() => objectName("name", raw.name, { optional: true }));
   let items: GridItem[] | undefined;
-  if ((raw.items === undefined) === (raw.arrangement === undefined)) v.fail("give exactly one of items (explicit coordinates) or arrangement (row, rectangle or mirror helper)");
+  if ((raw.items === undefined) === (raw.arrangement === undefined)) v.fail("give exactly one of items (explicit coordinates) or arrangement (row, rectangle, mirror or rows helper)");
   else items = v.check(() => (raw.items !== undefined ? explicitItems(raw.items) : expandArrangement(raw.arrangement!)));
   const preview = raw.preview === true;
   const verify = raw.verify !== false;
@@ -1005,7 +1040,7 @@ const arrangementSchema = z
   .discriminatedUnion("type", [
     z.object({
       type: z.literal("row"),
-      fixtures: z.array(fixtureEntry).describe('Fixture ids along the row; "a Thru b" ranges expand ("401 Thru 404", "501.1 Thru 501.12").'),
+      fixtures: z.array(fixtureEntry).describe('Fixture ids along the row; "a Thru b" ranges expand in their own direction ("401 Thru 404", "501.12 Thru 501.1").'),
       origin: originSchema,
       step: z.number().optional().describe("Cells between neighbours (default 1; negative runs backwards)."),
       axis: z.enum(["x", "y", "z"]).optional().describe("Axis of the row (default x)."),
@@ -1025,6 +1060,14 @@ const arrangementSchema = z
       right: z.array(fixtureEntry).describe("Right half, listed from the outer edge towards the centre (same count as left); right[i] mirrors left[i]."),
       origin: originSchema,
       center_gap: z.number().optional().describe("Empty cells between the two halves (default 0)."),
+    }),
+    z.object({
+      type: z.literal("rows"),
+      rows: z.array(z.array(fixtureEntry)).describe('Rows top to bottom, each a list of fixture ids or ranges ("402.36 Thru 402.1" runs downwards); rows may differ in length.'),
+      width: z.number().optional().describe("Cells per row (default: the longest row)."),
+      align: z.enum(["spread", "start", "center"]).optional().describe("spread (default): first and last fixture at the row's edges, the rest evenly; start: packed from the left; center: packed in the middle."),
+      origin: originSchema,
+      step_y: z.number().optional().describe("Cells between rows (default 1; negative runs upwards)."),
     }),
   ])
   .optional();
@@ -1071,12 +1114,14 @@ export const registerGroupTools: RegisterTools = (server, ctx) => {
       title: "Store a group with an explicit selection grid",
       description:
         "Create or overwrite Group <n> from a fixture list with explicit selection-grid cells. The cells are the order: the console stores a group in patch order and MAtricks, phasers and At a Thru b distribute along the grid, not along the list. Give either items ([{fixture, x, y, z}]) or an arrangement helper that expands into such a list: " +
-        "row (along one axis), rectangle (row by row, optional serpentine), mirror (left and right halves listed outside-in, right[i] mirrors left[i], optional centre gap). preview: true returns the expanded list, bounds, gaps and shared cells without sending anything. " +
+        "row (along one axis), rectangle (row by row, optional serpentine), mirror (left and right halves listed outside-in, right[i] mirrors left[i], optional centre gap), rows (one row per list, each spread over width cells). preview: true returns the expanded list, bounds, gaps and shared cells without sending anything. " +
         "Rules: duplicate fixtures are refused (the console silently ignores a second selection); shared cells are refused unless allow_shared_cells: true; gaps and offsets are kept (preserve_grid_positions, default true; false lets a recall at the origin compact them); a fixture and its own cells (501, 501.1) are separate items; missing fixtures are refused. An existing group needs overwrite: true (its name is kept unless name is given); a locked group is refused. " +
         "Requires exclusive: true (not for preview): the tool clears the console's fixture selection (programmer values are kept), selects each fixture after its own 'Grid x/y/z' command, checks that the selection is exactly the plan before 'Store Group', sets PreserveGridPositions and the name, " +
-        "then (verify, default true) reads the stored group back and recalls it at Grid 0/0/0 to check order and cells, and finally clears the selection and returns the cursor to 0/0/0. Grid cells are not physical stage positions. Needs bridge 0.21.0.",
+        "then (verify, default true) reads the stored group back and recalls it at Grid 0/0/0 to check order and cells, and finally clears the selection and returns the cursor to 0/0/0. Grid cells are not physical stage positions. Needs bridge 0.21.0. " +
+        "rows: rows of different lengths spread over one width (align spread, start or center); ranges run in their own direction (\"402.36 Thru 402.1\"). " +
+        BATCH_NOTE,
       inputSchema: {
-        group: z.number().describe("Group number (1-9999)."),
+        group: z.number().optional().describe("Group number (1-9999). Required unless groups is given."),
         name: z.string().optional().describe("Group name (a new group is otherwise named by the console)."),
         items: z.array(z.object({ fixture: fixtureEntry.describe('Fixture id: 401 or "501.1".'), x: z.number(), y: z.number(), z: z.number().optional() })).optional().describe("Explicit list; each fixture once. The cells define the order distributions follow (the console stores the group in patch order)."),
         arrangement: arrangementSchema.describe("Helper that expands into the explicit list (see preview)."),
@@ -1086,9 +1131,27 @@ export const registerGroupTools: RegisterTools = (server, ctx) => {
         exclusive: z.boolean().optional().describe("Required (true) unless preview: nobody else uses the console's selection while the tool runs."),
         preview: z.boolean().optional().describe("Only expand, analyse and check; send nothing (default false)."),
         verify: z.boolean().optional().describe("Read back and recall-check the stored group (default true)."),
+        groups: z
+          .array(z.object({ group: z.number(), name: z.string().optional(), items: z.array(z.object({ fixture: fixtureEntry, x: z.number(), y: z.number(), z: z.number().optional() })).optional(), arrangement: arrangementSchema, overwrite: z.boolean().optional(), preserve_grid_positions: z.boolean().optional(), allow_shared_cells: z.boolean().optional() }))
+          .optional()
+          .describe("Batch form: several groups, each {group, name, items | arrangement, overwrite, ...}, stored one after the other."),
+        ...batchOptionShape,
       },
     },
-    async (args) => operation(() => storeGroup(ctx, args as StoreGroupArgs)),
+    async (args) =>
+      operation(() =>
+        (args as Record<string, unknown>).groups !== undefined
+          ? runBatchCall(args as Record<string, unknown>, {
+              operation: "store_group",
+              listKey: "groups",
+              identityKeys: ["group", "items", "arrangement", "name"],
+              label: (it) => `Group ${String(it.group)}`,
+              key: (it) => `Group ${String(it.group)}`,
+              check: (items) => duplicates(items.map((it) => String(it.group))).map((g) => `Group ${g} appears more than once in groups`),
+              run: (it) => storeGroup(ctx, it as unknown as StoreGroupArgs),
+            })
+          : storeGroup(ctx, args as StoreGroupArgs),
+      ),
   );
 
   server.registerTool(

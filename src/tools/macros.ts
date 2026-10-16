@@ -25,6 +25,7 @@ import { z } from "zod";
 import type { Gma3Bridge } from "../bridge.js";
 import { exists } from "./common.js";
 import { json, operation, type RegisterTools, type ToolContext } from "./context.js";
+import { BATCH_NOTE, batchOptionShape, duplicates, runBatchCall } from "../batch.js";
 import {
   asRead,
   buildResult,
@@ -1038,20 +1039,39 @@ export const registerMacroTools: RegisterTools = (server, ctx) => {
       description:
         "mode (required): create (refuses an existing macro), replace (removes the existing lines first, keeping the macro, its appearance and its executor assignments) or append (adds after the existing lines). lines: [{command, wait (seconds, \"follow\" or \"go\" = a manual wait until the next Go+), enabled, add_to_cmdline, execute, name, note, raw}]; name, note, cli of the macro. " +
         "Before anything is sent the references in each line are checked (single objects named with full keywords; a Store earlier in the macro counts as creating its object); raw: true stores a line unchecked. Refuses a locked or running macro. Sends Store Macro N, Delete/Store Macro N.L and one set per property; NEVER runs the macro. " +
-        "The console rewrites command text outside quotes (trims, collapses spaces, expands abbreviated keywords): every line is read back and compared exactly; a rewritten line is a mismatch unless accept_console_form: true (it is reported in rewritten either way).",
+        "The console rewrites command text outside quotes (trims, collapses spaces, expands abbreviated keywords): every line is read back and compared exactly; a rewritten line is a mismatch unless accept_console_form: true (it is reported in rewritten either way). " +
+        BATCH_NOTE,
       inputSchema: {
-        macro: z.number(),
-        mode: z.enum(["create", "replace", "append"]),
-        lines: z.array(lineSchema),
+        macro: z.number().optional().describe("Macro number. Required unless macros is given."),
+        mode: z.enum(["create", "replace", "append"]).optional().describe("Required (per macro or for the whole batch)."),
+        lines: z.array(lineSchema).optional().describe("Required unless macros is given."),
         name: z.string().optional(),
         note: z.string().optional(),
         cli: z.boolean().optional(),
         accept_console_form: z.boolean().optional(),
         preview: z.boolean().optional(),
         verify: z.boolean().optional(),
+        macros: z
+          .array(z.object({ macro: z.number(), mode: z.enum(["create", "replace", "append"]).optional(), lines: z.array(lineSchema), name: z.string().optional(), note: z.string().optional(), cli: z.boolean().optional() }))
+          .optional()
+          .describe("Batch form: several macros, each {macro, mode, lines, name, note, cli}; mode may be given once for all."),
+        ...batchOptionShape,
       },
     },
-    async (args) => operation(() => storeMacro(ctx, args)),
+    async (args) =>
+      operation(() =>
+        (args as Record<string, unknown>).macros !== undefined
+          ? runBatchCall(args as Record<string, unknown>, {
+              operation: "store_macro",
+              listKey: "macros",
+              identityKeys: ["macro", "lines", "name", "note"],
+              label: (it) => `Macro ${String(it.macro)}`,
+              key: (it) => `Macro ${String(it.macro)}`,
+              check: (items) => duplicates(items.map((it) => String(it.macro))).map((m) => `Macro ${m} appears more than once in macros`),
+              run: (it) => storeMacro(ctx, it as unknown as StoreArgs),
+            })
+          : storeMacro(ctx, args),
+      ),
   );
 
   server.registerTool(
@@ -1059,11 +1079,13 @@ export const registerMacroTools: RegisterTools = (server, ctx) => {
     {
       title: "Insert, change, move or remove one macro line (never runs it)",
       description:
-        "action insert (line 1..count+1, needs command), set (any of command, wait, enabled, add_to_cmdline, execute, name, note), move (line -> to; sent as upward moves only, because a downward Move lands one place short), remove. References in a written command are checked unless raw: true. Refuses a locked or running macro. Every line is read back and compared with the expected order and content; accept_console_form as in gma3_store_macro. Never runs the macro.",
+        "action insert (line 1..count+1, needs command), set (any of command, wait, enabled, add_to_cmdline, execute, name, note), move (line -> to; sent as upward moves only, because a downward Move lands one place short), remove. References in a written command are checked unless raw: true. Refuses a locked or running macro. Every line is read back and compared with the expected order and content; accept_console_form as in gma3_store_macro. Never runs the macro. " +
+        "Batch form (edits): the edits run in order, each against the macro as the earlier edits left it (line numbers shift after an insert, move or remove); once an edit on a macro does not succeed, the later edits on that macro are not attempted. " +
+        BATCH_NOTE,
       inputSchema: {
-        macro: z.number(),
-        action: z.enum(["insert", "set", "move", "remove"]),
-        line: z.number(),
+        macro: z.number().optional().describe("Macro number. Required unless edits is given (it may then be a default for every edit)."),
+        action: z.enum(["insert", "set", "move", "remove"]).optional().describe("Required unless edits is given."),
+        line: z.number().optional().describe("Required unless edits is given."),
         to: z.number().optional(),
         command: z.string().optional(),
         wait: waitSchema,
@@ -1077,9 +1099,26 @@ export const registerMacroTools: RegisterTools = (server, ctx) => {
         allow_unresolved_dependents: z.boolean().optional().describe("Edit even when a later line uses an object this edit stops an earlier line from storing (default false: refuse)."),
         preview: z.boolean().optional(),
         verify: z.boolean().optional(),
+        edits: z
+          .array(z.object({ macro: z.number().optional(), action: z.enum(["insert", "set", "move", "remove"]), line: z.number(), to: z.number().optional(), command: z.string().optional(), wait: waitSchema, enabled: z.boolean().optional(), add_to_cmdline: z.boolean().optional(), execute: z.boolean().optional(), name: z.string().optional(), note: z.string().optional(), raw: z.boolean().optional() }))
+          .optional()
+          .describe("Batch form: several edits in order, each {macro, action, line, ...}; macro may be given once for all."),
+        ...batchOptionShape,
       },
     },
-    async (args) => operation(() => editMacroLine(ctx, args)),
+    async (args) =>
+      operation(() =>
+        (args as Record<string, unknown>).edits !== undefined
+          ? runBatchCall(args as Record<string, unknown>, {
+              operation: "edit_macro_line",
+              listKey: "edits",
+              identityKeys: ["action", "line", "to", "command"],
+              label: (it) => `Macro ${String(it.macro)} line ${String(it.line)} ${String(it.action)}`,
+              key: (it) => `Macro ${String(it.macro)}`,
+              run: (it) => editMacroLine(ctx, it as unknown as EditArgs),
+            })
+          : editMacroLine(ctx, args),
+      ),
   );
 
   server.registerTool(

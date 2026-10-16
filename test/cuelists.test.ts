@@ -275,7 +275,7 @@ test("store_cues: three cues built in Preview, each from its looks, named, timed
     });
     assert.equal(isError, false, JSON.stringify(result, null, 2));
     assert.equal(result.verification.status, "matched");
-    assert.deepEqual(result.cues.map((x: any) => [x.cue, x.status, x.verification.status]), [["1", "stored", "matched"], ["2", "stored", "matched"], ["3", "stored", "matched"]]);
+    assert.deepEqual(result.cues.map((x: any) => [x.cue, x.status, x.verification]), [["1", "stored", "matched"], ["2", "stored", "matched"], ["3", "stored", "matched"]], "compact: one line per cue");
     assert.equal(result.normalProgrammer, "untouched");
     normalUntouched(c);
     const seq = c.seqs.get(951)!;
@@ -332,6 +332,9 @@ test("store_cues: a look that does not apply stops the batch before its cue is s
     assert.equal(result.outcome, "partial");
     assert.deepEqual(result.cues.map((x: any) => x.status), ["stored", "failed", "not_attempted"]);
     assert.match(result.cues[1].error, /Preset 4\.2 did not apply, so cue 2 was not stored/);
+    assert.equal(result.cues[1].verification, "mismatched");
+    assert.ok(result.cues[1].detail && result.cues[1].looks?.length === 1, "a cue that did not match keeps its look details in the compact form");
+    assert.ok(result.steps.some((x: any) => x.status === "failed"), "the failed step is listed");
     assert.deepEqual(c.seqs.get(951)!.cues.map((x) => x.no), [1]);
     normalUntouched(c);
     assert.ok(!c.commands.some((x) => x.includes("Cue 2 ")), "cue 2 was never stored");
@@ -407,7 +410,7 @@ test("build_chase: one cue per preset, every cue Time-triggered, Wrap Around on,
     assert.deepEqual(seq.cues.map((x) => [x.no, x.trigType, x.trigTime]), [[1, "Time", 0.25], [2, "Time", 0.25], [3, "Time", 0.25]]);
     assert.equal(result.cycle.mode, "full");
     assert.deepEqual(result.cycle.expected, [1, 2, 3, 1, 2]);
-    assert.deepEqual(result.cycle.observed.map((o: any) => o.cue), [1, 2, 3, 1, 2]);
+    assert.deepEqual(result.cycle.observedCues, [1, 2, 3, 1, 2], "compact: the observed cue order");
     assert.equal(c.playing, null, "switched off afterwards");
     assert.deepEqual(c.commands.slice(-2), ["Goto Sequence 970 Cue 1", "Off Sequence 970"]);
     normalUntouched(c);
@@ -450,6 +453,62 @@ test("build_chase: a sequence running at another rate is judged against step / r
 // ---------------------------------------------------------------------------
 // Observation planning (pure)
 // ---------------------------------------------------------------------------
+
+test("SU-12: an 18-step chase result is compact by default (a few KB) and complete with detail: true", async () => {
+  const { h, c } = await setup();
+  try {
+    const steps = Array.from({ length: 18 }, (_, i) => ({ name: `Step ${i + 1}`, intensity: (i + 1) * 5 }));
+    const compact = await h.callJson("gma3_build_chase", { sequence: 971, fixtures: "101 + 102", steps, step_seconds: 0.2, exclusive: true });
+    assert.equal(compact.isError, false, JSON.stringify(compact.result).slice(0, 2000));
+    const size = JSON.stringify(compact.result).length;
+    assert.ok(size < 4000, `compact result is ${size} bytes`);
+    assert.equal(compact.result.cues.length, 18);
+    assert.deepEqual(compact.result.cues[2], { cue: "3", status: "stored", verification: "matched", name: "Step 3" });
+    assert.equal(compact.result.cycle.observed, undefined);
+    assert.equal(compact.result.cycle.observedCues.length, compact.result.cycle.expected.length);
+    assert.equal(compact.result.cycle.watched, true);
+    assert.deepEqual(compact.result.steps, [], "only steps that did not succeed are listed");
+    assert.ok(compact.result.stepCounts.succeeded > 100);
+    assert.match(compact.result.detailHint, /detail: true/);
+
+    c.seqs.delete(971);
+    const full = await h.callJson("gma3_build_chase", { sequence: 971, fixtures: "101 + 102", steps, step_seconds: 0.2, exclusive: true, detail: true });
+    assert.equal(full.isError, false);
+    assert.equal(full.result.steps.length, compact.result.stepCounts.succeeded);
+    assert.ok(JSON.stringify(full.result).length > 3 * size, "detail returns every step");
+  } finally {
+    await h.close();
+  }
+});
+
+test("store_cues batch (SU-12): several sequences, each its own Preview build; one refused in create mode fails alone", async () => {
+  const { h, c } = await setup();
+  try {
+    c.addCue(952, 1);
+    const { result, isError } = await h.callJson("gma3_store_cues", {
+      mode: "create",
+      fixtures: "101",
+      exclusive: true,
+      sequences: [
+        { sequence: 951, sequence_name: "A", cues: [{ cue: 1, intensity: 10 }, { cue: 2, intensity: 20 }] },
+        { sequence: 952, cues: [{ cue: 1, intensity: 30 }] },
+        { sequence: 953, fixtures: "102", cues: [{ cue: 1, presets: [{ pool: 4, preset: 2 }] }] },
+      ],
+    });
+    assert.equal(isError, true);
+    assert.equal(result.outcome, "partial");
+    assert.deepEqual(result.items.map((i: any) => `${i.target}:${i.outcome}:${i.verification}`), ["Sequence 951:succeeded:matched", "Sequence 952:failed:unavailable", "Sequence 953:succeeded:matched"]);
+    assert.match(result.items[1].summary, /already has cue\(s\) 1; nothing was sent/);
+    assert.equal(c.seqs.get(951)!.name, "A");
+    assert.deepEqual(c.seqs.get(953)!.cues[0].data, { "102": { ColorRGB_R: 0, ColorRGB_G: 100, ColorRGB_B: 0 } });
+    assert.equal(c.seqs.get(952)!.cues.length, 1, "the refused sequence is untouched");
+    normalUntouched(c);
+    const dup = await h.callJson("gma3_store_cues", { mode: "create", exclusive: true, sequences: [{ sequence: 951, cues: [{ cue: 5, intensity: 1, fixtures: "101" }] }, { sequence: 951, cues: [{ cue: 6, intensity: 1, fixtures: "101" }] }] });
+    assert.match(dup.result.validationErrors.join(" "), /Sequence 951 appears more than once/);
+  } finally {
+    await h.close();
+  }
+});
 
 test("planObservation: the full cycle when it fits, otherwise the tail through the wrap", () => {
   assert.deepEqual(planObservation(3, 1000, 45000), { mode: "full", start: 0, transitions: 4 });

@@ -148,6 +148,13 @@ Masters are written by name, which the console requires (a number is silently ig
 or one that shares its name with another. While a rate master is linked, the sequence's own rate fader is the shared
 master. See [speed.md](speed.md) for the masters themselves.
 
+### Batch form (SU-12)
+
+`sequences: [1, "3 Thru 17", 20]` applies the same settings to each sequence (numbers and ranges, either direction, at
+most 100 after expansion), each configured, checked and read back on its own with its own references. A sequence
+that appears twice after expansion refuses the whole call; a missing one fails alone. See
+[Batch forms](README.md#batch-forms-su-12).
+
 ## Not in the first release
 
 Custom key commands, executor width/height, executor configurations (save/load/recast), MA-encoder functions,

@@ -37,6 +37,7 @@ import { z } from "zod";
 import type { Gma3Bridge } from "../bridge.js";
 import { readObjects, type ObjectSummary } from "./common.js";
 import { json, operation, type RegisterTools, type ToolContext } from "./context.js";
+import { MAX_BATCH_ITEMS, batchOptionShape, batchRefused, duplicates, runBatchCall } from "../batch.js";
 import { executorNumber, executorRef, pageNumber } from "./executors.js";
 import {
   asRead,
@@ -746,6 +747,24 @@ interface ConfigureSequenceArgs extends Record<string, unknown> {
   verify?: boolean;
 }
 
+/** Sequence numbers from a list of numbers and "a Thru b" ranges (either direction), in the order given. */
+export function expandSequenceList(value: unknown): { numbers: number[] } | { error: string } {
+  if (!Array.isArray(value) || value.length === 0) return { error: 'sequences must be a non-empty list of sequence numbers or "a Thru b" ranges' };
+  const out: number[] = [];
+  for (const entry of value) {
+    const m = typeof entry === "string" ? entry.trim().match(/^(\d+)(?:\s+thru\s+(\d+))?$/i) : null;
+    const from = typeof entry === "number" ? entry : m ? Number(m[1]) : NaN;
+    const to = typeof entry === "number" ? entry : m ? Number(m[2] ?? m[1]) : NaN;
+    if (![from, to].every((n) => Number.isInteger(n) && n >= 1 && n <= 9999)) return { error: `sequences: ${JSON.stringify(entry)} is not a sequence number 1-9999 or an "a Thru b" range` };
+    const dir = to < from ? -1 : 1;
+    for (let n = from; dir > 0 ? n <= to : n >= to; n += dir) {
+      out.push(n);
+      if (out.length > MAX_BATCH_ITEMS) return { error: `sequences expands to more than ${MAX_BATCH_ITEMS} sequences; split the job into several calls` };
+    }
+  }
+  return { numbers: out };
+}
+
 export async function configureSequence(ctx: ToolContext, raw: ConfigureSequenceArgs): Promise<OperationResult> {
   const op = "configure_sequence";
   const v = new Validator();
@@ -959,16 +978,37 @@ export const registerPlaybackTools: RegisterTools = (server, ctx) => {
         "off_when_overridden, kill_protect, swap_protect (protection from the Kill/Swap playback actions, not from editing), use_executor_time, include_link_last_go, xfade_mode, xfade_reload. lock: true/false sets the sequence's own Lock. " +
         "Tempo links (SB-06): rate_master (a speed master 1-16 or \"none\": the cue timing (fades, delays, trigger times) runs at its effective BPM / 60, so 60 BPM is 1:1), speed_master (the phasers in the cues follow it), rate_scale and speed_scale (One, Mul2..Mul256, Div2..Div256), speed_from_rate. Masters are linked by name; a master without a unique name is refused. While a rate master is linked, moving the sequence's rate fader moves the shared master. " +
         "Settings belong to the sequence, so they apply to EVERY executor that references it: the tool scans all pages and lists them (references) and warns when other executors share the sequence. Cue triggers and timing are set with gma3_set_cue_trigger / gma3_set_cue_timing. " +
-        COMMON,
+        COMMON +
+        " Batch form (sequences): the same settings on a list of sequences and ranges (\"1 Thru 17\"), each configured, checked and read back on its own; the result has one line per sequence (detail: true for every step).",
       inputSchema: {
-        sequence: z.number().describe("Sequence number (must exist)."),
+        sequence: z.number().optional().describe("Sequence number (must exist). Required unless sequences is given."),
+        sequences: z
+          .array(z.union([z.number(), z.string()]))
+          .optional()
+          .describe('Batch form: the same settings on several sequences: numbers and "a Thru b" ranges, e.g. [1, "3 Thru 17", 20]; each sequence is configured and read back on its own.'),
         ...settingSchema,
         lock: z.boolean().optional().describe("Final state of the sequence's Lock; lock: false on a locked sequence removes the lock (explicit unlock)."),
         unlock: z.boolean().optional().describe("Allow unlocking a locked sequence for this call; the lock is restored afterwards (default false: refuse)."),
         preview: z.boolean().optional().describe("Only read and report the planned changes and sharing executors (default false)."),
         verify: z.boolean().optional().describe("Read the changed settings back and compare (default true)."),
+        ...batchOptionShape,
       },
     },
-    async (args) => operation(() => configureSequence(ctx, args as ConfigureSequenceArgs)),
+    async (args) =>
+      operation(async () => {
+        const a = args as Record<string, unknown>;
+        if (a.sequences === undefined) return configureSequence(ctx, a as ConfigureSequenceArgs);
+        const expanded = expandSequenceList(a.sequences);
+        if ("error" in expanded) return batchRefused("configure_sequence", "sequences", [expanded.error]);
+        return runBatchCall({ ...a, sequences: expanded.numbers.map((sequence) => ({ sequence })) }, {
+          operation: "configure_sequence",
+          listKey: "sequences",
+          identityKeys: ["sequence"],
+          label: (it) => `Sequence ${String(it.sequence)}`,
+          key: (it) => `Sequence ${String(it.sequence)}`,
+          check: (items) => duplicates(items.map((it) => String(it.sequence))).map((n) => `Sequence ${n} is listed more than once in sequences`),
+          run: (it) => configureSequence(ctx, it as ConfigureSequenceArgs),
+        });
+      }),
   );
 };

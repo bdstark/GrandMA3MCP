@@ -29,6 +29,7 @@ import { z } from "zod";
 import type { Gma3Bridge } from "../bridge.js";
 import { readObjects, type ObjectSummary } from "./common.js";
 import { operation, type RegisterTools, type ToolContext } from "./context.js";
+import { BATCH_NOTE, batchOptionShape, duplicates, runBatchCall } from "../batch.js";
 import {
   asRead,
   buildResult,
@@ -536,17 +537,37 @@ export const registerExecutorTools: RegisterTools = (server, ctx) => {
         "If labelling fails after the assignment the outcome is partial. " +
         "Does not change the fixture selection or the programmer and never sends Go/On/Off/Toggle or any playback keyword; whether the console changes the selected sequence on assignment is not controlled by this tool. " +
         "verify (default true) reads the executor back and compares the assigned object (by name and class) and, when a label was given, the executor's displayed name and the sequence's own Name; executor configuration, fader/key functions and playback state are NOT verified. " +
-        "Mutations from this server are serialised, but another operator or client can still change the executor between the inspection and the assignment.",
+        "Mutations from this server are serialised, but another operator or client can still change the executor between the inspection and the assignment. " +
+        "Batch form (assignments): each target executor is checked to be empty or to hold that sequence already, unless replace is given for that item (or for the whole call); a target listed twice is refused. " +
+        BATCH_NOTE,
       inputSchema: {
-        sequence: z.number().describe("Sequence number to assign (must exist)."),
-        page: z.number().describe("Executor page number (1-9999). The page must already exist; the tool does not create pages."),
-        executor: z.number().describe(EXECUTOR_DESC),
+        sequence: z.number().optional().describe("Sequence number to assign (must exist). Required unless assignments is given."),
+        page: z.number().optional().describe("Executor page number (1-9999). The page must already exist; the tool does not create pages. Required unless assignments is given (it may then be a default for every item)."),
+        executor: z.number().optional().describe(`${EXECUTOR_DESC} Required unless assignments is given.`),
         replace: z.boolean().optional().describe("Replace an executor that holds a different object (default false: fail and report the previous assignment)."),
         label: z.string().optional().describe(`Optional new name for the assigned sequence (an executor displays its assigned object's name). ${NAME_DESC}`),
         verify: z.boolean().optional().describe("Read the executor (and the sequence, when labelled) back and compare (default true)."),
+        assignments: z
+          .array(z.object({ sequence: z.number(), page: z.number().optional(), executor: z.number(), replace: z.boolean().optional(), label: z.string().optional() }))
+          .optional()
+          .describe("Batch form: several assignments, each {sequence, page, executor, replace, label}; page may be given once for all."),
+        ...batchOptionShape,
       },
     },
-    async (args) => operation(() => assignToExecutor(ctx, args as AssignArgs)),
+    async (args) =>
+      operation(() =>
+        (args as Record<string, unknown>).assignments !== undefined
+          ? runBatchCall(args as Record<string, unknown>, {
+              operation: "assign_to_executor",
+              listKey: "assignments",
+              identityKeys: ["sequence", "executor", "label"],
+              label: (it) => `Sequence ${String(it.sequence)} -> Page ${String(it.page)}.${String(it.executor)}`,
+              key: (it) => `Page ${String(it.page)}.${String(it.executor)}`,
+              check: (items) => duplicates(items.map((it) => `Page ${String(it.page)}.${String(it.executor)}`)).map((x) => `${x} is a target more than once in assignments`),
+              run: (it) => assignToExecutor(ctx, it as unknown as AssignArgs),
+            })
+          : assignToExecutor(ctx, args as AssignArgs),
+      ),
   );
 
   server.registerTool(

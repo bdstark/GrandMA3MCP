@@ -62,7 +62,7 @@ Parameters: `group` (1–9999), `name?`, exactly one of `items` / `arrangement`,
 - **`items`**: `[{fixture, x, y, z?}]`, fixture as `401` or `"501.1"` (a FID 1–99999999, then up to 7 cell numbers
   1–99999), integer cells −9999..9999, z default 0.
 - **`arrangement`** helpers, expanded into the same list (see it with `preview: true`). Fixture lists accept ids and
-  `"a Thru b"` ranges within one level (`"401 Thru 404"`, `"501.1 Thru 501.12"`):
+  `"a Thru b"` ranges within one level (`"401 Thru 404"`, `"501.12 Thru 501.1"`; a range runs in its own direction):
   - `{type: "row", fixtures, origin?, step? (default 1, negative runs backwards), axis? ("x" | "y" | "z")}`
   - `{type: "rectangle", fixtures, columns, origin?, step_x?, step_y?, serpentine?}`: filled row by row; `serpentine`
     runs every second row backwards.
@@ -101,6 +101,24 @@ Requests, in order:
 
 The tool holds this server's mutation lock from step 5 to the end. It cannot stop another operator from selecting
 fixtures in between; `check_selection` and the recall check detect that.
+
+### Compact specs and the batch form (SU-12)
+
+- A range runs in its own direction: `"402.36 Thru 402.1"` lists the cells from 36 down to 1, for a string whose
+  numbering starts at the far end.
+- `{type: "rows", rows, width?, align?, origin?, step_y?}`: one row per list (top to bottom, `step_y` default 1), rows
+  of different lengths in one width (default: the longest row). `align`:
+  - `spread` (default): the first and last fixture at the row's edges, the rest as evenly as whole cells allow
+    (5 in 9 cells: 0, 2, 4, 6, 8; 3 in 8: 0, 4, 7; 1: the middle). Never two fixtures in one cell.
+  - `start`: packed from the left.
+  - `center`: packed in the middle, the extra cell on the right.
+
+  A row longer than the width is refused.
+- A fixture's cells in physical order (the Festoon's bulb order) wait for SU-19's cell-order read.
+- `groups: [{group, name, items | arrangement, overwrite, preserve_grid_positions, allow_shared_cells}]` stores
+  several groups one after the other, each with the steps above; `exclusive`, `verify` and the other options apply to
+  every item unless an item gives its own. A group listed twice is refused. See
+  [Batch forms](README.md#batch-forms-su-12).
 
 ## `gma3_matricks` and `gma3_configure_matricks`
 

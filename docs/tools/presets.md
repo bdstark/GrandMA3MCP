@@ -117,6 +117,27 @@ relative), a forced conversion's removal, an
 attribute whose feature group is unknown (decided by the read-back), a pool with its own input filter, an incomplete
 dependency inspection.
 
+### Batch form: presets from explicit content (SU-12)
+
+`presets: [{preset, name, mode, existing, fixtures, presets, intensity, values | looks, attributes, layers, embed,
+input_filter}]` stores several presets, each from its own content instead of the programmer. `fixtures` (ids or
+`"a Thru b"` ranges) is the content's target and the preset's scope; `looks: [{fixtures, presets, intensity,
+values}]` gives several targets, and the scope is every fixture they name. Call-level `mode`, `existing`, `fixtures`
+and the other options are defaults for every preset. `exclusive: true` is required; `force`, `keep_activation` and
+`preview` are single-form only.
+
+The presets are built one by one in the console's Preview environment, as `gma3_store_cues` builds cues
+([cuelists.md](cuelists.md#how-a-batch-is-built)): the read-only checks first (presets, attributes, fixtures, the
+Normal programmer), Preview On and an empty Preview programmer, then per preset ClearAll (only in Preview), its looks
+with a programmer check after each, and this tool's own store, checks and read-back with `environment: Preview`.
+Preview is left at the end and the Normal programmer must be unchanged. A preset that is refused or does not match
+does not stop the others; an unknown step stops the build. The result has one line per preset (`items`), the build's
+own steps (`build`) and `normalProgrammer`. See [Batch forms](README.md#batch-forms-su-12).
+
+On bridge 0.30.0 the programmer scan of all fixtures misses subfixture index 0 (the first patched fixture when the
+show has no Universal fixture), so a scope that includes it is refused with "has no programmer value". The bridge fix
+is a separate change.
+
 ## `gma3_preset`
 
 - `{ preset: "4.12" }`:

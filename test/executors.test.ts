@@ -521,3 +521,40 @@ test("tool descriptions state selection, programmer, verification and the rename
     assert.match(d, /RENAMES THE/);
   }
 });
+
+// ---------------------------------------------------------------------------
+// SU-12 batch form
+// ---------------------------------------------------------------------------
+
+test("assign batch: each target is checked empty; an occupied one fails unless replace is given for that item", async () => {
+  world.seq(9, "Third").exec(1, 202, 7).exec(1, 203, 7);
+  const { result, isError } = await h.callJson("gma3_assign_to_executor", {
+    page: 1,
+    assignments: [
+      { sequence: 5, executor: 201 },
+      { sequence: 9, executor: 202 },
+      { sequence: 9, executor: 203, replace: true },
+      { sequence: 7, executor: 101, page: 2 },
+    ],
+  });
+  assert.equal(isError, true);
+  assert.equal(result.outcome, "partial");
+  assert.deepEqual(result.items.map((i: any) => `${i.target}:${i.outcome}`), [
+    "Sequence 5 -> Page 1.201:succeeded",
+    "Sequence 9 -> Page 1.202:failed",
+    "Sequence 9 -> Page 1.203:succeeded",
+    "Sequence 7 -> Page 2.101:succeeded",
+  ]);
+  assert.match(result.items[1].summary, /nothing was sent/i);
+  assert.deepEqual(h.fake.commands, ["Assign Sequence 5 At Page 1.201", "Assign Sequence 9 At Page 1.203", "Assign Sequence 7 At Page 2.101"]);
+  assert.equal(result.verification.status, "unavailable", "the refused item has no read-back");
+  assertNoPlayback(h);
+});
+
+test("assign batch: a target listed twice, or a top-level executor, refuses the whole call before anything is sent", async () => {
+  const dup = await h.callJson("gma3_assign_to_executor", { page: 1, assignments: [{ sequence: 5, executor: 201 }, { sequence: 7, executor: 201 }] });
+  assert.match(dup.result.validationErrors.join(" "), /Page 1\.201 is a target more than once/);
+  const top = await h.callJson("gma3_assign_to_executor", { executor: 201, assignments: [{ sequence: 5, executor: 202, page: 1 }] });
+  assert.match(top.result.validationErrors.join(" "), /give executor in each item/);
+  assert.deepEqual(h.fake.requests, []);
+});

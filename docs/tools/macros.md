@@ -106,6 +106,17 @@ accept_console_form?, preview?, verify?}`.
 
 Every line is read back and compared with the expected result of the action.
 
+### Batch forms (SU-12)
+
+- `gma3_store_macro` with `macros: [{macro, mode, lines, name, note, cli}]`: several macros, each with this tool's
+  reference checks and read-back. `mode` and `accept_console_form` may be given once for all. A macro listed twice is
+  refused. A macro stored earlier in the batch counts as existing for a later macro's references.
+- `gma3_edit_macro_line` with `edits: [{macro, action, line, ...}]`: the edits run in order, each against the macro as
+  the earlier edits left it (line numbers shift after an insert, move or remove). Once an edit on a macro does not
+  succeed, the later edits on that macro are not attempted; edits on other macros go on.
+
+See [Batch forms](README.md#batch-forms-su-12).
+
 ## `gma3_run_macro`
 
 `{macro, action: "go" | "off", observe_seconds? (3, max 60), interval_ms? (100)}`.
