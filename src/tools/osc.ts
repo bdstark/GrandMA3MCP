@@ -52,6 +52,8 @@ export interface OscState {
   preferredIp?: string | null;
   lines: OscLine[];
   interfaces: Array<{ index: number; name: string; ips: Array<{ address: string; ip?: string; mask?: string }> }>;
+  /** True only when every interface and address was read; otherwise reachability is unknown. */
+  interfacesComplete?: boolean;
 }
 
 const NEEDS_BRIDGE = "the console runs an older bridge plugin without the OSC ops (bridge 0.33.0); update the plugin";
@@ -73,27 +75,51 @@ export async function readOsc(bridge: Gma3Bridge, t: number): Promise<OscState> 
 const isLoopback = (ip: string | null | undefined) => typeof ip === "string" && /^127\./.test(ip);
 /** The machine's addresses outside loopback (the networks command input is reachable from). */
 const networkIps = (s: OscState) => s.interfaces.flatMap((n) => n.ips.filter((ip) => ip.ip && !isLoopback(ip.ip)).map((ip) => `${n.name} ${ip.ip}`));
-const commandLines = (s: OscState) => (s.enableInput ? s.lines.filter((l) => l.receiveCommand) : []);
-const sendingLines = (s: OscState) => (s.enableOutput ? s.lines.filter((l) => l.send || l.sendCommand) : []);
+/** Reachability is known only from a complete interface scan; a partial or failed one is never "loopback only". */
+const reachKnown = (s: OscState) => s.interfacesComplete === true;
+const commandLines = (s: OscState) => (s.enableInput === true ? s.lines.filter((l) => l.receiveCommand === true) : []);
+const sendingLines = (s: OscState) => (s.enableOutput === true ? s.lines.filter((l) => l.send === true || l.sendCommand === true) : []);
+/** Values the network judgement depends on that the console did not report (never assumed off). */
+function unreadableFlags(s: OscState): string[] {
+  const out: string[] = [];
+  if (typeof s.enableInput !== "boolean") out.push("EnableInput");
+  if (typeof s.enableOutput !== "boolean") out.push("EnableOutput");
+  for (const l of s.lines) {
+    for (const [k, label] of [["port", "Port"], ["receiveCommand", "ReceiveCommand"], ["send", "Send"], ["sendCommand", "SendCommand"], ["destinationIp", "DestinationIP"]] as const) {
+      if (l[k] === null || l[k] === undefined || (k === "port" && typeof l[k] !== "number")) out.push(`line ${l.index} ${label}`);
+    }
+  }
+  return out;
+}
 const address = (l: OscLine) => `${l.prefix ? `/${l.prefix}` : ""}/cmd`;
 
 /** What the configuration means, in words and flags. */
 export function explainOsc(s: OscState, sender?: { host: string; port: number; prefix?: string }) {
   const cmd = commandLines(s);
   const nets = networkIps(s);
+  const known = reachKnown(s);
   const out = sendingLines(s);
+  const unknownCmd = s.enableInput !== false ? s.lines.filter((l) => typeof l.receiveCommand !== "boolean") : [];
+  const accepts = cmd.length > 0 ? true : typeof s.enableInput !== "boolean" || unknownCmd.length ? null : false;
   const matching = sender ? cmd.find((l) => l.port === sender.port && (l.prefix || "") === (sender.prefix || "")) : undefined;
+  const reach = nets.length ? `, so anyone who can reach ${nets.join(", ")}${known ? "" : " (and possibly other networks: the interface scan was incomplete)"} can run commands on this console` : known ? "; this machine has no address outside loopback right now" : "; whether it is reachable from a network is unknown (the interface scan was incomplete)";
   return {
     input: {
       enabled: s.enableInput ?? null,
-      acceptsCommands: cmd.length > 0,
+      acceptsCommands: accepts,
       commandLines: cmd.map((l) => ({ line: l.index, name: l.name, port: l.port, address: address(l) })),
-      reachableFrom: cmd.length ? ["loopback", ...nets] : [],
-      explanation: !s.enableInput
-        ? "input is off: the console accepts no OSC"
-        : !cmd.length
-          ? "input is on, but no line has Receive Command: OSC commands are ignored"
-          : `the console runs OSC commands sent to UDP port ${[...new Set(cmd.map((l) => l.port))].join(", ")} (${cmd.map((l) => address(l)).join(", ")}). It listens on every interface whatever Interface and PreferredIP say${nets.length ? `, so anyone who can reach ${nets.join(", ")} can run commands on this console` : "; this machine has no address outside loopback right now"}.`,
+      ...(unknownCmd.length ? { unreadableLines: unknownCmd.map((l) => l.index) } : {}),
+      reachableFrom: cmd.length || accepts === null ? ["loopback", ...nets, ...(known ? [] : ["unknown: the interface scan was incomplete"])] : [],
+      explanation:
+        typeof s.enableInput !== "boolean"
+          ? "whether input is on could not be read"
+          : !s.enableInput
+            ? "input is off: the console accepts no OSC"
+            : !cmd.length
+              ? unknownCmd.length
+                ? `input is on; Receive Command could not be read on line ${unknownCmd.map((l) => l.index).join(", ")}, so whether commands are accepted is unknown`
+                : "input is on, but no line has Receive Command: OSC commands are ignored"
+              : `the console runs OSC commands sent to UDP port ${[...new Set(cmd.map((l) => l.port))].join(", ")} (${cmd.map((l) => address(l)).join(", ")}). It listens on every interface whatever Interface and PreferredIP say${reach}.`,
     },
     output: {
       enabled: s.enableOutput ?? null,
@@ -216,6 +242,10 @@ export async function configureOsc(ctx: ToolContext, raw: Record<string, unknown
       return buildResult({ operation: op, target, steps, verification: unavailable("nothing was changed"), extra });
     };
 
+    // Nothing is judged from values the console did not report: an unreadable flag is never taken for off.
+    const unreadable = unreadableFlags(before);
+    if (unreadable.length) return refuse(`the console did not report ${unreadable.join(", ")}: whether commands or output reach the network cannot be judged`);
+
     // The configuration after the change, from the console's values plus the request.
     const after: OscState = { ...before, lines: before.lines.map((l) => ({ ...l })) };
     if (enableInput !== undefined) after.enableInput = enableInput;
@@ -245,32 +275,46 @@ export async function configureOsc(ctx: ToolContext, raw: Record<string, unknown
     if (clash) return refuse(`two lines would run commands on port ${clash.port} with the same prefix`);
 
     // The network: command input that is reachable beyond loopback after the change and was not before, or output to a
-    // destination outside loopback that was not sent to before.
+    // destination outside loopback that was not sent to before. Unknown reachability (an incomplete interface scan)
+    // counts as networked. The plan below orders writes so that no intermediate state opens more than these two.
     const nets = networkIps(before);
+    const networked = nets.length > 0 || !reachKnown(before);
+    const where = nets.length ? `${nets.join(", ")}${reachKnown(before) ? "" : ", and possibly other networks (the interface scan was incomplete)"}` : "a network: this machine's interfaces could not all be read";
     const cmdBefore = commandLines(before);
     // A port is what the network reaches: a prefix or name change on a port that already runs commands opens nothing.
-    const opensInput = nets.length > 0 && cmdAfter.some((l) => !cmdBefore.some((b) => b.port === l.port));
+    const opensInput = networked && cmdAfter.some((l) => !cmdBefore.some((b) => b.port === l.port));
     const destBefore = new Set(sendingLines(before).map((l) => `${l.destinationIp}:${l.port}`));
     const opensOutput = sendingLines(after).filter((l) => !isLoopback(l.destinationIp) && !destBefore.has(`${l.destinationIp}:${l.port}`));
     const networkNotes = [
       ...(opensInput
-        ? [`the console would run OSC commands sent to UDP port ${[...new Set(cmdAfter.map((l) => l.port))].join(", ")} from anyone who can reach this machine (${nets.join(", ")}): it listens on every interface whatever Interface and PreferredIP say`]
+        ? [`the console would run OSC commands sent to UDP port ${[...new Set(cmdAfter.map((l) => l.port))].join(", ")} from anyone who can reach ${where}: it listens on every interface whatever Interface and PreferredIP say`]
         : []),
       ...(opensOutput.length ? [`the console would send OSC onto the network to ${opensOutput.map((l) => `${l.destinationIp}:${l.port}`).join(", ")}`] : []),
     ];
 
-    // The plan: input off first when it goes off; line edits (adds, writes, removes from the highest number); the
-    // preferred IP; input on last; a re-bind (off, wait, on) when input stays on and a command line's port changed or a
-    // receiving line was added; output on last.
+    // The plan: input / output off first when they go off. Per line: flags that go off; an actively sending line's
+    // Send / Send Command off while its destination or port changes; the other values; flags that go on; the
+    // temporarily disabled send flags back on (when still wanted). Removals from the highest number; the preferred IP;
+    // a re-bind (off, wait, on) when input stays on and an existing line's port changed or a receiving line was added;
+    // input and output on last.
     const plan: Step[] = [];
     if (enableInput === false && before.enableInput) plan.push({ kind: "set", name: "EnableInput", target: "base", property: "EnableInput", value: "No" });
     if (enableOutput === false && before.enableOutput) plan.push({ kind: "set", name: "EnableOutput", target: "base", property: "EnableOutput", value: "No" });
     for (const e of effective) {
+      const at = e.index !== undefined ? { index: e.index } : { add: e.add };
+      const set = (name: string, property: string, value: string) => plan.push({ kind: "set", name: `line ${e.label} ${name}`, target: "line", ...at, property, value });
       if (e.add !== undefined) plan.push({ kind: "add", name: `add line ${e.label}`, add: e.add });
-      for (const p of e.changed) {
-        const where = e.index !== undefined ? { index: e.index } : { add: e.add };
-        plan.push({ kind: "set", name: `line ${e.label} ${p.property}`, target: "line", ...where, property: p.property, value: display(p.kind, e.spec[p.key]) });
-      }
+      const offs = e.changed.filter((p) => p.kind === "bool" && e.spec[p.key] === false);
+      const ons = e.changed.filter((p) => p.kind === "bool" && e.spec[p.key] === true);
+      const values = e.changed.filter((p) => p.kind !== "bool");
+      const endpoint = values.some((p) => p.key === "port" || p.key === "destination_ip");
+      const sendFlags = LINE_PROPS.filter((p) => p.key === "send" || p.key === "send_command");
+      const tempOff = endpoint && e.before && before.enableOutput !== false ? sendFlags.filter((p) => e.before![p.state] === true && !offs.includes(p)) : [];
+      for (const p of offs) set(p.property, p.property, "No");
+      for (const p of tempOff) set(`${p.property} off (endpoint change)`, p.property, "No");
+      for (const p of values) set(p.property, p.property, display(p.kind, e.spec[p.key]));
+      for (const p of ons) set(p.property, p.property, "Yes");
+      for (const p of tempOff) if (e.after[p.state] === true && !ons.includes(p)) set(`${p.property} on (after endpoint change)`, p.property, "Yes");
     }
     for (const r of [...removes].sort((a, b) => b - a)) plan.push({ kind: "remove", name: `remove line ${r}`, index: r });
     if (preferredIp !== undefined && preferredIp !== before.preferredIp) plan.push({ kind: "set", name: "PreferredIP", target: "base", property: "PreferredIP", value: preferredIp });
@@ -295,10 +339,13 @@ export async function configureOsc(ctx: ToolContext, raw: Record<string, unknown
     if (preview) return buildResult({ operation: op, target, steps, verification: notRequested(), summary: `Preview only; nothing was sent. ${plan.length} step(s).${previewOut.networkNote ? ` ${previewOut.networkNote}.` : ""}`, extra: { ...previewOut, wouldBe: explainOsc(after, ctx.osc) } });
     if (networkNotes.length && raw.network !== true) return refuse(`${previewOut.networkNote}; pass network: true to confirm`, previewOut);
 
-    // Apply: every write is judged by the value the console answers; a write it did not take stops the call.
+    // Apply: every write is judged by the value the console answers, every add and removal by the line count. A step
+    // the console did not take (or whose answer is unreadable) stops the call before anything that depends on it, and
+    // nothing is resent: the read-back decides an uncertain step.
     const addIndex: number[] = [];
     let stopped: string | undefined;
     let sentUpTo = 0;
+    let count = before.lines.length;
     for (const s of plan) {
       if (stopped) break;
       sentUpTo++;
@@ -309,11 +356,22 @@ export async function configureOsc(ctx: ToolContext, raw: Record<string, unknown
         }
         if (s.kind === "add") {
           const r = (await ctx.bridge.request("osc.addLine", { exclusive: true }, t)) as { index?: number };
-          if (typeof r.index !== "number") throw new Error("the console did not report the new line's number");
+          if (r?.index !== count + 1) {
+            steps.push({ name: s.name, status: typeof r?.index === "number" ? "failed" : "unknown", op: "osc.addLine", error: `the console reported line ${String(r?.index)} (expected ${count + 1})`, detail: r });
+            stopped = s.name;
+            continue;
+          }
+          count++;
           addIndex[s.add] = r.index;
           steps.push({ name: `add line ${r.index}`, status: "succeeded", op: "osc.addLine", detail: r });
         } else if (s.kind === "remove") {
-          const r = await ctx.bridge.request("osc.removeLine", { index: s.index, exclusive: true }, t);
+          const r = (await ctx.bridge.request("osc.removeLine", { index: s.index, exclusive: true }, t)) as { count?: unknown };
+          if (r?.count !== count - 1) {
+            steps.push({ name: s.name, status: typeof r?.count === "number" ? "failed" : "unknown", op: "osc.removeLine", error: typeof r?.count === "number" ? `the console has ${r.count} line(s) after the removal (expected ${count - 1}): the line was not removed` : "the console did not report the line count: whether the line was removed is decided by the read-back", detail: r });
+            stopped = s.name;
+            continue;
+          }
+          count--;
           steps.push({ name: s.name, status: "succeeded", op: "osc.removeLine", detail: r });
         } else {
           const index = s.add !== undefined ? addIndex[s.add] : s.index;
@@ -332,16 +390,8 @@ export async function configureOsc(ctx: ToolContext, raw: Record<string, unknown
         stopped = s.name;
       }
     }
-    // A stop between the two halves of a re-bind leaves input off: put it back on, since nothing else depends on it.
-    const inputLeftOff = stopped && rebind && steps.some((x) => x.name === "EnableInput off (re-bind)" && x.status === "succeeded") && !steps.some((x) => x.name === "EnableInput on (re-bind)" && x.status === "succeeded");
-    if (inputLeftOff) {
-      try {
-        await ctx.bridge.request("osc.set", { target: "base", property: "EnableInput", value: "Yes", exclusive: true }, t);
-        steps.push({ name: "EnableInput on (restore after stop)", status: "succeeded", op: "osc.set" });
-      } catch (err) {
-        steps.push(stepFromError("EnableInput on (restore after stop)", err, { op: "osc.set" }));
-      }
-    }
+    const rebindOff = rebind && steps.some((x) => x.name === "EnableInput off (re-bind)" && x.status === "succeeded");
+    const rebindOn = steps.some((x) => x.name === "EnableInput on (re-bind)" && x.status === "succeeded");
 
     // Read back and compare everything the request named.
     let verification: Verification = notRequested();
@@ -392,7 +442,11 @@ export async function configureOsc(ctx: ToolContext, raw: Record<string, unknown
       warnings: [
         "the OSC configuration has no undo; previous holds the values before this call",
         ...(networkNotes.length && !stopped ? networkNotes.map((n) => n.replace(/would /g, "now ")) : []),
-        ...(stopped ? [`stopped at ${stopped}: nothing after it was sent${inputLeftOff ? "; input, switched off for the re-bind, was switched on again" : ""}`] : []),
+        ...(stopped ? [`stopped at ${stopped}: nothing after it was sent and nothing was resent`] : []),
+        // Input switched off for a re-bind whose "on" did not succeed: reported from the read-back, never resent.
+        ...(rebindOff && !rebindOn
+          ? [now ? (now.enableInput === false ? "input was switched off for the re-bind and reads off now: OSC input is closed; switch it on with gma3_configure_osc enable_input: true" : `input reads ${now.enableInput === true ? "on" : "unknown"} after the re-bind's uncertain "on"`) : "input was switched off for the re-bind and its state could not be read back"]
+          : []),
       ],
       extra: { ...previewOut, previous: before, ...(now ? { now: { ...now, meaning: explainOsc(now, ctx.osc) } } : {}), testWith: "gma3_test_osc_input proves that a command line receives" },
     });
@@ -441,57 +495,109 @@ export async function testOscInput(ctx: ToolContext, raw: Record<string, unknown
     if (!lines.length) return refuse("no OSC line has Receive Command");
     const bad = lines.find((l) => typeof l.port !== "number");
     if (bad) return refuse(`line ${bad.index}'s port cannot be read`);
+    // The marker must be confirmed absent: anything else (exists, or no clear answer) could overwrite a show's variable.
+    const markerState = async (): Promise<boolean | undefined> => {
+      const r = (await ctx.bridge.request("vars.get", { scope: "user", names: [MARKER] }, t)) as { items?: Array<{ name?: unknown; exists?: unknown; value?: unknown }> };
+      const it = r?.items?.find((x) => x?.name === MARKER);
+      return it && typeof it.exists === "boolean" ? it.exists : undefined;
+    };
     try {
-      const pre = (await ctx.bridge.request("vars.get", { scope: "user", names: [MARKER] }, t)) as { items?: Array<{ exists?: boolean }> };
-      if (pre.items?.[0]?.exists) return refuse(`the user variable ${MARKER} already exists (another test or a show variable); delete it first`);
+      const exists = await markerState();
+      if (exists === true) return refuse(`the user variable ${MARKER} already exists (another test or a show variable); delete it first`);
+      if (exists !== false) {
+        steps.push(asRead({ name: "check_marker", status: "failed", op: "vars.get", error: `whether the user variable ${MARKER} exists could not be read; nothing was sent` }));
+        return buildResult({ operation: op, target, steps, verification: unavailable("the marker variable's absence could not be confirmed; nothing was sent") });
+      }
       steps.push(asRead({ name: "check_marker", status: "succeeded", op: "vars.get" }));
     } catch (err) {
       steps.push(asRead(stepFromError("check_marker", err, { op: "vars.get" })));
       return buildResult({ operation: op, target, steps, verification: unavailable("the marker variable cannot be read (needs bridge 0.31.0); nothing was sent") });
     }
 
-    const results: Array<{ line: number; name?: string; port: number; address: string; received: boolean; latencyMs?: number }> = [];
+    // Per line: received (the nonce was read), not observed (reads worked, the nonce did not appear in the window), or
+    // unobservable (no read worked: receipt cannot be judged). Only the first is proof; the second is not proof that
+    // the console did not run it.
+    type LineResult = { line: number; name?: string; port: number; address: string; received: boolean | null; latencyMs?: number; polls: number; readablePolls: number; lastSeen?: unknown; sendFailed?: boolean };
+    const results: LineResult[] = [];
     for (const l of lines) {
       const nonce = `mcp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
       const name = `line ${l.index}: ${address(l)} to 127.0.0.1:${l.port}`;
+      const row: LineResult = { line: l.index, name: l.name, port: l.port as number, address: address(l), received: null, polls: 0, readablePolls: 0 };
       const t0 = Date.now();
       try {
         await send(l.port as number, l.prefix || undefined, `SetUserVariable "${MARKER}" "${nonce}"`);
       } catch (err) {
         steps.push(stepFromError(name, err, { op: "osc" }));
-        results.push({ line: l.index, name: l.name, port: l.port as number, address: address(l), received: false });
+        results.push({ ...row, received: false, sendFailed: true });
         continue;
       }
-      let received = false;
       while (Date.now() - t0 < timeoutMs) {
         await sleep(100);
-        const r = (await ctx.bridge.request("vars.get", { scope: "user", names: [MARKER] }, t).catch(() => null)) as { items?: Array<{ value?: unknown }> } | null;
-        if (r?.items?.[0]?.value === nonce) {
-          received = true;
+        row.polls++;
+        const r = (await ctx.bridge.request("vars.get", { scope: "user", names: [MARKER] }, t).catch(() => null)) as { items?: Array<{ name?: unknown; exists?: unknown; value?: unknown }> } | null;
+        const it = r?.items?.find((x) => x?.name === MARKER);
+        if (!it || typeof it.exists !== "boolean") continue;
+        row.readablePolls++;
+        row.lastSeen = it.exists ? it.value : null;
+        if (it.value === nonce) {
+          row.received = true;
+          row.latencyMs = Date.now() - t0;
           break;
         }
       }
-      const latencyMs = Date.now() - t0;
-      steps.push({ name, status: "succeeded", op: "osc", detail: { received, ...(received ? { latencyMs } : {}) } });
-      results.push({ line: l.index, name: l.name, port: l.port as number, address: address(l), received, ...(received ? { latencyMs } : {}) });
+      if (row.received !== true) row.received = row.readablePolls > 0 ? false : null;
+      steps.push({ name, status: row.received === null ? "unknown" : "succeeded", op: "osc", ...(row.received === null ? { error: "every read of the marker failed: receipt cannot be judged" } : {}), detail: row });
+      results.push(row);
     }
+
+    // Clean up and confirm: the marker must read absent afterwards.
+    let cleanup: "deleted" | "remains" | "unknown" = "unknown";
     try {
       await ctx.bridge.request("vars.delete", { scope: "user", name: MARKER }, t);
-      steps.push({ name: "delete_marker", status: "succeeded", op: "vars.delete" });
-    } catch (err) {
-      steps.push(stepFromError("delete_marker", err, { op: "vars.delete" }));
+    } catch {
+      // judged by the read below
     }
-    const missed = results.filter((r) => !r.received);
-    const verification: Verification = missed.length
-      ? { status: "mismatched", checked: `the marker variable ${MARKER} holds each test's nonce within ${timeoutMs} ms`, detail: `not received on ${missed.map((r) => `line ${r.line} (port ${r.port})`).join(", ")}: the console did not run the command (input socket not re-bound after a port change, a firewall, or another program on the port)` }
-      : { status: "matched", checked: `the marker variable ${MARKER} held each test's nonce: the console received and ran the command` };
+    try {
+      const exists = await markerState();
+      cleanup = exists === false ? "deleted" : exists === true ? "remains" : "unknown";
+    } catch {
+      cleanup = "unknown";
+    }
+    const cleanupHint = `delete it with gma3_set_variable {scope: "user", name: "${MARKER}", delete: true}`;
+    steps.push(
+      cleanup === "deleted"
+        ? { name: "delete_marker", status: "succeeded", op: "vars.delete" }
+        : cleanup === "remains"
+          ? { name: "delete_marker", status: "failed", op: "vars.delete", error: `the marker ${MARKER} is still there after the delete; ${cleanupHint}` }
+          : { name: "delete_marker", status: "unknown", op: "vars.delete", error: `whether the marker ${MARKER} was deleted could not be read; if gma3_variables shows it, ${cleanupHint}` },
+    );
+
+    const notSeen = results.filter((r) => r.received === false && !r.sendFailed);
+    const unsent = results.filter((r) => r.sendFailed);
+    const blind = results.filter((r) => r.received === null);
+    const checked = `the marker variable ${MARKER} holds each test's nonce within ${timeoutMs} ms`;
+    const verification: Verification = unsent.length
+      ? { status: "mismatched", checked, detail: `the test message could not be sent to ${unsent.map((r) => `line ${r.line} (port ${r.port})`).join(", ")}` }
+      : notSeen.length
+      ? {
+          status: "mismatched",
+          checked,
+          detail: `not observed within ${timeoutMs} ms on ${notSeen.map((r) => `line ${r.line} (port ${r.port})`).join(", ")}: the marker was read but never held the nonce (likely causes: input not re-bound after a port change, a firewall, another program on the port)${blind.length ? `; receipt could not be observed on ${blind.map((r) => `line ${r.line}`).join(", ")}` : ""}`,
+        }
+      : blind.length
+        ? unavailable(`receipt could not be observed on ${blind.map((r) => `line ${r.line} (port ${r.port})`).join(", ")}: every read of the marker failed`, checked)
+        : { status: "matched", checked: `the marker variable ${MARKER} held each test's nonce: the console received and ran the command` };
     return buildResult({
       operation: op,
       target,
       steps,
       verification,
-      summary: missed.length ? `OSC input test: ${results.length - missed.length} of ${results.length} line(s) received.` : `OSC input works: the console ran the loopback test command on ${results.map((r) => `line ${r.line} (port ${r.port})`).join(", ")}.`,
-      extra: { results, meaning: explainOsc(s, ctx.osc), note: "loopback proves the console receives; it listens on every interface, so a sender on the network reaches the same port unless a firewall stops it" },
+      summary:
+        verification.status === "matched" && cleanup === "deleted"
+          ? `OSC input works: the console ran the loopback test command on ${results.map((r) => `line ${r.line} (port ${r.port})`).join(", ")}.`
+          : `OSC input test: ${results.filter((r) => r.received === true).length} of ${results.length} line(s) observed receiving${notSeen.length ? `, ${notSeen.length} not observed within ${timeoutMs} ms` : ""}${blind.length ? `, ${blind.length} unobservable` : ""}; marker ${cleanup}.`,
+      ...(cleanup !== "deleted" ? { warnings: [cleanup === "remains" ? `the marker ${MARKER} remains (it blocks the next test); ${cleanupHint}` : `the marker's deletion could not be confirmed; ${cleanupHint} if it is still there`] } : {}),
+      extra: { results, markerCleanup: cleanup, meaning: explainOsc(s, ctx.osc), note: "loopback proves the console receives; it listens on every interface, so a sender on the network reaches the same port unless a firewall stops it" },
     });
   });
 }

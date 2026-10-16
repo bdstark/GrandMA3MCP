@@ -2402,8 +2402,25 @@ do
   check("su18: osc.addLine appends a line as the console creates it", r.ok and r.result.index == 2 and r.result.line.port == 8000 and r.result.line.destinationIp == "127.255.255.255", J(r))
   r = request("osc.removeLine", { index = 2, exclusive = true })
   check("su18: osc.removeLine removes it and answers the count", r.ok and r.result.count == 1 and r.result.removed.index == 2, J(r))
+  r = request("osc.read", {})
+  check("su18 review: a complete interface scan says so", r.ok and r.result.interfacesComplete == true, J(r))
+  local savedRemove = methods.Remove
+  methods.Remove = function() end
+  r = request("osc.addLine", { exclusive = true })
+  r = request("osc.removeLine", { index = 2, exclusive = true })
+  check("su18 review: a Remove the console ignores is an error, not a success", r.ok == false and r.error:find("remove%-failed"), J(r))
+  methods.Remove = savedRemove
+  r = request("osc.removeLine", { index = 2, exclusive = true })
   r = request("osc.removeLine", { index = 5, exclusive = true })
   check("su18: osc.removeLine of a missing line is refused", r.ok == false and r.error:find("no%-line"), J(r))
+  local savedRootFn = Root
+  Root = function() return { Interfaces = H({ class = "Interfaces", children = { H({ name = "en0", class = "Interface", children = { H({ class = "NetworkIP", props = {} }) } }) } }) } end
+  r = request("osc.read", {})
+  check("su18 review: an unreadable interface address makes the scan incomplete", r.ok and r.result.interfacesComplete == false, J(r))
+  Root = function() error("no interfaces") end
+  r = request("osc.read", {})
+  check("su18 review: a failed interface enumeration makes the scan incomplete", r.ok and r.result.interfacesComplete == false, J(r))
+  Root = savedRootFn
   oscBase = H({ class = "OSCBase", props = { EnableInput = "No", EnableOutput = "No", Interface = "0.0", PreferredIP = "10.0.0.0/8" } })
   r = request("osc.read", {})
   check("su18: Interface 0.0 (no interface matches PreferredIP) resolves to nothing; no lines is an empty array", r.ok and r.result.interface == "0.0" and r.result.interfaceResolved == nil and #r.result.lines == 0 and J(r):find('"lines":%[%]'), J(r))

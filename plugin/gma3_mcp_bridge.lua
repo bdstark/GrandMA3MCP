@@ -5192,23 +5192,29 @@ end)()
       dataPool = D(d, "DataPool"), page = D(d, "Page"), fader = D(d, "Fader"), executorKnob = D(d, "ExecutorKnob"), key = D(d, "Key"), note = D(d, "Note"),
     }
   end
+  -- The interfaces and whether the scan was complete: a failed enumeration or an unreadable IP makes it incomplete,
+  -- so the server never takes a partial list for "loopback only".
   local function interfaces()
-    local out = {}
-    pcall(function()
+    local out, complete = {}, true
+    local ok = pcall(function()
       for i, nic in ipairs(Root().Interfaces:Children()) do
         local ips = {}
-        for j, ip in ipairs(nic:Children()) do ips[#ips + 1] = { address = i .. "." .. j, ip = D(ip, "IP"), mask = D(ip, "Mask") } end
+        for j, ip in ipairs(nic:Children()) do
+          local addr = D(ip, "IP")
+          if addr == nil then complete = false end
+          ips[#ips + 1] = { address = i .. "." .. j, ip = addr, mask = D(ip, "Mask") }
+        end
         out[#out + 1] = { index = i, name = tostring(safeProp(nic, "name")), ips = emptyArray(ips) }
       end
     end)
-    return emptyArray(out)
+    return emptyArray(out), ok and complete
   end
 
   ops["osc.read"] = function(args)
     local b = base()
     local lines = {}
     for i, d in ipairs(b:Children()) do lines[#lines + 1] = lineRow(i, d) end
-    local nics = interfaces()
+    local nics, complete = interfaces()
     -- Interface is "<nic>.<ip>" in Root.Interfaces ("0.0": none matched PreferredIP).
     local iface = D(b, "Interface")
     local resolved
@@ -5218,7 +5224,7 @@ end)()
         if n.index == tonumber(a) then for _, ip in ipairs(n.ips) do if ip.address == iface then resolved = { name = n.name, ip = ip.ip, mask = ip.mask } end end end
       end
     end
-    return { enableInput = yes(b, "EnableInput"), enableOutput = yes(b, "EnableOutput"), interface = iface, interfaceResolved = resolved, preferredIp = D(b, "PreferredIP"), lines = emptyArray(lines), interfaces = nics }
+    return { enableInput = yes(b, "EnableInput"), enableOutput = yes(b, "EnableOutput"), interface = iface, interfaceResolved = resolved, preferredIp = D(b, "PreferredIP"), lines = emptyArray(lines), interfaces = nics, interfacesComplete = complete }
   end
 
   -- args: { target = base|line, index?, property, value, exclusive }
@@ -5260,7 +5266,10 @@ end)()
     local d = b:Children()[i]
     if not d then raise("[no-line] OSC line " .. i .. " does not exist") end
     local row = lineRow(i, d)
+    local n = b:Count()
     b:Remove(i)
+    -- Remove() returns nothing: the count says whether the line went.
+    if b:Count() ~= n - 1 then raise("[remove-failed] OSC line " .. i .. " was not removed (" .. b:Count() .. " lines, expected " .. (n - 1) .. ")") end
     return { removed = row, count = b:Count() }
   end
 end)()
