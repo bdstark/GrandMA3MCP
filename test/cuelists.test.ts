@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { registerCueListTools, expectedOrder, judgeCycle, planObservation } from "../src/tools/cuelists.ts";
+import { SILENT } from "./helpers/fake-bridge.ts";
 import { startHarness, type Harness } from "./helpers/tool-harness.ts";
 
 /**
@@ -64,6 +65,10 @@ class Console {
   previewIncomplete = false;
   /** Commands the console rejects (and does not perform). */
   reject?: RegExp;
+  /** set requests ("<ref> <Property>") that never get a reply, are refused, or are accepted and ignored. */
+  silentSet?: RegExp;
+  rejectSet?: RegExp;
+  ignoreSet?: RegExp;
   playing: { seq: number; start: number; t0: number } | null = null;
   /** Sequences reported as playing (SU-14 override checks), besides the chase being watched. */
   running = new Set<number>();
@@ -240,6 +245,31 @@ class Console {
     return ids.length ? { total: ids.length, items: ids.map((fid) => ({ name: `Fx ${fid}`, class: "Fixture", fields: { FID: fid } })) } : none;
   }
 
+  applySet(ref: string, prop: string, value: string): void {
+    let m: RegExpMatchArray | null;
+    if ((m = ref.match(/^Sequence (\d+) Cue ([\d.]+) Part 0$/))) {
+      const c = this.cue(+m[1], +m[2]);
+      if (!c) throw new Error(`no object found for '${ref}'`);
+      if (prop === "Name") c.name = value;
+      else if (prop === "Command") c.part0.Command = value;
+      else c.part0[prop] = Number(value).toFixed(2);
+    } else if ((m = ref.match(/^Sequence (\d+) Cue ([\d.]+)$/))) {
+      const c = this.cue(+m[1], +m[2]);
+      if (!c) throw new Error(`no object found for '${ref}'`);
+      if (prop === "TrigType") {
+        c.trigType = value;
+        // SU-14: a trigger other than Time sets TrigTime to 0, and a switch back keeps the 0 (live 2026-10-15).
+        if (value !== "Time") c.trigTime = 0;
+      } else if (prop === "TrigTime") c.trigTime = Number(value);
+    } else if ((m = ref.match(/^Sequence (\d+)$/))) {
+      const s = this.seqs.get(+m[1]);
+      if (!s) throw new Error(`no object found for '${ref}'`);
+      if (prop === "Name") s.name = value;
+      else if (prop === "WrapAround") s.wrap = value === "Yes";
+      else (s.props ??= {})[prop] = value;
+    }
+  }
+
   install(h: Harness) {
     const f = h.fake;
     f.reset();
@@ -256,28 +286,14 @@ class Console {
       const ref = String(args.ref);
       const prop = String(args.property);
       const value = String(args.value);
-      let m: RegExpMatchArray | null;
-      if ((m = ref.match(/^Sequence (\d+) Cue ([\d.]+) Part 0$/))) {
-        const c = this.cue(+m[1], +m[2]);
-        if (!c) throw new Error(`no object found for '${ref}'`);
-        if (prop === "Name") c.name = value;
-        else if (prop === "Command") c.part0.Command = value;
-        else c.part0[prop] = Number(value).toFixed(2);
-      } else if ((m = ref.match(/^Sequence (\d+) Cue ([\d.]+)$/))) {
-        const c = this.cue(+m[1], +m[2]);
-        if (!c) throw new Error(`no object found for '${ref}'`);
-        if (prop === "TrigType") {
-          c.trigType = value;
-          // SU-14: a trigger other than Time sets TrigTime to 0, and a switch back keeps the 0 (live 2026-10-15).
-          if (value !== "Time") c.trigTime = 0;
-        } else if (prop === "TrigTime") c.trigTime = Number(value);
-      } else if ((m = ref.match(/^Sequence (\d+)$/))) {
-        const s = this.seqs.get(+m[1]);
-        if (!s) throw new Error(`no object found for '${ref}'`);
-        if (prop === "Name") s.name = value;
-        else if (prop === "WrapAround") s.wrap = value === "Yes";
-        else (s.props ??= {})[prop] = value;
+      const key = `${ref} ${prop}`;
+      if (this.silentSet?.test(key)) {
+        this.applySet(ref, prop, value);
+        return SILENT;
       }
+      if (this.rejectSet?.test(key)) throw new Error("Access denied");
+      if (this.ignoreSet?.test(key)) return { ref, property: prop, value };
+      this.applySet(ref, prop, value);
       return { ref, property: prop, value };
     });
     f.on("object", (args) => {
@@ -680,7 +696,9 @@ test("SU-14 replace: the existing cues are deleted first and the sequence rebuil
     c.seqs.get(965)!.name = "Keep";
     const { result, isError } = await h.callJson("gma3_store_cues", { sequence: 965, replace: true, exclusive: true, cues: [{ cue: 1, fixtures: "101", intensity: 70 }, { cue: 2, fixtures: "101", intensity: 20 }] });
     assert.equal(isError, false, JSON.stringify(result).slice(0, 2000));
-    assert.ok(c.commands.includes("Delete Sequence 965 Cue 1 Thru /NoConfirmation"));
+    // Review round 1: the old cues are deleted only once Preview is confirmed usable, right before the build.
+    const del = c.commands.indexOf("[P] Delete Sequence 965 Cue 1 Thru /NoConfirmation");
+    assert.ok(del > c.commands.indexOf("Preview On"), JSON.stringify(c.commands.slice(0, 6)));
     assert.deepEqual(c.seqs.get(965)!.cues.map((x) => [x.no, x.data["101"]?.Dimmer]), [[1, 70], [2, 20]]);
     assert.equal(c.seqs.get(965)!.name, "Keep", "the sequence object stays");
     // build_chase refuses a sequence with cues unless replace.
@@ -781,6 +799,138 @@ test("SU-14 edit_cues: one command per cue, read back; a count that differs is r
     assert.deepEqual(c.seqs.get(21)!.cues.map((x) => x.part0.Command), ["Go+ Macro 1", "Go+ Macro 2"]);
     const bad = await h.callJson("gma3_edit_cues", { sequence: 21, all: true, commands: ["Go+ Macro 1"] });
     assert.match(errors(bad), /1 command\(s\) for 2 cue\(s\)/);
+  } finally {
+    await h.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// SU-14 review round 1
+// ---------------------------------------------------------------------------
+
+test("SU-14 review 1: replace deletes nothing when Preview is not usable (occupied, incomplete) or not entered", async () => {
+  const { h, c } = await setup();
+  try {
+    c.addCue(975, 1, { "101": { Dimmer: 77 } });
+    c.prog.Preview.set("102", new Map([["Dimmer", { value: 12 }]]));
+    const occupied = await h.callJson("gma3_store_cues", { sequence: 975, replace: true, exclusive: true, cues: [{ cue: 1, fixtures: "101", intensity: 10 }] });
+    assert.equal(occupied.isError, true);
+    assert.match(errors(occupied), /Preview programmer is not empty/);
+    assert.deepEqual(c.seqs.get(975)!.cues.map((x) => x.data["101"]?.Dimmer), [77], "the old cue is still there");
+    assert.equal(c.prog.Preview.get("102")?.get("Dimmer")?.value, 12, "the operator's Preview value is kept");
+    assert.ok(!c.commands.some((x) => /Delete Sequence/.test(x)));
+    c.prog.Preview.clear();
+    c.previewIncomplete = true;
+    const incomplete = await h.callJson("gma3_store_cues", { sequence: 975, replace: true, exclusive: true, cues: [{ cue: 1, fixtures: "101", intensity: 10 }] });
+    assert.equal(incomplete.isError, true);
+    c.previewIncomplete = false;
+    c.reject = /^Preview On$/;
+    const notEntered = await h.callJson("gma3_store_cues", { sequence: 975, replace: true, exclusive: true, cues: [{ cue: 1, fixtures: "101", intensity: 10 }] });
+    assert.equal(notEntered.isError, true);
+    assert.ok(!c.commands.some((x) => /Delete Sequence/.test(x)), "nothing was ever deleted");
+    assert.deepEqual(c.seqs.get(975)!.cues.map((x) => x.data["101"]?.Dimmer), [77]);
+  } finally {
+    await h.close();
+  }
+});
+
+test("SU-14 review 1: sequence_settings values are validated before anything is sent, in both builders", async () => {
+  const { h, c } = await setup();
+  try {
+    c.addCue(976, 1, { "101": { Dimmer: 77 } });
+    for (const [tool, args] of [
+      ["gma3_store_cues", { sequence: 976, replace: true, exclusive: true, cues: [{ cue: 1, command: "Go+ Macro 1" }], sequence_settings: { priority: "banana" } }],
+      ["gma3_build_chase", { sequence: 976, replace: true, exclusive: true, fixtures: "101", steps: [{ intensity: 1 }, { intensity: 2 }], step_seconds: 1, observe: false, sequence_settings: { off_when_overridden: "no" } }],
+      ["gma3_store_cues", { sequence: 976, mode: "merge", exclusive: true, cues: [{ cue: 2, command: "x" }], sequence_settings: {} }],
+    ] as const) {
+      const r = await h.callJson(tool, args as Record<string, unknown>);
+      assert.equal(r.isError, true, tool);
+      assert.match(r.result.validationErrors.join(" "), /sequence_settings(\.priority must be one of|\.off_when_overridden must be true or false| is empty)/);
+    }
+    assert.deepEqual(c.commands, [], "nothing was sent");
+    assert.deepEqual(c.seqs.get(976)!.cues.map((x) => x.data["101"]?.Dimmer), [77]);
+  } finally {
+    await h.close();
+  }
+});
+
+test("SU-14 review 1: after a step without a reply no later mutation is sent (settings after a build, the Note after a restore)", async () => {
+  const { h, c } = await setup();
+  try {
+    c.silentSet = /^Sequence 977 Cue 2 Part 0 Command$/;
+    const r = await h.callJson("gma3_store_cues", { sequence: 977, mode: "create", exclusive: true, cues: [{ cue: 1, command: "Go+ Macro 1" }, { cue: 2, command: "Go+ Macro 2" }], sequence_settings: { priority: "high" } });
+    assert.equal(c.seqs.get(977)!.props?.Priority, undefined, "Priority was never written");
+    assert.match(r.result.sequenceSettings.reason, /got no reply/);
+    assert.ok(r.result.steps.some((st: any) => st.name === "sequence_settings" && st.status === "skipped"));
+    c.silentSet = undefined;
+    for (const n of [1, 2]) Object.assign(c.addCue(978, n), { trigType: "Go", trigTime: 0 });
+    c.seqs.get(978)!.props = { Note: "[gma3-mcp trigtimes 1=2.5 2=4]" };
+    c.silentSet = /^Sequence 978 Cue 2 TrigTime$/;
+    await h.callJson("gma3_edit_cues", { sequence: 978, all: true, trigger: "time", restore_times: true });
+    assert.equal(c.seqs.get(978)!.props?.Note, "[gma3-mcp trigtimes 1=2.5 2=4]", "the saved times stay after an unanswered restore");
+  } finally {
+    await h.close();
+  }
+});
+
+test("SU-14 review 1: an override whose protection fails is neither configured nor played", async () => {
+  const { h, c } = await setup();
+  try {
+    c.addCue(5, 1);
+    c.running.add(5);
+    c.rejectSet = /^Sequence 5 OffWhenOverridden$/;
+    const sc = await h.callJson("gma3_store_cues", { sequence: 979, mode: "create", exclusive: true, cues: [{ cue: 1, fixtures: "101", intensity: 100 }], sequence_settings: { priority: "high" }, protect_running: true });
+    assert.equal(sc.isError, true);
+    assert.equal(c.seqs.get(979)!.props?.Priority, undefined, "the override's priority was not applied");
+    assert.equal(sc.result.verification.status, "mismatched");
+    const ch = await h.callJson("gma3_build_chase", { sequence: 980, exclusive: true, fixtures: "101", steps: [{ intensity: 10 }, { intensity: 90 }], step_seconds: 0.25, sequence_settings: { priority: "high" }, protect_running: true });
+    assert.equal(ch.isError, true);
+    assert.ok(!c.commands.some((x) => /^Goto Sequence 980/.test(x)), "the chase was not played");
+    assert.match(ch.result.cycle.reason, /protection\) did not succeed/);
+  } finally {
+    await h.close();
+  }
+});
+
+test("SU-14 review 1: keep_times reads the saved marker back before changing triggers; an ignored write changes nothing", async () => {
+  const { h, c } = await setup();
+  try {
+    Object.assign(c.addCue(981, 1), { trigType: "Time", trigTime: 2.5 });
+    c.seqs.get(981)!.props = { Note: "clock" };
+    c.ignoreSet = /^Sequence 981 Note$/;
+    const r = await h.callJson("gma3_edit_cues", { sequence: 981, all: true, trigger: "go", keep_times: true });
+    assert.equal(r.isError, true);
+    assert.match(errors(r), /the Note reads "clock", not the saved times; the triggers were not changed/);
+    assert.deepEqual([c.cue(981, 1)!.trigType, c.cue(981, 1)!.trigTime], ["Time", 2.5], "the original time is untouched");
+    assert.equal(r.result.trigTimesKept, false);
+  } finally {
+    await h.close();
+  }
+});
+
+test("SU-14 review 1: a look's phaser on a fixture without its attributes is refused before anything is sent", async () => {
+  const { h, c } = await setup();
+  try {
+    const r = await h.callJson("gma3_store_cues", { sequence: 982, mode: "create", exclusive: true, cues: [{ cue: 1, fixtures: "101 + 301", phaser: { steps: [{ values: { ColorRGB_R: 100 } }, { values: { ColorRGB_R: 0 } }] } }] });
+    assert.equal(r.isError, true);
+    assert.match(errors(r), /fixture\(s\) 301 of Fixture 101 \+ 301 have no ColorRGB_R/);
+    assert.deepEqual(c.commands, [], "nothing was sent");
+  } finally {
+    await h.close();
+  }
+});
+
+test("SU-14 review 1: each deletion is its own step; a refused one keeps the earlier ones in the result", async () => {
+  const { h, c } = await setup();
+  try {
+    for (const n of [0.1, 0.2, 1]) c.addCue(983, n, { "101": { Dimmer: 5 } });
+    c.reject = /^Delete Sequence 983 Cue 0\.2 /;
+    const r = await h.callJson("gma3_store_cues", { sequence: 983, replace: true, exclusive: true, cues: [{ cue: 1, fixtures: "101", intensity: 10 }], detail: true });
+    assert.equal(r.result.outcome, "partial");
+    const st = (n: string) => r.result.steps.find((x: any) => x.name === n);
+    assert.equal(st("delete_cue_0.1").status, "succeeded");
+    assert.equal(st("delete_cue_0.2").status, "failed");
+    assert.deepEqual(c.seqs.get(983)!.cues.map((x) => x.no), [0.2, 1], "cue 0.1 is gone, as the result says");
   } finally {
     await h.close();
   }

@@ -61,7 +61,7 @@ import {
 } from "./fixtures.js";
 import { cueNo, readSequenceRate } from "./speed.js";
 import { effectAttributes, effectCommands, parsePhaser, parseStep, verifyBuild, type Effect, type Unit } from "./phasers.js";
-import { SEQUENCE_SETTINGS, configureSequence, findReferences, type ConfigureSequenceArgs } from "./playback.js";
+import { SEQUENCE_SETTINGS, configureSequence, findReferences, settingValue, type ConfigureSequenceArgs } from "./playback.js";
 import { HeldLock } from "../mutations.js";
 
 export const MAX_CUES = 100;
@@ -352,6 +352,24 @@ function setStep(bridge: Gma3Bridge, name: string, ref: string, property: string
  * gma3_build_phaser checks it). Other attributes of the cue (a look's intensity or values) are not judged here; the
  * activation-group siblings that came with the phaser (same step count) are.
  */
+/** A look's fixtures (top level, by their root FID) and which of them have every phaser attribute on themselves or a cell. */
+async function phaserCoverage(bridge: Gma3Bridge, fixtures: string, attrs: string[], t: number): Promise<{ supported: Map<number, string>; unsupported: string[]; complete: boolean }> {
+  const scan = (await bridge.request("programmer", { scope: "fixtures", fixtures, limit: 1, maxChannels: 50000 }, t)) as {
+    scannedFixtures?: Array<{ subfixtureIndex?: number; fid?: string | null; name?: string | null; rootFid?: string | null; attributes?: string[] }>;
+    coverage?: { complete?: boolean };
+    fixturesTruncated?: boolean;
+  };
+  const supported = new Map<number, string>();
+  const roots = new Map<string, boolean>();
+  for (const e of scan.scannedFixtures ?? []) {
+    const root = e.rootFid && e.rootFid !== "None" ? e.rootFid : e.fid && e.fid !== "None" ? e.fid : (e.name ?? "?");
+    const has = attrs.every((a) => (e.attributes ?? []).includes(a));
+    roots.set(root, (roots.get(root) ?? false) || has);
+    if (has && typeof e.subfixtureIndex === "number") supported.set(e.subfixtureIndex, e.fid && e.fid !== "None" ? e.fid : e.name ?? String(e.subfixtureIndex));
+  }
+  return { supported, unsupported: [...roots].filter(([, ok]) => !ok).map(([r]) => r), complete: scan.coverage?.complete !== false && scan.fixturesTruncated !== true };
+}
+
 async function checkLookPhaser(bridge: Gma3Bridge, fixtures: string, effect: Effect, t: number): Promise<Verification> {
   const checked = `the phaser on ${fixtures} in the programmer (steps, step timing, phaser layers, phase per fixture)`;
   try {
@@ -362,11 +380,10 @@ async function checkLookPhaser(bridge: Gma3Bridge, fixtures: string, effect: Eff
     };
     if (scan.coverage?.complete === false) return unavailable("the programmer scan of the look's fixtures was incomplete", checked);
     const attrs = effectAttributes(effect);
-    const scope = new Map<number, string>();
-    for (const e of scan.scannedFixtures ?? []) {
-      if (typeof e.subfixtureIndex !== "number") continue;
-      if (attrs.every((a) => (e.attributes ?? []).includes(a))) scope.set(e.subfixtureIndex, e.fid && e.fid !== "None" ? e.fid : e.name ?? String(e.subfixtureIndex));
-    }
+    // Every fixture of the look must be covered (review round 1): one without the attributes is a mismatch, not left out.
+    const cov = await phaserCoverage(bridge, fixtures, attrs, t);
+    const scope = cov.supported;
+    if (cov.unsupported.length) return { status: "mismatched", checked, detail: `fixture(s) ${cov.unsupported.join(", ")} of ${fixtures} have no ${attrs.join(", ")}, so they hold no phaser` };
     if (scope.size === 0) return { status: "mismatched", checked, detail: `no fixture of ${fixtures} has ${attrs.join(", ")}` };
     const n = effect.steps.length;
     const rows = (scan.rows ?? []).filter((r) => scope.has(r.subfixtureIndex) && (attrs.includes(String(r.attribute)) || (r.stepCount ?? 1) === n));
@@ -438,7 +455,7 @@ export interface PreviewBuild {
  * stay), unless `continueAfterFailure`: then the next item starts again from a confirmed, cleared Preview programmer.
  * An item with an unknown step stops the build either way.
  */
-export async function buildInPreview(ctx: ToolContext, o: { items: PreviewItem[]; verify: boolean; noun: string; inspect?: Array<{ name: string; run: StepFn }>; beforeBuild?: Array<{ name: string; run: StepFn }>; continueAfterFailure?: boolean }): Promise<PreviewBuild> {
+export async function buildInPreview(ctx: ToolContext, o: { items: PreviewItem[]; verify: boolean; noun: string; inspect?: Array<{ name: string; run: StepFn }>; prepare?: () => Array<{ name: string; run: StepFn }>; continueAfterFailure?: boolean }): Promise<PreviewBuild> {
   const { bridge } = ctx;
   const t = ctx.requestTimeoutMs;
   const warnings: string[] = [];
@@ -494,6 +511,24 @@ export async function buildInPreview(ctx: ToolContext, o: { items: PreviewItem[]
       },
     },
     {
+      // SU-14 review round 1: every fixture of a look with a phaser (or one of its cells) has the phaser's attributes;
+      // otherwise the console would answer OK and leave it out. Checked before anything is sent.
+      name: "check_phaser_fixtures",
+      run: async () => {
+        try {
+          for (const look of allLooks.filter((l) => l.phaser)) {
+            const attrs = effectAttributes(look.phaser as Effect);
+            const cov = await phaserCoverage(bridge, look.fixtures, attrs, t);
+            if (!cov.complete) return failedRead("check_phaser_fixtures", `the fixtures of ${look.fixtures} could not all be read; nothing was sent`);
+            if (cov.unsupported.length) return failedRead("check_phaser_fixtures", `fixture(s) ${cov.unsupported.join(", ")} of ${look.fixtures} have no ${attrs.join(", ")} (nor any cell with them), so the phaser would leave them out; nothing was sent`, { unsupported: cov.unsupported });
+          }
+          return asRead({ name: "check_phaser_fixtures", status: "succeeded", op: "programmer" });
+        } catch (err) {
+          return asRead(stepFromError("check_phaser_fixtures", err, { op: "programmer" }));
+        }
+      },
+    },
+    {
       name: "read_normal_programmer",
       run: async () => {
         try {
@@ -510,12 +545,6 @@ export async function buildInPreview(ctx: ToolContext, o: { items: PreviewItem[]
   ]);
   const steps: StepResult[] = [...inspect.steps];
   if (inspect.outcome !== "succeeded") return { steps, readBack, warnings, items: reports, sent: false, backInNormal: true, normalProgrammer: "not_entered" };
-  // The caller's changes that must happen once everything was checked and before the build (replace: delete cues).
-  if (o.beforeBuild?.length) {
-    const pre = await runSteps(o.beforeBuild);
-    steps.push(...pre.steps);
-    if (pre.outcome !== "succeeded") return { steps, readBack, warnings, items: reports, sent: true, backInNormal: true, normalProgrammer: "not_entered" };
-  }
 
   // 2. Build in Preview.
   let entered = false;
@@ -547,7 +576,17 @@ export async function buildInPreview(ctx: ToolContext, o: { items: PreviewItem[]
       ]);
       steps.push(...check.steps);
       if (check.outcome !== "succeeded") stopped = true;
-      else building = true;
+      else {
+        // From here the Preview programmer is confirmed empty and holds only our values: it is released at the end.
+        building = true;
+        if (o.prepare) {
+          // The caller's destructive preparation (replace: delete the old cues) runs only once Preview is confirmed
+          // usable and empty, right before the first item is built (review round 1); a refusal leaves Preview untouched.
+          const prep = await runSteps(o.prepare());
+          steps.push(...prep.steps);
+          if (prep.outcome !== "succeeded") stopped = true;
+        }
+      }
     } else stopped = true;
 
     for (let i = 0; i < o.items.length && !stopped; i++) {
@@ -704,23 +743,35 @@ export async function buildCueBatch(ctx: ToolContext, b: Batch): Promise<BatchRe
   });
   // replace: every existing cue is deleted once everything was checked (Delete ... Cue 1 Thru keeps the sequence object,
   // its settings and its executor assignments: live 2026-10-15), and the sequence must read empty before the build.
-  const deleteCues = {
-    name: "delete_cues",
-    run: async (): Promise<StepResult> => {
-      const list = (existing as CueListEntry[] | null) ?? [];
-      if (!list.length) return { name: "delete_cues", status: "succeeded", op: "cmd", detail: { deleted: 0 } };
-      const below = list.filter((c) => c.no < 1).map((c) => `Delete ${cueRef(b.sequence, fmtNo(c.no))} /NoConfirmation`);
-      const cmds = [...below, ...(list.some((c) => c.no >= 1) ? [`Delete Sequence ${b.sequence} Cue 1 Thru /NoConfirmation`] : [])];
-      for (const c of cmds) {
-        const st = await commandStep(bridge, "delete_cues", c, t);
-        if (st.status !== "succeeded") return st;
-      }
-      const after = await readCueList(bridge, b.sequence, t);
-      if (after === null || after.length) return { name: "delete_cues", status: "failed", op: "cmd", error: after === null ? `Sequence ${b.sequence} is gone after deleting its cues` : `Sequence ${b.sequence} still has cue(s) ${after.map((c) => fmtNo(c.no)).join(", ")} after the delete; nothing was built` };
-      return { name: "delete_cues", status: "succeeded", op: "cmd", detail: { deleted: list.map((c) => fmtNo(c.no)) } };
-    },
+  const deleteSteps = (): Array<{ name: string; run: StepFn }> => {
+    const list = (existing as CueListEntry[] | null) ?? [];
+    if (!list.length) return [];
+    // One step per request, so a refusal after earlier deletions keeps them in the result (review round 1).
+    const out: Array<{ name: string; run: StepFn }> = list
+      .filter((c) => c.no < 1)
+      .map((c) => {
+        const name = `delete_cue_${fmtNo(c.no)}`;
+        return { name, run: () => commandStep(bridge, name, `Delete ${cueRef(b.sequence, fmtNo(c.no))} /NoConfirmation`, t) };
+      });
+    if (list.some((c) => c.no >= 1)) out.push({ name: "delete_cues_from_1", run: () => commandStep(bridge, "delete_cues_from_1", `Delete Sequence ${b.sequence} Cue 1 Thru /NoConfirmation`, t) });
+    out.push({
+      name: "check_cues_deleted",
+      run: async () => {
+        try {
+          const after = await readCueList(bridge, b.sequence, t);
+          if (after === null) return failedRead("check_cues_deleted", `Sequence ${b.sequence} is gone after deleting its cues; nothing was built`);
+          if (after.length) return failedRead("check_cues_deleted", `Sequence ${b.sequence} still has cue(s) ${after.map((c) => fmtNo(c.no)).join(", ")} after the delete; nothing was built`, { remaining: after.map((c) => fmtNo(c.no)) });
+          return asRead({ name: "check_cues_deleted", status: "succeeded", op: "children", detail: { deleted: list.map((c) => fmtNo(c.no)) } });
+        } catch (err) {
+          return asRead(stepFromError("check_cues_deleted", err, { op: "children" }));
+        }
+      },
+    });
+    return out;
   };
-  const built = await buildInPreview(ctx, { items, verify: b.verify, noun: "cues", inspect: [readSequence], ...(b.replace ? { beforeBuild: [deleteCues] } : {}) });
+  // replace: every existing cue is deleted once everything was checked and Preview is confirmed usable (Delete ... Cue 1
+  // Thru keeps the sequence object, its settings and its executor assignments: live 2026-10-15).
+  const built = await buildInPreview(ctx, { items, verify: b.verify, noun: "cues", inspect: [readSequence], ...(b.replace ? { prepare: deleteSteps } : {}) });
   const { steps, readBack, warnings, normalProgrammer } = built;
   const reports: CueReport[] = b.cues.map((c, i) => {
     const r = built.items[i];
@@ -1020,23 +1071,35 @@ async function overrideCandidates(bridge: Gma3Bridge, sequence: number, priority
  * After a build: the sequence's settings (gma3_configure_sequence, in the same lock span) and, for a priority above
  * LTP, the running sequences it would switch off, with Off When Overridden turned off on them when `protect`.
  */
-async function sequenceExtras(ctx: ToolContext, sequence: number, settings: Record<string, unknown> | undefined, protect: boolean, steps: StepResult[], warnings: string[]): Promise<{ extra: Record<string, unknown>; verifications: Verification[] }> {
+async function sequenceExtras(ctx: ToolContext, sequence: number, settings: Record<string, unknown> | undefined, protect: boolean, steps: StepResult[], warnings: string[]): Promise<{ extra: Record<string, unknown>; verifications: Verification[]; ready: boolean }> {
   const held: ToolContext = { ...ctx, mutations: new HeldLock() };
   const extra: Record<string, unknown> = {};
   const verifications: Verification[] = [];
-  if (!settings) return { extra, verifications };
+  if (!settings) return { extra, verifications, ready: true };
+  /** Not ready: the requested protection did not fully succeed, so the override is neither configured nor played. */
+  const notReady = (reason: string) => {
+    steps.push({ name: "sequence_settings", status: "skipped", error: `not attempted: ${reason}` });
+    verifications.push({ status: "mismatched", checked: "the running sequences' protection", detail: reason });
+    extra.sequenceSettings = { outcome: "not_attempted", reason };
+    return { extra, verifications, ready: false };
+  };
   const priority = typeof settings.priority === "string" ? settings.priority : undefined;
   if (priority && rankOf(priority) > PRIORITY_RANK.ltp) {
     try {
       const c = await overrideCandidates(ctx.bridge, sequence, priority, ctx.requestTimeoutMs);
       steps.push(asRead({ name: "read_running_sequences", status: "succeeded", op: "objects", detail: { candidates: c.sequences.length, complete: c.complete } }));
       const protectedOnes: number[] = [];
+      extra.override = { priority, wouldSwitchOff: c.sequences, complete: c.complete, protected: protectedOnes };
       if (protect) {
+        // Protection must be complete and confirmed before the override is configured or played (review round 1).
+        if (!c.complete) return notReady("the running sequences could not all be read, so their protection is not complete");
         for (const r of c.sequences) {
           const res = await configureSequence(held, { sequence: r.sequence, off_when_overridden: false } as ConfigureSequenceArgs);
-          steps.push({ name: `protect_sequence_${r.sequence}`, status: res.outcome === "succeeded" ? "succeeded" : res.outcome === "unknown" ? "unknown" : "failed", op: "gma3_configure_sequence", ...(res.outcome === "succeeded" ? {} : { error: res.summary }) });
+          const ok = res.outcome === "succeeded" && res.verification.status === "matched";
+          steps.push({ name: `protect_sequence_${r.sequence}`, status: ok ? "succeeded" : res.outcome === "unknown" || res.steps.some((st) => st.status === "unknown" && st.kind !== "read") ? "unknown" : "failed", op: "gma3_configure_sequence", ...(ok ? {} : { error: res.summary }) });
           verifications.push(res.verification);
-          if (res.outcome === "succeeded") protectedOnes.push(r.sequence);
+          if (!ok) return notReady(`Off When Overridden could not be confirmed off on Sequence ${r.sequence} (${res.outcome}, read-back ${res.verification.status})`);
+          protectedOnes.push(r.sequence);
         }
       } else if (c.sequences.length) {
         warnings.push(`Sequence ${sequence} plays at priority ${priority}: where it plays on the same fixtures it switches off ${c.sequences.map((r) => `Sequence ${r.sequence} "${r.name}"`).join(", ")} (Off When Overridden is on); pass protect_running: true to turn Off When Overridden off on them`);
@@ -1044,6 +1107,7 @@ async function sequenceExtras(ctx: ToolContext, sequence: number, settings: Reco
       extra.override = { priority, wouldSwitchOff: c.sequences, complete: c.complete, protected: protectedOnes, note: "a running sequence of lower priority with Off When Overridden on is switched off where the override plays on the same fixtures; cue contents cannot be read on 2.5.1, so every playing candidate is listed" };
     } catch (err) {
       steps.push(asRead(stepFromError("read_running_sequences", err, { op: "objects" })));
+      if (protect) return notReady("the running sequences could not be read, so they could not be protected");
       warnings.push("the running sequences could not be read, so the override's effect on them is not known");
     }
   }
@@ -1052,7 +1116,20 @@ async function sequenceExtras(ctx: ToolContext, sequence: number, settings: Reco
   verifications.push(res.verification);
   if (res.warnings?.length) warnings.push(...res.warnings);
   extra.sequenceSettings = { outcome: res.outcome, verification: res.verification.status, ...(res.intended ? { intended: res.intended } : {}) };
-  return { extra, verifications };
+  return { extra, verifications, ready: res.outcome === "succeeded" && res.verification.status !== "mismatched" };
+}
+
+/** A mutation step without a reply (its effect on the console is not known). */
+const uncertainStep = (steps: StepResult[]) => steps.find((st) => st.status === "unknown" && st.kind !== "read");
+
+/**
+ * Before a destructive replace: the settings would be accepted by gma3_configure_sequence (its preview: sequence,
+ * locks, master names), read-only. A new sequence has nothing to check yet.
+ */
+async function settingsPreflight(ctx: ToolContext, sequence: number, settings: Record<string, unknown>): Promise<StepResult> {
+  const held: ToolContext = { ...ctx, mutations: new HeldLock() };
+  const res = await configureSequence(held, { sequence, ...settings, preview: true } as ConfigureSequenceArgs);
+  return res.outcome === "succeeded" ? asRead({ name: "check_sequence_settings", status: "succeeded", op: "gma3_configure_sequence" }) : failedRead("check_sequence_settings", `the sequence settings would not apply (${res.summary}); nothing was sent`);
 }
 
 /** Validate sequence_settings: the gma3_configure_sequence settings (lock and preview are not taken here). */
@@ -1062,8 +1139,16 @@ function validateSequenceSettings(v: Validator, raw: unknown): Record<string, un
     v.fail("sequence_settings must be an object of gma3_configure_sequence settings");
     return undefined;
   }
-  const bad = Object.keys(raw).filter((k) => !(k in SEQUENCE_SETTINGS));
+  const entries = Object.entries(raw as Record<string, unknown>);
+  if (!entries.length) v.fail("sequence_settings is empty: give at least one setting, or leave it out");
+  const bad = entries.map(([k]) => k).filter((k) => !(k in SEQUENCE_SETTINGS));
   if (bad.length) v.fail(`sequence_settings: ${bad.join(", ")} ${bad.length === 1 ? "is" : "are"} not a sequence setting (${Object.keys(SEQUENCE_SETTINGS).join(", ")})`);
+  // Every value is checked before anything is sent (review round 1): a bad value must not surface after a rebuild.
+  for (const [k, value] of entries) {
+    if (!(k in SEQUENCE_SETTINGS)) continue;
+    if (value === undefined || value === null) v.fail(`sequence_settings.${k} has no value`);
+    else v.check(() => settingValue(`sequence_settings.${k}`, SEQUENCE_SETTINGS[k], value));
+  }
   return raw as Record<string, unknown>;
 }
 
@@ -1111,6 +1196,11 @@ export async function storeCues(ctx: ToolContext, raw: Record<string, unknown>):
         return buildResult({ operation: op, target, steps: pre, verification: unavailable("nothing was sent") });
       }
     }
+    if (replace && settings && (await readCueList(bridge, sequence, t).catch(() => null)) !== null) {
+      const chk = await settingsPreflight(ctx, sequence, settings);
+      pre.push(chk);
+      if (chk.status !== "succeeded") return buildResult({ operation: op, target, steps: pre, verification: unavailable("nothing was sent") });
+    }
     const before = replace ? await assignmentsOf(bridge, sequence, t) : null;
     const r = await buildCueBatch(ctx, { sequence, sequenceName, mode, cues, verify: raw.verify !== false, replace });
     r.steps.unshift(...pre);
@@ -1123,10 +1213,17 @@ export async function storeCues(ctx: ToolContext, raw: Record<string, unknown>):
       extra.assignments = { before, after, kept: before === null || after === null ? null : kept };
       if (before !== null && after !== null && !kept) verification = worst([verification, { status: "mismatched", detail: `the executor assignments changed: ${before.join(", ") || "none"} before, ${after.join(", ") || "none"} after` }], "cues and executor assignments");
     }
-    if (settings && r.cues.some((c) => c.status === "stored")) {
+    // The settings only after a complete build with no uncertain step (review round 1): later mutations are not sent
+    // after a step whose effect is unknown, or onto a sequence whose build failed.
+    const uncertain = uncertainStep(r.steps);
+    if (settings && r.cues.every((c) => c.status === "stored") && !uncertain) {
       const s2 = await sequenceExtras(ctx, sequence, settings, protect, r.steps, r.warnings);
       Object.assign(extra, s2.extra);
       verification = worst([verification, ...s2.verifications], `${verification.checked ?? "the cues"} and the sequence settings`);
+    } else if (settings) {
+      const reason = uncertain ? `step '${uncertain.name}' got no reply, so the console's state is not known` : "not every cue was stored";
+      r.steps.push({ name: "sequence_settings", status: "skipped", error: `not attempted: ${reason}` });
+      extra.sequenceSettings = { outcome: "not_attempted", reason };
     }
     return batchResult(op, { sequence, cues: cues.map((c) => c.cue), mode, ...(replace ? { replace } : {}) }, r, extra, verification);
   });
@@ -1234,12 +1331,18 @@ export async function editCues(ctx: ToolContext, raw: Record<string, unknown>): 
               for (const c of selected) {
                 const r = (await bridge.request("objects", { ref: cueRef(sequence, fmtNo(c.no)), fields: ["TrigType", "TrigTime"], limit: 1 }, t)) as { items?: Array<{ fields?: Record<string, unknown> }> };
                 const f = r.items?.[0]?.fields ?? {};
-                before.set(fmtNo(c.no), { type: String(f.TrigType ?? ""), time: timeToSeconds(f.TrigTime) });
+                const type = String(f.TrigType ?? "");
+                const time = timeToSeconds(f.TrigTime);
+                // keep_times saves what it reads: an unreadable trigger is refused, never taken as nothing to keep.
+                if (keepTimes && (!type || (type.toLowerCase() === "time" && time === null))) return failedRead("read_cues", `the trigger of cue ${fmtNo(c.no)} could not be read (${JSON.stringify(f.TrigType ?? null)} / ${JSON.stringify(f.TrigTime ?? null)}), so its time cannot be kept; nothing was sent`);
+                before.set(fmtNo(c.no), { type, time });
               }
             }
             if (keepTimes || restoreTimes) {
               const sq = (await bridge.request("objects", { ref: `Sequence ${sequence}`, fields: ["Note"], limit: 1 }, t)) as { items?: Array<{ fields?: Record<string, unknown> }> };
-              note = String(sq.items?.[0]?.fields?.Note ?? "");
+              const raw2 = sq.items?.[0]?.fields?.Note;
+              if (raw2 === undefined || raw2 === null) return failedRead("read_cues", `the Note of Sequence ${sequence} could not be read, so saved trigger times cannot be kept or found; nothing was sent`);
+              note = String(raw2);
             }
             if (restoreTimes) {
               const saved = parseTrigMarker(note);
@@ -1269,10 +1372,30 @@ export async function editCues(ctx: ToolContext, raw: Record<string, unknown>): 
     if (inspect.outcome === "succeeded" && keepTimes && wiped.length) {
       const saved = parseTrigMarker(note);
       for (const w of wiped) saved.set(w.cue, w.time);
-      const kept = await runSteps([setStep(bridge, "keep_trig_times", `Sequence ${sequence}`, "Note", writeTrigMarker(note, saved), t)]);
+      const wanted = writeTrigMarker(note, saved);
+      const kept = await runSteps([
+        setStep(bridge, "keep_trig_times", `Sequence ${sequence}`, "Note", wanted, t),
+        {
+          // The saved times are the only copy once the trigger changes: they are read back before anything else
+          // (review round 1). A console that ignores or rewrites the write stops the edit here.
+          name: "check_trig_times_kept",
+          run: async () => {
+            try {
+              const sq = (await bridge.request("objects", { ref: `Sequence ${sequence}`, fields: ["Note"], limit: 1 }, t)) as { items?: Array<{ fields?: Record<string, unknown> }> };
+              const got = sq.items?.[0]?.fields?.Note;
+              if (got === undefined || got === null) return failedRead("check_trig_times_kept", "the Note could not be read back; the triggers were not changed");
+              const back = parseTrigMarker(got);
+              const same = String(got).trim() === wanted.trim() && wiped.every((w) => back.get(w.cue) === w.time);
+              return same ? asRead({ name: "check_trig_times_kept", status: "succeeded", op: "objects" }) : failedRead("check_trig_times_kept", `the Note reads ${JSON.stringify(got)}, not the saved times; the triggers were not changed`);
+            } catch (err) {
+              return asRead(stepFromError("check_trig_times_kept", err, { op: "objects" }));
+            }
+          },
+        },
+      ]);
       steps.push(...kept.steps);
       if (kept.outcome !== "succeeded") stopAll = true;
-      else note = writeTrigMarker(note, saved);
+      else note = wanted;
     }
     if (inspect.outcome === "succeeded") {
       let stopped = stopAll;
@@ -1324,13 +1447,16 @@ export async function editCues(ctx: ToolContext, raw: Record<string, unknown>): 
         }
       }
     }
-    // restore_times: the restored cues' entries leave the Note's marker (the rest of the note stays).
-    if (restoreTimes && reports.some((r) => r.status === "stored")) {
+    // restore_times: only the cues whose restored time was read back leave the Note's marker (the rest of the note
+    // and every unconfirmed entry stay, as recovery data), and nothing is written after a step without a reply.
+    const confirmed = reports.filter((r) => r.status === "stored" && r.verification.status === "matched").map((r) => r.cue);
+    const unsure = steps.find((st) => st.status === "unknown" && st.kind !== "read");
+    if (restoreTimes && confirmed.length && !unsure) {
       const saved = parseTrigMarker(note);
-      for (const r of reports) if (r.status === "stored") saved.delete(r.cue);
+      for (const c of confirmed) saved.delete(c);
       const cleaned = await runSteps([setStep(bridge, "clear_saved_trig_times", `Sequence ${sequence}`, "Note", writeTrigMarker(note, saved), t)]);
       steps.push(...cleaned.steps);
-    }
+    } else if (restoreTimes && unsure) steps.push({ name: "clear_saved_trig_times", status: "skipped", error: `not attempted: step '${unsure.name}' got no reply; the saved times stay in the Note` });
     const attempted = reports.filter((r) => r.status !== "not_attempted");
     const verification =
       raw.verify === false ? notRequested() : attempted.length === 0 ? unavailable("nothing was sent") : worst(attempted.map((r) => ({ ...r.verification, detail: r.verification.detail ? `cue ${r.cue}: ${r.verification.detail}` : undefined })), `${attempted.length} cue(s): the properties that were written`);
@@ -1420,12 +1546,19 @@ export async function buildChase(ctx: ToolContext, raw: Record<string, unknown>)
       pre.push(asRead(stepFromError("check_sequence_empty", err, { op: "children" })));
       return buildResult({ operation: op, target: { sequence }, steps: pre, verification: unavailable("nothing was sent") });
     }
+    if (replace && settings && (await readCueList(bridge, sequence, t).catch(() => null)) !== null) {
+      const chk = await settingsPreflight(ctx, sequence, settings);
+      pre.push(chk);
+      if (chk.status !== "succeeded") return buildResult({ operation: op, target: { sequence }, steps: pre, verification: unavailable("nothing was sent") });
+    }
     const assignedBefore = replace ? await assignmentsOf(bridge, sequence, t) : null;
     const r = await buildCueBatch(ctx, { sequence, sequenceName: name, mode: "create", cues, verify, replace });
     r.steps.unshift(...pre);
     const allStored = r.cues.every((c) => c.status === "stored");
     const extra: Record<string, unknown> = { stepSeconds: step, cycleSeconds: Number((step * cues.length).toFixed(3)) };
     if (!allStored) return batchResult(op, { sequence, steps: cues.length }, r, { ...extra, cycle: { watched: false, reason: "not every cue was stored" } });
+    const unsure = uncertainStep(r.steps);
+    if (unsure) return batchResult(op, { sequence, steps: cues.length }, r, { ...extra, cycle: { watched: false, reason: `step '${unsure.name}' got no reply; nothing more was sent` } });
     // Nothing more is sent unless Preview was left cleanly and the console is confirmed back in Normal: a Goto from
     // anywhere else would play the chase on a console in an unknown state.
     if (!r.backInNormal) return batchResult(op, { sequence, steps: cues.length }, r, { ...extra, cycle: { watched: false, reason: "the console was not confirmed back in the Normal environment after the build (run gma3_phaser_release); Wrap Around was not set and the chase was not played" } });
@@ -1453,6 +1586,8 @@ export async function buildChase(ctx: ToolContext, raw: Record<string, unknown>)
       const s2 = await sequenceExtras(ctx, sequence, settings, protect, r.steps, r.warnings);
       Object.assign(extra, s2.extra);
       configVerification = worst([configVerification, ...s2.verifications], "Wrap Around and the sequence settings");
+      // An override whose protection or settings did not succeed is not played (review round 1).
+      if (!s2.ready) return batchResult(op, { sequence, steps: cues.length }, r, { ...extra, cycle: { watched: false, reason: "the sequence settings (or the running sequences' protection) did not succeed, so the chase was not played" } }, worst([r.verification, configVerification], "cues, Wrap Around and the sequence settings"));
     }
 
     // One observed cycle (a playback: Goto, sample, Off).
