@@ -33,6 +33,7 @@ export const TASK_TOOLS: ReadonlyArray<{ task: string; tools: readonly string[] 
 /** Tools that watch the console over time on the server side: no Lua loop, no Lua time budget. */
 export const OBSERVING_TOOLS: ReadonlyArray<{ tool: string; what: string }> = [
   { tool: "gma3_observe_tempo", what: "how fast running sequences (chases) advance" },
+  { tool: "gma3_observe_values", what: "programmer or DMX output values of fixtures as they change" },
   { tool: "gma3_build_chase", what: "one cycle of the chase it built" },
   { tool: "gma3_run_macro", what: "a macro's running line" },
   { tool: "gma3_timecode_transport", what: "a timecode show's cursor and the sequences it fires" },

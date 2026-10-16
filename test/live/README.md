@@ -44,6 +44,7 @@ Guard rails, enforced by `test/live/live.ts`:
 | Two movers (`GMA3_LIVE_SU13_MOVERS`, default 301,302), a cell row (`GMA3_LIVE_SU13_CELLS`, default 401.1 Thru 401.40) and a whole rig with Dimmer (`GMA3_LIVE_SU13_RIG`); Presets 23.951–23.959 (must not exist; deleted at the end); built in Preview, ClearAll at the end | SU-13 phaser builder test |
 | Two fixtures with Dimmer (`GMA3_LIVE_CUE_FIDS`, default 101,102), an existing preset range (`GMA3_LIVE_CUE_PRESETS`, default 21.11-21.14, recalled only); Sequences 940–943 and Page 90 (created when missing) executor 90.220 (must be empty; deleted at the end); built in Preview | SU-14 cue-contents test |
 | Global variables McpLiveA, McpLiveB, McpLiveSeq and the bridge user's McpLiveU, Macro 930 and Sequence 944 (all must be absent; deleted at the end) | SU-15 console-variables test (bridge 0.31.0) |
+| Sequence 945 (must not exist; deleted at the end; plays for a few seconds), one fixture with Dimmer from `GMA3_LIVE_READS_FID` (default 101; programmer values, then ClearAll) | SU-16 live-reads test (bridge 0.32.0) |
 | Fixture types Generic Fog and Fan (imported, then removed; their attributes stay), fixture FID 994 from the first free block at 3.001 (also needs `GMA3_LIVE_EXCLUSIVE=1`) | SU-03 fixture-type import tests (bridge 0.26.0; committed with no undo) |
 
 Each live test file documents the exact objects it creates at the top of the file.

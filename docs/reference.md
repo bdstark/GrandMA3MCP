@@ -27,9 +27,9 @@
 | `gma3_objects` | Resolve a range like `Fixture 1 Thru 20` to objects with property values. Page and executor lists are expanded by the bridge (v0.20.0, [below](#page-and-executor-ranges-plugin-v0200)) |
 | `gma3_dump` | Raw `Dump()` text of an object |
 | `gma3_set_property` | `Set()` a property |
-| `gma3_playback` | Go+, Go-, Pause, Off, Top, Flash, Load, ... on a sequence or executor |
+| `gma3_playback` | Go+, Go-, Pause, Off, Top, Flash, Load, ... on a sequence or executor; reads the playback state back a frame later ([docs](tools/live-reads.md)) |
 | `gma3_set_fader` / `gma3_get_fader` | Fader levels via `SetFader` / `GetFader` |
-| `gma3_sequences`, `gma3_cues`, `gma3_executors`, `gma3_fixtures`, `gma3_pool` | Convenience views |
+| `gma3_sequences`, `gma3_cues`, `gma3_executors`, `gma3_fixtures`, `gma3_pool` | Convenience views; sequences carry the current cue, and `gma3_cues` reads several sequences ([docs](tools/live-reads.md)) |
 | `gma3_help` | Read a page of the grandMA3 manual shipped with onPC |
 | `gma3_start_bridge` | Start the plugin over OSC when the bridge is down |
 
@@ -55,6 +55,7 @@ Structured inspection tools (read-only; work with Lua execution disabled; need p
 | --- | --- |
 | `gma3_fixture_attributes` | Attributes of one fixture or subfixture with stable identifiers, units, ranges, defaults and DMX channel mapping; unknown metadata is `null`, never inferred ([docs](tools/inspection.md)) |
 | `gma3_programmer` | Active programmer values (all fixtures, current selection, or given fixtures) with masks, timing and every phaser step; reports incomplete coverage instead of claiming an empty programmer ([docs](tools/inspection.md)) |
+| `gma3_observe_values` | Watches a fixture's programmer or output values for a few seconds and reports the changes; says up front when output cannot be read ([docs](tools/live-reads.md)) |
 | `gma3_fixture_output` | DMX output per channel of a fixture: raw 8/16-bit values, percent, and a physical value where the channel function allows a conversion ([docs](tools/inspection.md)) |
 | `gma3_dmx` | Raw or percent DMX values of a universe and channel range, with `granted` and optional patch lookup ([docs](tools/inspection.md)) |
 | `gma3_dmx_output` | Read-only: universes in use with grant, request and ports, the Art-Net / sACN entries that send each one, the protocols and output stations; each universe explained (not granted, not sent, sent as) (bridge 0.30.0, [docs](tools/dmx-output.md)) |

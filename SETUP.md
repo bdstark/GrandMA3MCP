@@ -676,6 +676,17 @@ triggers of every cue of four sequences. `gma3_sequences` reports `hasActivePlay
 To check the strobe, the agent wrote a busy-wait loop in Lua sampling `GetDMXValue`, which the server instructions
 forbid. Every sample was nil because the universe is not granted.
 
+**Status:** implemented in bridge 0.32.0 ([docs/tools/live-reads.md](docs/tools/live-reads.md), probe record
+[su-16-live-reads-macos-2.5.1.md](docs/probes/su-16-live-reads-macos-2.5.1.md), live test
+`test/live/live-reads.live.ts` 8/8 on macOS onPC 2.5.1).
+- Sequence reads carry `currentCue {no, name}` while the sequence plays and `lastCue` after Off (`CurrentCue` is
+  sticky). This covers `gma3_sequences`, `gma3_executors` and `gma3_cues`, which also reads up to 20 sequences at once.
+- `gma3_goto_cue` verifies the cue 100 ms after the command, and `gma3_playback` reports the state of a Sequence
+  or Executor target.
+- `gma3_programmer` has a compact form: `fields`, and `by_fixture` for one entry per fixture.
+- `gma3_observe_values` samples programmer or output values for up to 30 s and reports the timed changes. Output
+  that cannot be read is reported before any sampling.
+
 ### Acceptance criteria
 
 - The current cue (number and name) per sequence in `gma3_sequences` and `gma3_executors`, read a frame after a

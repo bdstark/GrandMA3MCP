@@ -145,8 +145,11 @@ Steps: `resolve_sequence` (if selected) -> `check_target` (`objects`, cue must e
 -> `goto` (`cmd`): `Goto Sequence <n> Cue <c>` or `Goto Sequence <n> Cue <c> Fade <s>`.
 
 A `succeeded` outcome means the console **accepted** the command. The crossfade runs asynchronously; the tool
-does not claim it completed. Verification is `not_requested` (the sequence's current cue is not read back; use
-`gma3_cues` / `gma3_get_object` to inspect playback state). Selection and programmer: unchanged.
+does not claim it completed. With `verify` (default true), the sequence's state is read 100 ms after the command
+(SU-16, bridge 0.32.0). Verification is `matched` when the sequence plays that cue, and `playbackState` has the
+cue's number and name. It is `mismatched` when the sequence is in another cue or not playing, and `unavailable`
+with an older bridge. See [live-reads.md](live-reads.md#read-back-after-a-playback-command). Selection and
+programmer: unchanged.
 
 ## gma3_delete_cue
 

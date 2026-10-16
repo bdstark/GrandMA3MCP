@@ -54,6 +54,45 @@ export const RECIPE_KEYS = ["index", "name", "enabled", "selection", "selectionM
 
 type Row = Record<string, unknown>;
 
+/** Keys a compact programmer row always keeps, so a row still says which channel it is. */
+const PROGRAMMER_ID_KEYS = ["fid", "subfixtureIndex", "attribute"] as const;
+
+/** A programmer row's value in one cell: percent, the phaser's step count, or null. */
+function compactValue(r: Row): unknown {
+  if (Array.isArray(r.steps) && r.steps.length > 1) return `phaser (${r.steps.length} steps)`;
+  return r.value ?? null;
+}
+
+/**
+ * SU-16: the compact programmer read. `fields` keeps those row keys (plus the channel's identity); `byFixture` folds
+ * the rows into one entry per (sub)fixture with attribute -> value (or attribute -> the chosen fields).
+ */
+export function compactProgrammer(rows: Row[], opts: { fields?: string[]; byFixture?: boolean }): { rows?: Row[]; perFixture?: Row[] } {
+  const pick = (r: Row): Row => {
+    const out: Row = {};
+    for (const k of [...PROGRAMMER_ID_KEYS, ...(opts.fields ?? [])]) out[k] = r[k] ?? null;
+    return out;
+  };
+  if (!opts.byFixture) return { rows: opts.fields ? rows.map(pick) : rows };
+  const byKey = new Map<string, Row & { values: Row; channels: number }>();
+  for (const r of rows) {
+    const key = `${r.fid ?? r.fixture}|${r.subfixtureIndex}`;
+    let f = byKey.get(key);
+    if (!f) {
+      f = { fid: r.fid ?? null, fixture: r.fixture ?? null, subfixtureIndex: r.subfixtureIndex ?? null, channels: 0, values: {} };
+      byKey.set(key, f);
+    }
+    f.channels++;
+    const attr = String(r.attribute ?? r.uiChannel ?? `channel ${f.channels}`);
+    if (opts.fields) {
+      const cell: Row = {};
+      for (const k of opts.fields) cell[k] = r[k] ?? null;
+      f.values[attr] = cell;
+    } else f.values[attr] = compactValue(r);
+  }
+  return { rows: undefined, perFixture: [...byKey.values()] };
+}
+
 /** Return a copy of `row` in which every listed key exists (missing ones as null). */
 export function withNulls(row: unknown, keys: readonly string[]): Row {
   const out: Row = {};
@@ -209,11 +248,14 @@ export const registerInspectionTools: RegisterTools = (server, ctx: ToolContext)
         "ROWS ARE PROGRAMMER CONTENT, NOT OUTPUT VALUES (source \"programmer\"; use gma3_fixture_output/gma3_dmx for output). " +
         "A row is emitted only when the console's activity masks show programmer data; `value: 0` with `present: true` is a real zero, an absent row means no programmer value. " +
         "Multi-step phasers keep every step in `steps[]` (value is null) with phaser-level fade/delay/speed/phase; `phaser.supported` is false with a reason when the API shape was unusable. " +
-        "`coverage` reports whether the scan was complete; when it is not (budget reached, API unavailable) the programmer is NOT claimed empty. Paginated. `value` is percent, `valueRaw` the 24-bit integer.",
+        "`coverage` reports whether the scan was complete; when it is not (budget reached, API unavailable) the programmer is NOT claimed empty. Paginated. `value` is percent, `valueRaw` the 24-bit integer. " +
+        "Compact form: `fields` keeps only those row keys; `by_fixture: true` gives perFixture, one entry per fixture, with attribute -> value (a multi-step phaser reads \"phaser (n steps)\"). To watch values change over time use gma3_observe_values.",
       inputSchema: {
         scope: z.enum(["all", "selection", "fixtures"]).describe("all = every patched (sub)fixture; selection = current selection; fixtures = the `fixtures` range."),
         fixtures: z.string().optional().describe('Required for scope "fixtures": fixture IDs/ranges such as "1 Thru 5", "101 + 103", "Fixture 501.3". Groups are not expanded.'),
         max_channels: z.number().int().min(1).max(50000).optional().describe("Scan budget in UI channels per request (default 5000). The scan stops when reached and coverage.complete is false."),
+        fields: z.array(z.enum(PROGRAMMER_ROW_KEYS)).optional().describe("Compact form: keep only these row keys (fid, subfixtureIndex and attribute are always kept)."),
+        by_fixture: z.boolean().optional().describe("Compact form: perFixture, one entry per (sub)fixture with attribute -> value (or -> the chosen fields), instead of rows (one per channel). Folds the rows of this page."),
         ...pageShape(200, 5000),
       },
     },
@@ -229,7 +271,10 @@ export const registerInspectionTools: RegisterTools = (server, ctx: ToolContext)
           v.fail(`fixtures is only accepted with scope "fixtures" (scope is ${JSON.stringify(scope)})`);
         }
         const maxChannels = v.check(() => finiteNumber("max_channels", args.max_channels, { integer: true, min: 1, max: 50000, optional: true })) ?? 5000;
-        const { limit, offset } = pageArgs(v, args, 200, 5000);
+        const byFixture = args.by_fixture === true;
+        const fields = args.fields === undefined ? undefined : Array.isArray(args.fields) ? args.fields.map((f, i) => v.check(() => oneOf(`fields[${i}]`, f, PROGRAMMER_ROW_KEYS))).filter((f): f is (typeof PROGRAMMER_ROW_KEYS)[number] => !!f) : (v.fail("fields must be a list of row keys"), undefined);
+        // The fixture summary folds one page: by default a whole scan's worth, so a fixture is not split across pages.
+        const { limit, offset } = pageArgs(v, { ...args, limit: args.limit ?? (byFixture ? 5000 : undefined) }, 200, 5000);
         if (!v.ok || !scope) return validationError("gma3_programmer", v.errors);
         const res = await op(bridge, "programmer", { scope, fixtures, limit, offset, maxChannels }, timeoutMs);
         const coverage = (res.coverage && typeof res.coverage === "object" ? res.coverage : { complete: false }) as Row;
@@ -242,9 +287,12 @@ export const registerInspectionTools: RegisterTools = (server, ctx: ToolContext)
           ...res,
           source: res.source ?? "programmer",
           coverage: { complete: coverage.complete === true, ...coverage },
-          rows: asArray(res.rows).map((row) => withNulls(row, PROGRAMMER_ROW_KEYS)),
+          ...(fields || byFixture
+            ? compactProgrammer(asArray(res.rows).map((row) => withNulls(row, PROGRAMMER_ROW_KEYS)), { fields, byFixture })
+            : { rows: asArray(res.rows).map((row) => withNulls(row, PROGRAMMER_ROW_KEYS)) }),
           limitations,
           notes: [
+            ...(byFixture ? ["by_fixture: one entry per (sub)fixture of this page; a fixture split across pages appears on each page with its part of the channels"] : []),
             "rows are programmer values, not output; output is read with gma3_fixture_output or gma3_dmx",
             "value is percent (absolute), valueRaw the console's 24-bit integer; multi-step phasers have value null and all steps in steps[]",
             NULL_NOTE,

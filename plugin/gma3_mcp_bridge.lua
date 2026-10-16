@@ -154,7 +154,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.31.0"
+local VERSION      = "0.32.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -597,10 +597,21 @@ local function objectProperties(h, asText)
   return props
 end
 
+-- SU-16 (0.32.0): a sequence's current cue as { no, name }. Cue.no is the cue number x 1000 (cue 7 reads 7000, live
+-- 2026-10-16). CurrentCue keeps naming the last cue after Off, so it is read together with hasActivePlayback.
+local function currentCueOf(seq)
+  if safeCall(seq, "GetClass") ~= "Sequence" then return nil end
+  local ok, c = pcall(function() return seq.CurrentCue end)
+  if not ok or not isHandle(c) then return nil end
+  local no = tonumber(safeProp(c, "no"))
+  return { no = no and no / 1000 or nil, name = safeProp(c, "name") }
+end
+
 local function childSummary(c, fields, asText, playback)
   local s = handleSummary(c)
   if playback then
     pcall(function() s.hasActivePlayback = c:HasActivePlayback() end)
+    s.currentCue = currentCueOf(c)
   end
   if fields and #fields > 0 then
     s.fields = {}
@@ -2707,6 +2718,7 @@ ops.object = function(args)
     res.children = listChildren(h, args.childFields, args.childLimit or 100, args.childOffset or 0, args.asText ~= false)
   end
   pcall(function() res.hasActivePlayback = h:HasActivePlayback() end)
+  res.currentCue = currentCueOf(h)
   return res
 end
 
@@ -2782,6 +2794,7 @@ ops.executor = function(args)
   if isHandle(assigned) then
     res.assigned = handleSummary(assigned)
     pcall(function() res.assigned.hasActivePlayback = assigned:HasActivePlayback() end)
+    res.assigned.currentCue = currentCueOf(assigned)
     local okF, fv = pcall(assigned.GetFader, assigned, {})
     if okF then res.assigned.faderMaster = fv end
   end
@@ -2796,6 +2809,7 @@ local function executorInfo(n)
   if isHandle(assigned) then
     res.assigned = handleSummary(assigned)
     pcall(function() res.assigned.hasActivePlayback = assigned:HasActivePlayback() end)
+    res.assigned.currentCue = currentCueOf(assigned)
     local okF, fv = pcall(assigned.GetFader, assigned, {})
     if okF then res.faderMaster = fv end
     local okT, ft = pcall(assigned.GetFaderText, assigned, {})

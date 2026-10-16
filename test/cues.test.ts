@@ -28,6 +28,8 @@ class FakeShow {
   missingThrows = false;
   /** When true, Delete answers OK but leaves the cue in place. */
   deleteIsNoop = false;
+  /** SU-16: the playback state per sequence as the bridge 0.32.0 `object` op reports it (Goto sets it). */
+  playback = new Map<number, { hasActivePlayback: boolean; currentCue?: { no: number; name: string } }>();
 
   cueKey(seq: number | string, cue: string, part?: number) {
     return norm(`Sequence ${seq} Cue ${cue}${part !== undefined ? ` Part ${part}` : ""}`);
@@ -91,6 +93,11 @@ class FakeShow {
       return { ref, property, value: o[prop] };
     });
     fake.on("object", ({ ref }) => {
+      const seq = norm(String(ref)).match(/^sequence (\d+)$/);
+      if (seq) {
+        const n = Number(seq[1]);
+        return { name: `Seq ${n}`, class: "Sequence", addr: `14.14.1.7.${n}`, ...(this.playback.get(n) ?? { hasActivePlayback: false }) };
+      }
       if (norm(String(ref)) !== "selectedsequence") throw new Error(`no object found for '${ref}'`);
       if (this.selected === null) throw new Error("no object found for 'SelectedSequence'");
       return { name: `Seq ${this.selected}`, class: "Sequence", index: this.selected, addr: `14.14.1.7.${this.selected}` };
@@ -116,7 +123,11 @@ class FakeShow {
       }
       return "OK";
     }
-    if (/^Goto Sequence \d+ Cue [\d.]+( Fade [\d.]+)?$/.test(command)) return "OK";
+    const go = command.match(/^Goto Sequence (\d+) Cue ([\d.]+)( Fade [\d.]+)?$/);
+    if (go) {
+      this.playback.set(Number(go[1]), { hasActivePlayback: true, currentCue: { no: Number(go[2]), name: this.get(`Sequence ${go[1]} Cue ${go[2]}`)?.Name ?? "" } });
+      return "OK";
+    }
     return "Syntax Error";
   }
 }
@@ -574,16 +585,21 @@ test("set_cue_trigger: missing cue -> failed with nothing sent; lost reply -> un
 // gma3_goto_cue
 // ---------------------------------------------------------------------------
 
-test("goto_cue: sends Goto with optional Fade, verification not requested, wording says accepted not completed", async () => {
-  show.addCue(900, "2");
+test("goto_cue: sends Goto with optional Fade and reads the current cue back a frame later (SU-16)", async () => {
+  show.addCue(900, "2", { Name: "Blue" });
   const plain = await h.callJson("gma3_goto_cue", { sequence: 900, cue: 2 });
   assert.equal(plain.isError, false, plain.text);
   assert.deepEqual(h.fake.commands, ["Goto Sequence 900 Cue 2"]);
-  assert.equal(plain.result.verification.status, "not_requested");
-  assert.match(plain.result.summary, /accepted/);
-  assert.match(plain.result.summary, /not verified/);
-  assert.ok(!/completed\b(?! when)/.test(plain.result.summary.replace("completion is not verified", "")), plain.result.summary);
+  assert.equal(plain.result.verification.status, "matched");
+  assert.deepEqual(plain.result.verification.expected, { active: true, cue: 2 });
+  assert.deepEqual(plain.result.playbackState.currentCue, { no: 2, name: "Blue" });
+  assert.equal(plain.result.playbackState.readAfterMs, 100);
+  assert.match(plain.result.summary, /plays cue 2 \(Blue\) a frame after Goto/);
+  assert.match(plain.result.summary, /completion is not verified/);
   assert.match(plain.result.note, /playback mutation/i);
+  // The state is read after the command, not before it.
+  const ops = h.fake.requests.map((r) => `${r.op}:${String((r.args as { ref?: string; command?: string }).ref ?? (r.args as { command?: string }).command ?? "")}`);
+  assert.ok(ops.indexOf("object:Sequence 900") > ops.indexOf("cmd:Goto Sequence 900 Cue 2"), ops.join(", "));
 
   const faded = await h.callJson("gma3_goto_cue", { sequence: 900, cue: 2, fade: 0 });
   assert.equal(faded.isError, false, faded.text);
@@ -592,8 +608,46 @@ test("goto_cue: sends Goto with optional Fade, verification not requested, wordi
   assert.equal(h.fake.commands.at(-1), "Goto Sequence 900 Cue 2 Fade 2.5");
   assert.equal(faded2.result.fade, 2.5);
 
+  const unverified = await h.callJson("gma3_goto_cue", { sequence: 900, cue: 2, verify: false });
+  assert.equal(unverified.result.verification.status, "not_requested");
+  assert.equal(unverified.result.playbackState, undefined);
+
   const tool = h.tools.get("gma3_goto_cue")!;
   assert.match(tool.description ?? "", /PLAYBACK MUTATION/);
+});
+
+test("goto_cue: a different cue, a stopped sequence or a bridge without the cue read is not reported as matched", async () => {
+  show.addCue(900, "2");
+  // A Follow trigger moved the sequence on within the frame.
+  h.fake.onCommand(() => {
+    show.playback.set(900, { hasActivePlayback: true, currentCue: { no: 3, name: "Next" } });
+    return "OK";
+  });
+  const moved = await h.callJson("gma3_goto_cue", { sequence: 900, cue: 2 });
+  assert.equal(moved.isError, true);
+  assert.equal(moved.result.outcome, "succeeded");
+  assert.equal(moved.result.verification.status, "mismatched");
+  assert.match(moved.result.verification.detail, /cue 3 \(Next\), not 2/);
+
+  // Off a frame later: CurrentCue still names the cue, but it is the last cue, not a current one.
+  h.fake.onCommand(() => {
+    show.playback.set(900, { hasActivePlayback: false, currentCue: { no: 2, name: "" } });
+    return "OK";
+  });
+  const off = await h.callJson("gma3_goto_cue", { sequence: 900, cue: 2 });
+  assert.equal(off.result.verification.status, "mismatched");
+  assert.match(off.result.verification.detail, /not playing/);
+  assert.equal(off.result.playbackState.currentCue, null);
+  assert.deepEqual(off.result.playbackState.lastCue, { no: 2, name: "" });
+
+  // An older bridge (before 0.32.0) reports activity without the cue.
+  h.fake.onCommand(() => {
+    show.playback.set(900, { hasActivePlayback: true });
+    return "OK";
+  });
+  const old = await h.callJson("gma3_goto_cue", { sequence: 900, cue: 2 });
+  assert.equal(old.result.verification.status, "unavailable");
+  assert.match(old.result.verification.detail, /0\.32\.0/);
 });
 
 test("goto_cue: missing cue is refused without sending; a lost reply is unknown and not resent", async () => {
