@@ -1,9 +1,10 @@
 import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { startHarness, type Harness } from "./helpers/tool-harness.ts";
-import { registerPhaserTools, parseStep, parsePhaser, expandTemplate, effectCommands, expectedPhase, verifyBuild, fingerprint, type Effect } from "../src/tools/phasers.ts";
+import { registerPhaserTools, parseStep, parsePhaser, expandTemplate, effectCommands, expectedPhase, verifyBuild, fingerprint, planEffect, invertValue, summarizePhases, variantOf, sameAngle, type Effect } from "../src/tools/phasers.ts";
 import type { ProgrammerRow } from "../src/tools/presets.ts";
 import { ValidationError } from "../src/validate.ts";
+import { SILENT } from "./helpers/fake-bridge.ts";
 
 // ---------------------------------------------------------------------------
 // Request parsing, templates, commands
@@ -56,6 +57,7 @@ test("the expected phase follows the grid position and the repetition", () => {
   const at = (n: number, repeat?: Parameters<typeof expectedPhase>[3]) => Array.from({ length: n }, (_, k) => expectedPhase({ from: 0, to: 270 }, k, n, repeat));
   assert.deepEqual(at(4), [0, 90, 180, 270]);
   assert.deepEqual(Array.from({ length: 4 }, (_, k) => expectedPhase({ from: 360, to: 0 }, k, 4)), [360, 240, 120, 0], "reverse direction");
+  assert.deepEqual([0, 1].map((k) => expectedPhase({ from: 0, to: 180 }, k, 2, { kind: "wings", count: 2 })), [180, 180], "a one-fixture wing gets the centre end (live)");
   assert.deepEqual(at(4, { kind: "groups", count: 2 }), [0, 270, 0, 270]);
   assert.deepEqual(at(8, { kind: "wings", count: 2 }), [0, 90, 180, 270, 270, 180, 90, 0]);
   assert.deepEqual(at(8, { kind: "blocks", count: 2 }), [0, 0, 90, 90, 180, 180, 270, 270]);
@@ -152,7 +154,21 @@ class Console {
     return r;
   }
 
+  names = new Map<string, string>();
+  /** Never answer a Name write (a lost reply after the store went through). */
+  silentNameSet = false;
+  /** Refuse every Name write (the store went through, the name did not). */
+  rejectNameSet = false;
+  matricks: { kind: "groups" | "wings" | "blocks"; count: number } | undefined;
+
   install(h: Harness): void {
+    h.fake.on("set", (args) => {
+      if (this.silentNameSet) return SILENT;
+      if (this.rejectNameSet) throw new Error("Illegal value");
+      const key = String(args.ref).replace("Preset ", "");
+      this.names.set(key, String(args.value));
+      return { ref: args.ref, property: args.property, value: args.value };
+    });
     h.fake.on("preset.context", () => ({ preferences: { StoreLook: "No", PresetInputFilter: "Yes", StoreMode: "Ask" }, preferencesReadable: true, pool: { no: 23, exists: true, name: "All 3", presetMode: "Selective" } }));
     h.fake.on("preset.read", (args) => {
       const key = String(args.ref).replace("Preset ", "");
@@ -161,7 +177,7 @@ class Console {
       if (!stored) throw new Error(`no object found for '${args.ref}'`);
       const types: Record<string, string> = {};
       for (const sf of (args.typesFor as number[]) ?? []) types[String(sf)] = "T";
-      return { ref: args.ref, no: 1, name: "x", pool: { no: 23 }, presetMode: "Selective", storedData: "Selective", lock: "", dependencies: [], dependenciesReadable: true, types,
+      return { ref: args.ref, no: 1, name: this.names.get(key) ?? "x", pool: { no: 23 }, presetMode: "Selective", storedData: "Selective", lock: "", dependencies: [], dependenciesReadable: true, types,
         rows: stored.map((r) => ({ fixture: r.fid, attribute: r.attribute, sfIndex: r.subfixtureIndex, fixtureType: "T", mode: "selective", stepCount: r.stepCount, steps: r.steps!.map((s, i) => ({ step: i + 1, absolute: s.absolute ?? undefined, relative: s.relative ?? undefined, trans: s.trans ?? undefined, accel: s.accel ?? undefined, decel: s.decel ?? undefined, width: s.width ?? undefined })), speed: r.phaser?.speed === 1 ? undefined : r.phaser?.speed, phase: r.phaser?.phase === 0 ? undefined : r.phaser?.phase })) };
     });
     h.fake.on("fixtureAttributes", (args) => {
@@ -183,6 +199,10 @@ class Console {
         for (const r of this.prog()) r.stepCount = 0;
         return { feedback: "OK" };
       }
+      // Selection MAtricks while the phase is set: groups / wings / blocks change the distribution (shuffle is ignored).
+      const mat = c.match(/^Set Selection MAtricks "X(Group|Wings|Block)" (\d+)$/);
+      if (mat) { this.matricks = { kind: ({ Group: "groups", Wings: "wings", Block: "blocks" } as const)[mat[1] as "Group"], count: Number(mat[2]) }; return { feedback: "OK" }; }
+      if (c === "Reset Selection MAtricks") { this.matricks = undefined; return { feedback: "OK" }; }
       if (/^Grid /.test(c) || /MAtricks/.test(c)) return { feedback: "OK" };
       if (c === "Preview On") { if (!this.previewIgnored) { this.env = "Preview"; this.selection = []; } return { feedback: "OK" }; }
       if (c === "Preview Off") { if (this.failPreviewOff) return { feedback: "Error" }; this.env = "Normal"; return { feedback: "OK" }; }
@@ -204,7 +224,7 @@ class Console {
       if ((m = c.match(/^At Phase (-?[\d.]+) Thru (-?[\d.]+)$/))) {
         const [from, to] = [Number(m[1]), Number(m[2])];
         const n = this.selection.length;
-        for (const r of this.prog()) { const k = this.selection.indexOf(r.subfixtureIndex); r.phaser!.phase = n > 1 ? from + ((to - from) * k) / (n - 1) : from; }
+        for (const r of this.prog()) { const k = this.selection.indexOf(r.subfixtureIndex); r.phaser!.phase = expectedPhase({ from, to }, k, n, this.matricks); }
         return { feedback: "OK" };
       }
       if ((m = c.match(/^Store Preset (\d+\.\d+) /))) { this.presets.set(m[1], this.prog().map((r) => ({ ...r }))); for (const r of this.prog()) r.stepCount = 0; return { feedback: "OK" }; }
@@ -328,7 +348,7 @@ test("gma3_phaser_release leaves Preview, clears Normal only on request, and is 
 test("cleanup clears only after the console confirms Preview: a Preview On that did not take leaves Normal alone", async () => {
   con.previewIgnored = true;
   con.programmers.Normal.push({ subfixtureIndex: 5, fid: "701", attribute: "Dimmer", stepCount: 1, value: 30, steps: [{ absolute: 30 }], phaser: {} });
-  const { result, isError } = await build({ preset: "23.1", fixtures: [401, 402], template: { type: "dimmer_chase" } });
+  const { result, isError } = await build({ preset: "23.1", fixtures: [401, 402], template: { type: "dimmer_chase" }, detail: true });
   assert.equal(isError, true);
   assert.match(errorOf(result, "check_preview"), /reports the Normal environment after Preview On/);
   assert.equal(con.commands.includes("ClearAll"), false, "no ClearAll in Normal");
@@ -379,4 +399,239 @@ test("the fingerprint includes measure, speed master, relative and per-step refe
     { ...base, steps: [{ absolute: 100, integratedPreset: { addrNative: "P.4.4" } }, { absolute: 0 }] },
     { ...base, absPreset: { addrNative: "P.4.4" } },
   ]) assert.notEqual(fingerprint([changed as ProgrammerRow]), fp, JSON.stringify(changed));
+});
+
+// ---------------------------------------------------------------------------
+// SU-13: whole rig, variants, mirror, phase step, shuffle, shapes and patterns
+// ---------------------------------------------------------------------------
+
+test("SU-13 phaser forms: a phase step per fixture, an even spread and a shuffle seed", () => {
+  assert.deepEqual(parsePhaser({ phase: { step: 180 } }).phaseStep, { from: 0, step: 180 });
+  assert.equal(parsePhaser({ phase: "spread" }).phaseSpread, true);
+  assert.equal(parsePhaser({ phase: { from: 0, to: 90 }, shuffle: 7 }).shuffle, 7);
+  for (const bad of [{ phase: { step: 10, to: 20 } }, { shuffle: 3 }, { phase: { from: 0, to: 1 }, shuffle: 0 }, { phase: "even" }]) assert.throws(() => parsePhaser(bad), ValidationError, JSON.stringify(bad));
+  const base: Effect = { unit: "percent", steps: [{ values: { Dimmer: { absolute: 100 } } }, { values: { Dimmer: { absolute: 0 } } }], phaser: { phaseStep: { from: 0, step: 180 } } };
+  assert.deepEqual(planEffect(base, 72).effect.phaser.phase, { from: 0, to: 12780 }, "the field test's 180 degrees between neighbours");
+  assert.deepEqual(planEffect({ ...base, phaser: { phaseSpread: true } }, 4).effect.phaser.phase, { from: 0, to: 270 });
+  assert.ok(sameAngle(12780, 180) && sameAngle(360, 0) && !sameAngle(90, 270), "phases compare modulo 360");
+});
+
+test("SU-13 mirror: every second wing inverted (relative and physical negated, percent 100 - v); spreads give per-fixture values", () => {
+  assert.deepEqual(invertValue({ relative: 20 }, "physical"), { relative: -20 });
+  assert.deepEqual(invertValue({ absolute: -45 }, "physical"), { absolute: 45 });
+  assert.deepEqual(invertValue({ absolute: 30 }, "percent"), { absolute: 70 });
+  const circle = expandTemplate({ type: "circle", size: 30, center: { pan: 10, tilt: 0 } }, 4);
+  const { overrides } = planEffect({ ...circle, mirror: { attributes: ["Pan"], wings: 2 } }, 4);
+  assert.deepEqual([...new Set(overrides.map((o) => o.member))], [2, 3], "the second half of four fixtures");
+  assert.deepEqual(overrides.filter((o) => o.member === 2).map((o) => o.value.absolute), [-40, -10, 20, -10], "Pan negated per step");
+  const fan = expandTemplate({ type: "fan", size: 60, center: { pan: 0, tilt: 10 } }, 0);
+  const fo = planEffect(fan, 4).overrides;
+  assert.deepEqual(fo.map((o) => [o.member, o.step, o.value.absolute]), [[0, 2, -30], [1, 2, -10], [2, 2, 10], [3, 2, 30]]);
+  const mirroredFan = planEffect({ ...fan, mirror: { attributes: ["Pan"], wings: 2 } }, 4).overrides;
+  assert.deepEqual(mirroredFan.filter((o) => o.step === 2).map((o) => o.value.absolute), [-30, -10, -10, -30], "a mirrored spread inverts the spread value");
+});
+
+test("SU-13 commands: overrides after every step exists, on the fixtures they belong to (same overrides together), then the whole selection again; shuffle as selection MAtricks", () => {
+  const e: Effect = { unit: "percent", steps: [{ values: { Dimmer: { absolute: 100 } } }, { values: { Dimmer: { absolute: 0 } } }], phaser: { phase: { from: 0, to: 270 }, shuffle: 5 }, mirror: { attributes: ["Dimmer"], wings: 2 } };
+  const planned = planEffect(e, 4);
+  const cmds = effectCommands(planned.effect, planned.overrides, { all: ["ClearSelection", "Fixture 1 Thru 4"], some: (ms) => ["ClearSelection", ...ms.map((m) => `Fixture ${m + 1}`)] });
+  assert.deepEqual(cmds, [
+    "Step 1", 'Attribute "Dimmer" At Absolute 100', "Step 2", 'Attribute "Dimmer" At Absolute 0',
+    "ClearSelection", "Fixture 3", "Fixture 4", "Step 1", 'Attribute "Dimmer" At Absolute 0', "Step 2", 'Attribute "Dimmer" At Absolute 100',
+    "ClearSelection", "Fixture 1 Thru 4",
+    'Set Selection MAtricks "XShuffle" 5', "At Phase 0 Thru 270", "Reset Selection MAtricks", "Step 1",
+  ]);
+});
+
+test("SU-13 verification: per-fixture values from overrides, a shuffled distribution as a set, a compact phase summary", () => {
+  const e: Effect = { unit: "percent", steps: [{ values: { Dimmer: { absolute: 100 } } }, { values: { Dimmer: { absolute: 0 } } }], phaser: { phase: { from: 0, to: 270 }, shuffle: 5 } };
+  const mk = (sf: number, pos: number, phase: number, a: number, b: number) => ({ subfixtureIndex: sf, attribute: "Dimmer", stepCount: 2, steps: [{ absolute: a }, { absolute: b }], phaser: { gridPos: pos, phase } });
+  const scope = new Map([[1, "1"], [2, "2"], [3, "3"], [4, "4"]]);
+  const shuffled = [mk(1, 0, 180, 100, 0), mk(2, 1, 0, 100, 0), mk(3, 2, 270, 100, 0), mk(4, 3, 90, 100, 0)];
+  assert.deepEqual(verifyBuild({ effect: e, rows: shuffled, scope, implied: new Set(), stepPresets: [] }).problems, []);
+  const wrongSet = [...shuffled.slice(0, 3), mk(4, 3, 180, 100, 0)];
+  assert.match(verifyBuild({ effect: e, rows: wrongSet, scope, implied: new Set(), stepPresets: [] }).problems.join(), /shuffled phases: expected the set 0, 90, 180, 270/);
+  const mirrored = { ...e, phaser: { phase: { from: 0, to: 270 } } };
+  const over = new Map([["3|1|Dimmer", { absolute: 0 }], ["3|2|Dimmer", { absolute: 100 }]]);
+  const rows = [mk(1, 0, 0, 100, 0), mk(2, 1, 90, 100, 0), mk(3, 2, 180, 0, 100), mk(4, 3, 270, 100, 0)];
+  const overrideOf = (sf: number, step: number, a: string) => over.get(`${sf}|${step}|${a}`);
+  assert.deepEqual(verifyBuild({ effect: mirrored, rows, scope, implied: new Set(), stepPresets: [], overrideOf }).problems, []);
+  assert.match(verifyBuild({ effect: mirrored, rows, scope, implied: new Set(), stepPresets: [] }).problems.join(), /3 Dimmer step 1: absolute 100 % expected, 0 read/, "without the override the inverted fixture is a mismatch");
+  const order = [1, 2, 3, 4].map((sf) => ({ sf, id: String(sf) }));
+  assert.deepEqual(summarizePhases(rows, order), { fixtures: 4, first: "1", last: "4", first_phase: 0, step: 90 });
+  assert.deepEqual(summarizePhases(shuffled, order), { fixtures: 4, first: "1", last: "4", phases: [180, 0, 270, 90] });
+  // 72 cells, 180 degrees apart: a few dozen characters instead of a programmer dump.
+  const long = Array.from({ length: 72 }, (_, k) => mk(k + 10, k, k * 180, 100, 0));
+  const sum = summarizePhases(long, long.map((r) => ({ sf: r.subfixtureIndex, id: `401.${r.subfixtureIndex - 9}` })));
+  assert.deepEqual(sum, { fixtures: 72, first: "401.1", last: "401.72", first_phase: 0, step: 180 });
+  // 116 fixtures spread over 360: the step 3.1034 does not drift over the run.
+  const spread = Array.from({ length: 116 }, (_, k) => mk(k + 10, k, (360 * k) / 116, 100, 0));
+  assert.deepEqual(summarizePhases(spread, spread.map((r) => ({ sf: r.subfixtureIndex, id: String(r.subfixtureIndex) }))), { fixtures: 116, first: "10", last: "125", first_phase: 0, step: 3.1034 });
+  // As the console reads it back (live 2026-10-15): kept within ±720, with float noise.
+  const wrapped = [0, 180, 360, 540, 720, -539.99997854233, -359.99997854233, -179.99997854233].map((ph, k) => mk(k + 10, k, ph, 100, 0));
+  assert.deepEqual(summarizePhases(wrapped, wrapped.map((r) => ({ sf: r.subfixtureIndex, id: String(r.subfixtureIndex) }))), { fixtures: 8, first: "10", last: "17", first_phase: 0, step: 180 });
+});
+
+test("SU-13 templates: position shapes in degrees and dimmer patterns for rows", () => {
+  const c = expandTemplate({ type: "circle", size: 20, center: { pan: 5, tilt: -10 } }, 0);
+  assert.equal(c.unit, "physical");
+  assert.deepEqual(c.steps.map((s) => [s.values.Pan.absolute, s.values.Tilt.absolute]), [[25, -10], [5, 10], [-15, -10], [5, -30]]);
+  assert.equal(expandTemplate({ type: "figure8", size: 20 }, 0).steps.length, 8);
+  assert.deepEqual(expandTemplate({ type: "bounce", size: 15, center: { tilt: 30 } }, 0).steps.map((s) => s.values.Tilt.absolute), [45, 15]);
+  assert.deepEqual(expandTemplate({ type: "cone", tilt: 40 }, 0).steps.map((s) => s.values.Pan.absolute), [-180, 0, 180, 0]);
+  const runner = expandTemplate({ type: "runner" }, 8);
+  assert.deepEqual(runner.steps.map((s) => [s.values.Dimmer.absolute, s.width, s.transition]), [[100, 100, 0], [0, 700, 0]]);
+  assert.deepEqual(runner.phaser.phase, { from: 0, to: 315 });
+  const comet = expandTemplate({ type: "comet", tail: 3 }, 10);
+  assert.deepEqual(comet.steps.map((s) => [s.width, s.transition]), [[300, 100], [700, 0]]);
+  assert.deepEqual(expandTemplate({ type: "alternate" }, 6).phaser.repeat, { kind: "groups", count: 2 });
+  assert.deepEqual(expandTemplate({ type: "thirds" }, 6).phaser, { speedBpm: 120, phase: { from: 0, to: 240 }, repeat: { kind: "groups", count: 3 } });
+  assert.deepEqual(expandTemplate({ type: "fill" }, 4).phaser.phase, { from: 0, to: 135 });
+  assert.equal(expandTemplate({ type: "sparkle", seed: 9 }, 12).phaser.shuffle, 9);
+  const long = expandTemplate({ type: "runner" }, 300);
+  assert.ok(long.steps.every((s) => (s.width ?? 0) <= 3200), "widths stay within the console's 3200 % on long rows");
+  assert.deepEqual(expandTemplate({ type: "comet", tail: 4 }, 40).steps.map((s) => s.width), [355.6, 3200], "scaled and kept to 0.1 % (live: 3600 read back as 3200)");
+  assert.throws(() => parseStep("s", { values: { Dimmer: 1 }, width: 3600 }, "percent"), /<= 3200/);
+  assert.throws(() => expandTemplate({ type: "comet", tail: 5 }, 5), /tail must be shorter/);
+  assert.throws(() => expandTemplate({ type: "runner" }, 1), /at least two/);
+});
+
+test("SU-13 variants: sync without a spread, follow with it, mirror with wings 2 and Pan inverted", () => {
+  const pt = expandTemplate({ type: "circle", size: 20 }, 0);
+  assert.equal(variantOf(pt, "sync").phaser.phaseSpread, undefined);
+  assert.equal(variantOf(pt, "follow").phaser.phaseSpread, true);
+  const m = variantOf(pt, "mirror");
+  assert.deepEqual(m.phaser.repeat, { kind: "wings", count: 2 });
+  assert.deepEqual(m.mirror, { attributes: ["Pan"], wings: 2 });
+  const chase: Effect = { unit: "percent", steps: [{ values: { Dimmer: { absolute: 100 } } }, { values: { Dimmer: { absolute: 0 } } }], phaser: { phase: { from: 0, to: 90 } } };
+  assert.equal(variantOf(chase, "mirror").mirror, undefined, "no Pan, no mirror attributes given: only the mirrored spread");
+  assert.deepEqual(variantOf(chase, "follow").phaser.phase, { from: 0, to: 90 }, "follow keeps the request's phase");
+});
+
+test("SU-13 tool: variants go into consecutive presets with names, built in one Preview session", async () => {
+  const { result, isError } = await build({ preset: "23.5", name: "Chase", fixtures: [401, 402], steps: [{ values: { Dimmer: 100 }, transition: 0 }, { values: { Dimmer: 0 }, transition: 0 }], variants: ["sync", "follow", "mirror"], phaser: { speed_bpm: 120 } });
+  assert.equal(isError, false, JSON.stringify(result, null, 2).slice(0, 3000));
+  assert.deepEqual(result.items.map((i: any) => `${i.target}:${i.outcome}:${i.verification}`), ['Preset 23.5 (sync) "Chase sync":succeeded:matched', 'Preset 23.6 (follow) "Chase follow":succeeded:matched', 'Preset 23.7 (mirror) "Chase mirror":succeeded:matched']);
+  assert.deepEqual([...con.names], [["23.5", "Chase sync"], ["23.6", "Chase follow"], ["23.7", "Chase mirror"]]);
+  assert.equal(result.items[0].phases, undefined, "sync has no phase spread");
+  assert.deepEqual(result.items[1].phases, { fixtures: 2, first: "401", last: "402", first_phase: 0, step: 180 });
+  assert.equal(con.commands.filter((c) => c === "Preview On").length, 1, "one Preview session");
+  assert.equal(con.commands.filter((c) => c === "ClearAll").length, 3, "cleared between presets and at the end");
+  assert.equal(con.env, "Normal");
+  assert.equal(result.normalProgrammerUntouched, true);
+});
+
+test("SU-13 tool: mirror inverts the chosen attribute on the second half; a whole rig over 128 fixtures in one call", async () => {
+  const mir = await build({ preset: "23.8", fixtures: [401, 402], steps: [{ values: { Dimmer: 100 }, transition: 0 }, { values: { Dimmer: 20 }, transition: 0 }], mirror: { attributes: ["Dimmer"] } });
+  assert.equal(mir.isError, false, JSON.stringify(mir.result).slice(0, 2000));
+  const stored = con.presets.get("23.8") as Array<{ fid: string; steps: Array<{ absolute: number }> }>;
+  assert.deepEqual(stored.map((r) => [r.fid, r.steps.map((x) => x.absolute)]), [["401", [100, 20]], ["402", [0, 80]]]);
+  assert.equal(mir.result.plan.perFixtureValues, 2);
+
+  for (let i = 1; i <= 132; i++) con.fixtures[String(2000 + i)] = { sf: 1000 + i, attrs: ["Dimmer"] };
+  const rig = await build({ preset: "23.9", fixtures: ["2001 Thru 2132"], steps: [{ values: { Dimmer: 100 }, transition: 0 }, { values: { Dimmer: 0 }, transition: 0 }], phaser: { phase: { step: 180 } } });
+  assert.equal(rig.isError, false, JSON.stringify(rig.result).slice(0, 2000));
+  assert.deepEqual(rig.result.phases, { fixtures: 132, first: "2001", last: "2132", first_phase: 0, step: 180 });
+  assert.equal(rig.result.plan.distribution.phase.to, 23580);
+  assert.ok(JSON.stringify(rig.result).length < 6000, `a whole-rig result is compact by default (${JSON.stringify(rig.result).length} bytes)`);
+  assert.deepEqual(rig.result.steps, [], "only steps that did not succeed are listed");
+  assert.ok(rig.result.plan.commandCount > 0 && rig.result.plan.commands === undefined, "the command count instead of the commands");
+});
+
+test("SU-13 tool: several effects in one call; one refused does not stop the rest; duplicates and audition are refused", async () => {
+  con.presets.set("23.11", []);
+  const { result, isError } = await build({
+    effects: [
+      { preset: "23.10", fixtures: [401, 402], template: { type: "alternate" } },
+      { preset: "23.11", fixtures: [401], template: { type: "dimmer_chase" } },
+      { preset: "23.12", fixtures: [401, 402], template: { type: "runner" } },
+    ],
+  });
+  // 23.11 exists: the inspection refuses the whole call before anything is sent.
+  assert.equal(isError, true);
+  assert.match(errorOf(result, "preset 23.11: read_context"), /already exists/);
+  assert.deepEqual(con.commands, []);
+  con.presets.delete("23.11");
+  const ok = await build({ effects: [{ preset: "23.10", fixtures: [401, 402], template: { type: "alternate" } }, { preset: "23.12", fixtures: [401, 402], template: { type: "runner" } }] });
+  assert.equal(ok.isError, false, JSON.stringify(ok.result).slice(0, 2000));
+  assert.deepEqual(ok.result.items.map((i: any) => i.outcome), ["succeeded", "succeeded"]);
+  assert.ok(ok.result.steps.every((s: any) => !s.name.startsWith("preset ")), "compact: only the shared steps");
+  for (const [args, re] of [
+    [{ effects: [{ preset: "23.1", fixtures: [401], template: { type: "dimmer_chase" } }, { preset: "23.1", fixtures: [402], template: { type: "dimmer_chase" } }] }, /presets built twice in one call: Preset 23\.1/],
+    [{ preset: "23.1", fixtures: [401, 402], template: { type: "dimmer_chase" }, variants: ["sync", "follow"], audition_ms: 100 }, /audition_ms plays one effect/],
+    [{ preset: "23.1", effects: [{ preset: "23.2", fixtures: [401], template: { type: "dimmer_chase" } }] }, /with effects, give preset in each effect/],
+    [{ preset: "23.1", fixtures: [401, 402], template: { type: "runner" }, mirror: { attributes: ["Pan"] } }, /does not write Pan/],
+  ] as const) {
+    const r = await build(args as Record<string, unknown>);
+    assert.match((r.result.validationErrors ?? []).join(" "), re, JSON.stringify(r.result).slice(0, 500));
+  }
+});
+
+test("SU-13 tool: a store whose name write got no reply stops the build; the next variant is not stored", async () => {
+  con.silentNameSet = true;
+  const { result } = await build({ preset: "23.20", name: "Chase", fixtures: [401, 402], steps: [{ values: { Dimmer: 100 }, transition: 0 }, { values: { Dimmer: 0 }, transition: 0 }], variants: ["sync", "follow"] });
+  assert.deepEqual(result.items.map((i: any) => i.outcome), ["partial", "not_attempted"], JSON.stringify(result.items).slice(0, 1500));
+  // Review round 1: a stored preset is persistent work, and the unanswered step stays visible in the compact result.
+  assert.equal(result.outcome, "partial");
+  assert.equal(result.items[0].uncertain, true);
+  assert.ok(result.items[0].steps.some((st: any) => st.status === "unknown"), JSON.stringify(result.items[0]));
+  assert.match(result.summary, /a step got no reply/);
+  assert.equal(con.presets.has("23.20"), true);
+  assert.equal(con.presets.has("23.21"), false, "nothing more is stored after an uncertain step");
+  assert.equal(con.env, "Normal", "Preview is still left");
+});
+
+test("SU-13 review round 1: with shuffle every attribute's phases are checked and a fixture's attributes share one phase", () => {
+  const e: Effect = { unit: "percent", steps: [{ values: { Dimmer: { absolute: 100 }, ColorRGB_R: { absolute: 100 } } }, { values: { Dimmer: { absolute: 0 }, ColorRGB_R: { absolute: 0 } } }], phaser: { phase: { from: 0, to: 180 }, shuffle: 7 } };
+  const row = (sf: number, attribute: string, pos: number, phase: number) => ({ subfixtureIndex: sf, attribute, stepCount: 2, steps: [{ absolute: 100 }, { absolute: 0 }], phaser: { gridPos: pos, phase } });
+  const scope = new Map([[1, "1"], [2, "2"]]);
+  const good = [row(1, "Dimmer", 0, 180), row(1, "ColorRGB_R", 0, 180), row(2, "Dimmer", 1, 0), row(2, "ColorRGB_R", 1, 0)];
+  assert.deepEqual(verifyBuild({ effect: e, rows: good, scope, implied: new Set(), stepPresets: [] }).problems, []);
+  // The reviewer's case: Dimmer 0/180 but ColorRGB_R 90/90 was reported as matched.
+  const bad = [row(1, "Dimmer", 0, 0), row(1, "ColorRGB_R", 0, 90), row(2, "Dimmer", 1, 180), row(2, "ColorRGB_R", 1, 90)];
+  const problems = verifyBuild({ effect: e, rows: bad, scope, implied: new Set(), stepPresets: [] }).problems.join(" | ");
+  assert.match(problems, /1: its attributes are out of phase \(Dimmer 0, ColorRGB_R 90\)/);
+  assert.match(problems, /2: its attributes are out of phase \(Dimmer 180, ColorRGB_R 90\)/);
+  // Every attribute in step but the distribution wrong over the fixtures: the full-set check.
+  const allWrong = [row(1, "Dimmer", 0, 90), row(1, "ColorRGB_R", 0, 90), row(2, "Dimmer", 1, 90), row(2, "ColorRGB_R", 1, 90)];
+  assert.match(verifyBuild({ effect: e, rows: allWrong, scope, implied: new Set(), stepPresets: [] }).problems.join(), /shuffled phases: expected the set 0, 180 over the fixtures, read 90, 90/);
+});
+
+test("SU-13 review round 2: a channel only part of a mixed rig has (RGBW's W) follows its fixture's shuffled phase", () => {
+  // One RGB and one RGBW fixture; ColorRGB_R explicit, ColorRGB_W an activated sibling on the RGBW fixture only.
+  const e: Effect = { unit: "percent", steps: [{ values: { ColorRGB_R: { absolute: 100 } } }, { values: { ColorRGB_R: { absolute: 0 } } }], phaser: { phase: { from: 0, to: 180 }, shuffle: 7 } };
+  const row = (sf: number, attribute: string, pos: number, phase: number) => ({ subfixtureIndex: sf, attribute, stepCount: 2, steps: [{ absolute: attribute === "ColorRGB_R" ? 100 : 0 }, { absolute: 0 }], phaser: { gridPos: pos, phase } });
+  const scope = new Map([[1, "rgb"], [2, "rgbw"]]);
+  // Shuffle gave the RGB fixture 180 and the RGBW fixture 0; W reads 0 with its fixture's R: valid.
+  const valid = [row(1, "ColorRGB_R", 0, 180), row(2, "ColorRGB_R", 1, 0), row(2, "ColorRGB_W", 1, 0)];
+  assert.deepEqual(verifyBuild({ effect: e, rows: valid, scope, implied: new Set(["ColorRGB_W"]), stepPresets: [] }).problems, []);
+  // W out of step with its own fixture is still caught.
+  const off = [row(1, "ColorRGB_R", 0, 180), row(2, "ColorRGB_R", 1, 0), row(2, "ColorRGB_W", 1, 180)];
+  assert.match(verifyBuild({ effect: e, rows: off, scope, implied: new Set(["ColorRGB_W"]), stepPresets: [] }).problems.join(), /rgbw: its attributes are out of phase \(ColorRGB_R 0, ColorRGB_W 180\)/);
+});
+
+test("SU-13 review round 1: presets stored with a rejected name write are partial work, so the call is partial, not failed", async () => {
+  con.rejectNameSet = true;
+  const { result } = await build({ effects: [{ preset: "23.30", name: "A", fixtures: [401, 402], template: { type: "alternate" } }, { preset: "23.31", name: "B", fixtures: [401, 402], template: { type: "runner" } }] });
+  assert.deepEqual(result.items.map((i: any) => i.outcome), ["partial", "partial"], JSON.stringify(result.items).slice(0, 1500));
+  assert.equal(result.outcome, "partial");
+  assert.equal(con.presets.has("23.30") && con.presets.has("23.31"), true, "both presets exist");
+  assert.match(result.summary, /2 stored with a later step that did not succeed/);
+  assert.ok(result.items[0].steps.some((st: any) => st.status === "failed"), "the failed name step is listed in the compact line");
+});
+
+test("SU-13 review round 3: with shuffle a participating channel without a phase read is a problem, never left out", () => {
+  const e: Effect = { unit: "percent", steps: [{ values: { Dimmer: { absolute: 100 }, ColorRGB_R: { absolute: 100 } } }, { values: { Dimmer: { absolute: 0 }, ColorRGB_R: { absolute: 0 } } }], phaser: { phase: { from: 0, to: 180 }, shuffle: 7 } };
+  const row = (sf: number, attribute: string, pos: number, phase: number | null | undefined) => ({ subfixtureIndex: sf, attribute, stepCount: 2, steps: [{ absolute: 100 }, { absolute: 0 }], phaser: { gridPos: pos, ...(phase === undefined ? {} : { phase }) } });
+  const scope = new Map([[1, "1"], [2, "2"]]);
+  // The reviewer's case: Dimmer 0/180, both ColorRGB_R rows without a phase field.
+  const missing = [row(1, "Dimmer", 0, 0), row(1, "ColorRGB_R", 0, undefined), row(2, "Dimmer", 1, 180), row(2, "ColorRGB_R", 1, undefined)];
+  const p1 = verifyBuild({ effect: e, rows: missing as never, scope, implied: new Set(), stepPresets: [] }).problems.join(" | ");
+  assert.match(p1, /1 ColorRGB_R: no phase read/);
+  assert.match(p1, /2 ColorRGB_R: no phase read/);
+  // A null phase is not a phase either; a numeric mismatch is still out of phase.
+  const nul = [row(1, "Dimmer", 0, 0), row(1, "ColorRGB_R", 0, null), row(2, "Dimmer", 1, 180), row(2, "ColorRGB_R", 1, 270)];
+  const p2 = verifyBuild({ effect: e, rows: nul as never, scope, implied: new Set(), stepPresets: [] }).problems.join(" | ");
+  assert.match(p2, /1 ColorRGB_R: no phase read/);
+  assert.match(p2, /2: its attributes are out of phase \(Dimmer 180, ColorRGB_R 270\)/);
 });
