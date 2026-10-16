@@ -36,6 +36,9 @@ Live playback and value reads (SU-16, bridge 0.32.0): the current cue in `gma3_s
 sequences) and `gma3_executors`; read-back in `gma3_goto_cue` and `gma3_playback`; the compact `gma3_programmer`;
 `gma3_observe_values` ([live-reads.md](live-reads.md)).
 
+OSC input and output (SU-18, bridge 0.33.0; changes need `exclusive: true`, a newly opened command port on a
+networked machine `network: true`): `gma3_osc`, `gma3_configure_osc`, `gma3_test_osc_input` ([osc.md](osc.md)).
+
 `AGENT-RULES.md` records the implementation rules every area follows (bridge-only, no retries, shared
 validation and result helpers, serialised mutations, documentation and test requirements).
 

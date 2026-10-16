@@ -1555,7 +1555,7 @@ do
   r = request("feedback.read", {}, nil, C)
   check("feedback.read without items is refused with a code", r.ok == false and r.code == "no-items", r.error)
   r = request("feedback.read", { readers = { "commandText", "lastCommand", "blind", "solo", "page", "freeze", "selectedSequence", "previewBar", "sequenceActive" }, displays = { 1, 2, 9 }, executors = { 201, 202 }, sequences = { 5, 6 } }, nil, C)
-  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.32.0" and r.result.module.version == feedbackModule.VERSION and r.result.identity.showFile == "mcp-test-disposable", J(r))
+  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.33.0" and r.result.module.version == feedbackModule.VERSION and r.result.identity.showFile == "mcp-test-disposable", J(r))
   local by = {}
   if r.ok then for _, it in ipairs(r.result.items) do by[it.key] = it end end
   check("feedback.read: command text and last command are raw observations", by.commandText and by.commandText.value == "Store " and by.lastCommand.value == "Go+ Sequence 5 : OK" and by.lastCommand.note:find("not confirmation"), J(by.lastCommand))
@@ -1668,7 +1668,7 @@ do
   end
   local C = { id = 71 }
   r = request("feedback.context", { executors = { 201, 202 } }, nil, C)
-  check("feedback.context answers with Lua and input disabled", r.ok and r.result.bridgeVersion == "0.32.0" and r.result.module.version == feedbackModule.VERSION and r.result.atomic == false and r.result.generation == 1 and r.result.generationChanged == false and r.result.identity.showFile == "mcp-test-disposable" and r.result.identity.dataPool.name == "Default", J(r))
+  check("feedback.context answers with Lua and input disabled", r.ok and r.result.bridgeVersion == "0.33.0" and r.result.module.version == feedbackModule.VERSION and r.result.atomic == false and r.result.generation == 1 and r.result.generationChanged == false and r.result.identity.showFile == "mcp-test-disposable" and r.result.identity.dataPool.name == "Default", J(r))
   check("feedback.context: authoritative display, bank/page, slots with availability and value", r.ok and r.result.authoritativeDisplay.rule == "configured" and r.result.encoder.value.bank.name == "Color" and r.result.encoder.value.page.name == "RGB" and r.result.slots.value.slots[1].name == "ColorRGB_R" and r.result.slots.value.slots[1].availability == "available" and r.result.slots.value.slots[1].absolute == 50 and r.result.slots.value.slots[1].unit == "None" and r.result.slots.value.slots[2].valueState == "empty" and r.result.executorPage.no == 1, J(r.result.slots))
   check("feedback.context: executor targets with functions, level and playback-target status", r.ok and #r.result.executors == 2 and r.result.executors[1].value.functions.keyPress == "Temp" and r.result.executors[1].value.level.value == 100 and r.result.executors[1].value.playbackTarget == true and r.result.executors[2].value.empty == true and r.result.executors[2].value.reserved == nil, J(r.result.executors))
   check("feedback.context: nested fields survive the serialiser depth bound", r.ok and type(r.result.slots.value.slots[1].feature) == "string" and type(r.result.executors[1].value.assigned.name) == "string")
@@ -2328,6 +2328,104 @@ do
   check("su16: executor carries the assigned sequence's current cue", r.ok and r.result.assigned.currentCue.name == "Half", J(r))
 
   ObjectList, GetExecutor, CurrentExecPage = savedObjectList, savedGetExecutor, savedPage
+end
+
+-------------------------------------------------------------------------------
+-- SU-18 (0.33.0): osc.read / osc.set / osc.addLine / osc.removeLine against a fake OSCBase
+-------------------------------------------------------------------------------
+do
+  local registry = setmetatable({}, { __mode = "k" })
+  local fileMeta = getmetatable(io.stdout)
+  local meta = { __gc = fileMeta and fileMeta.__gc, __close = fileMeta and fileMeta.__close, __name = "FakeHandle" }
+  local methods = {}
+  meta.__index = function(u, key)
+    local def = registry[u]
+    if not def then return nil end
+    if methods[key] then return methods[key] end
+    if key == "name" then return def.props.Name or def.name end
+    return def.props[key]
+  end
+  function methods.Get(u, k) return registry[u].props[k] end
+  function methods.Set(u, k, v)
+    local def = registry[u]
+    if def.ignore and def.ignore[k] then return end
+    def.props[k] = v
+  end
+  function methods.Children(u) return registry[u].children end
+  function methods.Count(u) return #registry[u].children end
+  function methods.GetClass(u) return registry[u].class end
+  local function H(def) local u = io.tmpfile(); debug.setmetatable(u, meta); def.children = def.children or {}; def.props = def.props or {}; registry[u] = def; return u end
+  local function line(name, port, over)
+    local p = { Name = name, Mode = "UDP", Port = port, Prefix = "", DestinationIP = "127.255.255.255", Receive = "No", ReceiveCommand = "No", Send = "No", SendCommand = "No", EchoInput = "No", EchoOutput = "No", FaderRange = "100", Note = "" }
+    for k, v in pairs(over or {}) do p[k] = v end
+    return H({ class = "OSCData", props = p })
+  end
+  function methods.Append(u)
+    local def = registry[u]
+    local d = line("OSCData " .. (#def.children + 1), "8000")
+    def.children[#def.children + 1] = d
+    return d
+  end
+  function methods.Remove(u, i) table.remove(registry[u].children, i) end
+  local l1 = line("Helper", "8000", { Receive = "Yes", ReceiveCommand = "Yes" })
+  local oscBase = H({ class = "OSCBase", props = { EnableInput = "Yes", EnableOutput = "No", Interface = "2.1", PreferredIP = "192.168.0.0/16" }, children = { l1 } })
+  local lo = H({ name = "lo0", class = "Interface", children = { H({ class = "NetworkIP", props = { IP = "127.0.0.1", Mask = "255.0.0.0" } }) } })
+  local en = H({ name = "en0", class = "Interface", children = { H({ class = "NetworkIP", props = { IP = "192.168.5.59", Mask = "255.255.255.0" } }) } })
+  local savedShowData, savedRoot, savedRoles = ShowData, Root, Enums.Roles
+  Enums.Roles = Enums.Roles or { Display = 1 }
+  ShowData = function() return { OSCBase = oscBase } end
+  Root = function() return { Interfaces = H({ class = "Interfaces", children = { lo, en } }) } end
+
+  r = request("osc.read", {})
+  check("su18: osc.read reports switches, preferred IP and the interface resolved to en0's address", r.ok and r.result.enableInput == true and r.result.enableOutput == false and r.result.preferredIp == "192.168.0.0/16" and r.result.interface == "2.1" and r.result.interfaceResolved and r.result.interfaceResolved.name == "en0" and r.result.interfaceResolved.ip == "192.168.5.59", J(r))
+  check("su18: osc.read lists lines with typed fields and the interfaces with their IPs", r.ok and #r.result.lines == 1 and r.result.lines[1].port == 8000 and r.result.lines[1].receiveCommand == true and r.result.lines[1].send == false and r.result.lines[1].name == "Helper" and #r.result.interfaces == 2 and r.result.interfaces[1].ips[1].ip == "127.0.0.1", J(r))
+  r = request("osc.set", { target = "line", index = 1, property = "Port", value = 8010 })
+  check("su18: osc.set without exclusive is refused", r.ok == false and r.error:find("exclusive"), J(r))
+  r = request("osc.set", { target = "line", index = 1, property = "Port", value = 8010, exclusive = true })
+  check("su18: osc.set writes a line property and answers before and after", r.ok and r.result.before == "8000" and r.result.value == "8010", J(r))
+  registry[l1].props.Name = nil
+  registry[l1].name = "Helper"
+  local savedGet = methods.Get
+  methods.Get = function(u, k) if k == "Name" then return "OSCData 1 '" .. tostring(registry[u].name) .. "'" end return savedGet(u, k) end
+  function methods.Set(u, k, v) local def = registry[u]; if def.ignore and def.ignore[k] then return end; if k == "Name" then def.name = v else def.props[k] = v end end
+  r = request("osc.set", { target = "line", index = 1, property = "Name", value = "Tempo", exclusive = true })
+  check("su18: a line's Name reads back as the object's name, not its display form", r.ok and r.result.before == "Helper" and r.result.value == "Tempo", J(r))
+  methods.Get = savedGet
+  r = request("osc.set", { target = "base", property = "Interface", value = "1.1", exclusive = true })
+  check("su18: osc.set refuses a property outside the whitelist (Interface follows PreferredIP)", r.ok == false and r.error:find("bad%-property"), J(r))
+  r = request("osc.set", { target = "line", index = 7, property = "Port", value = 1, exclusive = true })
+  check("su18: osc.set on a missing line is refused", r.ok == false and r.error:find("no%-line"), J(r))
+  registry[oscBase].ignore = { EnableOutput = true }
+  r = request("osc.set", { target = "base", property = "EnableOutput", value = "Yes", exclusive = true })
+  check("su18: an ignored write answers the value the console kept", r.ok and r.result.value == "No", J(r))
+  r = request("osc.addLine", { exclusive = true })
+  check("su18: osc.addLine appends a line as the console creates it", r.ok and r.result.index == 2 and r.result.line.port == 8000 and r.result.line.destinationIp == "127.255.255.255", J(r))
+  r = request("osc.removeLine", { index = 2, exclusive = true })
+  check("su18: osc.removeLine removes it and answers the count", r.ok and r.result.count == 1 and r.result.removed.index == 2, J(r))
+  r = request("osc.read", {})
+  check("su18 review: a complete interface scan says so", r.ok and r.result.interfacesComplete == true, J(r))
+  local savedRemove = methods.Remove
+  methods.Remove = function() end
+  r = request("osc.addLine", { exclusive = true })
+  r = request("osc.removeLine", { index = 2, exclusive = true })
+  check("su18 review: a Remove the console ignores is an error, not a success", r.ok == false and r.error:find("remove%-failed"), J(r))
+  methods.Remove = savedRemove
+  r = request("osc.removeLine", { index = 2, exclusive = true })
+  r = request("osc.removeLine", { index = 5, exclusive = true })
+  check("su18: osc.removeLine of a missing line is refused", r.ok == false and r.error:find("no%-line"), J(r))
+  local savedRootFn = Root
+  Root = function() return { Interfaces = H({ class = "Interfaces", children = { H({ name = "en0", class = "Interface", children = { H({ class = "NetworkIP", props = {} }) } }) } }) } end
+  r = request("osc.read", {})
+  check("su18 review: an unreadable interface address makes the scan incomplete", r.ok and r.result.interfacesComplete == false, J(r))
+  Root = function() error("no interfaces") end
+  r = request("osc.read", {})
+  check("su18 review: a failed interface enumeration makes the scan incomplete", r.ok and r.result.interfacesComplete == false, J(r))
+  Root = savedRootFn
+  oscBase = H({ class = "OSCBase", props = { EnableInput = "No", EnableOutput = "No", Interface = "0.0", PreferredIP = "10.0.0.0/8" } })
+  r = request("osc.read", {})
+  check("su18: Interface 0.0 (no interface matches PreferredIP) resolves to nothing; no lines is an empty array", r.ok and r.result.interface == "0.0" and r.result.interfaceResolved == nil and #r.result.lines == 0 and J(r):find('"lines":%[%]'), J(r))
+
+  ShowData, Root, Enums.Roles = savedShowData, savedRoot, savedRoles
 end
 
 print(string.format("%d passed, %d failed", passes, failures))

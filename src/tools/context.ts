@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Gma3Bridge } from "../bridge.js";
 import type { MutationLock } from "../mutations.js";
+import type { OscOptions } from "../osc.js";
 import type { OperationResult, ToolResult } from "../results.js";
 import { toToolResult } from "../results.js";
 
@@ -13,6 +14,8 @@ export interface ToolContext {
   requestTimeoutMs: number;
   /** Whether the gma3_lua tool is registered (workflow tools never depend on it). */
   luaToolAllowed: boolean;
+  /** The server's own OSC sender (GMA3_OSC_HOST / _PORT / _PREFIX), for gma3_osc's report. */
+  osc?: OscOptions;
 }
 
 export type RegisterTools = (server: McpServer, ctx: ToolContext) => void;

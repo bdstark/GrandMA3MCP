@@ -753,6 +753,17 @@ and checked the socket with `lsof`.
   plain statement that anyone on that network can then run commands.
 - Verify that input works by sending a loopback test message that the console provably received. No shell needed.
 
+**Status:** implemented in bridge 0.33.0 ([docs/tools/osc.md](docs/tools/osc.md), probe record
+[su-18-osc-config-macos-2.5.1.md](docs/probes/su-18-osc-config-macos-2.5.1.md), live test `test/live/osc.live.ts` 6/6
+on macOS onPC 2.5.1).
+- `gma3_osc` reads the switches, Interface and PreferredIP, every line and the interfaces. It says who can run
+  commands: the console listens on every interface whatever Interface and PreferredIP say.
+- `gma3_configure_osc` configures with validation and read-back. It re-binds input after a port change, since a port
+  change alone does not take effect. A port that newly runs commands on a networked machine needs `network: true`
+  and a plain statement.
+- `gma3_test_osc_input` sends a loopback `/cmd` that sets a marker variable and reads it back.
+- The field test's drop-until-PreferredIP-changed did not reproduce: PreferredIP only picks Interface.
+
 ## SU-19 — Fixture-type data: cell order and wheels
 
 **Request:** Know a string's physical cell order and a wheel's slots from the fixture type.

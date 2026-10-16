@@ -154,7 +154,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.32.0"
+local VERSION      = "0.33.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -5155,6 +5155,122 @@ end)()
       if not ok then raise("[delete-failed] " .. name .. " could not be deleted: " .. tostring(err)) end
     end
     return { scope = args.scope, user = args.scope == "user" and user() or nil, before = before, after = read(h, name) }
+  end
+end)()
+
+-------------------------------------------------------------------------------
+-- SU-18 (0.33.0): OSC input and output (SETUP.md SU-18, docs/probes/su-18-osc-config-macos-2.5.1.md).
+--   osc.read        read-only: ShowData().OSCBase (EnableInput, EnableOutput, Interface, PreferredIP), its OSC lines,
+--                   and the console's network interfaces with their IPs
+--   osc.set         one whitelisted property of OSCBase or of a line, read back at once
+--   osc.addLine     appends a line (as the console creates it: UDP, port 8000, destination 127.255.255.255)
+--   osc.removeLine  removes one line
+-- Values are read in the display role. Live (onPC 2.5.1): the input socket listens on all interfaces (*:port) whatever
+-- Interface and PreferredIP say, and it re-binds only when EnableInput goes off and on (a port change alone does not).
+-------------------------------------------------------------------------------
+;(function()
+  local function D(o, k)
+    local ok, v = pcall(function() return o:Get(k, Enums.Roles.Display) end)
+    if ok and v ~= nil then return tostring(v) end
+    return nil
+  end
+  local function yes(o, k) local v = D(o, k); if v == nil then return nil end return v == "Yes" or v == "On" end
+  local WRITABLE = {
+    base = { EnableInput = true, EnableOutput = true, PreferredIP = true },
+    line = { Name = true, Mode = true, Port = true, Prefix = true, DestinationIP = true, Receive = true, ReceiveCommand = true, Send = true, SendCommand = true, EchoInput = true, EchoOutput = true, Note = true },
+  }
+  local function base()
+    local ok, b = pcall(function() return ShowData().OSCBase end)
+    if not ok or not b then raise("[no-osc] the OSC configuration (ShowData.OSCBase) cannot be read") end
+    return b
+  end
+  local function lineRow(i, d)
+    return {
+      index = i, name = tostring(safeProp(d, "name")), mode = D(d, "Mode"), port = tonumber(D(d, "Port") or ""), prefix = D(d, "Prefix"),
+      destinationIp = D(d, "DestinationIP"), receive = yes(d, "Receive"), receiveCommand = yes(d, "ReceiveCommand"), send = yes(d, "Send"),
+      sendCommand = yes(d, "SendCommand"), echoInput = yes(d, "EchoInput"), echoOutput = yes(d, "EchoOutput"), faderRange = tonumber(D(d, "FaderRange") or ""),
+      dataPool = D(d, "DataPool"), page = D(d, "Page"), fader = D(d, "Fader"), executorKnob = D(d, "ExecutorKnob"), key = D(d, "Key"), note = D(d, "Note"),
+    }
+  end
+  -- The interfaces and whether the scan was complete: a failed enumeration or an unreadable IP makes it incomplete,
+  -- so the server never takes a partial list for "loopback only".
+  local function interfaces()
+    local out, complete = {}, true
+    local ok = pcall(function()
+      for i, nic in ipairs(Root().Interfaces:Children()) do
+        local ips = {}
+        for j, ip in ipairs(nic:Children()) do
+          local addr = D(ip, "IP")
+          if addr == nil then complete = false end
+          ips[#ips + 1] = { address = i .. "." .. j, ip = addr, mask = D(ip, "Mask") }
+        end
+        out[#out + 1] = { index = i, name = tostring(safeProp(nic, "name")), ips = emptyArray(ips) }
+      end
+    end)
+    return emptyArray(out), ok and complete
+  end
+
+  ops["osc.read"] = function(args)
+    local b = base()
+    local lines = {}
+    for i, d in ipairs(b:Children()) do lines[#lines + 1] = lineRow(i, d) end
+    local nics, complete = interfaces()
+    -- Interface is "<nic>.<ip>" in Root.Interfaces ("0.0": none matched PreferredIP).
+    local iface = D(b, "Interface")
+    local resolved
+    local a, c = tostring(iface or ""):match("^(%d+)%.(%d+)$")
+    if a then
+      for _, n in ipairs(nics) do
+        if n.index == tonumber(a) then for _, ip in ipairs(n.ips) do if ip.address == iface then resolved = { name = n.name, ip = ip.ip, mask = ip.mask } end end end
+      end
+    end
+    return { enableInput = yes(b, "EnableInput"), enableOutput = yes(b, "EnableOutput"), interface = iface, interfaceResolved = resolved, preferredIp = D(b, "PreferredIP"), lines = emptyArray(lines), interfaces = nics, interfacesComplete = complete }
+  end
+
+  -- args: { target = base|line, index?, property, value, exclusive }
+  ops["osc.set"] = function(args)
+    requireExclusive(args, "osc.set")
+    local b, o = base(), nil
+    if args.target == "base" then o = b
+    elseif args.target == "line" then
+      local i = integerArg(args.index, "index", 1, 10000)
+      o = b:Children()[i]
+      if not o then raise("[no-line] OSC line " .. i .. " does not exist") end
+    else raise("[bad-args] target must be base or line") end
+    local prop = args.property
+    if type(prop) ~= "string" or not WRITABLE[args.target][prop] then raise("[bad-property] " .. tostring(prop) .. " is not a configurable property of the OSC " .. tostring(args.target)) end
+    if args.value == nil then raise("[bad-args] value is required") end
+    -- A line's Name displays as "OSCData 2 'name'" (live): read it as the object's name.
+    local function read() if prop == "Name" then return tostring(safeProp(o, "name")) end return D(o, prop) end
+    local before = read()
+    local ok, err = pcall(function() o:Set(prop, tostring(args.value)) end)
+    if not ok then raise("[set-failed] " .. prop .. " could not be written: " .. tostring(err)) end
+    return { property = prop, before = before, value = read() }
+  end
+
+  -- args: { exclusive }
+  ops["osc.addLine"] = function(args)
+    requireExclusive(args, "osc.addLine")
+    local b = base()
+    local n = b:Count()
+    local d = b:Append()
+    if not d or b:Count() ~= n + 1 then raise("[add-failed] no OSC line was appended") end
+    return { index = n + 1, line = lineRow(n + 1, d) }
+  end
+
+  -- args: { index, exclusive }
+  ops["osc.removeLine"] = function(args)
+    requireExclusive(args, "osc.removeLine")
+    local b = base()
+    local i = integerArg(args.index, "index", 1, 10000)
+    local d = b:Children()[i]
+    if not d then raise("[no-line] OSC line " .. i .. " does not exist") end
+    local row = lineRow(i, d)
+    local n = b:Count()
+    b:Remove(i)
+    -- Remove() returns nothing: the count says whether the line went.
+    if b:Count() ~= n - 1 then raise("[remove-failed] OSC line " .. i .. " was not removed (" .. b:Count() .. " lines, expected " .. (n - 1) .. ")") end
+    return { removed = row, count = b:Count() }
   end
 end)()
 

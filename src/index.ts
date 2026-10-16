@@ -31,6 +31,7 @@ import { registerTypeStructureTools } from "./tools/typestructure.js";
 import { registerCellLayoutTools } from "./tools/celllayout.js";
 import { registerDmxOutputTools } from "./tools/dmxoutput.js";
 import { registerVariableTools } from "./tools/variables.js";
+import { registerOscTools } from "./tools/osc.js";
 import { annotatePlayback, readTargetState, registerLiveStateTools, stateAfterFrame } from "./tools/livestate.js";
 
 const env = process.env;
@@ -39,11 +40,12 @@ const bridge = new Gma3Bridge({
   port: Number(env.GMA3_BRIDGE_PORT ?? 9800),
   requestTimeoutMs: Number(env.GMA3_BRIDGE_TIMEOUT_MS ?? 15000),
 });
-const osc = new OscSender({
+const oscOptions = {
   host: env.GMA3_OSC_HOST ?? "127.0.0.1",
   port: Number(env.GMA3_OSC_PORT ?? 8000),
   prefix: env.GMA3_OSC_PREFIX?.replace(/^\/+|\/+$/g, "") || undefined,
-});
+};
+const osc = new OscSender(oscOptions);
 
 // A build older than its source checkout (a `git pull` without `npm run build`) serves an older tool
 // set; an agent then has no reason to suspect missing tools and falls back to gma3_lua. Say so in the
@@ -79,6 +81,7 @@ const toolContext: ToolContext = {
   mutations,
   requestTimeoutMs: Number(env.GMA3_BRIDGE_TIMEOUT_MS ?? 15000),
   luaToolAllowed: allowLuaTool,
+  osc: oscOptions,
 };
 
 type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
@@ -157,7 +160,7 @@ server.registerTool(
     title: "Start the bridge plugin via OSC",
     description:
       'Fallback for when the bridge is not running: sends the command  Plugin "gma3_mcp_bridge"  to onPC over OSC (/cmd). ' +
-      "Requires the OSC configuration in onPC (Menu > In & Out > OSC) to have Enable Input on and Receive Command = Yes on a line matching GMA3_OSC_PORT. " +
+      "Requires the OSC configuration in onPC (Menu > In & Out > OSC) to have Enable Input on and Receive Command = Yes on a line matching GMA3_OSC_PORT (gma3_osc shows it; gma3_test_osc_input proves it). " +
       "Then waits briefly and pings the bridge.",
     inputSchema: {},
   },
@@ -658,6 +661,7 @@ registerCellLayoutTools(server, toolContext);
 registerDmxOutputTools(server, toolContext);
 registerVariableTools(server, toolContext);
 registerLiveStateTools(server, toolContext);
+registerOscTools(server, toolContext);
 
 server.registerResource(
   "cheatsheet",
