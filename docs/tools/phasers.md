@@ -82,7 +82,8 @@ a template.
   each has the effect's attributes (checked before anything is sent). `gma3_store_preset`'s scope cap rose to match.
 - **Phase forms.** `{from, to}` as before; `{from, step}` gives a phase step per fixture (`step: 180` on 72 cells sends
   `At Phase 0 Thru 12780`); `"spread"` is 0 → 360·(n−1)/n. Phases are compared modulo 360. `shuffle: <seed>` sets the
-  selection MAtricks XShuffle while the phase is set: the phases are permuted, and the check compares the set of phases.
+  selection MAtricks XShuffle while the phase is set: the phases are permuted. The check requires every attribute of a
+  fixture to share its phase, and for every attribute the set of phases over the fixtures to be the unshuffled set.
 - **Mirror.** `mirror: {attributes, wings}` cuts the fixtures (grid order) into `wings` parts and inverts the attributes
   on every second part: relative and physical values change sign (Pan −20° for +20°), percent becomes 100 − v. The
   per-fixture values are written once every step exists, on those fixtures, and the whole selection is restored before
@@ -96,9 +97,11 @@ a template.
 - **Several effects.** `effects: [{preset, fixtures | group, steps | template, phaser, mirror, variants, name, ...}]`,
   at most 64 presets per call. `unit`, `mode`, `existing` and `verify` given for the call are defaults. Every effect is
   inspected first (nothing is sent when one is refused). Then all are built in one Preview session, with a confirmed
-  Preview and `ClearAll` between them. An effect whose build check or store fails does not stop the others; an unknown
-  step does. The result has one line per preset (`items`) with its phase summary; `detail: true` adds each preset's
-  plan, steps and store result. `audition_ms` is for a single effect only.
+  Preview and `ClearAll` between them. An effect whose build check or store fails does not stop the others; a step
+  without a reply (also inside the store, such as its name write) does. The result has one line per preset (`items`)
+  with its phase summary, the steps that did not succeed and `uncertain: true` after a step without a reply;
+  `detail: true` adds each preset's plan, steps and store result. The call is `partial` when any preset was stored,
+  even with a later step that failed. `audition_ms` is for a single effect only.
 - **Phase summary.** Each built preset reports the phase of every fixture in grid order from the build check's own
   programmer scan: `{fixtures, first, last, first_phase, step}` for an even run, otherwise the list of phases. No
   client-side programmer read is needed.

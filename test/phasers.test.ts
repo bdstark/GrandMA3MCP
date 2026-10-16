@@ -157,11 +157,14 @@ class Console {
   names = new Map<string, string>();
   /** Never answer a Name write (a lost reply after the store went through). */
   silentNameSet = false;
+  /** Refuse every Name write (the store went through, the name did not). */
+  rejectNameSet = false;
   matricks: { kind: "groups" | "wings" | "blocks"; count: number } | undefined;
 
   install(h: Harness): void {
     h.fake.on("set", (args) => {
       if (this.silentNameSet) return SILENT;
+      if (this.rejectNameSet) throw new Error("Illegal value");
       const key = String(args.ref).replace("Preset ", "");
       this.names.set(key, String(args.value));
       return { ref: args.ref, property: args.property, value: args.value };
@@ -568,7 +571,35 @@ test("SU-13 tool: a store whose name write got no reply stops the build; the nex
   con.silentNameSet = true;
   const { result } = await build({ preset: "23.20", name: "Chase", fixtures: [401, 402], steps: [{ values: { Dimmer: 100 }, transition: 0 }, { values: { Dimmer: 0 }, transition: 0 }], variants: ["sync", "follow"] });
   assert.deepEqual(result.items.map((i: any) => i.outcome), ["partial", "not_attempted"], JSON.stringify(result.items).slice(0, 1500));
+  // Review round 1: a stored preset is persistent work, and the unanswered step stays visible in the compact result.
+  assert.equal(result.outcome, "partial");
+  assert.equal(result.items[0].uncertain, true);
+  assert.ok(result.items[0].steps.some((st: any) => st.status === "unknown"), JSON.stringify(result.items[0]));
+  assert.match(result.summary, /a step got no reply/);
   assert.equal(con.presets.has("23.20"), true);
   assert.equal(con.presets.has("23.21"), false, "nothing more is stored after an uncertain step");
   assert.equal(con.env, "Normal", "Preview is still left");
+});
+
+test("SU-13 review round 1: with shuffle every attribute's phases are checked and a fixture's attributes share one phase", () => {
+  const e: Effect = { unit: "percent", steps: [{ values: { Dimmer: { absolute: 100 }, ColorRGB_R: { absolute: 100 } } }, { values: { Dimmer: { absolute: 0 }, ColorRGB_R: { absolute: 0 } } }], phaser: { phase: { from: 0, to: 180 }, shuffle: 7 } };
+  const row = (sf: number, attribute: string, pos: number, phase: number) => ({ subfixtureIndex: sf, attribute, stepCount: 2, steps: [{ absolute: 100 }, { absolute: 0 }], phaser: { gridPos: pos, phase } });
+  const scope = new Map([[1, "1"], [2, "2"]]);
+  const good = [row(1, "Dimmer", 0, 180), row(1, "ColorRGB_R", 0, 180), row(2, "Dimmer", 1, 0), row(2, "ColorRGB_R", 1, 0)];
+  assert.deepEqual(verifyBuild({ effect: e, rows: good, scope, implied: new Set(), stepPresets: [] }).problems, []);
+  // The reviewer's case: Dimmer 0/180 but ColorRGB_R 90/90 was reported as matched.
+  const bad = [row(1, "Dimmer", 0, 0), row(1, "ColorRGB_R", 0, 90), row(2, "Dimmer", 1, 180), row(2, "ColorRGB_R", 1, 90)];
+  const problems = verifyBuild({ effect: e, rows: bad, scope, implied: new Set(), stepPresets: [] }).problems.join(" | ");
+  assert.match(problems, /ColorRGB_R: shuffled phases: expected the set 0, 180, read 90, 90/);
+  assert.match(problems, /1: its attributes are out of phase \(Dimmer 0, ColorRGB_R 90\)/);
+});
+
+test("SU-13 review round 1: presets stored with a rejected name write are partial work, so the call is partial, not failed", async () => {
+  con.rejectNameSet = true;
+  const { result } = await build({ effects: [{ preset: "23.30", name: "A", fixtures: [401, 402], template: { type: "alternate" } }, { preset: "23.31", name: "B", fixtures: [401, 402], template: { type: "runner" } }] });
+  assert.deepEqual(result.items.map((i: any) => i.outcome), ["partial", "partial"], JSON.stringify(result.items).slice(0, 1500));
+  assert.equal(result.outcome, "partial");
+  assert.equal(con.presets.has("23.30") && con.presets.has("23.31"), true, "both presets exist");
+  assert.match(result.summary, /2 stored with a later step that did not succeed/);
+  assert.ok(result.items[0].steps.some((st: any) => st.status === "failed"), "the failed name step is listed in the compact line");
 });

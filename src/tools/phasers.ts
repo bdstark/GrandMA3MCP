@@ -594,22 +594,38 @@ export function verifyBuild(input: {
       }
     }
   }
-  // Shuffle permutes which fixture gets which phase: the set of phases must be the unshuffled one (modulo 360).
+  // Shuffle permutes which fixture gets which phase (review round 1: every attribute, not only the first row):
+  //   - the attributes of one fixture share its phase (one At Phase command sets every active attribute);
+  //   - for every attribute, the set of phases over the fixtures is the unshuffled set (modulo 360).
   const ph = effect.phaser;
   if (ph.phase && ph.shuffle !== undefined) {
-    const want: number[] = [];
-    const got: number[] = [];
+    const expectedOf = new Map<number, number>();
     for (const [sf] of input.scope) {
       const pos = posOf.get(sf);
-      const r = (bySf.get(sf) ?? [])[0];
-      if (pos === undefined || !r) continue;
-      want.push(norm360(expectedPhase(ph.phase, pos - minPos, span, ph.repeat)));
-      if (typeof r.phaser?.phase === "number") got.push(norm360(r.phaser.phase));
+      if (pos !== undefined) expectedOf.set(sf, norm360(expectedPhase(ph.phase, pos - minPos, span, ph.repeat)));
     }
-    want.sort((a, b) => a - b);
-    got.sort((a, b) => a - b);
-    const same = want.length === got.length && want.every((w, i) => sameAngle(w, got[i]));
-    if (!same) problems.push(`shuffled phases: expected the set ${want.join(", ")}, read ${got.join(", ")}`);
+    for (const [sf, id] of input.scope) {
+      const rows = (bySf.get(sf) ?? []).filter((r) => typeof r.phaser?.phase === "number");
+      const first = rows[0]?.phaser?.phase;
+      const off = rows.filter((r) => !sameAngle(r.phaser!.phase, first));
+      if (off.length) problems.push(`${id}: its attributes are out of phase (${rows.map((r) => `${r.attribute} ${norm360(r.phaser!.phase as number)}`).join(", ")})`);
+    }
+    const attrsSeen = [...new Set(input.rows.filter((r) => input.scope.has(r.subfixtureIndex)).map((r) => String(r.attribute)))];
+    for (const a of attrsSeen) {
+      const want: number[] = [];
+      const got: number[] = [];
+      for (const [sf] of input.scope) {
+        const r = (bySf.get(sf) ?? []).find((x) => x.attribute === a);
+        const w = expectedOf.get(sf);
+        if (!r || w === undefined) continue;
+        want.push(w);
+        if (typeof r.phaser?.phase === "number") got.push(norm360(r.phaser.phase));
+      }
+      want.sort((x, y) => x - y);
+      got.sort((x, y) => x - y);
+      const same = want.length === got.length && want.every((w, i) => sameAngle(w, got[i]));
+      if (!same) problems.push(`${a}: shuffled phases: expected the set ${want.join(", ")}, read ${got.join(", ")}`);
+    }
   }
   // A step that calls a preset: every fixture references it in that step (on the preset's attributes), none another.
   input.stepPresets.forEach((sp, i) => {
@@ -1236,20 +1252,26 @@ export async function buildPhaser(ctx: ToolContext, raw: BuildArgs): Promise<Ope
       const outcome = rep.status === "not_attempted" ? "not_attempted" : stored ? stored.outcome : bad?.status === "unknown" ? "unknown" : "failed";
       const verification = stored ? (untouched === false ? "mismatched" : stored.verification.status) : rep.status === "not_attempted" ? "not_attempted" : "not_requested";
       const summary = rep.status === "not_attempted" ? "not attempted: the build stopped before this preset" : stored && !bad ? stored.summary : `${bad?.name ?? "build"}: ${bad?.error ?? "failed"}`;
+      // A step that got no reply, here or inside the store, keeps the preset's state unknown (review round 1).
+      const uncertain = rep.steps.some((st) => st.status === "unknown" && st.kind !== "read") || (!!stored && (stored.outcome === "unknown" || stored.steps.some((st) => st.status === "unknown" && st.kind !== "read")));
+      const problemSteps = [...rep.steps, ...(stored?.steps ?? [])].filter((st) => st.status === "failed" || st.status === "unknown").map((st) => ({ name: st.name, status: st.status, ...(st.error ? { error: st.error.length > 300 ? `${st.error.slice(0, 299)}…` : st.error } : {}) }));
       return {
         item: i + 1,
         target: `${j.ref}${j.variant ? ` (${j.variant})` : ""}${j.name ? ` "${j.name}"` : ""}`,
         outcome,
         verification,
         summary: summary.length > 400 ? `${summary.slice(0, 399)}…` : summary,
+        ...(uncertain ? { uncertain: true } : {}),
         ...(rep.phases ? { phases: rep.phases } : {}),
-        ...(raw.detail === true ? { plan: rep.plan, steps: rep.steps, stored } : {}),
+        ...(raw.detail === true ? { plan: rep.plan, steps: rep.steps, stored } : problemSteps.length ? { steps: problemSteps } : {}),
       };
     });
     const ok = lines.filter((l) => l.outcome === "succeeded").length;
+    // Persistent work: a preset that was stored, even when a later step of it failed or got no reply (outcome partial).
+    const worked = lines.filter((l) => l.outcome === "succeeded" || l.outcome === "partial").length;
     const common = steps.filter((s) => !jobs.some((j) => s.name.startsWith(pre(j))));
     const commonBad = common.find((s) => s.status === "failed" || s.status === "unknown");
-    const outcome = ok === lines.length && !commonBad ? "succeeded" : ok > 0 ? "partial" : lines.some((l) => l.outcome === "unknown") ? "unknown" : "failed";
+    const outcome = ok === lines.length && !commonBad ? "succeeded" : worked > 0 ? "partial" : lines.some((l) => l.outcome === "unknown" || l.uncertain) ? "unknown" : "failed";
     const mism = lines.filter((l) => l.verification === "mismatched");
     const verification: Verification =
       mism.length || untouched === false
@@ -1265,7 +1287,7 @@ export async function buildPhaser(ctx: ToolContext, raw: BuildArgs): Promise<Ope
       outcome,
       verification,
       steps: raw.detail === true ? steps : common.map((s) => ({ name: s.name, status: s.status, ...(s.error ? { error: s.error } : {}) })),
-      summary: `build_phaser: ${lines.length} preset(s): ${ok} succeeded${first ? `. First problem, item ${first.item} (${first.target}): ${first.summary}` : ""}.`,
+      summary: `build_phaser: ${lines.length} preset(s): ${ok} succeeded${worked > ok ? `, ${worked - ok} stored with a later step that did not succeed` : ""}${lines.some((l) => l.uncertain) ? "; a step got no reply, so the console's state is not known" : ""}${first ? `. First problem, item ${first.item} (${first.target}): ${first.summary}` : ""}.`,
       ...(warnings.length ? { warnings } : {}),
       items: lines,
       normalProgrammerUntouched: untouched,
