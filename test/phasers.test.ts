@@ -1,7 +1,7 @@
 import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { startHarness, type Harness } from "./helpers/tool-harness.ts";
-import { registerPhaserTools, parseStep, parsePhaser, expandTemplate, effectCommands, expectedPhase, verifyBuild, fingerprint, planEffect, invertValue, summarizePhases, variantOf, sameAngle, gridX, type Effect } from "../src/tools/phasers.ts";
+import { registerPhaserTools, parseStep, parsePhaser, expandTemplate, effectCommands, expectedPhase, verifyBuild, fingerprint, planEffect, invertValue, summarizePhases, variantOf, sameAngle, gridX, phaseDistributions, phaseStepConflict, type Effect } from "../src/tools/phasers.ts";
 import type { ProgrammerRow } from "../src/tools/presets.ts";
 import { ValidationError } from "../src/validate.ts";
 import { SILENT } from "./helpers/fake-bridge.ts";
@@ -224,7 +224,8 @@ class Console {
       if ((m = c.match(/^At Phase (-?[\d.]+) Thru (-?[\d.]+)$/))) {
         const [from, to] = [Number(m[1]), Number(m[2])];
         const n = this.selection.length;
-        for (const r of this.prog()) { const k = this.selection.indexOf(r.subfixtureIndex); r.phaser!.phase = expectedPhase({ from, to }, k, n, this.matricks); }
+        // 0 Thru 360 as the console spreads it: one cycle, the end left out.
+        for (const r of this.prog()) { const k = this.selection.indexOf(r.subfixtureIndex); r.phaser!.phase = expectedPhase({ from, to }, k, n, this.matricks, phaseDistributions({ phase: { from, to }, repeat: this.matricks })[0]); }
         return { feedback: "OK" };
       }
       if ((m = c.match(/^Store Preset (\d+\.\d+) /))) { this.presets.set(m[1], this.prog().map((r) => ({ ...r }))); for (const r of this.prog()) r.stepCount = 0; return { feedback: "OK" }; }
@@ -692,4 +693,70 @@ test("showtest2: a shuffled phase on two rows compares the set of phases over X"
   assert.deepEqual(verifyBuild({ effect: e, rows, scope, implied: new Set(), stepPresets: [] }).problems, []);
   const wrong = rows.map((r) => (r.subfixtureIndex === 5 ? { ...r, phaser: { ...r.phaser, phase: 90 } } : r));
   assert.match(verifyBuild({ effect: e, rows: wrong, scope, implied: new Set(), stepPresets: [] }).problems.join(), /shuffled phases: expected the set 0, 0, 90, 90, 180, 180, 270, 270 over the fixtures, read 0, 0, 90, 90, 90, 180, 270, 270/);
+});
+
+// showtest2 (2026-10-16): build_phaser on Group 4 (72 festoon cells, one row) with phase {from: 0, to: 360} read
+// 402.35 Dimmer 5.0000023841858 at grid position 1 and 402.34 10.000004768372 at 2: the console spreads 0 Thru 360 as
+// one cycle (360 / 72 apart, the end left out), and the check expected 360 / 71 and reported a correct build as failed.
+
+test("showtest2: 0 Thru 360 is one cycle (360 / n apart, the end left out); every other range uses both ends", () => {
+  const cycle = (n: number) => Array.from({ length: n }, (_, k) => expectedPhase({ from: 0, to: 360 }, k, n, undefined, "cycle"));
+  assert.deepEqual(cycle(4), [0, 90, 180, 270]);
+  assert.deepEqual(cycle(72).slice(0, 3), [0, 5, 10]);
+  assert.equal(cycle(72)[71], 355, "the last cell does not repeat the first");
+  assert.deepEqual(Array.from({ length: 4 }, (_, k) => expectedPhase({ from: 0, to: 270 }, k, 4)), [0, 90, 180, 270], "inclusive stays the default");
+  assert.deepEqual(phaseDistributions({ phase: { from: 0, to: 360 } }), ["cycle"], "live");
+  assert.deepEqual(phaseDistributions({ phase: { from: 0, to: 360 }, shuffle: 3 }), ["cycle"], "shuffle permutes the same set");
+  for (const phase of [{ from: 0, to: 270 }, { from: 0, to: 1260 }, { from: 0, to: 12780 }, { from: 0, to: 315 }, { from: 270, to: 0 }, { from: 0, to: 0 }]) assert.deepEqual(phaseDistributions({ phase }), ["inclusive"], JSON.stringify(phase));
+  // Whole numbers of cycles the console has not been read on: either distribution.
+  for (const ph of [{ phase: { from: 0, to: 720 } }, { phase: { from: 360, to: 0 } }, { phase: { from: 90, to: 450 } }, { phase: { from: 0, to: -360 } }, { phase: { from: 0, to: 360 }, repeat: { kind: "groups" as const, count: 2 } }]) assert.deepEqual(phaseDistributions(ph), ["cycle", "inclusive"], JSON.stringify(ph));
+  // A phase resolved from a step is that step between neighbours: inclusive only.
+  assert.deepEqual(phaseDistributions(planEffect({ unit: "percent", steps: [], phaser: { phaseStep: { from: 0, step: 180 } } }, 5).effect.phaser), ["inclusive"], "0 Thru 720 from step 180");
+});
+
+test("showtest2: 0 Thru 360 on 72 cells in one row verifies at 5° per cell, and the inclusive spread is now the mismatch", () => {
+  const e: Effect = { unit: "percent", steps: [{ values: { Dimmer: { absolute: 100 } } }, { values: { Dimmer: { absolute: 0 } } }], phaser: { phase: { from: 0, to: 360 } } };
+  // The live values carry float noise (5.0000023841858 at X 1).
+  const read = gridRows(1, 72, (x) => x * 5 * (1 + 4.7683716e-7), "Dimmer");
+  assert.deepEqual(verifyBuild({ effect: e, rows: read.rows, scope: read.scope, implied: new Set(), stepPresets: [] }).problems, []);
+  const inclusive = gridRows(1, 72, (x) => (360 * x) / 71, "Dimmer");
+  const problems = verifyBuild({ effect: e, rows: inclusive.rows, scope: inclusive.scope, implied: new Set(), stepPresets: [] }).problems;
+  assert.match(problems[0], /^201\.2 Dimmer: phase 5° expected \(grid position 1 of 72, as one cycle\), 5\.07/);
+  // Shuffled: the set of 72 phases 5° apart.
+  const perm = Array.from({ length: 72 }, (_, x) => (x * 29) % 72);
+  const sh = gridRows(1, 72, (x) => perm[x] * 5, "Dimmer");
+  const shuffled: Effect = { ...e, phaser: { ...e.phaser, shuffle: 3 } };
+  assert.deepEqual(verifyBuild({ effect: shuffled, rows: sh.rows, scope: sh.scope, implied: new Set(), stepPresets: [] }).problems, []);
+  const shIncl = gridRows(1, 72, (x) => (360 * perm[x]) / 71, "Dimmer");
+  assert.match(verifyBuild({ effect: shuffled, rows: shIncl.rows, scope: shIncl.scope, implied: new Set(), stepPresets: [] }).problems.join(), /^shuffled phases: expected the set 0, 5, 10, .* over the fixtures, as one cycle, read/);
+});
+
+test("a whole number of cycles not read live is accepted as either distribution, consistently over the selection", () => {
+  const e = colourEffect({ phase: { from: 0, to: 720 } });
+  const ok = (phaseOf: (x: number) => number) => { const g = gridRows(1, 4, phaseOf); return verifyBuild({ effect: e, rows: g.rows, scope: g.scope, implied: new Set(), stepPresets: [] }).problems; };
+  assert.deepEqual(ok((x) => x * 180), [], "one cycle: 0, 180, 360, 540");
+  assert.deepEqual(ok((x) => x * 240), [], "inclusive: 0, 240, 480, 720");
+  // A mix of the two is a mismatch, reported against the first (cycle).
+  assert.match(ok((x) => [0, 180, 480, 720][x]).join(" | "), /^201\.3 ColorRGB_R: phase 360° expected \(grid position 2 of 4, as one cycle\), 480 read/);
+  // A step that resolves to 0 Thru 720 is the request's step: only the inclusive spread matches.
+  const stepped = colourEffect({ phase: { from: 0, to: 720 }, phaseFromStep: 240 });
+  const g = gridRows(1, 4, (x) => x * 180);
+  assert.match(verifyBuild({ effect: stepped, rows: g.rows, scope: g.scope, implied: new Set(), stepPresets: [] }).problems.join(), /phase 240° expected \(grid position 1 of 4\), 180 read/);
+});
+
+test("a phase step that resolves to exactly 0 Thru 360 is refused before anything is sent; 0 Thru 360 itself builds as one cycle", async () => {
+  const base: Effect = { unit: "percent", steps: [], phaser: { phaseStep: { from: 0, step: 120 } } };
+  assert.match(phaseStepConflict(planEffect(base, 4).effect.phaser, 4) ?? "", /phase step 120 over 4 fixtures makes At Phase 0 Thru 360, which the console spreads as one even cycle \(90° apart/);
+  assert.equal(phaseStepConflict(planEffect({ ...base, phaser: { phaseStep: { from: 0, step: 180 } } }, 72).effect.phaser, 72), undefined, "0 Thru 12780");
+  assert.equal(phaseStepConflict(planEffect({ ...base, phaser: { phaseStep: { from: 0, step: 180 } } }, 5).effect.phaser, 5), undefined, "0 Thru 720: not established, checked as the step");
+  assert.equal(phaseStepConflict(planEffect({ ...base, phaser: { phase: { from: 0, to: 360 } } }, 4).effect.phaser, 4), undefined, "an explicit 0 Thru 360 is not a step");
+  const steps = [{ values: { Dimmer: 100 } }, { values: { Dimmer: 0 } }];
+  const refused = await build({ preset: "23.1", fixtures: [401, 402], steps, phaser: { phase: { step: 360 } } });
+  assert.equal(refused.isError, true);
+  assert.match(errorOf(refused.result, "check_step_presets"), /phase step 360 over 2 fixtures makes At Phase 0 Thru 360/);
+  assert.deepEqual(con.commands, []);
+  const { result, isError } = await build({ preset: "23.1", fixtures: [401, 402], steps, phaser: { phase: { from: 0, to: 360 } } });
+  assert.equal(isError, false, JSON.stringify(result));
+  assert.equal(result.verification.status, "matched", JSON.stringify(result.verification));
+  assert.ok(con.commands.includes("At Phase 0 Thru 360"));
 });
