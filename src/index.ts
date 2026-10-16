@@ -32,6 +32,7 @@ import { registerCellLayoutTools } from "./tools/celllayout.js";
 import { registerDmxOutputTools } from "./tools/dmxoutput.js";
 import { registerVariableTools } from "./tools/variables.js";
 import { registerOscTools } from "./tools/osc.js";
+import { registerShowTools } from "./tools/show.js";
 import { annotatePlayback, readTargetState, registerLiveStateTools, stateAfterFrame } from "./tools/livestate.js";
 
 const env = process.env;
@@ -662,6 +663,7 @@ registerDmxOutputTools(server, toolContext);
 registerVariableTools(server, toolContext);
 registerLiveStateTools(server, toolContext);
 registerOscTools(server, toolContext);
+registerShowTools(server, toolContext);
 
 server.registerResource(
   "cheatsheet",

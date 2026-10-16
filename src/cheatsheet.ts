@@ -41,7 +41,7 @@ Executors are addressed by page: "Page 1.201" or "Executor 201" (current page). 
 ## Patch and show
 - Patch Fixture 1 1.1          patch to universe 1 address 1 (Edit Patch menu for full control)
 - Fixture 1 Thru 10 Property "Name" "Spot %"
-- SaveShow / SaveShow "Name" / LoadShow "Name" / NewShow
+- SaveShow / SaveShow "Name" / LoadShow "Name" / NewShow   (save with gma3_save_show: a dialog from a raw command stalls the bridge)
 - List, Dump                   print to the command line history (not returned over the bridge)
 - Menu "Patch" / Menu "Settings" / Menu "DisplayConfig"
 - Lua "Printf('hi')"           run inline Lua from the command line

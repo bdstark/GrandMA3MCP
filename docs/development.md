@@ -61,7 +61,9 @@ The suite in `test/` has no extra dependencies:
 Live tests live in `test/live/*.live.ts`, are never picked up by `npm test`, and refuse to run unless
 `GMA3_LIVE=1` is set and the loaded show file name matches `GMA3_LIVE_SHOW` (default: a name containing
 "disposable", "mcp-test" or "scratch"). Each file documents the show objects it creates and deletes;
-`test/live/README.md` lists the reserved ranges. Nothing in the tests calls `SaveShow`.
+`test/live/README.md` lists the reserved ranges. Only `test/live/save-show.live.ts` saves (it needs
+`GMA3_LIVE_EXCLUSIVE=1` and `GMA3_LIVE_SAVE=1`, writes `mcp-save-live-1.show` and saves the starting show back under
+its own name); no other test calls `SaveShow`.
 
 `npm run coverage:lcov` additionally writes `coverage/lcov.info` for editor and CI integrations. Lua coverage
 is not measured.

@@ -47,6 +47,7 @@ Guard rails, enforced by `test/live/live.ts`:
 | Sequence 945 (must not exist; deleted at the end; plays for a few seconds), one fixture with Dimmer from `GMA3_LIVE_READS_FID` (default 101; programmer values, then ClearAll) | SU-16 live-reads test (bridge 0.32.0) |
 | OSC lines "McpLive OSC" (UDP 8031, then 8032 and a prefix) and "McpLive OSC out" (send-only to a loopback port the test listens on), both added and removed; input re-bound (off about 0.4 s); EnableOutput restored; existing lines unchanged (also needs `GMA3_LIVE_EXCLUSIVE=1`) | SU-18 OSC test (bridge 0.33.0) |
 | A fixture with cells (`GMA3_LIVE_SU19_STRING`, default 401) and one whose type has a colour wheel (`GMA3_LIVE_SU19_WHEEL`, default 301), read only; the layout and the group are previews (the layout check skips while the patch copy is open) | SU-19 fixture-type data test (bridge 0.34.0) |
+| Show file mcp-save-live-1.show (must not exist; left in the shows folder), and at the end the show the console started on (or `GMA3_LIVE_SAVE_RESTORE`) saved under its own name; the current show name changes during the test (also needs `GMA3_LIVE_EXCLUSIVE=1` and `GMA3_LIVE_SAVE=1`) | SU-20 save-show test (bridge 0.35.0) |
 | Fixture types Generic Fog and Fan (imported, then removed; their attributes stay), fixture FID 994 from the first free block at 3.001 (also needs `GMA3_LIVE_EXCLUSIVE=1`) | SU-03 fixture-type import tests (bridge 0.26.0; committed with no undo) |
 
 Each live test file documents the exact objects it creates at the top of the file.

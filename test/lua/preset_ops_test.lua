@@ -136,7 +136,7 @@ local function request(op, args)
 end
 
 local r = request("ping")
-check("ping reports bridge 0.30.0", r.ok and r.result.bridgeVersion == "0.34.0", J(r))
+check("ping reports bridge 0.30.0", r.ok and r.result.bridgeVersion == "0.35.0", J(r))
 
 r = request("preset.read", { ref = "Preset 23.3" })
 local res = r.ok and r.result or {}
