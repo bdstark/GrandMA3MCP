@@ -634,10 +634,10 @@ forbid. Every sample was nil because the universe is not granted.
 MCP tools.
 
 **Depends on:** SB-06, and the status and configuration interface of
-[bdstark/gma3-link](https://github.com/bdstark/gma3-link) (its GL-01 and GL-02).
+[bdstark/gma3-beat-sync](https://github.com/bdstark/gma3-beat-sync) (its BS-01 and BS-02).
 
 **Repository:** GrandMA3MCP for the tools. The sync engine is a console plugin in a separate GPL repository,
-bdstark/gma3-link, which needs nothing from this one.
+bdstark/gma3-beat-sync, which needs nothing from this one.
 
 **Lua changes:** No. The plugin publishes its own state.
 
@@ -649,7 +649,7 @@ helper. It sent commands over OSC (SU-18) and realigned the pattern sequences wi
 A probe on 2026-10-15 showed that the console's own Lua can do the network part (UDP multicast through
 `socket.udp4()`, about 16.6 ms per frame). That work moved to the plugin repository.
 
-**Boundary:** this repository stays MIT and takes no code from bdstark/gma3-link. The tools talk to the plugin only
+**Boundary:** this repository stays MIT and takes no code from bdstark/gma3-beat-sync. The tools talk to the plugin only
 through the console (its published status and its configuration), as two separate programs.
 
 ### Acceptance criteria
@@ -741,7 +741,7 @@ From the second field test:
 - SU-13 and SU-14 build on it.
 - SU-15's probe (does `cmd` expand `$variables`) is small. Run it early, since SU-14 depends on its answer.
 - SU-16, SU-18, SU-19 and SU-20 are independent.
-- SU-17's `resync` is independent. Its plugin tools wait for the interface that bdstark/gma3-link's GL-01 and GL-02
+- SU-17's `resync` is independent. Its plugin tools wait for the interface that bdstark/gma3-beat-sync's BS-01 and BS-02
   define.
 
 ## References
@@ -751,4 +751,4 @@ From the second field test:
 - [Position fixtures in the 3D space](https://help.malighting.com/grandMA3/2.5/HTML/patch_position_fixtures.html)
 - Field-test transcripts: Claude Code sessions in `~/gma3-enduser/showtest` (2026-10-14 and 2026-10-15, session
   6626864f)
-- [bdstark/gma3-link](https://github.com/bdstark/gma3-link): the tempo-sync console plugin (GPL, separate repository)
+- [bdstark/gma3-beat-sync](https://github.com/bdstark/gma3-beat-sync): the tempo-sync console plugin (GPL, separate repository)
