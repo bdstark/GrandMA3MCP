@@ -39,6 +39,7 @@ Guard rails, enforced by `test/live/live.ts`:
 | Two fixtures with cells sharing a layout from `GMA3_LIVE_CELL_FIDS` (default 1, 2; every fixture sharing it moves and is restored); fixture type "MCP live layout" (must not exist; created and removed; also needs `GMA3_LIVE_EXCLUSIVE=1`) | SU-08 cell-layout test (bridge 0.29.0; patch sessions committed with no undo) |
 | Every fixture type and patched fixture, read only; at least one fixture with cells (`GMA3_LIVE_REQUIRE_CELLS=0` skips that) | SU-07 type-structure test (bridge 0.28.0) |
 | Two top-level fixtures from `GMA3_LIVE_POSITION_FIDS` (default 1, 2): position, rotation and mesh mirroring changed and restored | SU-04 position tests |
+| One fixture with a multi-function channel from `GMA3_LIVE_DECIMAL_TARGET` (`"<fid>:<attribute>"`; default the first patched fixture with one, Pan and Tilt skipped); the programmer cleared | SU-11 decimal read-back test |
 | Fixture types Generic Fog and Fan (imported, then removed; their attributes stay), fixture FID 994 from the first free block at 3.001 (also needs `GMA3_LIVE_EXCLUSIVE=1`) | SU-03 fixture-type import tests (bridge 0.26.0; committed with no undo) |
 
 Each live test file documents the exact objects it creates at the top of the file.

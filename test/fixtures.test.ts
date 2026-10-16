@@ -41,6 +41,9 @@ interface FakeRow {
   subfixtureIndex: number;
   attribute: string;
   value?: number;
+  /** The step's 24-bit DMX value (absolute_value). */
+  valueRaw?: number;
+  channelFunction?: string | null;
   stepCount?: number;
   physicalFrom?: number | null;
   physicalTo?: number | null;
@@ -605,7 +608,7 @@ test("read-back: degrees are converted through each fixture's physical range", a
 });
 
 test("read-back: decimal and readout units are interpreted; an unknown readout is unavailable", async () => {
-  script({ selectionCount: 1, programmer: { scanned: [twoFixtures.scanned[0]], rows: [row("1", 11, "Dimmer", 50.196)] } });
+  script({ selectionCount: 1, programmer: { scanned: [twoFixtures.scanned[0]], rows: [row("1", 11, "Dimmer", 50.196, { valueRaw: 0x808080 })] } });
   let r = await h.callJson("gma3_set_attribute", { use_selection: true, attribute: "Dimmer", value: 128, unit: "decimal8" });
   assert.equal(r.result.verification.status, "matched", r.result.verification.detail);
   r = await h.callJson("gma3_set_attribute", { use_selection: true, attribute: "Dimmer", value: 50.2 });
@@ -615,6 +618,56 @@ test("read-back: decimal and readout units are interpreted; an unknown readout i
   r = await h.callJson("gma3_set_attribute", { use_selection: true, attribute: "Gobo1", value: 20 });
   assert.equal(r.result.verification.status, "unavailable");
   assert.match(r.result.verification.detail, /readout null of Gobo1 cannot be interpreted/);
+});
+
+// SU-11: the 180 W beam's Color1 channel has two channel functions, Color1 (DMX 0..127) and Color1WheelSpin
+// (128..255). The programmer's percent is a share of the Color1 function's range, so Decimal8 104 reads 81.89 %
+// (104/127), not 40.8 % (104/255); its raw 24-bit value is 0x686868 (probe su-11, onPC 2.5.1).
+const color1 = (value: number, valueRaw: number | undefined) =>
+  row("1", 11, "Color1", value, { valueRaw, channelFunction: "Color1 1", physicalFrom: 0, physicalTo: 12, readout: "Physical", physicalUnit: "None" });
+const color1Script = (value: number, valueRaw: number | undefined) =>
+  script({ selectionCount: 1, attributes: ["Color1"], programmer: { scanned: [{ ...twoFixtures.scanned[0], attributes: ["Color1"] }], rows: [color1(value, valueRaw)] } });
+
+test("read-back (SU-11): a decimal value on a channel with several functions verifies as a DMX value, in both tools", async () => {
+  const cases: [number, "decimal8" | "decimal16" | "decimal24", number, number][] = [
+    [104, "decimal8", 81.889763779528, 0x686868],
+    [26700, "decimal16", 81.803978141417, 0x684c68],
+    [6842472, "decimal24", 81.889763779528, 6842472],
+    // In the upper function's DMX range the percent runs past 100 (157.48 % for Decimal8 200), still verified.
+    [200, "decimal8", 157.48031496063, 0xc8c8c8],
+  ];
+  for (const [value, unit, percent, raw] of cases) {
+    color1Script(percent, raw);
+    let r = await h.callJson("gma3_set_attribute", { use_selection: true, attribute: "Color1", value, unit });
+    assert.equal(r.result.verification.status, "matched", `${value} ${unit}: ${r.result.verification.detail}`);
+    assert.match(r.result.verification.checked, /decimal values exactly, as DMX values/);
+    color1Script(percent, raw);
+    r = await h.callJson("gma3_set_attributes", { use_selection: true, values: [{ attribute: "Color1", value, unit }] });
+    assert.equal(r.result.verification.status, "matched", `set_attributes ${value} ${unit}: ${r.result.verification.detail}`);
+  }
+});
+
+test("read-back (SU-11): a real decimal mismatch is still detected and explained in DMX terms", async () => {
+  color1Script(82.677165354331, 0x696969);
+  let r = await h.callJson("gma3_set_attribute", { use_selection: true, attribute: "Color1", value: 104, unit: "decimal8" });
+  assert.equal(r.isError, true);
+  assert.equal(r.result.verification.status, "mismatched");
+  assert.match(r.result.verification.detail, /Color1 reads 105 decimal8 \(DMX 0x696969, 82.6772 % of channel function Color1 1\), expected 104 decimal8/);
+  // One step off in the fine byte is a mismatch for decimal16, though the coarse byte agrees.
+  color1Script(81.803978141417, 0x684d68);
+  r = await h.callJson("gma3_set_attributes", { use_selection: true, values: [{ attribute: "Color1", value: 26700, unit: "decimal16" }] });
+  assert.equal(r.result.verification.status, "mismatched");
+  assert.match(r.result.verification.detail, /reads 26701 decimal16/);
+  color1Script(81.889763779528, 6842473);
+  r = await h.callJson("gma3_set_attribute", { use_selection: true, attribute: "Color1", value: 6842472, unit: "decimal24" });
+  assert.equal(r.result.verification.status, "mismatched");
+});
+
+test("read-back (SU-11): a row without a raw DMX value is unavailable for decimals, never judged as a percent of 255", async () => {
+  color1Script(40.784313725490, undefined);
+  const r = await h.callJson("gma3_set_attribute", { use_selection: true, attribute: "Color1", value: 104, unit: "decimal8" });
+  assert.equal(r.result.verification.status, "unavailable");
+  assert.match(r.result.verification.detail, /carries no raw DMX value/);
 });
 
 test("read-back: a multi-step phaser is never reduced to a matching static value", async () => {
