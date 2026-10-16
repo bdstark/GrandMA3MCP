@@ -17,7 +17,7 @@ the programmer's environment and the phaser layers of steps and presets (extensi
 | --- | --- | --- |
 | **Step timing** | per step `width`, `transition`, `accel`, `decel` | how one step moves to the next: the width of a step (percent of a beat), the share of it spent moving (0 snaps), the curve (accel/decel −100 is a sine) |
 | **Fixture distribution** | `phaser.phase {from, to}`, `phaser.repeat {groups|wings|blocks: n}` | the phase offset of each fixture, spread from → to over the selection grid in X; from > to runs the other way; repeat restarts the spread every n fixtures (groups), mirrors it (wings) or holds n together (blocks) |
-| **Playback speed** | `phaser.speed_bpm`, `phaser.measure`, `phaser.speed_master` | how fast the cycle runs: BPM (default 60), the number of beats per cycle, and the speed master (1–16) that scales it |
+| **Playback speed** | `phaser.speed_bpm`, `phaser.measure`, `phaser.speed_master` | how fast the cycle runs: BPM (default 60), `measure` (the number of beats one cycle lasts at that speed; a step's width is a percent of a beat, so the widths should add up to measure × 100, MA help "Measure Keyword"), and the speed master (1–16) that scales it |
 
 The plan the tool returns (`plan.steps[].stepTiming`, `plan.distribution`, `plan.playbackSpeed`) has the same split.
 
@@ -30,7 +30,11 @@ The plan the tool returns (`plan.steps[].stepTiming`, `plan.distribution`, `plan
 | `steps` *or* `template` | 2–16 steps, or one of the templates below |
 | step | `values: {Attribute: number | {absolute, relative}}`, `preset: "4.4"` (called into the step, stored as a reference), `width`, `transition`, `accel`, `decel` |
 | `unit` | `percent` (default) or `physical` (degrees for Pan/Tilt, as `At Absolute|Relative Physical`) |
-| `phaser` | `speed_bpm`, `phase {from, to}`, `measure`, `speed_master`, `repeat` (needs `phase`) |
+| `phaser` | `speed_bpm`, `phase` (`{from, to}`, `{from?, step}` or `"spread"`), `measure`, `speed_master`, `repeat` and `shuffle` (both need `phase`) |
+| `mirror` | `{attributes, wings?: 2}`: invert these attributes on every second wing (SU-13) |
+| `variants` | `["sync", "follow", "mirror"]`: build these versions into consecutive presets (SU-13) |
+| `effects` | several effects in one call instead of the fields above (SU-13) |
+| `detail` | with several presets: every preset's plan, steps and store result |
 | `mode` | `selective` (default) or `global`; universal cannot hold a per-fixture phase |
 | `existing`, `name` | as for `gma3_store_preset` |
 | `audition_ms` | 0 (default: no playback) up to 30000 |
@@ -44,7 +48,64 @@ The plan the tool returns (`plan.steps[].stepTiming`, `plan.distribution`, `plan
 | `{type: "alternating_colors", colors: [c1, c2], speed_bpm?: 60, snap?: false}` | two colour steps, each `{red, green, blue}` (percent) or `{preset: "4.n"}`; phase 0 → 180 with `repeat: {groups: 2}`, so neighbours alternate; `snap: true` sets transition 0 |
 | `{type: "pan_tilt", pan?: 20, tilt?: 20, speed_bpm?: 20, spread?: false}` | a circle around the current position: four relative steps (Pan +p, 0, −p, 0; Tilt 0, +t, 0, −t, degrees) with accel/decel −100; `spread: true` spreads the phase |
 
+Position shapes (SU-13), absolute physical degrees around `center: {pan, tilt}` (default 0/0), default 20 BPM; they also
+take a `group`:
+
+| `template` | Expands to |
+| --- | --- |
+| `{type: "circle", size?: 20, center?}` | four points (Pan c+r, c, c−r, c; Tilt c, c+r, c, c−r) with accel/decel −100 |
+| `{type: "figure8", size?: 20, center?}` | eight points: Pan c + r·sin θ, Tilt c + r/2·sin 2θ |
+| `{type: "cone", tilt?, center?}` | tilt held at `tilt`, pan sweeping −180 → 0 → +180 → 0 around the centre (a full turn and back) |
+| `{type: "fan", size?: 20, center?}` | step 1 every fixture on the centre, step 2 Pan spread from c − size/2 (first fixture) to c + size/2 (last) |
+| `{type: "bounce", size?: 20, center?}` | Tilt c + size, c − size with accel/decel −100 |
+
+Dimmer patterns for a row of fixtures or cells in grid order (SU-13), default 120 BPM, `on?: 100`. Widths are percent of
+a beat, so a runner on n cells lasts n beats:
+
+| `template` | Expands to |
+| --- | --- |
+| `{type: "runner"}` | on (width 100) / off (width 100·(n−1)), snap, phase 0 → 360·(n−1)/n: one on at a time |
+| `{type: "comet", tail?: 3}` | on fading out over `tail` cells (width 100·tail, transition 100), off for the rest |
+| `{type: "alternate"}` | on/off, phase 0/180 with `repeat: {groups: 2}` |
+| `{type: "thirds"}` | on (100) / off (200), phase 0/120/240 with `repeat: {groups: 3}` |
+| `{type: "fill"}` | off/on half and half, phase 0 → 180·(n−1)/n: the row fills, then empties in the same direction |
+| `{type: "sparkle", every?: 4, seed?: 1}` | on (100) / off (100·(every−1)) spread and shuffled with `seed` |
+
+A scanner (one dot running back and forth) needs a different on-time per cell, which one phaser cannot hold; it is not
+a template.
+
 `preview: true` returns the expanded steps and the exact console commands.
+
+### Whole rig, variants, mirror and several effects (SU-13)
+
+- **No tool cap below the console's.** Up to 1024 fixtures or cells per effect, of several fixture types, as long as
+  each has the effect's attributes (checked before anything is sent). `gma3_store_preset`'s scope cap rose to match.
+- **Phase forms.** `{from, to}` as before; `{from, step}` gives a phase step per fixture (`step: 180` on 72 cells sends
+  `At Phase 0 Thru 12780`); `"spread"` is 0 → 360·(n−1)/n. Phases are compared modulo 360. `shuffle: <seed>` sets the
+  selection MAtricks XShuffle while the phase is set: the phases are permuted. The check requires every attribute of a
+  fixture to share its phase, and the fixtures' phases over the whole selection to be the unshuffled set. A channel
+  that only part of a mixed rig has (RGBW's W) is checked against its own fixture's phase.
+- **Mirror.** `mirror: {attributes, wings}` cuts the fixtures (grid order) into `wings` parts and inverts the attributes
+  on every second part: relative and physical values change sign (Pan −20° for +20°), percent becomes 100 − v. The
+  per-fixture values are written once every step exists, on those fixtures, and the whole selection is restored before
+  the step timing and phaser layers. The check expects each fixture's own value.
+- **Variants.** `variants: ["sync", "follow", "mirror"]` builds the versions of one effect into consecutive presets
+  from `preset`, named `"<name> sync"` and so on (name default: the template type, or `Effect`):
+  - sync: no phase spread;
+  - follow: the request's phase, or `"spread"`;
+  - mirror: the spread mirrored about the centre (`repeat: {wings: 2}`), with `mirror.attributes` (default Pan, for a
+    position effect) inverted on the second half.
+- **Several effects.** `effects: [{preset, fixtures | group, steps | template, phaser, mirror, variants, name, ...}]`,
+  at most 64 presets per call. `unit`, `mode`, `existing` and `verify` given for the call are defaults. Every effect is
+  inspected first (nothing is sent when one is refused). Then all are built in one Preview session, with a confirmed
+  Preview and `ClearAll` between them. An effect whose build check or store fails does not stop the others; a step
+  without a reply (also inside the store, such as its name write) does. The result has one line per preset (`items`)
+  with its phase summary, the steps that did not succeed and `uncertain: true` after a step without a reply;
+  `detail: true` adds each preset's plan, steps and store result. The call is `partial` when any preset was stored,
+  even with a later step that failed. `audition_ms` is for a single effect only.
+- **Phase summary.** Each built preset reports the phase of every fixture in grid order from the build check's own
+  programmer scan: `{fixtures, first, last, first_phase, step}` for an even run, otherwise the list of phases. No
+  client-side programmer read is needed.
 
 ### Requests, in order
 
@@ -113,6 +174,7 @@ effect that is playing there. It is idempotent: from Normal without `clear_norma
   - an unrelated Normal-programmer value unchanged after every build;
   - an audition released;
   - the release tool.
+- SU-13, verified live: see the SU-13 probe record and `test/live/phaser-builder.live.ts`.
 - Not covered:
   - per-attribute layer overrides (every layer command applies to every attribute of the effect, which keeps an
     activation group in phase);

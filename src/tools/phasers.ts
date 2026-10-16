@@ -74,19 +74,53 @@ export interface Step {
 export interface PhaserLayers {
   speedBpm?: number;
   phase?: { from: number; to: number };
+  /** SU-13: a phase step per fixture (to = from + step x (n - 1)), resolved once the fixture count is known. */
+  phaseStep?: { from: number; step: number };
+  /** SU-13: an even spread over the fixtures (0 -> 360 x (n - 1) / n), resolved once the fixture count is known. */
+  phaseSpread?: boolean;
   measure?: number;
   speedMaster?: number;
   repeat?: { kind: "groups" | "wings" | "blocks"; count: number };
+  /** SU-13: XShuffle seed applied (as selection MAtricks) while the phase is set: the phases are permuted. */
+  shuffle?: number;
+}
+
+/** SU-13: invert attributes on every second wing of the fixtures (grid order): the mirrored half of a rig. */
+export interface Mirror {
+  attributes: string[];
+  wings: number;
+}
+
+/** SU-13: one step's value of an attribute spread over the fixtures in grid order (a fan): from on the first, to on the last. */
+export interface Spread {
+  attribute: string;
+  step: number;
+  from: number;
+  to: number;
 }
 
 export interface Effect {
   steps: Step[];
   phaser: PhaserLayers;
   unit: Unit;
+  mirror?: Mirror;
+  spreads?: Spread[];
+}
+
+/** A per-fixture step value that differs from the step's own value (mirror inversion, spreads). */
+export interface Override {
+  /** Index of the fixture in grid order (0-based). */
+  member: number;
+  step: number;
+  attribute: string;
+  value: StepValue;
 }
 
 const MAX_STEPS = 16;
-const MAX_FIXTURES = 128;
+/** The largest step width the console keeps (percent of a beat); larger values are clamped silently. */
+export const MAX_WIDTH = 3200;
+/** SU-13: no tool-side cap below what a preset holds; the console builds and stores this many without trouble. */
+export const MAX_FIXTURES = 1024;
 const VALUE_TOLERANCE = 0.5;
 const LAYER_TOLERANCE = 0.05;
 const REPEAT_PROPERTY = { groups: "XGroup", wings: "XWings", blocks: "XBlock" } as const;
@@ -122,7 +156,8 @@ export function parseStep(field: string, raw: unknown, unit: Unit): Step {
   return {
     values,
     preset,
-    width: num(`${field}.width`, r.width, 0, 10000),
+    // The console clamps a step width above 3200 % silently and keeps it to 0.1 % (live 2026-10-15).
+    width: num(`${field}.width`, r.width, 0, MAX_WIDTH),
     transition: num(`${field}.transition`, r.transition, 0, 100),
     accel: num(`${field}.accel`, r.accel, -1000, 1000),
     decel: num(`${field}.decel`, r.decel, -1000, 1000),
@@ -133,7 +168,7 @@ export function parsePhaser(raw: unknown): PhaserLayers {
   if (raw === undefined || raw === null) return {};
   if (typeof raw !== "object" || Array.isArray(raw)) throw new ValidationError("phaser must be an object", "phaser");
   const r = raw as Record<string, unknown>;
-  for (const k of Object.keys(r)) if (!["speed_bpm", "phase", "measure", "speed_master", "repeat"].includes(k)) throw new ValidationError(`phaser.${k} is not a phaser setting (speed_bpm, phase, measure, speed_master, repeat)`, "phaser");
+  for (const k of Object.keys(r)) if (!["speed_bpm", "phase", "measure", "speed_master", "repeat", "shuffle"].includes(k)) throw new ValidationError(`phaser.${k} is not a phaser setting (speed_bpm, phase, measure, speed_master, repeat, shuffle)`, "phaser");
   const out: PhaserLayers = {
     speedBpm: num("phaser.speed_bpm", r.speed_bpm, 0.01, 6000),
     measure: num("phaser.measure", r.measure, 1, 1000),
@@ -141,17 +176,25 @@ export function parsePhaser(raw: unknown): PhaserLayers {
   };
   if (r.phase !== undefined) {
     const p = r.phase as Record<string, unknown>;
-    if (!p || typeof p !== "object" || Array.isArray(p)) throw new ValidationError("phaser.phase must be {from, to} in degrees", "phaser.phase");
-    out.phase = { from: num("phaser.phase.from", p.from, -3600, 3600)!, to: num("phaser.phase.to", p.to, -3600, 3600)! };
-    if (out.phase.from === undefined || out.phase.to === undefined) throw new ValidationError("phaser.phase needs from and to", "phaser.phase");
+    if (p === ("spread" as unknown)) out.phaseSpread = true;
+    else if (!p || typeof p !== "object" || Array.isArray(p)) throw new ValidationError('phaser.phase must be {from, to} or {from?, step} in degrees, or "spread"', "phaser.phase");
+    else if (p.step !== undefined) {
+      if (p.to !== undefined) throw new ValidationError("phaser.phase: give to or step, not both", "phaser.phase");
+      out.phaseStep = { from: num("phaser.phase.from", p.from, -3600, 3600) ?? 0, step: num("phaser.phase.step", p.step, -3600, 3600)! };
+    } else {
+      out.phase = { from: num("phaser.phase.from", p.from, -3600, 3600)!, to: num("phaser.phase.to", p.to, -3600, 3600)! };
+      if (out.phase.from === undefined || out.phase.to === undefined) throw new ValidationError("phaser.phase needs from and to (or step)", "phaser.phase");
+    }
   }
+  if (r.shuffle !== undefined) out.shuffle = finiteNumber("phaser.shuffle", r.shuffle, { integer: true, min: 1, max: 9999 });
   if (r.repeat !== undefined) {
     const rp = r.repeat as Record<string, unknown>;
     const keys = rp && typeof rp === "object" ? Object.keys(rp) : [];
     if (keys.length !== 1 || !["groups", "wings", "blocks"].includes(keys[0])) throw new ValidationError("phaser.repeat must be exactly one of {groups: n}, {wings: n}, {blocks: n}", "phaser.repeat");
     out.repeat = { kind: keys[0] as "groups" | "wings" | "blocks", count: finiteNumber(`phaser.repeat.${keys[0]}`, rp[keys[0]], { integer: true, min: 2, max: 64 })! };
-    if (!out.phase) throw new ValidationError("phaser.repeat distributes the phase: give phaser.phase too", "phaser.repeat");
+    if (!out.phase && !out.phaseStep && !out.phaseSpread) throw new ValidationError("phaser.repeat distributes the phase: give phaser.phase too", "phaser.repeat");
   }
+  if (out.shuffle !== undefined && !out.phase && !out.phaseStep && !out.phaseSpread) throw new ValidationError("phaser.shuffle permutes the phase distribution: give phaser.phase too", "phaser.shuffle");
   return out;
 }
 
@@ -199,26 +242,212 @@ export function expandTemplate(raw: unknown, fixtureCount: number): Effect {
         phaser: { speedBpm: num("template.speed_bpm", t.speed_bpm, 0.01, 6000) ?? 20, phase: t.spread === true ? spread(true) : undefined },
       };
     }
+    case "circle":
+    case "figure8":
+    case "cone":
+    case "fan":
+    case "bounce":
+      return shapeTemplate(t);
+    case "runner":
+    case "comet":
+    case "alternate":
+    case "thirds":
+    case "fill":
+    case "sparkle":
+      return patternTemplate(t, fixtureCount);
     default:
-      throw new ValidationError(`template.type must be dimmer_chase, alternating_colors or pan_tilt (got ${describe(t.type)})`, "template");
+      throw new ValidationError(`template.type must be one of ${TEMPLATE_TYPES.join(", ")} (got ${describe(t.type)})`, "template");
   }
+}
+
+export const SHAPE_TYPES = ["circle", "figure8", "cone", "fan", "bounce"] as const;
+export const PATTERN_TYPES = ["runner", "comet", "alternate", "thirds", "fill", "sparkle"] as const;
+export const TEMPLATE_TYPES = ["dimmer_chase", "alternating_colors", "pan_tilt", ...SHAPE_TYPES, ...PATTERN_TYPES] as const;
+
+const round3 = (x: number) => Math.round(x * 1000) / 1000;
+
+/**
+ * SU-13 position shapes in physical degrees, absolute around a centre {pan, tilt}: circle and figure8 (size = radius),
+ * cone (tilt held at `tilt`, pan sweeping a full turn and back), fan (the fixtures close on the centre, then open
+ * over `size` degrees of pan, first fixture to last), bounce (tilt up and down by `size`).
+ */
+function shapeTemplate(t: Record<string, unknown>): Effect {
+  const c = (t.center ?? {}) as Record<string, unknown>;
+  if (typeof c !== "object" || Array.isArray(c)) throw new ValidationError("template.center must be {pan, tilt} in degrees", "template.center");
+  const cx = num("template.center.pan", c.pan, -540, 540) ?? 0;
+  const cy = num("template.center.tilt", c.tilt, -270, 270) ?? 0;
+  const size = num("template.size", t.size, 0, 540) ?? 20;
+  const speedBpm = num("template.speed_bpm", t.speed_bpm, 0.01, 6000) ?? 20;
+  const smooth = { accel: -100, decel: -100 };
+  const pt = (pan: number | undefined, tilt: number | undefined, extra: Partial<Step> = {}): Step => ({
+    values: { ...(pan !== undefined ? { Pan: { absolute: round3(pan) } } : {}), ...(tilt !== undefined ? { Tilt: { absolute: round3(tilt) } } : {}) },
+    ...extra,
+  });
+  const out = (steps: Step[], spreads?: Spread[]): Effect => ({ unit: "physical", steps, phaser: { speedBpm }, ...(spreads ? { spreads } : {}) });
+  switch (t.type) {
+    case "circle":
+      return out([pt(cx + size, cy, smooth), pt(cx, cy + size, smooth), pt(cx - size, cy, smooth), pt(cx, cy - size, smooth)]);
+    case "figure8": {
+      // Pan at the base frequency, tilt at twice it: a lemniscate in eight points.
+      const steps = Array.from({ length: 8 }, (_, k) => {
+        const a = (k * Math.PI) / 4;
+        return pt(cx + size * Math.sin(a), cy + (size / 2) * Math.sin(2 * a));
+      });
+      return out(steps);
+    }
+    case "cone": {
+      const tilt = num("template.tilt", t.tilt, -270, 270) ?? cy;
+      return out([pt(cx - 180, tilt, smooth), pt(cx, tilt, smooth), pt(cx + 180, tilt, smooth), pt(cx, tilt, smooth)]);
+    }
+    case "fan":
+      return out([pt(cx, cy, smooth), pt(cx, cy, smooth)], [{ attribute: "Pan", step: 2, from: round3(cx - size / 2), to: round3(cx + size / 2) }]);
+    default:
+      return out([pt(undefined, cy + size, smooth), pt(undefined, cy - size, smooth)]);
+  }
+}
+
+/**
+ * SU-13 dimmer patterns for a row of fixtures or cells (in grid order): runner (one on at a time), comet (on, then a
+ * tail of `tail` cells fading out), alternate (odd and even), thirds (every third in turn), fill (fill up, then
+ * empty in the same direction), sparkle (one in `every` on at a time, shuffled). Step widths are percent of a beat:
+ * the cycle lasts (sum of widths) / 100 beats at the speed.
+ */
+function patternTemplate(t: Record<string, unknown>, n: number): Effect {
+  if (n < 2) throw new ValidationError(`template ${String(t.type)} needs at least two fixtures or cells`, "template");
+  const on = num("template.on", t.on, 0, 100) ?? 100;
+  const speedBpm = num("template.speed_bpm", t.speed_bpm, 0.01, 6000) ?? 120;
+  const snap = { transition: 0 };
+  const d = (v: number, extra: Partial<Step> = {}): Step => ({ values: { Dimmer: { absolute: v } }, ...snap, ...extra });
+  const spread = { from: 0, to: round3((360 * (n - 1)) / n) };
+  // A width is at most 3200 % of a beat and kept to 0.1 % by the console: long rows scale both widths down, keeping
+  // the ratio as far as 0.1 % allows.
+  const widths = (a: number, b: number): [number, number] => {
+    const k = Math.min(1, MAX_WIDTH / Math.max(a, b));
+    const tenth = (x: number) => Math.round(x * k * 10) / 10;
+    return [tenth(a), tenth(b)];
+  };
+  switch (t.type) {
+    case "runner": {
+      const [w1, w2] = widths(100, 100 * (n - 1));
+      return { unit: "percent", steps: [d(on, { width: w1 }), d(0, { width: w2 })], phaser: { speedBpm, phase: spread } };
+    }
+    case "comet": {
+      const tail = num("template.tail", t.tail, 1, 1000) ?? 3;
+      if (tail >= n) throw new ValidationError(`template.tail must be shorter than the row (${n})`, "template.tail");
+      const [w1, w2] = widths(100 * tail, 100 * (n - tail));
+      return { unit: "percent", steps: [d(on, { width: w1, transition: 100 }), d(0, { width: w2 })], phaser: { speedBpm, phase: spread } };
+    }
+    case "alternate":
+      return { unit: "percent", steps: [d(on), d(0)], phaser: { speedBpm, phase: { from: 0, to: 180 }, repeat: { kind: "groups", count: 2 } } };
+    case "thirds":
+      if (n < 3) throw new ValidationError("template thirds needs at least three fixtures or cells", "template");
+      return { unit: "percent", steps: [d(on, { width: 100 }), d(0, { width: 200 })], phaser: { speedBpm, phase: { from: 0, to: 240 }, repeat: { kind: "groups", count: 3 } } };
+    case "fill":
+      return { unit: "percent", steps: [d(0), d(on)], phaser: { speedBpm, phase: { from: 0, to: round3((180 * (n - 1)) / n) } } };
+    default: {
+      const every = num("template.every", t.every, 2, 1000) ?? 4;
+      const seed = t.seed === undefined ? 1 : finiteNumber("template.seed", t.seed, { integer: true, min: 1, max: 9999 })!;
+      const [w1, w2] = widths(100, 100 * (every - 1));
+      return { unit: "percent", steps: [d(on, { width: w1 }), d(0, { width: w2 })], phaser: { speedBpm, phase: spread, shuffle: seed } };
+    }
+  }
+}
+
+/** The inverse of a step value for a mirrored fixture: relative and physical values change sign, percent becomes 100 - v. */
+export function invertValue(v: StepValue, unit: Unit): StepValue {
+  return {
+    ...(v.absolute !== undefined ? { absolute: unit === "physical" ? -v.absolute : round3(100 - v.absolute) } : {}),
+    ...(v.relative !== undefined ? { relative: -v.relative } : {}),
+  };
+}
+
+/**
+ * Resolve what depends on the fixture count n (fixtures in grid order): phase step and spread become from/to, spreads
+ * and the mirror become per-fixture overrides. Mirror: the fixtures are cut into `wings` equal parts in grid order and
+ * every second part gets the chosen attributes inverted (relative and physical values negated, percent 100 - v).
+ */
+export function planEffect(e: Effect, n: number): { effect: Effect; overrides: Override[] } {
+  const phaser: PhaserLayers = { ...e.phaser };
+  if (phaser.phaseStep) {
+    phaser.phase = { from: phaser.phaseStep.from, to: round3(phaser.phaseStep.from + phaser.phaseStep.step * Math.max(0, n - 1)) };
+    delete phaser.phaseStep;
+  }
+  if (phaser.phaseSpread) {
+    if (n > 1) phaser.phase = { from: 0, to: round3((360 * (n - 1)) / n) };
+    delete phaser.phaseSpread;
+  }
+  const values = new Map<string, StepValue>();
+  const key = (m: number, step: number, a: string) => `${m}|${step}|${a}`;
+  for (const sp of e.spreads ?? []) {
+    for (let m = 0; m < n; m++) values.set(key(m, sp.step, sp.attribute), { absolute: round3(n > 1 ? sp.from + ((sp.to - sp.from) * m) / (n - 1) : sp.from) });
+  }
+  if (e.mirror) {
+    const size = Math.ceil(n / e.mirror.wings);
+    for (let m = 0; m < n; m++) {
+      if (Math.floor(m / size) % 2 !== 1) continue;
+      e.steps.forEach((st, i) => {
+        for (const a of e.mirror!.attributes) {
+          const own = values.get(key(m, i + 1, a)) ?? st.values[a];
+          if (own) values.set(key(m, i + 1, a), invertValue(own, e.unit));
+        }
+      });
+    }
+  }
+  const overrides: Override[] = [...values].map(([k, value]) => {
+    const [m, step, attribute] = k.split("|");
+    return { member: Number(m), step: Number(step), attribute, value };
+  });
+  return { effect: { ...e, phaser }, overrides };
 }
 
 /** Every attribute the effect writes. */
 export const effectAttributes = (e: Effect) => [...new Set(e.steps.flatMap((s) => Object.keys(s.values)))];
 
-/** The console commands that build the effect on a selection, in order. */
-export function effectCommands(e: Effect): string[] {
+/** How the commands select fixtures for per-fixture overrides: the whole selection again, or some fixtures (grid order). */
+export interface Selector {
+  all: string[];
+  some: (members: number[]) => string[];
+}
+
+/**
+ * The console commands that build the effect on a selection, in order. Overrides (mirror, spreads) are written once
+ * every step exists, on the fixtures they belong to (fixtures with the same overrides together), and the whole selection
+ * is restored before the step timing and the phaser layers, which apply to the selection.
+ */
+export function effectCommands(e: Effect, overrides: Override[] = [], select?: Selector): string[] {
   const out: string[] = [];
   const kw = e.unit === "physical" ? " Physical" : "";
+  const write = (attr: string, v: StepValue) => {
+    if (v.absolute !== undefined) out.push(`Attribute "${attr}" At Absolute${kw} ${formatValue(v.absolute)}`);
+    if (v.relative !== undefined) out.push(`Attribute "${attr}" At Relative${kw} ${formatValue(v.relative)}`);
+  };
   e.steps.forEach((s, i) => {
     out.push(`Step ${i + 1}`);
     if (s.preset) out.push(`At Preset ${s.preset.pool}.${s.preset.number}`);
-    for (const [attr, v] of Object.entries(s.values)) {
-      if (v.absolute !== undefined) out.push(`Attribute "${attr}" At Absolute${kw} ${formatValue(v.absolute)}`);
-      if (v.relative !== undefined) out.push(`Attribute "${attr}" At Relative${kw} ${formatValue(v.relative)}`);
-    }
+    for (const [attr, v] of Object.entries(s.values)) write(attr, v);
   });
+  if (overrides.length) {
+    if (!select) throw new Error("overrides need a selector");
+    const byMember = new Map<number, Override[]>();
+    for (const o of overrides) byMember.set(o.member, [...(byMember.get(o.member) ?? []), o]);
+    const groups = new Map<string, { members: number[]; list: Override[] }>();
+    for (const [m, list] of byMember) {
+      const sorted = [...list].sort((a, b) => a.step - b.step || a.attribute.localeCompare(b.attribute));
+      const k = JSON.stringify(sorted.map((o) => [o.step, o.attribute, o.value]));
+      const g = groups.get(k) ?? { members: [], list: sorted };
+      g.members.push(m);
+      groups.set(k, g);
+    }
+    for (const g of groups.values()) {
+      out.push(...select.some(g.members.sort((a, b) => a - b)));
+      let step = -1;
+      for (const o of g.list) {
+        if (o.step !== step) { out.push(`Step ${o.step}`); step = o.step; }
+        write(o.attribute, o.value);
+      }
+    }
+    out.push(...select.all);
+  }
   // Step timing only after every step exists: a step layer set while the programmer has a single step is ignored.
   e.steps.forEach((s, i) => {
     const layers: string[] = [];
@@ -230,11 +459,12 @@ export function effectCommands(e: Effect): string[] {
   });
   const p = e.phaser;
   if (p.repeat) out.push(`Set Selection MAtricks "${REPEAT_PROPERTY[p.repeat.kind]}" ${p.repeat.count}`);
+  if (p.shuffle !== undefined) out.push(`Set Selection MAtricks "XShuffle" ${p.shuffle}`);
   if (p.speedBpm !== undefined) out.push(`At Speed ${formatValue(p.speedBpm)}`);
   if (p.phase) out.push(`At Phase ${formatValue(p.phase.from)} Thru ${formatValue(p.phase.to)}`);
   if (p.measure !== undefined) out.push(`At Measure ${formatValue(p.measure)}`);
   if (p.speedMaster !== undefined) out.push(`At SpeedMaster ${p.speedMaster}`);
-  if (p.repeat) out.push("Reset Selection MAtricks");
+  if (p.repeat || p.shuffle !== undefined) out.push("Reset Selection MAtricks");
   out.push("Step 1");
   return out;
 }
@@ -262,6 +492,14 @@ function expectedPercent(v: number, kind: "absolute" | "relative", unit: Unit, r
 
 const near = (a: unknown, b: unknown, tol: number) => typeof a === "number" && typeof b === "number" && Math.abs(a - b) <= tol;
 
+/** Two phases are the same angle (modulo 360: a spread of 0 -> 12780 may read back wrapped). */
+export const sameAngle = (a: unknown, b: unknown, tol = 0.05): boolean => {
+  if (typeof a !== "number" || typeof b !== "number") return false;
+  const d = ((((a - b) % 360) + 540) % 360) - 180;
+  return Math.abs(d) <= tol;
+};
+const norm360 = (x: number) => Math.round((((x % 360) + 360) % 360) * 100) / 100;
+
 /**
  * The phase a fixture gets: from -> to over its position k of n along grid X, with the repetition applied as the
  * selection MAtricks does it (SB-02: groups repeat every g, wings mirror within each wing, blocks hold b together).
@@ -272,6 +510,9 @@ export function expectedPhase(phase: { from: number; to: number }, k: number, n:
   if (repeat?.kind === "groups") { idx = k % repeat.count; span = Math.min(repeat.count, n); }
   else if (repeat?.kind === "wings") {
     const size = Math.ceil(n / repeat.count);
+    // A wing of one fixture gets the centre end of the distribution (live 2026-10-15: wings 2 on two movers read 180 for
+    // phase 0 Thru 180 on both).
+    if (size === 1) return phase.to;
     const pos = k % size;
     idx = Math.floor(k / size) % 2 === 1 ? size - 1 - pos : pos;
     span = size;
@@ -284,7 +525,15 @@ export function expectedPhase(phase: { from: number; to: number }, k: number, n:
  * the right number of steps, values, step layers, step presets and phaser layers; the phase spreads from -> to over the
  * transformed grid positions. `implied` attributes (activation-group siblings) may be present; anything else may not.
  */
-export function verifyBuild(input: { effect: Effect; rows: BuildRow[]; scope: Map<number, string>; implied: Set<string>; stepPresets: Array<string | undefined> }): { problems: string[]; implied: string[] } {
+export function verifyBuild(input: {
+  effect: Effect;
+  rows: BuildRow[];
+  scope: Map<number, string>;
+  implied: Set<string>;
+  stepPresets: Array<string | undefined>;
+  /** Per-fixture step values (mirror, spreads) by subfixture index, step (1-based) and attribute. */
+  overrideOf?: (sf: number, step: number, attr: string) => StepValue | undefined;
+}): { problems: string[]; implied: string[] } {
   const { effect } = input;
   const problems: string[] = [];
   const attrs = effectAttributes(effect);
@@ -319,7 +568,7 @@ export function verifyBuild(input: { effect: Effect; rows: BuildRow[]; scope: Ma
       effect.steps.forEach((s, i) => {
         const st = r.steps?.[i];
         if (!st) { problems.push(`${where}: step ${i + 1} not read`); return; }
-        const v = s.values[attr];
+        const v = input.overrideOf?.(sf, i + 1, attr) ?? s.values[attr];
         for (const kind of ["absolute", "relative"] as const) {
           if (v?.[kind] === undefined) continue;
           const want = expectedPercent(v[kind]!, kind, effect.unit, r);
@@ -340,9 +589,41 @@ export function verifyBuild(input: { effect: Effect; rows: BuildRow[]; scope: Ma
         const pos = posOf.get(sf);
         if (pos === undefined) { problems.push(`${where}: the grid position was not read, so the phase cannot be checked`); continue; }
         const want = expectedPhase(ph.phase, pos - minPos, span, ph.repeat);
-        if (!near(r.phaser?.phase, want, 0.05)) problems.push(`${where}: phase ${formatValue(want)}° expected (grid position ${pos - minPos} of ${span}${ph.repeat ? `, ${ph.repeat.kind} ${ph.repeat.count}` : ""}), ${r.phaser?.phase ?? "none"} read`);
+        if (ph.shuffle !== undefined) continue; // a shuffled distribution is checked as a whole below
+        if (!sameAngle(r.phaser?.phase, want)) problems.push(`${where}: phase ${formatValue(want)}° expected (grid position ${pos - minPos} of ${span}${ph.repeat ? `, ${ph.repeat.kind} ${ph.repeat.count}` : ""}), ${r.phaser?.phase ?? "none"} read`);
       }
     }
+  }
+  // Shuffle permutes which fixture gets which phase:
+  //   - every attribute of one fixture shares that fixture's phase (one At Phase command sets every active attribute,
+  //     activated siblings and step-preset channels included; review round 1);
+  //   - over the whole selection, the fixtures' phases are the unshuffled set (modulo 360). An attribute that only part
+  //     of a mixed rig has (RGBW's W next to RGB fixtures) takes whatever phase its fixture drew from the whole set, so
+  //     it is checked against its fixture, not against a subset of the distribution (review round 2).
+  const ph = effect.phaser;
+  if (ph.phase && ph.shuffle !== undefined) {
+    const want: number[] = [];
+    const got: number[] = [];
+    for (const [sf, id] of input.scope) {
+      const pos = posOf.get(sf);
+      if (pos !== undefined) want.push(norm360(expectedPhase(ph.phase, pos - minPos, span, ph.repeat)));
+      // Every participating row must carry a phase (review round 3): a row without one is not silently left out.
+      const all = bySf.get(sf) ?? [];
+      const finite = (r: BuildRow) => typeof r.phaser?.phase === "number" && Number.isFinite(r.phaser.phase);
+      for (const r of all.filter((x) => !finite(x))) problems.push(`${id} ${r.attribute}: no phase read (the shuffled distribution cannot be checked)`);
+      const rows = all.filter(finite);
+      if (!rows.length) continue;
+      // The fixture's phase: from an attribute the effect writes, else its first phased row.
+      const own = rows.find((r) => attrs.includes(String(r.attribute))) ?? rows[0];
+      const phase = own.phaser!.phase as number;
+      got.push(norm360(phase));
+      const off = rows.filter((r) => !sameAngle(r.phaser!.phase, phase));
+      if (off.length) problems.push(`${id}: its attributes are out of phase (${rows.map((r) => `${r.attribute} ${norm360(r.phaser!.phase as number)}`).join(", ")})`);
+    }
+    want.sort((x, y) => x - y);
+    got.sort((x, y) => x - y);
+    const same = want.length === got.length && want.every((w, i) => sameAngle(w, got[i]));
+    if (!same) problems.push(`shuffled phases: expected the set ${want.join(", ")} over the fixtures, read ${got.join(", ")}`);
   }
   // A step that calls a preset: every fixture references it in that step (on the preset's attributes), none another.
   input.stepPresets.forEach((sp, i) => {
@@ -355,6 +636,30 @@ export function verifyBuild(input: { effect: Effect; rows: BuildRow[]; scope: Ma
     }
   });
   return { problems: problems.slice(0, 20), implied: [...implied] };
+}
+
+/**
+ * The phase of every fixture in grid order, compactly (SU-13): an arithmetic run as {first, step}, otherwise the list of
+ * values (modulo 360, two decimals). Read from the build check's own programmer scan, so no client-side programmer read
+ * is needed.
+ */
+export function summarizePhases(rows: BuildRow[], order: Array<{ sf: number; id: string }>): Record<string, unknown> | null {
+  const values: Array<number | null> = order.map(({ sf }) => {
+    const r = rows.find((x) => x.subfixtureIndex === sf && typeof x.phaser?.phase === "number");
+    return r ? (r.phaser!.phase as number) : null;
+  });
+  if (!values.some((v) => v !== null)) return null;
+  const head = { fixtures: order.length, first: order[0]?.id, last: order[order.length - 1]?.id };
+  const nums = values.filter((v): v is number => v !== null);
+  if (nums.length === values.length && nums.length > 1) {
+    // The step from the whole run (unrounded), so 360/116 does not drift; the console keeps phases within ±720
+    // (a 180 step reads 0, 180, 360, 540, 720, -540, ...), so the run is compared modulo 360.
+    const first = nums[0];
+    const d = ((((nums[1] - first) % 360) + 540) % 360) - 180;
+    const step = Math.abs(d) < 1e-9 ? 0 : nums[1] - first;
+    if (nums.every((v, i) => sameAngle(v, first + step * i))) return { ...head, first_phase: Math.round(first * 100) / 100, step: Math.round(step * 10000) / 10000 };
+  }
+  return { ...head, phases: values.map((v) => (v === null ? null : norm360(v))) };
 }
 
 // ---------------------------------------------------------------------------
@@ -420,21 +725,28 @@ async function commandsStep(bridge: Gma3Bridge, name: string, commands: string[]
 // gma3_build_phaser
 // ---------------------------------------------------------------------------
 
-interface BuildArgs {
-  preset: string;
+interface EffectArgs {
+  preset?: string;
   fixtures?: unknown[];
   group?: number;
   steps?: unknown[];
   phaser?: unknown;
   template?: unknown;
   unit?: Unit;
+  mirror?: unknown;
+  variants?: unknown;
   mode?: "selective" | "global";
   existing?: "refuse" | "merge" | "overwrite";
   name?: string;
+  verify?: boolean;
+}
+
+interface BuildArgs extends EffectArgs {
+  effects?: Array<Record<string, unknown>>;
   audition_ms?: number;
   exclusive?: boolean;
   preview?: boolean;
-  verify?: boolean;
+  detail?: boolean;
 }
 
 interface Member {
@@ -444,189 +756,326 @@ interface Member {
   x: number;
 }
 
-export async function buildPhaser(ctx: ToolContext, raw: BuildArgs): Promise<OperationResult> {
-  const op = "build_phaser";
-  const v = new Validator();
-  const target: Record<string, unknown> = { preset: raw.preset };
-  const id = v.check(() => presetId("preset", raw.preset));
+/** One preset to build: an effect (a variant is its own job) on its fixtures. */
+interface Job {
+  id: { pool: number; number: number };
+  ref: string;
+  variant?: Variant;
+  effect: Effect;
+  ids: string[];
+  group?: number;
+  mode: "selective" | "global";
+  existing: "refuse" | "merge" | "overwrite";
+  name?: string;
+  verify: boolean;
+}
+
+export const VARIANTS = ["sync", "follow", "mirror"] as const;
+export type Variant = (typeof VARIANTS)[number];
+/** Presets per call (effects x variants). */
+export const MAX_JOBS = 64;
+
+function parseMirror(raw: unknown, path: string): Mirror | undefined {
+  if (raw === undefined) return undefined;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new ValidationError(`${path} must be {attributes, wings?}`, path);
+  const r = raw as Record<string, unknown>;
+  if (!Array.isArray(r.attributes) || r.attributes.length === 0) throw new ValidationError(`${path}.attributes must name the attributes to invert, e.g. ["Pan"]`, path);
+  return { attributes: r.attributes.map((a, i) => attributeName(`${path}.attributes[${i}]`, a)), wings: r.wings === undefined ? 2 : finiteNumber(`${path}.wings`, r.wings, { integer: true, min: 2, max: 64 })! };
+}
+
+/**
+ * The versions of one effect (SU-13): sync (every fixture in phase), follow (the phase spread over the fixtures: the
+ * request's phase, or 0 -> 360 x (n - 1) / n), mirror (the follow spread mirrored about the centre with wings 2, and the
+ * mirror attributes, Pan by default for a position effect, inverted on the second half).
+ */
+export function variantOf(e: Effect, variant: Variant, mirror?: Mirror): Effect {
+  const {
+    phase: _p, phaseStep: _s, phaseSpread: _sp, repeat: _r, shuffle: _sh, ...still
+  } = e.phaser;
+  const distributed = e.phaser.phase || e.phaser.phaseStep || e.phaser.phaseSpread ? { phase: e.phaser.phase, phaseStep: e.phaser.phaseStep, phaseSpread: e.phaser.phaseSpread } : { phaseSpread: true };
+  const clean = (p: PhaserLayers): PhaserLayers => Object.fromEntries(Object.entries(p).filter(([, v]) => v !== undefined)) as PhaserLayers;
+  if (variant === "sync") return { ...e, phaser: clean(still), mirror: undefined };
+  if (variant === "follow") return { ...e, phaser: clean({ ...still, ...distributed, repeat: e.phaser.repeat, shuffle: e.phaser.shuffle }), mirror: undefined };
+  const attrs = mirror?.attributes ?? (effectAttributes(e).includes("Pan") ? ["Pan"] : []);
+  return { ...e, phaser: clean({ ...still, ...distributed, repeat: { kind: "wings", count: mirror?.wings ?? 2 } }), mirror: attrs.length ? { attributes: attrs, wings: mirror?.wings ?? 2 } : undefined };
+}
+
+/** Validate one effect request into its jobs (one per variant, on consecutive presets). Errors go to `v` with `path`. */
+function effectJobs(v: Validator, raw: EffectArgs, path: string): Job[] {
+  const p = (f: string) => (path ? `${path}.${f}` : f);
+  const id = v.check(() => presetId(p("preset"), raw.preset));
   let ids: string[] = [];
-  if ((raw.fixtures === undefined) === (raw.group === undefined)) v.fail("give exactly one of fixtures (ids or ranges, distributed in list order) or group (a stored group, distributed over its grid)");
+  if ((raw.fixtures === undefined) === (raw.group === undefined)) v.fail(`${path ? `${path}: ` : ""}give exactly one of fixtures (ids or ranges, distributed in list order) or group (a stored group, distributed over its grid)`);
   else if (raw.fixtures !== undefined) {
-    if (!Array.isArray(raw.fixtures) || raw.fixtures.length === 0) v.fail("fixtures must be a non-empty list");
-    else raw.fixtures.forEach((f, i) => { const x = v.check(() => expandFixtures(`fixtures[${i}]`, f)); if (x) ids.push(...x); });
+    if (!Array.isArray(raw.fixtures) || raw.fixtures.length === 0) v.fail(`${p("fixtures")} must be a non-empty list`);
+    else raw.fixtures.forEach((f, i) => { const x = v.check(() => expandFixtures(`${p("fixtures")}[${i}]`, f)); if (x) ids.push(...x); });
     ids = [...new Set(ids)];
-    if (ids.length > MAX_FIXTURES) v.fail(`at most ${MAX_FIXTURES} fixtures`);
+    if (ids.length > MAX_FIXTURES) v.fail(`${p("fixtures")}: at most ${MAX_FIXTURES} fixtures`);
   }
-  const group = raw.group === undefined ? undefined : v.check(() => objectNumber("group", raw.group, { max: 9999 }));
+  const group = raw.group === undefined ? undefined : v.check(() => objectNumber(p("group"), raw.group, { max: 9999 }));
   const unit: Unit = raw.unit ?? "percent";
-  if (unit !== "percent" && unit !== "physical") v.fail("unit must be percent or physical");
+  if (unit !== "percent" && unit !== "physical") v.fail(`${p("unit")} must be percent or physical`);
   const mode = raw.mode ?? "selective";
-  if (mode !== "selective" && mode !== "global") v.fail("mode must be selective or global (universal data keeps one value per attribute and cannot hold per-fixture phase)");
+  if (mode !== "selective" && mode !== "global") v.fail(`${p("mode")} must be selective or global (universal data keeps one value per attribute and cannot hold per-fixture phase)`);
   const existing = raw.existing ?? "refuse";
-  if (!["refuse", "merge", "overwrite"].includes(existing)) v.fail("existing must be refuse, merge or overwrite");
-  const name = v.check(() => objectName("name", raw.name, { optional: true }));
-  const audition = raw.audition_ms === undefined ? 0 : v.check(() => finiteNumber("audition_ms", raw.audition_ms, { integer: true, min: 0, max: 30000 })) ?? 0;
-  const preview = raw.preview === true;
-  const verify = raw.verify !== false;
-  if (audition > 0 && !verify) v.fail("audition_ms needs verify: only an effect whose read-back matched is played");
-  if (!preview && raw.exclusive !== true) v.fail("exclusive must be true: the tool switches the console to its Preview environment to build the effect and stores a preset; nobody else may use the console while it runs. preview: true needs no acknowledgement");
+  if (!["refuse", "merge", "overwrite"].includes(existing)) v.fail(`${p("existing")} must be refuse, merge or overwrite`);
+  const name = v.check(() => objectName(p("name"), raw.name, { optional: true }));
   let effect: Effect | undefined;
-  if ((raw.template === undefined) === (raw.steps === undefined)) v.fail("give exactly one of steps (with phaser) or template");
+  if ((raw.template === undefined) === (raw.steps === undefined)) v.fail(`${path ? `${path}: ` : ""}give exactly one of steps (with phaser) or template`);
   else if (raw.template !== undefined) {
-    if (raw.phaser !== undefined || raw.unit !== undefined) v.fail("a template sets its own phaser and unit; to change them, expand it with preview and pass steps and phaser");
-    if (group !== undefined) v.fail("templates take fixtures (their spread depends on the fixture count); for a group pass steps and phaser");
+    if (raw.phaser !== undefined || raw.unit !== undefined) v.fail(`${path ? `${path}: ` : ""}a template sets its own phaser and unit; to change them, expand it with preview and pass steps and phaser`);
+    const type = (raw.template as { type?: unknown } | null)?.type;
+    if (group !== undefined && !(SHAPE_TYPES as readonly unknown[]).includes(type)) v.fail(`${path ? `${path}: ` : ""}this template takes fixtures (its spread depends on the fixture count); a position shape (${SHAPE_TYPES.join(", ")}) also takes a group`);
     effect = v.check(() => expandTemplate(raw.template, ids.length));
   } else {
-    if (!Array.isArray(raw.steps) || raw.steps.length < 2 || raw.steps.length > MAX_STEPS) v.fail(`steps must hold 2-${MAX_STEPS} steps (a phaser has at least two)`);
+    if (!Array.isArray(raw.steps) || raw.steps.length < 2 || raw.steps.length > MAX_STEPS) v.fail(`${p("steps")} must hold 2-${MAX_STEPS} steps (a phaser has at least two)`);
     else {
-      const steps = raw.steps.map((s, i) => v.check(() => parseStep(`steps[${i}]`, s, unit)));
+      const steps = raw.steps.map((s, i) => v.check(() => parseStep(`${p("steps")}[${i}]`, s, unit)));
       const phaser = v.check(() => parsePhaser(raw.phaser));
       if (steps.every((s): s is Step => !!s) && phaser) effect = { steps, phaser, unit };
     }
   }
-  if (!v.ok || !id || !effect) return validationFailure(op, target, v.errors);
-  const ref = `Preset ${id.pool}.${id.number}`;
-  target.presetRef = ref;
+  const mirror = v.check(() => parseMirror(raw.mirror, p("mirror")));
+  if (mirror && effect) for (const a of mirror.attributes) if (!effectAttributes(effect).includes(a)) v.fail(`${p("mirror")}: the effect does not write ${a}`);
+  let variants: Variant[] | undefined;
+  if (raw.variants !== undefined) {
+    if (!Array.isArray(raw.variants) || raw.variants.length === 0 || raw.variants.some((x) => !(VARIANTS as readonly unknown[]).includes(x)) || new Set(raw.variants).size !== raw.variants.length) {
+      v.fail(`${p("variants")} must list distinct variants from ${VARIANTS.join(", ")}`);
+    } else variants = raw.variants as Variant[];
+  }
+  if (!id || !effect) return [];
+  const base = { ids, group, mode, existing, verify: raw.verify !== false } as const;
+  if (!variants) return [{ ...base, id, ref: `Preset ${id.pool}.${id.number}`, effect: mirror ? { ...effect, mirror } : effect, name }];
+  const label = name ?? (typeof (raw.template as { type?: unknown } | undefined)?.type === "string" ? String((raw.template as { type: string }).type) : "Effect");
+  return variants.map((variant, i) => {
+    const n = { pool: id.pool, number: id.number + i };
+    return { ...base, id: n, ref: `Preset ${n.pool}.${n.number}`, variant, effect: variantOf(effect, variant, mirror), name: `${label} ${variant}` };
+  });
+}
+
+/** One job's line in a multi-effect result. */
+interface JobReport {
+  job: Job;
+  steps: StepResult[];
+  members: Member[];
+  stored: OperationResult | null;
+  problems: string[];
+  implied: string[];
+  phases: Record<string, unknown> | null;
+  plan: Record<string, unknown>;
+  status: "not_attempted" | "refused" | "built";
+}
+
+/**
+ * The compact form of a single effect's result (SU-13; a whole-rig result was 80 KB with every step): the steps that
+ * did not succeed with a count of the rest, the command count instead of the commands, the stored preset's outcome and
+ * verification without its rows. detail: true returns the full result.
+ */
+export function compactPhaserResult(r: OperationResult): OperationResult {
+  const stepCounts: Record<string, number> = {};
+  for (const st of r.steps) stepCounts[st.status] = (stepCounts[st.status] ?? 0) + 1;
+  const plan = r.plan as Record<string, unknown> | undefined;
+  const stored = r.stored as Record<string, unknown> | null | undefined;
+  const { actual: _a, expected: _e, ...verification } = r.verification;
+  return {
+    ...r,
+    verification,
+    steps: r.steps.filter((st) => st.status !== "succeeded").map(({ detail: _d, ...rest }) => rest),
+    stepCounts,
+    ...(plan ? { plan: { ...plan, commands: undefined, commandCount: Array.isArray(plan.commands) ? plan.commands.length : undefined } } : {}),
+    ...(stored ? { stored: { outcome: stored.outcome, verification: (stored.verification as Verification | undefined)?.status } } : {}),
+    detailHint: "detail: true returns every step, the console commands and the stored rows",
+  };
+}
+
+export async function buildPhaser(ctx: ToolContext, raw: BuildArgs): Promise<OperationResult> {
+  const op = "build_phaser";
+  const v = new Validator();
+  const multi = raw.effects !== undefined;
+  let jobs: Job[] = [];
+  if (multi) {
+    const own = ["preset", "fixtures", "group", "steps", "template", "phaser", "mirror", "variants", "name"].filter((k) => (raw as Record<string, unknown>)[k] !== undefined);
+    if (own.length) v.fail(`with effects, give ${own.join(", ")} in each effect, not for the whole call (unit, mode, existing and verify may be defaults)`);
+    if (!Array.isArray(raw.effects) || raw.effects.length === 0) v.fail("effects must be a non-empty list");
+    else raw.effects.forEach((e, i) => jobs.push(...effectJobs(v, { unit: raw.unit, mode: raw.mode, existing: raw.existing, verify: raw.verify, ...(e as EffectArgs) }, `effects[${i}]`)));
+  } else jobs = effectJobs(v, raw, "");
+  const dupes = jobs.map((j) => j.ref).filter((r, i, a) => a.indexOf(r) !== i);
+  if (dupes.length) v.fail(`presets built twice in one call: ${[...new Set(dupes)].join(", ")}`);
+  if (jobs.length > MAX_JOBS) v.fail(`at most ${MAX_JOBS} presets per call (effects x variants); got ${jobs.length}`);
+  const audition = raw.audition_ms === undefined ? 0 : v.check(() => finiteNumber("audition_ms", raw.audition_ms, { integer: true, min: 0, max: 30000 })) ?? 0;
+  const preview = raw.preview === true;
+  if (audition > 0 && jobs.length > 1) v.fail("audition_ms plays one effect: build several (effects, variants) without it");
+  if (audition > 0 && jobs.some((j) => !j.verify)) v.fail("audition_ms needs verify: only an effect whose read-back matched is played");
+  if (!preview && raw.exclusive !== true) v.fail("exclusive must be true: the tool switches the console to its Preview environment to build the effect and stores a preset; nobody else may use the console while it runs. preview: true needs no acknowledgement");
+  const target: Record<string, unknown> = multi || jobs.length > 1 ? { presets: jobs.map((j) => `${j.id.pool}.${j.id.number}`) } : { preset: raw.preset };
+  if (!v.ok || jobs.length === 0) return validationFailure(op, target, v.errors);
+  if (!multi && jobs.length === 1) target.presetRef = jobs[0].ref;
   const bridge = ctx.bridge;
   const t = ctx.requestTimeoutMs;
-  const attrs = effectAttributes(effect);
-  const commands = effectCommands(effect);
-  const plan = {
-    steps: effect.steps.map((s, i) => ({ step: i + 1, values: s.values, ...(s.preset ? { preset: `${s.preset.pool}.${s.preset.number}` } : {}), stepTiming: { width: s.width ?? STEP_DEFAULTS.width, transition: s.transition ?? STEP_DEFAULTS.trans, accel: s.accel ?? STEP_DEFAULTS.accel, decel: s.decel ?? STEP_DEFAULTS.decel } })),
-    distribution: effect.phaser.phase ? { phase: effect.phaser.phase, direction: effect.phaser.phase.to >= effect.phaser.phase.from ? "forward" : "reverse", ...(effect.phaser.repeat ? { repeat: effect.phaser.repeat } : {}) } : null,
-    playbackSpeed: { speedBpm: effect.phaser.speedBpm ?? null, measure: effect.phaser.measure ?? null, speedMaster: effect.phaser.speedMaster ?? null },
-    unit: effect.unit,
-    commands,
-  };
+  const single = jobs.length === 1;
+  const pre = (j: Job) => (single ? "" : `preset ${j.id.pool}.${j.id.number}: `);
 
   const body = async (): Promise<OperationResult> => {
-    const members: Member[] = [];
     let normalBefore: Scan | null = null;
-    const stepPresets: Array<string | undefined> = [];
-    const implied = new Set<string>();
     const warnings: string[] = [];
-    const inspect = await runSteps([
-      {
-        name: "read_context",
-        run: async () => {
-          try {
-            const c = (await bridge.request("preset.context", { pool: id.pool }, t)) as PresetContext;
-            if (!c.pool?.exists) return failed("read_context", `preset pool ${id.pool} does not exist`);
-            const look = String(c.preferences?.StoreLook ?? "").trim().toLowerCase();
-            if (look !== "no" && look !== "off") return failed("read_context", `the operator's StoreLook store preference is ${JSON.stringify(c.preferences?.StoreLook)}; a store would take every fixture with an open dimmer`);
-            if (!ALL_POOLS.includes(id.pool) && String(c.preferences?.PresetInputFilter ?? "").toLowerCase() === "yes") warnings.push(`Preset pool ${id.pool} is a feature-group pool with the input filter on: attributes of other feature groups would be refused by the store; an All pool (21-25) takes any effect`);
-            const p = await bridge.request("preset.read", { ref }, t).catch((err: unknown) => (err instanceof BridgeError && /no objects? found/i.test(err.message) ? null : Promise.reject(err)));
-            const pr = p as PresetRead | null;
-            if (pr) {
-              if (String(pr.lock ?? "").trim() !== "") return failed("read_context", `${ref} is locked`);
-              if (existing === "refuse") return failed("read_context", `${ref} already exists; pass existing: "merge" or "overwrite"`);
-            }
-            return asRead({ name: "read_context", status: "succeeded", op: "preset.context", detail: { exists: !!pr } });
-          } catch (err) {
-            return readStepFromError("read_context", "preset.context", err);
-          }
-        },
-      },
-      {
-        name: "resolve_fixtures",
-        run: async () => {
-          try {
-            if (group !== undefined) {
-              let g: { items: Array<{ fixture?: string | null; addr?: string | null; sfIndex?: number; x?: number; unreadable?: boolean }> };
-              try {
-                g = (await bridge.request("group.read", { ref: `Group ${group}` }, t)) as typeof g;
-              } catch (err) {
-                if (err instanceof BridgeError && /no objects? found/i.test(err.message)) return failed("resolve_fixtures", `Group ${group} does not exist`);
-                throw err;
+    const reports: JobReport[] = jobs.map((job) => ({ job, steps: [], members: [], stored: null, problems: [], implied: [], phases: null, plan: {}, status: "not_attempted" }));
+    const plans = new Map<Job, { effect: Effect; overrides: Override[]; commands: string[]; select: string[]; stepPresets: Array<string | undefined>; implied: Set<string>; members: Member[] }>();
+
+    // 1. Inspection per job (nothing is sent when any fails), then the Normal programmer once.
+    const inspectPlan: Array<{ name: string; run: () => Promise<StepResult> }> = [];
+    for (const job of jobs) {
+      const { effect, id, ref, group, ids, existing } = job;
+      const members: Member[] = [];
+      const stepPresets: Array<string | undefined> = [];
+      const implied = new Set<string>();
+      const attrs = effectAttributes(effect);
+      const P = pre(job);
+      inspectPlan.push(
+        {
+          name: `${P}read_context`,
+          run: async () => {
+            const name = `${P}read_context`;
+            try {
+              const c = (await bridge.request("preset.context", { pool: id.pool }, t)) as PresetContext;
+              if (!c.pool?.exists) return failed(name, `preset pool ${id.pool} does not exist`);
+              const look = String(c.preferences?.StoreLook ?? "").trim().toLowerCase();
+              if (look !== "no" && look !== "off") return failed(name, `the operator's StoreLook store preference is ${JSON.stringify(c.preferences?.StoreLook)}; a store would take every fixture with an open dimmer`);
+              if (!ALL_POOLS.includes(id.pool) && String(c.preferences?.PresetInputFilter ?? "").toLowerCase() === "yes") warnings.push(`Preset pool ${id.pool} is a feature-group pool with the input filter on: attributes of other feature groups would be refused by the store; an All pool (21-25) takes any effect`);
+              const pr = (await bridge.request("preset.read", { ref }, t).catch((err: unknown) => (err instanceof BridgeError && /no objects? found/i.test(err.message) ? null : Promise.reject(err)))) as PresetRead | null;
+              if (pr) {
+                if (String(pr.lock ?? "").trim() !== "") return failed(name, `${ref} is locked`);
+                if (existing === "refuse") return failed(name, `${ref} already exists; pass existing: "merge" or "overwrite"`);
               }
-              for (const it of g.items) {
-                // Members are resolved by fixture id: a numeric Addr() path does not resolve back through FromAddr.
-                if (it.unreadable || !it.fixture || typeof it.sfIndex !== "number") return failed("resolve_fixtures", `Group ${group} holds an item without a fixture id; it cannot be checked`);
-                members.push({ id: it.fixture, sfIndex: it.sfIndex, ref: `Fixture ${it.fixture}`, x: it.x ?? 0 });
-              }
-              if (members.length === 0) return failed("resolve_fixtures", `Group ${group} is empty`);
-            } else {
-              for (const [i, fid] of ids.entries()) members.push({ id: fid, sfIndex: -1, ref: `Fixture ${fid}`, x: i });
+              return asRead({ name, status: "succeeded", op: "preset.context", detail: { exists: !!pr } });
+            } catch (err) {
+              return readStepFromError(name, "preset.context", err);
             }
-            if (effect.steps.some((s) => s.preset) === false && members.length > MAX_FIXTURES) return failed("resolve_fixtures", `at most ${MAX_FIXTURES} fixtures`);
-            const missing: string[] = [];
-            const unsupported: string[] = [];
-            for (const m of members) {
-              let fa: { subfixtureIndex?: number; attributes?: Array<{ attribute?: string; activationGroup?: string }> };
-              try {
-                fa = (await bridge.request("fixtureAttributes", { ref: m.ref, limit: 500 }, t)) as typeof fa;
-              } catch (err) {
-                if (err instanceof BridgeError && /no objects? found|no object at address/i.test(err.message)) { missing.push(m.id); continue; }
-                throw err;
+          },
+        },
+        {
+          name: `${P}resolve_fixtures`,
+          run: async () => {
+            const name = `${P}resolve_fixtures`;
+            try {
+              if (group !== undefined) {
+                let g: { items: Array<{ fixture?: string | null; addr?: string | null; sfIndex?: number; x?: number; unreadable?: boolean }> };
+                try {
+                  g = (await bridge.request("group.read", { ref: `Group ${group}` }, t)) as typeof g;
+                } catch (err) {
+                  if (err instanceof BridgeError && /no objects? found/i.test(err.message)) return failed(name, `Group ${group} does not exist`);
+                  throw err;
+                }
+                for (const it of g.items) {
+                  // Members are resolved by fixture id: a numeric Addr() path does not resolve back through FromAddr.
+                  if (it.unreadable || !it.fixture || typeof it.sfIndex !== "number") return failed(name, `Group ${group} holds an item without a fixture id; it cannot be checked`);
+                  members.push({ id: it.fixture, sfIndex: it.sfIndex, ref: `Fixture ${it.fixture}`, x: it.x ?? 0 });
+                }
+                if (members.length === 0) return failed(name, `Group ${group} is empty`);
+                if (members.length > MAX_FIXTURES) return failed(name, `Group ${group} holds ${members.length} items; at most ${MAX_FIXTURES}`);
+              } else {
+                for (const [i, fid] of ids.entries()) members.push({ id: fid, sfIndex: -1, ref: `Fixture ${fid}`, x: i });
               }
-              if (typeof fa.subfixtureIndex === "number") m.sfIndex = fa.subfixtureIndex;
-              const have = new Map((fa.attributes ?? []).map((a) => [String(a.attribute), a.activationGroup]));
-              const lacking = attrs.filter((a) => !have.has(a));
-              if (lacking.length) unsupported.push(`${m.id} has no ${lacking.join(", ")}`);
-              for (const a of attrs) {
-                const ag = have.get(a);
-                if (ag) for (const [other, og] of have) if (og === ag && other !== a) implied.add(other);
+              const missing: string[] = [];
+              const unsupported: string[] = [];
+              for (const m of members) {
+                let fa: { subfixtureIndex?: number; attributes?: Array<{ attribute?: string; activationGroup?: string }> };
+                try {
+                  fa = (await bridge.request("fixtureAttributes", { ref: m.ref, limit: 500 }, t)) as typeof fa;
+                } catch (err) {
+                  if (err instanceof BridgeError && /no objects? found|no object at address/i.test(err.message)) { missing.push(m.id); continue; }
+                  throw err;
+                }
+                if (typeof fa.subfixtureIndex === "number") m.sfIndex = fa.subfixtureIndex;
+                const have = new Map((fa.attributes ?? []).map((a) => [String(a.attribute), a.activationGroup]));
+                const lacking = attrs.filter((a) => !have.has(a));
+                if (lacking.length) unsupported.push(`${m.id} has no ${lacking.join(", ")}`);
+                for (const a of attrs) {
+                  const ag = have.get(a);
+                  if (ag) for (const [other, og] of have) if (og === ag && other !== a) implied.add(other);
+                }
               }
+              if (missing.length) return failed(name, `not in the patch: ${missing.join(", ")}`);
+              if (unsupported.length) return failed(name, `unsupported attributes for this selection (the console would answer OK and ignore them): ${unsupported.slice(0, 20).join("; ")}${unsupported.length > 20 ? ` and ${unsupported.length - 20} more` : ""}`, { unsupported: unsupported.slice(0, 50) });
+              return asRead({ name, status: "succeeded", op: "fixtureAttributes", detail: { fixtures: members.length, implied: [...implied] } });
+            } catch (err) {
+              return readStepFromError(name, "fixtureAttributes", err);
             }
-            if (missing.length) return failed("resolve_fixtures", `not in the patch: ${missing.join(", ")}`);
-            if (unsupported.length) return failed("resolve_fixtures", `unsupported attributes for this selection (the console would answer OK and ignore them): ${unsupported.join("; ")}`, { unsupported });
-            return asRead({ name: "resolve_fixtures", status: "succeeded", op: "fixtureAttributes", detail: { fixtures: members.length, implied: [...implied] } });
-          } catch (err) {
-            return readStepFromError("resolve_fixtures", "fixtureAttributes", err);
-          }
+          },
         },
-      },
-      {
-        name: "check_step_presets",
-        run: async () => {
-          try {
-            for (const s of effect.steps) {
-              if (!s.preset) { stepPresets.push(undefined); continue; }
-              const r = `Preset ${s.preset.pool}.${s.preset.number}`;
-              const p = await bridge.request("preset.read", { ref: r }, t).catch((err: unknown) => (err instanceof BridgeError && /no objects? found/i.test(err.message) ? null : Promise.reject(err)));
-              if (!p) return failed("check_step_presets", `${r} (a step preset) does not exist`);
-              stepPresets.push((p as PresetRead).addrNative);
+        {
+          name: `${P}check_step_presets`,
+          run: async () => {
+            const name = `${P}check_step_presets`;
+            try {
+              for (const s of effect.steps) {
+                if (!s.preset) { stepPresets.push(undefined); continue; }
+                const r = `Preset ${s.preset.pool}.${s.preset.number}`;
+                const p = await bridge.request("preset.read", { ref: r }, t).catch((err: unknown) => (err instanceof BridgeError && /no objects? found/i.test(err.message) ? null : Promise.reject(err)));
+                if (!p) return failed(name, `${r} (a step preset) does not exist`);
+                stepPresets.push((p as PresetRead).addrNative);
+              }
+              // Everything that depends on the fixture count and order: phase step and spread, mirror, spreads.
+              const order = [...members].map((m, i) => ({ m, i })).sort((a, b) => a.m.x - b.m.x || a.i - b.i).map((x) => x.m);
+              const planned = planEffect(effect, order.length);
+              const select = group !== undefined ? ["ClearSelection", "Grid 0/0/0", `Group ${group}`] : ["ClearSelection", ...members.flatMap((m) => [`Grid ${m.x}/0/0`, m.ref])];
+              const commands = effectCommands(planned.effect, planned.overrides, { all: select, some: (ms) => ["ClearSelection", ...ms.map((k) => order[k].ref)] });
+              plans.set(job, { ...planned, commands, select, stepPresets, implied, members: order });
+              return asRead({ name, status: "succeeded", op: "preset.read" });
+            } catch (err) {
+              return readStepFromError(name, "preset.read", err);
             }
-            return asRead({ name: "check_step_presets", status: "succeeded", op: "preset.read" });
-          } catch (err) {
-            return readStepFromError("check_step_presets", "preset.read", err);
-          }
+          },
         },
+      );
+    }
+    inspectPlan.push({
+      name: "read_normal_programmer",
+      run: async () => {
+        try {
+          normalBefore = await scan(bridge, t);
+        } catch (err) {
+          return readStepFromError("read_normal_programmer", "programmer", err);
+        }
+        const nb = normalBefore as Scan;
+        if (nb.environment !== "Normal") return failed("read_normal_programmer", `the console is in the ${nb.environment} environment; the tool builds in Preview and must start from Normal (gma3_phaser_release leaves Preview)`);
+        if (audition > 0 && nb.rows.length) return failed("read_normal_programmer", `audition_ms needs an empty Normal programmer (it holds ${nb.rows.length} value(s)); clear it or omit audition_ms`);
+        return asRead({ name: "read_normal_programmer", status: "succeeded", op: "programmer", detail: { environment: nb.environment, values: nb.rows.length } });
       },
-      {
-        name: "read_normal_programmer",
-        run: async () => {
-          try {
-            normalBefore = await scan(bridge, t);
-          } catch (err) {
-            return readStepFromError("read_normal_programmer", "programmer", err);
-          }
-          const nb = normalBefore as Scan;
-          if (nb.environment !== "Normal") return failed("read_normal_programmer", `the console is in the ${nb.environment} environment; the tool builds in Preview and must start from Normal (gma3_phaser_release leaves Preview)`);
-          if (audition > 0 && nb.rows.length) return failed("read_normal_programmer", `audition_ms needs an empty Normal programmer (it holds ${nb.rows.length} value(s)); clear it or omit audition_ms`);
-          return asRead({ name: "read_normal_programmer", status: "succeeded", op: "programmer", detail: { environment: nb.environment, values: nb.rows.length } });
-        },
-      },
-    ]);
-    const extra: Record<string, unknown> = { plan, fixtures: members.map((m) => m.id) };
+    });
+    const inspect = await runSteps(inspectPlan);
+    const planOf = (job: Job): Record<string, unknown> => {
+      const pl = plans.get(job);
+      const e = pl?.effect ?? job.effect;
+      return {
+        ...(job.variant ? { variant: job.variant } : {}),
+        steps: e.steps.map((s, i) => ({ step: i + 1, values: s.values, ...(s.preset ? { preset: `${s.preset.pool}.${s.preset.number}` } : {}), stepTiming: { width: s.width ?? STEP_DEFAULTS.width, transition: s.transition ?? STEP_DEFAULTS.trans, accel: s.accel ?? STEP_DEFAULTS.accel, decel: s.decel ?? STEP_DEFAULTS.decel } })),
+        distribution: e.phaser.phase ? { phase: e.phaser.phase, direction: e.phaser.phase.to >= e.phaser.phase.from ? "forward" : "reverse", ...(e.phaser.repeat ? { repeat: e.phaser.repeat } : {}), ...(e.phaser.shuffle !== undefined ? { shuffle: e.phaser.shuffle } : {}) } : null,
+        ...(e.mirror ? { mirror: e.mirror } : {}),
+        ...(pl?.overrides.length ? { perFixtureValues: pl.overrides.length } : {}),
+        playbackSpeed: { speedBpm: e.phaser.speedBpm ?? null, measure: e.phaser.measure ?? null, speedMaster: e.phaser.speedMaster ?? null },
+        unit: e.unit,
+        commands: pl?.commands ?? effectCommands(e),
+      };
+    };
+    const singleExtra = (): Record<string, unknown> => ({ plan: planOf(jobs[0]), fixtures: (plans.get(jobs[0])?.members ?? []).map((m) => m.id) });
     if (inspect.outcome !== "succeeded") {
-      return buildResult({ operation: op, target, steps: inspect.steps, summary: `${op} was not performed; nothing was sent: ${inspect.steps.find((s) => s.status !== "succeeded")?.error ?? "inspection failed"}`, warnings, extra });
+      return buildResult({ operation: op, target, steps: inspect.steps, summary: `${op} was not performed; nothing was sent: ${inspect.steps.find((s) => s.status !== "succeeded")?.error ?? "inspection failed"}`, warnings, extra: single ? singleExtra() : { plans: jobs.map((j) => ({ preset: `${j.id.pool}.${j.id.number}`, ...planOf(j) })) } });
     }
     if (preview) {
-      return buildResult({ operation: op, target, steps: inspect.steps, summary: `Preview only; nothing was sent. ${effect.steps.length} steps on ${members.length} fixture(s) would be built in the Preview environment and stored into ${ref}.`, warnings, extra: { ...extra, preview: true } });
+      const sum = jobs.map((j) => `${j.effect.steps.length} steps on ${plans.get(j)?.members.length ?? 0} fixture(s) into ${j.ref}${j.variant ? ` (${j.variant})` : ""}`).join("; ");
+      return buildResult({ operation: op, target, steps: inspect.steps, summary: `Preview only; nothing was sent. In the Preview environment: ${sum}.`, warnings, extra: single ? { ...singleExtra(), preview: true } : { plans: jobs.map((j) => ({ preset: `${j.id.pool}.${j.id.number}`, ...planOf(j) })), preview: true } });
     }
 
+    // 2. Build every job in one Preview session.
     const steps: StepResult[] = [...inspect.steps];
-    const scope = new Map(members.map((m) => [m.sfIndex, m.id]));
     let entered = false;
-    let built: { problems: string[]; implied: string[] } | null = null;
-    let storeResult: OperationResult | null = null;
     try {
       const enter = await commandStep(bridge, "preview_on", "Preview On", t);
       steps.push(enter);
       entered = enter.status === "succeeded" || enter.status === "unknown";
+      let ready = false;
       if (enter.status === "succeeded") {
-        const main = await runSteps([
+        const chk = await runSteps([
           {
             name: "check_preview",
             run: async () => {
@@ -640,47 +1089,89 @@ export async function buildPhaser(ctx: ToolContext, raw: BuildArgs): Promise<Ope
               }
             },
           },
-          {
-            name: "select",
-            run: () => commandsStep(bridge, "select", group !== undefined ? ["ClearSelection", "Grid 0/0/0", `Group ${group}`] : ["ClearSelection", ...members.flatMap((m) => [`Grid ${m.x}/0/0`, m.ref])], t),
-          },
-          { name: "build", run: () => commandsStep(bridge, "build", commands, t) },
-          {
-            name: "check_build",
+        ]);
+        steps.push(...chk.steps);
+        ready = chk.outcome === "succeeded";
+      }
+      for (let i = 0; i < reports.length && ready; i++) {
+        const rep = reports[i];
+        const job = rep.job;
+        const pl = plans.get(job)!;
+        const P = pre(job);
+        rep.members = pl.members;
+        rep.plan = planOf(job);
+        const scope = new Map(pl.members.map((m) => [m.sfIndex, m.id]));
+        const overrideMap = new Map(pl.overrides.map((o) => [`${pl.members[o.member].sfIndex}|${o.step}|${o.attribute}`, o.value]));
+        const jobPlan: Array<{ name: string; run: () => Promise<StepResult> }> = [];
+        if (i > 0) {
+          // The previous preset's values stay in the Preview programmer: ClearAll only after Preview is confirmed.
+          jobPlan.push({
+            name: `${P}confirm_preview`,
             run: async () => {
               try {
                 const s = await scan(bridge, t);
-                built = verifyBuild({ effect, rows: s.rows, scope, implied, stepPresets });
-                if (built.problems.length) return failed("check_build", `the built phaser does not match the request: ${built.problems.join("; ")}`, { problems: built.problems });
-                return asRead({ name: "check_build", status: "succeeded", op: "programmer", detail: { values: s.rows.length, implied: built.implied } });
+                if (s.environment !== "Preview") return failed(`${P}confirm_preview`, `the console left the Preview environment (now ${s.environment}); nothing more was built`);
+                return asRead({ name: `${P}confirm_preview`, status: "succeeded", op: "programmer" });
               } catch (err) {
-                return readStepFromError("check_build", "programmer", err);
+                return readStepFromError(`${P}confirm_preview`, "programmer", err);
+              }
+            },
+          });
+          jobPlan.push({ name: `${P}clear`, run: () => commandStep(bridge, `${P}clear`, "ClearAll", t) });
+        }
+        jobPlan.push(
+          { name: `${P}select`, run: () => commandsStep(bridge, `${P}select`, pl.select, t) },
+          { name: `${P}build`, run: () => commandsStep(bridge, `${P}build`, pl.commands, t) },
+          {
+            name: `${P}check_build`,
+            run: async () => {
+              const name = `${P}check_build`;
+              try {
+                const s = await scan(bridge, t);
+                const b = verifyBuild({ effect: pl.effect, rows: s.rows, scope, implied: pl.implied, stepPresets: pl.stepPresets, overrideOf: (sf, step, attr) => overrideMap.get(`${sf}|${step}|${attr}`) });
+                rep.problems = b.problems;
+                rep.implied = b.implied;
+                rep.phases = pl.effect.phaser.phase ? summarizePhases(s.rows, pl.members.map((m) => ({ sf: m.sfIndex, id: m.id }))) : null;
+                if (b.problems.length) return failed(name, `the built phaser does not match the request: ${b.problems.join("; ")}`, { problems: b.problems });
+                return asRead({ name, status: "succeeded", op: "programmer", detail: { values: s.rows.length, implied: b.implied } });
+              } catch (err) {
+                return readStepFromError(name, "programmer", err);
               }
             },
           },
           {
-            name: "store",
+            name: `${P}store`,
             run: async () => {
               const p = prepareStorePreset(ctx, {
-                preset: `${id.pool}.${id.number}`,
-                fixtures: members.map((m) => m.id),
-                mode,
-                existing,
+                preset: `${job.id.pool}.${job.id.number}`,
+                fixtures: pl.members.map((m) => m.id),
+                mode: job.mode,
+                existing: job.existing,
                 layers: ["absolute", "relative", "phaser"],
-                embed: stepPresets.some((x) => x),
-                name,
+                embed: pl.stepPresets.some((x) => x),
+                name: job.name,
                 exclusive: true,
-                verify,
+                verify: job.verify,
                 environment: "Preview",
               });
-              storeResult = "operation" in p ? p : await p.body();
-              const r = storeResult as OperationResult;
+              const r = "operation" in p ? p : await p.body();
+              rep.stored = r;
               const ok = r.outcome === "succeeded" && r.verification.status !== "mismatched";
-              return { name: "store", status: ok ? "succeeded" : r.outcome === "unknown" ? "unknown" : "failed", op: "gma3_store_preset", detail: { outcome: r.outcome, verification: r.verification.status }, ...(ok ? {} : { error: r.summary }) };
+              // A store with a step that got no reply (its name write after the store, say) is uncertain, not failed:
+              // the build stops there instead of going on to the next preset.
+              const uncertain = r.outcome === "unknown" || r.steps.some((st) => st.status === "unknown" && st.kind !== "read");
+              const status = uncertain ? "unknown" : ok ? "succeeded" : "failed";
+              return { name: `${P}store`, status, op: "gma3_store_preset", detail: { outcome: r.outcome, verification: r.verification.status }, ...(status === "succeeded" ? {} : { error: r.summary }) };
             },
           },
-        ]);
-        steps.push(...main.steps);
+        );
+        const run = await runSteps(jobPlan);
+        steps.push(...run.steps);
+        rep.steps = run.steps;
+        rep.status = "built";
+        // A failed effect does not stop the others; an unknown step (or leaving Preview) stops the build.
+        const bad = run.steps.find((s) => s.status === "unknown" || (s.name === `${P}confirm_preview` && s.status !== "succeeded"));
+        if (bad) ready = false;
       }
     } finally {
       // Leave the Preview environment whatever happened, once it may have been entered. ClearAll is sent only after
@@ -712,39 +1203,94 @@ export async function buildPhaser(ctx: ToolContext, raw: BuildArgs): Promise<Ope
         steps.push(readStepFromError("check_normal_programmer", "programmer", err));
       }
     }
-    const stored = storeResult as OperationResult | null;
-    // Only a stored and verified effect is played.
-    const storedOk = !!stored && stored.outcome === "succeeded" && stored.verification.status === "matched";
-    // Audition: explicit only, in the (empty) Normal programmer, always released.
-    let auditioned: unknown = null;
-    if (audition > 0 && storedOk && untouched) {
-      const sel = group !== undefined ? ["ClearSelection", "Grid 0/0/0", `Group ${group}`] : ["ClearSelection", ...members.flatMap((m) => [`Grid ${m.x}/0/0`, m.ref])];
-      try {
-        const a = await commandsStep(bridge, "audition", [...sel, `At Preset ${id.pool}.${id.number}`], t);
-        steps.push(a);
-        if (a.status === "succeeded") await new Promise((r) => setTimeout(r, audition));
-      } finally {
-        steps.push(await commandStep(bridge, "audition_release", "ClearAll", t));
-      }
-      try {
-        const after = await scan(bridge, t);
-        const clear = after.rows.length === 0;
-        steps.push(asRead({ name: "check_audition_released", status: clear ? "succeeded" : "failed", op: "programmer", ...(clear ? {} : { error: `the Normal programmer still holds ${after.rows.length} value(s) after the audition; run gma3_phaser_release with clear_normal` }) }));
-        auditioned = { ms: audition, released: clear };
-      } catch (err) {
-        steps.push(readStepFromError("check_audition_released", "programmer", err));
-      }
-    } else if (audition > 0) warnings.push("the audition was skipped: it needs a stored effect whose read-back matched, and an untouched Normal programmer");
 
-    let verification: Verification = notRequested();
-    if (stored) {
-      verification = stored.verification;
-      if (untouched === false) verification = { status: "mismatched", checked: `${verification.checked ?? "the stored preset"} and the Normal programmer`, detail: "the Normal programmer is not as it was before the build" };
+    if (single) {
+      const rep = reports[0];
+      const job = rep.job;
+      const stored = rep.stored;
+      // Only a stored and verified effect is played.
+      const storedOk = !!stored && stored.outcome === "succeeded" && stored.verification.status === "matched";
+      // Audition: explicit only, in the (empty) Normal programmer, always released.
+      let auditioned: unknown = null;
+      if (audition > 0 && storedOk && untouched) {
+        const sel = plans.get(job)!.select;
+        try {
+          const a = await commandsStep(bridge, "audition", [...sel, `At Preset ${job.id.pool}.${job.id.number}`], t);
+          steps.push(a);
+          if (a.status === "succeeded") await new Promise((r) => setTimeout(r, audition));
+        } finally {
+          steps.push(await commandStep(bridge, "audition_release", "ClearAll", t));
+        }
+        try {
+          const after = await scan(bridge, t);
+          const clear = after.rows.length === 0;
+          steps.push(asRead({ name: "check_audition_released", status: clear ? "succeeded" : "failed", op: "programmer", ...(clear ? {} : { error: `the Normal programmer still holds ${after.rows.length} value(s) after the audition; run gma3_phaser_release with clear_normal` }) }));
+          auditioned = { ms: audition, released: clear };
+        } catch (err) {
+          steps.push(readStepFromError("check_audition_released", "programmer", err));
+        }
+      } else if (audition > 0) warnings.push("the audition was skipped: it needs a stored effect whose read-back matched, and an untouched Normal programmer");
+
+      let verification: Verification = notRequested();
+      if (stored) {
+        verification = stored.verification;
+        if (untouched === false) verification = { status: "mismatched", checked: `${verification.checked ?? "the stored preset"} and the Normal programmer`, detail: "the Normal programmer is not as it was before the build" };
+      }
+      if (stored?.warnings) warnings.push(...stored.warnings);
+      if (rep.implied.length) warnings.push(`stored with the effect (the rest of an activation group, or attributes of a step preset): ${rep.implied.join(", ")}`);
+      const full = buildResult({ operation: op, target, steps, verification, warnings, extra: { ...singleExtra(), phases: rep.phases, normalProgrammerUntouched: untouched, stored: stored ? { outcome: stored.outcome, verification: stored.verification, resulting: (stored as Record<string, unknown>).resulting ?? null } : null, audition: auditioned } });
+      return raw.detail === true ? full : compactPhaserResult(full);
     }
-    if (stored?.warnings) warnings.push(...stored.warnings);
-    const b = built as { problems: string[]; implied: string[] } | null;
-    if (b?.implied.length) warnings.push(`stored with the effect (the rest of an activation group, or attributes of a step preset): ${b.implied.join(", ")}`);
-    return buildResult({ operation: op, target, steps, verification, warnings, extra: { ...extra, normalProgrammerUntouched: untouched, stored: stored ? { outcome: stored.outcome, verification: stored.verification, resulting: (stored as Record<string, unknown>).resulting ?? null } : null, audition: auditioned } });
+
+    // Several presets: one line per preset, the shared steps, and every step with detail: true.
+    const lines = reports.map((rep, i) => {
+      const j = rep.job;
+      const stored = rep.stored;
+      const bad = rep.steps.find((s) => s.status === "failed" || s.status === "unknown");
+      const outcome = rep.status === "not_attempted" ? "not_attempted" : stored ? stored.outcome : bad?.status === "unknown" ? "unknown" : "failed";
+      const verification = stored ? (untouched === false ? "mismatched" : stored.verification.status) : rep.status === "not_attempted" ? "not_attempted" : "not_requested";
+      const summary = rep.status === "not_attempted" ? "not attempted: the build stopped before this preset" : stored && !bad ? stored.summary : `${bad?.name ?? "build"}: ${bad?.error ?? "failed"}`;
+      // A step that got no reply, here or inside the store, keeps the preset's state unknown (review round 1).
+      const uncertain = rep.steps.some((st) => st.status === "unknown" && st.kind !== "read") || (!!stored && (stored.outcome === "unknown" || stored.steps.some((st) => st.status === "unknown" && st.kind !== "read")));
+      const problemSteps = [...rep.steps, ...(stored?.steps ?? [])].filter((st) => st.status === "failed" || st.status === "unknown").map((st) => ({ name: st.name, status: st.status, ...(st.error ? { error: st.error.length > 300 ? `${st.error.slice(0, 299)}…` : st.error } : {}) }));
+      return {
+        item: i + 1,
+        target: `${j.ref}${j.variant ? ` (${j.variant})` : ""}${j.name ? ` "${j.name}"` : ""}`,
+        outcome,
+        verification,
+        summary: summary.length > 400 ? `${summary.slice(0, 399)}…` : summary,
+        ...(uncertain ? { uncertain: true } : {}),
+        ...(rep.phases ? { phases: rep.phases } : {}),
+        ...(raw.detail === true ? { plan: rep.plan, steps: rep.steps, stored } : problemSteps.length ? { steps: problemSteps } : {}),
+      };
+    });
+    const ok = lines.filter((l) => l.outcome === "succeeded").length;
+    // Persistent work: a preset that was stored, even when a later step of it failed or got no reply (outcome partial).
+    const worked = lines.filter((l) => l.outcome === "succeeded" || l.outcome === "partial").length;
+    const common = steps.filter((s) => !jobs.some((j) => s.name.startsWith(pre(j))));
+    const commonBad = common.find((s) => s.status === "failed" || s.status === "unknown");
+    const outcome = ok === lines.length && !commonBad ? "succeeded" : worked > 0 ? "partial" : lines.some((l) => l.outcome === "unknown" || l.uncertain) ? "unknown" : "failed";
+    const mism = lines.filter((l) => l.verification === "mismatched");
+    const verification: Verification =
+      mism.length || untouched === false
+        ? { status: "mismatched", checked: "each preset's build check and read-back, and the Normal programmer", detail: [...mism.map((l) => `item ${l.item} (${l.target}): ${l.summary}`), ...(untouched === false ? ["the Normal programmer is not as it was before the build"] : [])].join("; ") }
+        : lines.every((l) => l.verification === "matched")
+          ? { status: "matched", checked: "each preset's build check and read-back, and the Normal programmer" }
+          : { status: "unavailable", checked: "each preset's build check and read-back", detail: lines.filter((l) => l.verification !== "matched").map((l) => `item ${l.item} (${l.target}): ${l.verification}`).join("; ") };
+    for (const rep of reports) if (rep.stored?.warnings) warnings.push(...rep.stored.warnings.map((w) => `${rep.job.ref}: ${w}`));
+    const first = lines.find((l) => l.outcome !== "succeeded");
+    return {
+      operation: op,
+      target,
+      outcome,
+      verification,
+      steps: raw.detail === true ? steps : common.map((s) => ({ name: s.name, status: s.status, ...(s.error ? { error: s.error } : {}) })),
+      summary: `build_phaser: ${lines.length} preset(s): ${ok} succeeded${worked > ok ? `, ${worked - ok} stored with a later step that did not succeed` : ""}${lines.some((l) => l.uncertain) ? "; a step got no reply, so the console's state is not known" : ""}${first ? `. First problem, item ${first.item} (${first.target}): ${first.summary}` : ""}.`,
+      ...(warnings.length ? { warnings } : {}),
+      items: lines,
+      normalProgrammerUntouched: untouched,
+      ...(raw.detail === true ? {} : { detailHint: "detail: true returns every preset's plan, steps and store result" }),
+    };
   };
   return preview ? body() : ctx.mutations.run(body);
 }
@@ -799,6 +1345,21 @@ const stepSchema = z.object({
   decel: z.number().optional().describe("Step timing: deceleration (default 0)."),
 });
 
+const phaserSchema = z
+  .object({
+    speed_bpm: z.number().optional().describe("Playback speed in BPM."),
+    phase: z.union([z.object({ from: z.number(), to: z.number() }), z.object({ from: z.number().optional(), step: z.number() }), z.literal("spread")]).optional().describe('{from, to}, {from, step} (degrees per fixture) or "spread".'),
+    measure: z.number().optional().describe("Beats one phaser cycle lasts at the speed."),
+    speed_master: z.number().optional(),
+    repeat: z.object({ groups: z.number().optional(), wings: z.number().optional(), blocks: z.number().optional() }).optional(),
+    shuffle: z.number().optional().describe("XShuffle seed: permutes the phase distribution."),
+  })
+  .optional()
+  .describe("Phaser layers: playback speed, phase distribution, measure, speed master, repetition, shuffle.");
+const templateSchema = z.object({ type: z.enum(TEMPLATE_TYPES as unknown as [string, ...string[]]) }).passthrough().optional().describe("A template instead of steps; see the description for its options.");
+const mirrorSchema = z.object({ attributes: z.array(z.string()), wings: z.number().optional() }).optional().describe("Invert these attributes on every second wing (default 2 wings: the second half).");
+const variantsSchema = z.array(z.enum(VARIANTS)).optional().describe("Build these versions into consecutive presets from preset: sync, follow, mirror.");
+
 export const registerPhaserTools: RegisterTools = (server, ctx) => {
   server.registerTool(
     "gma3_build_phaser",
@@ -806,27 +1367,29 @@ export const registerPhaserTools: RegisterTools = (server, ctx) => {
       title: "Build a phaser and store it as a preset",
       description:
         "Build a repeatable effect from structured steps and store it into Preset <pool>.<number>, reading every step back. Steps: per attribute an absolute and/or relative value (unit percent, or physical: degrees for Pan/Tilt) or a preset called into the step, plus step timing (width, transition, accel, decel). " +
-        "phaser: fixture distribution (phase {from, to} in degrees over the selection grid; from > to runs the other way; repeat {groups|wings|blocks: n} repeats it along X) and playback speed (speed_bpm, measure in beats, speed_master 1-16). These three are kept apart in the plan and the result. " +
-        "Templates (instead of steps): dimmer_chase {on, off, speed_bpm, spread}, alternating_colors {colors: [{red, green, blue} or {preset}], x2, speed_bpm, snap}, pan_tilt {pan, tilt (degrees), speed_bpm, spread}: a relative circle around the current position. preview: true returns the expanded steps and the console commands. " +
-        "fixtures are selected in list order on grid X (or group: a stored group with its grid). Every attribute is checked against every fixture before anything is sent (the console ignores unsupported attributes silently). " +
+        "phaser: fixture distribution (phase {from, to} in degrees over the selection grid, from > to runs the other way; {from, step}: a phase step per fixture, e.g. step 180 between neighbours; \"spread\": 0 -> 360 x (n-1)/n; repeat {groups|wings|blocks: n} repeats it along X; shuffle: an XShuffle seed that permutes the phases) and playback speed (speed_bpm; measure = the number of beats one phaser cycle lasts at that speed, so the step widths, in percent of a beat, should add up to measure x 100; speed_master 1-16). These three are kept apart in the plan and the result. " +
+        "mirror {attributes, wings (default 2)}: the fixtures (grid order) are cut into wings and every second wing gets those attributes inverted (relative and physical values negated, percent 100 - v), e.g. the second beam's Pan. variants [sync, follow, mirror] build the versions of one effect into consecutive presets from preset, named \"<name> sync|follow|mirror\": sync without a phase spread, follow with the phase (default spread), mirror with the spread mirrored about the centre (wings 2) and Pan (or mirror.attributes) inverted on the second half. " +
+        "Templates (instead of steps): dimmer_chase {on, off, speed_bpm, spread}, alternating_colors {colors: [{red, green, blue} or {preset}], x2, speed_bpm, snap}, pan_tilt {pan, tilt (degrees), speed_bpm, spread}: a relative circle around the current position. " +
+        "Position shapes in physical degrees around center {pan, tilt}: circle and figure8 (size = radius), cone (tilt held at tilt, pan sweeping a full turn and back), fan (closed on the centre, then open over size degrees of pan from the first fixture to the last), bounce (tilt up and down by size); default 20 BPM. " +
+        "Dimmer patterns for rows of fixtures or cells (grid order): runner (one on at a time), comet {tail: cells}, alternate, thirds, fill (fill up, then empty), sparkle {every, seed}; default 120 BPM. preview: true returns the expanded steps and the console commands. " +
+        "fixtures are selected in list order on grid X (or group: a stored group with its grid); up to 1024. Every attribute is checked against every fixture before anything is sent (the console ignores unsupported attributes silently). " +
+        "effects: several effects (each with its own preset, fixtures or group, steps or template, phaser, mirror, variants, name) built in one Preview session, one result line per preset with a compact phase summary (detail: true for every step); a failed effect does not stop the others. " +
         "The effect is built in the console's Preview environment (its own empty programmer; nothing is output) and the operator's Normal programmer is fingerprinted before and after: it is never touched. The built programmer is checked per fixture, step and layer, including the phase per fixture, then stored with the gma3_store_preset rules (mode selective or global, existing refuse|merge|overwrite, step presets embedded) and verified step by step; the Preview programmer is cleared and Preview left in every case. " +
         "audition_ms (default 0: no playback) calls the stored preset on the fixtures in the Normal programmer, which must be empty, for that long and releases it with ClearAll. Requires exclusive: true (not for preview). If a build is interrupted, gma3_phaser_release leaves Preview. Needs bridge 0.23.0.",
       inputSchema: {
-        preset: z.string().describe('Target preset "<pool>.<number>"; an All pool (21-25) takes any attributes.'),
+        preset: z.string().optional().describe('Target preset "<pool>.<number>" (the first of the variants); an All pool (21-25) takes any attributes. Required unless effects is given.'),
         fixtures: z.array(z.union([z.string(), z.number()])).optional().describe("Fixture ids or ranges, distributed in list order."),
         group: z.number().optional().describe("A stored group instead of fixtures; its grid sets the distribution order."),
         steps: z.array(stepSchema).optional().describe("2-16 steps."),
-        phaser: z
-          .object({
-            speed_bpm: z.number().optional(),
-            phase: z.object({ from: z.number(), to: z.number() }).optional(),
-            measure: z.number().optional(),
-            speed_master: z.number().optional(),
-            repeat: z.object({ groups: z.number().optional(), wings: z.number().optional(), blocks: z.number().optional() }).optional(),
-          })
+        phaser: phaserSchema,
+        template: templateSchema,
+        mirror: mirrorSchema,
+        variants: variantsSchema,
+        effects: z
+          .array(z.object({ preset: z.string(), fixtures: z.array(z.union([z.string(), z.number()])).optional(), group: z.number().optional(), steps: z.array(stepSchema).optional(), phaser: phaserSchema, template: templateSchema, unit: z.enum(["percent", "physical"]).optional(), mirror: mirrorSchema, variants: variantsSchema, mode: z.enum(["selective", "global"]).optional(), existing: z.enum(["refuse", "merge", "overwrite"]).optional(), name: z.string().optional() }))
           .optional()
-          .describe("Phaser layers: playback speed, phase distribution, measure, speed master, repetition."),
-        template: z.object({ type: z.enum(["dimmer_chase", "alternating_colors", "pan_tilt"]) }).passthrough().optional().describe("A template instead of steps; see the description for its options."),
+          .describe("Several effects in one call (instead of preset/fixtures/steps/template): built in one Preview session; unit, mode, existing and verify given for the call are defaults."),
+        detail: z.boolean().optional().describe("Return every step, the console commands and the stored rows (default false: a compact result; with several presets one line each)."),
         unit: z.enum(["percent", "physical"]).optional().describe("Unit of the step values (default percent)."),
         mode: z.enum(["selective", "global"]).optional().describe("Preset mode (default selective)."),
         existing: z.enum(["refuse", "merge", "overwrite"]).optional().describe("When the preset exists (default refuse)."),
