@@ -154,7 +154,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.30.0"
+local VERSION      = "0.30.1"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -2903,7 +2903,9 @@ ops.programmer = function(args)
   elseif scope == "all" then
     local ok, n = callApi("GetSubfixtureCount")
     if ok and type(n) == "number" then
-      for i = 1, math.floor(n) - 1 do indices[#indices + 1] = i end
+      -- Patch indices are 0..n-1 (live 2026-10-15: GetSubfixture(0) is the first patched fixture in a show without
+      -- MA's Universal fixture, GetSubfixture(n) is nil). Index 0 was skipped before 0.30.1.
+      for i = 0, math.floor(n) - 1 do indices[#indices + 1] = i end
     else
       enumerated = false
       table.insert(limitations, "the patch could not be enumerated: " .. (ok and ("GetSubfixtureCount returned " .. type(n)) or tostring(n)))
