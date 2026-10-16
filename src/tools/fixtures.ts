@@ -332,6 +332,8 @@ interface ProgrammerRow {
   physicalTo?: number | null;
   readout?: string | null;
   physicalUnit?: string | null;
+  /** The attribute's channel function, whose range `value` is a percent of. */
+  channelFunction?: string | null;
   /** The preset a recall linked the channel to (bridge 0.27.0). */
   absPreset?: { name?: string | null; addrNative?: string | null } | null;
 }
@@ -425,11 +427,11 @@ export function expectedPercent(exp: Expectation, row: ProgrammerRow): { percent
     case "percent_fine":
       return { percent: exp.value };
     case "decimal8":
-      return { percent: (exp.value / 255) * 100 };
     case "decimal16":
-      return { percent: (exp.value / 65535) * 100 };
     case "decimal24":
-      return { percent: (exp.value / 16777215) * 100 };
+      // Decimal values are compared as DMX values (expectedDecimal); a percent is meaningless here because the
+      // programmer's percent is a share of the attribute's channel-function range, not of 0..255 (SU-11).
+      return { reason: `${exp.unit} values of ${exp.attribute} are compared as DMX values, not percent` };
     case "physical":
       return physical();
     case "natural":
@@ -441,6 +443,28 @@ export function expectedPercent(exp: Expectation, row: ProgrammerRow): { percent
     }
   }
 }
+
+const DECIMAL_SHIFT: Record<string, number> = { decimal8: 16, decimal16: 8, decimal24: 0 };
+
+const isDecimalUnit = (unit: Expectation["unit"]): boolean => unit in DECIMAL_SHIFT;
+
+/**
+ * Compare a decimal8/16/24 expectation with a programmer row as a DMX value (SU-11). The row's `valueRaw` is the
+ * step's 24-bit DMX value (`absolute_value`): Decimal8 104 is stored as 0x686868 and Decimal16 26700 as 0x684C68
+ * (probe docs/probes/su-11-decimal-readback-macos-2.5.1.md), so the value in the unit sent is its top 8, 16 or 24
+ * bits. The row's percent cannot be used: it is a share of the attribute's channel-function range (DMX 0..127 on a
+ * colour wheel whose upper half is a spin function), not of the whole channel.
+ */
+export function expectedDecimal(exp: Expectation, row: ProgrammerRow): { matches: boolean; reading: number; raw: number } | { reason: string } {
+  const raw = row.valueRaw;
+  if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 0 || raw > 0xffffff) {
+    return { reason: `the programmer row of ${exp.attribute} carries no raw DMX value, so the ${exp.unit} value cannot be compared` };
+  }
+  const reading = Math.floor(raw / 2 ** DECIMAL_SHIFT[exp.unit]);
+  return { matches: reading === exp.value, reading, raw };
+}
+
+const hex24 = (raw: number): string => `0x${raw.toString(16).toUpperCase().padStart(6, "0")}`;
 
 interface FixtureVerdict {
   key: string;
@@ -487,6 +511,15 @@ function judgeFixture(label: string, key: string, entries: ScannedFixture[], row
           verdict.problems.push(`${label}${cell}: ${exp.attribute} holds a ${row.stepCount ?? "multi"}-step phaser, not the static value ${exp.value}`);
           continue;
         }
+        if (isDecimalUnit(exp.unit)) {
+          const got = expectedDecimal(exp, row);
+          if ("reason" in got) verdict.unavailable.push(`${label}${cell}: ${got.reason}`);
+          else if (!got.matches) {
+            const fn = row.channelFunction ? `, ${formatValue(row.value)} % of channel function ${row.channelFunction}` : "";
+            verdict.problems.push(`${label}${cell}: ${exp.attribute} reads ${got.reading} ${exp.unit} (DMX ${hex24(got.raw)}${fn}), expected ${formatValue(exp.value)} ${exp.unit}`);
+          }
+          continue;
+        }
         const want = expectedPercent(exp, row);
         if ("reason" in want) {
           verdict.unavailable.push(`${label}${cell}: ${want.reason}`);
@@ -515,7 +548,7 @@ function judgeFixture(label: string, key: string, entries: ScannedFixture[], row
  * without the attribute; `unavailable` when a read could not be completed or interpreted.
  */
 export async function verifyProgrammer(bridge: Gma3Bridge, expectations: Expectation[], steps: StepResult[], warnings: string[]): Promise<{ verification: Verification; summary: Record<string, unknown> }> {
-  const checked = `programmer values of the selected fixtures (${expectations.map((e) => `${e.attribute} = ${formatValue(e.value)} ${e.unit}`).join(", ")}), tolerance ${VERIFY_TOLERANCE_PERCENT} % of range`;
+  const checked = `programmer values of the selected fixtures (${expectations.map((e) => `${e.attribute} = ${formatValue(e.value)} ${e.unit}`).join(", ")}), tolerance ${VERIFY_TOLERANCE_PERCENT} % of range${expectations.some((e) => isDecimalUnit(e.unit)) ? "; decimal values exactly, as DMX values" : ""}`;
   const unavailableReasons: string[] = [];
   let primary: ProgrammerResult;
   try {
