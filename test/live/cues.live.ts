@@ -143,8 +143,10 @@ liveTest("cue tools: store, part, timing, trigger, goto and delete on Sequence 9
 
   // --- FR-05 goto (playback) ------------------------------------------------------------------
   const gt = ok(await call("gma3_goto_cue", { sequence: SEQ, cue: 2, fade: 0 }), "goto cue 2");
-  assert.equal(gt.verification.status, "not_requested");
-  assert.match(gt.summary, /accepted/);
+  // SU-16: the current cue is read back a frame after Goto.
+  assert.equal(gt.verification.status, "matched");
+  assert.equal(gt.playbackState.currentCue.no, 2);
+  assert.match(gt.summary, /plays cue 2/);
 
   // --- FR-05 delete ---------------------------------------------------------------------------
   const missing = await call("gma3_delete_cue", { sequence: SEQ, cue: 77 });

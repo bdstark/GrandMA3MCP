@@ -32,6 +32,10 @@ the live test procedure on a disposable show.
 
 Console variables (SU-15, bridge 0.31.0): `gma3_variables`, `gma3_set_variable` ([variables.md](variables.md)).
 
+Live playback and value reads (SU-16, bridge 0.32.0): the current cue in `gma3_sequences`, `gma3_cues` (several
+sequences) and `gma3_executors`; read-back in `gma3_goto_cue` and `gma3_playback`; the compact `gma3_programmer`;
+`gma3_observe_values` ([live-reads.md](live-reads.md)).
+
 `AGENT-RULES.md` records the implementation rules every area follows (bridge-only, no retries, shared
 validation and result helpers, serialised mutations, documentation and test requirements).
 
@@ -39,7 +43,7 @@ validation and result helpers, serialised mutations, documentation and test requ
 
 The server sends instructions on every start (`src/discovery.ts`). They give:
 - a short map from setup and show tasks to these tools;
-- the tools that watch the console over time on the server side (`gma3_observe_tempo`, `gma3_build_chase`,
+- the tools that watch the console over time on the server side (`gma3_observe_tempo`, `gma3_observe_values`, `gma3_build_chase`,
   `gma3_run_macro`, `gma3_timecode_transport`), so no Lua waiting loop is written against the 5 s Lua budget;
 - `gma3_command` and `gma3_lua` as fallbacks only.
 

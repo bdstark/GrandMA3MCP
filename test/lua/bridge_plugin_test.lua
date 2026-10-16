@@ -1555,7 +1555,7 @@ do
   r = request("feedback.read", {}, nil, C)
   check("feedback.read without items is refused with a code", r.ok == false and r.code == "no-items", r.error)
   r = request("feedback.read", { readers = { "commandText", "lastCommand", "blind", "solo", "page", "freeze", "selectedSequence", "previewBar", "sequenceActive" }, displays = { 1, 2, 9 }, executors = { 201, 202 }, sequences = { 5, 6 } }, nil, C)
-  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.31.0" and r.result.module.version == feedbackModule.VERSION and r.result.identity.showFile == "mcp-test-disposable", J(r))
+  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.32.0" and r.result.module.version == feedbackModule.VERSION and r.result.identity.showFile == "mcp-test-disposable", J(r))
   local by = {}
   if r.ok then for _, it in ipairs(r.result.items) do by[it.key] = it end end
   check("feedback.read: command text and last command are raw observations", by.commandText and by.commandText.value == "Store " and by.lastCommand.value == "Go+ Sequence 5 : OK" and by.lastCommand.note:find("not confirmation"), J(by.lastCommand))
@@ -1668,7 +1668,7 @@ do
   end
   local C = { id = 71 }
   r = request("feedback.context", { executors = { 201, 202 } }, nil, C)
-  check("feedback.context answers with Lua and input disabled", r.ok and r.result.bridgeVersion == "0.31.0" and r.result.module.version == feedbackModule.VERSION and r.result.atomic == false and r.result.generation == 1 and r.result.generationChanged == false and r.result.identity.showFile == "mcp-test-disposable" and r.result.identity.dataPool.name == "Default", J(r))
+  check("feedback.context answers with Lua and input disabled", r.ok and r.result.bridgeVersion == "0.32.0" and r.result.module.version == feedbackModule.VERSION and r.result.atomic == false and r.result.generation == 1 and r.result.generationChanged == false and r.result.identity.showFile == "mcp-test-disposable" and r.result.identity.dataPool.name == "Default", J(r))
   check("feedback.context: authoritative display, bank/page, slots with availability and value", r.ok and r.result.authoritativeDisplay.rule == "configured" and r.result.encoder.value.bank.name == "Color" and r.result.encoder.value.page.name == "RGB" and r.result.slots.value.slots[1].name == "ColorRGB_R" and r.result.slots.value.slots[1].availability == "available" and r.result.slots.value.slots[1].absolute == 50 and r.result.slots.value.slots[1].unit == "None" and r.result.slots.value.slots[2].valueState == "empty" and r.result.executorPage.no == 1, J(r.result.slots))
   check("feedback.context: executor targets with functions, level and playback-target status", r.ok and #r.result.executors == 2 and r.result.executors[1].value.functions.keyPress == "Temp" and r.result.executors[1].value.level.value == 100 and r.result.executors[1].value.playbackTarget == true and r.result.executors[2].value.empty == true and r.result.executors[2].value.reserved == nil, J(r.result.executors))
   check("feedback.context: nested fields survive the serialiser depth bound", r.ok and type(r.result.slots.value.slots[1].feature) == "string" and type(r.result.executors[1].value.assigned.name) == "string")
@@ -2256,6 +2256,78 @@ do
   check("set: an Executor range is refused before anything is read or written", r.ok == false and r.error:find("[unsafe-range]", 1, true) ~= nil and #calls == 0, J({ r, calls }))
 
   ObjectList = savedObjectList
+end
+
+-------------------------------------------------------------------------------
+-- SU-16 (0.32.0): a sequence's current cue in object, children (playback) and executors reads
+-------------------------------------------------------------------------------
+do
+  local registry = setmetatable({}, { __mode = "k" })
+  local fileMeta = getmetatable(io.stdout)
+  local meta = { __gc = fileMeta and fileMeta.__gc, __close = fileMeta and fileMeta.__close, __name = "FakeHandle" }
+  meta.__index = function(u, key)
+    local def = registry[u]
+    if not def then return nil end
+    if def.methods[key] then return def.methods[key] end
+    if key == "name" then return def.name end
+    return def.props[tostring(key):lower()]
+  end
+  local function H(def)
+    local u = io.tmpfile()
+    debug.setmetatable(u, meta)
+    local lowered = {}
+    for k, v in pairs(def.props or {}) do lowered[tostring(k):lower()] = v end
+    def.props = lowered
+    def.children = def.children or {}
+    def.methods = {
+      Get = function(self, k) return registry[self].props[tostring(k):lower()] end,
+      GetClass = function(self) return registry[self].class end,
+      Addr = function(self) return registry[self].addr or registry[self].name end,
+      Index = function(self) return registry[self].index or 1 end,
+      Children = function(self) return registry[self].children end,
+      Count = function(self) return #registry[self].children end,
+      Parent = function() return nil end,
+      PropertyCount = function() return 0 end,
+      HasActivePlayback = def.active ~= nil and function(self) return registry[self].active end or nil,
+    }
+    registry[u] = def
+    return u
+  end
+  -- Cue.no is the cue number x 1000 (live 2026-10-16: cue 7 reads 7000); 2.5 reads 2500.
+  local cone = H({ name = "Cone", class = "Cue", props = { no = 7000 } })
+  local half = H({ name = "Half", class = "Cue", props = { no = 2500 } })
+  local playing = H({ name = "MH Moves", class = "Sequence", addr = "Sequence 7", active = true, props = { CurrentCue = cone } })
+  local stopped = H({ name = "Chase", class = "Sequence", addr = "Sequence 8", active = false, props = { CurrentCue = half } })
+  local fresh = H({ name = "Empty", class = "Sequence", addr = "Sequence 9", active = false })
+  local macro = H({ name = "M", class = "Macro", addr = "Macro 1", props = { CurrentCue = cone } })
+  local pool = H({ name = "Sequences", class = "Sequences", children = { playing, stopped, fresh } })
+  local exec = H({ name = "201", class = "Executor", props = { Object = stopped } })
+  local savedObjectList, savedGetExecutor, savedPage = ObjectList, GetExecutor, CurrentExecPage
+  ObjectList = function(ref)
+    local m = ({ ["Sequence 7"] = playing, ["Sequence 8"] = stopped, ["Sequence 9"] = fresh, ["Macro 1"] = macro, ["SeqPool"] = pool })[ref]
+    return m and { m } or {}
+  end
+  GetExecutor = function(n) if n == 201 then return exec, nil end return nil end
+  CurrentExecPage = function() return nil end
+
+  r = request("object", { ref = "Sequence 7", properties = false })
+  check("su16: object reports the current cue number (Cue.no / 1000) and name", r.ok and r.result.hasActivePlayback == true and r.result.currentCue and r.result.currentCue.no == 7 and r.result.currentCue.name == "Cone", J(r))
+  r = request("object", { ref = "Sequence 8", properties = false })
+  check("su16: a stopped sequence still reports CurrentCue (sticky) next to hasActivePlayback false; fractional cues keep their number", r.ok and r.result.hasActivePlayback == false and r.result.currentCue.no == 2.5, J(r))
+  r = request("object", { ref = "Sequence 9", properties = false })
+  check("su16: a sequence without a current cue has no currentCue", r.ok and r.result.currentCue == nil, J(r))
+  r = request("object", { ref = "Macro 1", properties = false })
+  check("su16: only sequences get a currentCue", r.ok and r.result.currentCue == nil, J(r))
+  r = request("children", { ref = "SeqPool", playback = true })
+  check("su16: children with playback carry each sequence's current cue", r.ok and r.result.count == 3 and r.result.items[1].currentCue.no == 7 and r.result.items[2].currentCue.name == "Half" and r.result.items[3].currentCue == nil, J(r))
+  r = request("children", { ref = "SeqPool" })
+  check("su16: children without playback do not read the current cue", r.ok and r.result.items[1].currentCue == nil, J(r))
+  r = request("executors", { from = 201, to = 202 })
+  check("su16: executors carry the assigned sequence's current cue", r.ok and r.result.count == 1 and r.result.executors[1].assigned.currentCue.no == 2.5 and r.result.executors[1].assigned.hasActivePlayback == false, J(r))
+  r = request("executor", { number = 201 })
+  check("su16: executor carries the assigned sequence's current cue", r.ok and r.result.assigned.currentCue.name == "Half", J(r))
+
+  ObjectList, GetExecutor, CurrentExecPage = savedObjectList, savedGetExecutor, savedPage
 end
 
 print(string.format("%d passed, %d failed", passes, failures))

@@ -31,6 +31,7 @@ import { registerTypeStructureTools } from "./tools/typestructure.js";
 import { registerCellLayoutTools } from "./tools/celllayout.js";
 import { registerDmxOutputTools } from "./tools/dmxoutput.js";
 import { registerVariableTools } from "./tools/variables.js";
+import { annotatePlayback, readTargetState, registerLiveStateTools, stateAfterFrame } from "./tools/livestate.js";
 
 const env = process.env;
 const bridge = new Gma3Bridge({
@@ -431,7 +432,8 @@ server.registerTool(
     title: "Playback control",
     description:
       "Trigger a playback function on a sequence or executor. Equivalent to commands like 'Go+ Sequence 1', 'Off Executor 201', 'Load Sequence 1 Cue 5'. " +
-      "Targets: 'Sequence 3', 'Executor 201', 'Page 2.201', 'Sequence 1 Cue 4' (for load/go to a cue), 'Master 3.1', 'Macro 5', 'Group 2'.",
+      "Targets: 'Sequence 3', 'Executor 201', 'Page 2.201', 'Sequence 1 Cue 4' (for load/go to a cue), 'Master 3.1', 'Macro 5', 'Group 2'. " +
+      "For a Sequence or Executor target the playback state is read back a frame after the command (playbackState: active, currentCue {no, name}, or lastCue after Off; needs bridge 0.32.0 for the cue).",
     inputSchema: {
       action: z.enum(Object.keys(playbackActions) as [keyof typeof playbackActions, ...(keyof typeof playbackActions)[]]),
       target: z.string().describe("Object the action applies to, e.g. 'Sequence 1' or 'Executor 201'"),
@@ -440,9 +442,12 @@ server.registerTool(
   },
   async ({ action, target, fade }) =>
     run(() =>
-      mutations.run(() => {
+      mutations.run(async () => {
         const cmd = `${playbackActions[action]} ${target}${fade !== undefined ? ` Fade ${fade}` : ""}`;
-        return bridge.request("cmd", { command: cmd });
+        const res = (await bridge.request("cmd", { command: cmd })) as Record<string, unknown>;
+        // SU-16: the state a frame later, as the console shows it (a fade keeps running; only the cue and activity are read).
+        const playbackState = await stateAfterFrame(bridge, target);
+        return { ...res, playbackState };
       }),
     ),
 );
@@ -486,7 +491,8 @@ server.registerTool(
   "gma3_sequences",
   {
     title: "List sequences",
-    description: "List all sequences in the selected data pool with cue count and whether they have active playback.",
+    description:
+      "List all sequences in the selected data pool with cue count, whether they have active playback, and the current cue (currentCue {no, name} while it plays; lastCue: the cue it stopped in, after Off). Needs bridge 0.32.0 for the cue.",
     inputSchema: {
       fields: z.array(z.string()).optional().describe("Extra property names to include per sequence"),
       limit: z.number().int().positive().optional(),
@@ -496,6 +502,7 @@ server.registerTool(
   async ({ fields, limit, offset }) =>
     run(async () => {
       const res = (await bridge.request("children", { ref: "DataPool.Sequences", fields, limit, offset, playback: true })) as any;
+      if (Array.isArray(res?.items)) res.items.forEach(annotatePlayback);
       return res;
     }),
 );
@@ -503,24 +510,39 @@ server.registerTool(
 server.registerTool(
   "gma3_cues",
   {
-    title: "List cues of a sequence",
-    description: "List the cues of a sequence with cue number, name, trigger and timing properties.",
+    title: "List cues of sequences",
+    description:
+      "List the cues of one sequence (sequence) or several (sequences, up to 20) with cue number, name, trigger (TrigType, TrigTime) and command, plus each sequence's playback state " +
+      "(playback: active, currentCue {no, name} while it plays, lastCue after Off; bridge 0.32.0).",
     inputSchema: {
-      sequence: z.union([z.number(), z.string()]).describe("Sequence number or name"),
+      sequence: z.union([z.number(), z.string()]).optional().describe("Sequence number or name"),
+      sequences: z.array(z.union([z.number(), z.string()])).optional().describe("Several sequences in one read (instead of sequence)"),
       fields: z.array(z.string()).optional().describe("Property names per cue (default: No, Name, TrigType, TrigTime, Command, Note)"),
       limit: z.number().int().positive().optional(),
       offset: z.number().int().nonnegative().optional(),
     },
   },
-  async ({ sequence, fields, limit, offset }) =>
-    run(() =>
-      bridge.request("children", {
-        ref: typeof sequence === "number" ? `Sequence ${sequence}` : `Sequence "${sequence}"`,
-        fields: fields ?? ["No", "Name", "TrigType", "TrigTime", "Command", "Note"],
-        limit,
-        offset,
-      }),
-    ),
+  async ({ sequence, sequences, fields, limit, offset }) =>
+    run(async () => {
+      if ((sequence === undefined) === (sequences === undefined)) throw new Error("give exactly one of sequence or sequences");
+      if (sequences !== undefined && (sequences.length < 1 || sequences.length > 20)) throw new Error("sequences must list 1 to 20 sequences");
+      const read = async (s: number | string) => {
+        const ref = typeof s === "number" ? `Sequence ${s}` : `Sequence "${s}"`;
+        const cues = (await bridge.request("children", { ref, fields: fields ?? ["No", "Name", "TrigType", "TrigTime", "Command", "Note"], limit, offset })) as Record<string, unknown>;
+        const state = await readTargetState(bridge, ref).catch(() => null);
+        const playback = state && !state.notRead
+          ? { active: state.active, currentCue: state.currentCue, ...(state.lastCue ? { lastCue: state.lastCue } : {}), ...(state.observedCue ? { observedCue: state.observedCue } : {}) }
+          : state
+            ? { notRead: state.notRead }
+            : null;
+        return { ...cues, playback };
+      };
+      if (sequence !== undefined) return read(sequence);
+      const out = [];
+      // One sequence's failure (missing, unreadable) is its own row, not the whole read's.
+      for (const s of sequences!) out.push(await read(s).then((r) => ({ sequence: s, ...r }), (err) => ({ sequence: s, error: err instanceof Error ? err.message : String(err) })));
+      return { count: out.length, sequences: out };
+    }),
 );
 
 server.registerTool(
@@ -528,7 +550,7 @@ server.registerTool(
   {
     title: "List executors",
     description:
-      "List executors on the current executor page with their assigned object, key/fader functions and master fader level. Executor numbers: 101-115 top row, 201-215 faders, 301-315 etc.",
+      "List executors on the current executor page with their assigned object, key/fader functions and master fader level, and for an assigned sequence its playback state (assigned.currentCue {no, name} while it plays, assigned.lastCue after Off; bridge 0.32.0). Executor numbers: 101-115 top row, 201-215 faders, 301-315 etc.",
     inputSchema: {
       from: z.number().int().positive().optional().describe("First executor number (default 101)"),
       to: z.number().int().positive().optional().describe("Last executor number (default 315)"),
@@ -536,7 +558,11 @@ server.registerTool(
     },
   },
   async ({ from, to, only_assigned }) =>
-    run(() => bridge.request("executors", { from: from ?? 101, to: to ?? 315, onlyAssigned: only_assigned ?? true }, 30000)),
+    run(async () => {
+      const res = (await bridge.request("executors", { from: from ?? 101, to: to ?? 315, onlyAssigned: only_assigned ?? true }, 30000)) as any;
+      if (Array.isArray(res?.executors)) for (const e of res.executors) annotatePlayback(e?.assigned);
+      return res;
+    }),
 );
 
 server.registerTool(
@@ -631,6 +657,7 @@ registerTypeStructureTools(server, toolContext);
 registerCellLayoutTools(server, toolContext);
 registerDmxOutputTools(server, toolContext);
 registerVariableTools(server, toolContext);
+registerLiveStateTools(server, toolContext);
 
 server.registerResource(
   "cheatsheet",

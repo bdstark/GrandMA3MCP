@@ -58,6 +58,7 @@ import {
   timeSeconds,
 } from "../validate.js";
 import { cueRef, exists, readFields } from "./common.js";
+import { stateAfterFrame } from "./livestate.js";
 
 // ---------------------------------------------------------------------------
 // Console vocabulary
@@ -497,10 +498,32 @@ async function setCueTrigger(ctx: ToolContext, args: TriggerArgs): Promise<Opera
 
 interface GotoArgs extends TargetArgs {
   fade?: number;
+  verify?: boolean;
 }
 
 const GOTO_NOTE =
-  "Goto is a playback mutation. A succeeded outcome means the console accepted the command; the crossfade runs asynchronously and its completion is not verified.";
+  "Goto is a playback mutation. The sequence's current cue is read back a frame after the command; the crossfade runs asynchronously and its completion is not verified.";
+
+/** SU-16: compare the sequence's state a frame after Goto with the cue that was asked for. */
+export function gotoVerification(cue: string, state: Awaited<ReturnType<typeof stateAfterFrame>>): Verification {
+  const checked = `Sequence ${state.target.replace(/^\s*Sequence\s+(\d+).*$/i, "$1")} plays cue ${cue} a frame after Goto`;
+  if (state.notRead) return unavailable(state.notRead, checked);
+  const expected = { active: true, cue: Number(cue) };
+  const actual = { active: state.active ?? null, currentCue: state.currentCue ?? null, ...(state.lastCue ? { lastCue: state.lastCue } : {}), ...(state.observedCue ? { observedCue: state.observedCue } : {}) };
+  if (state.active === null || state.active === undefined) return unavailable("the console did not report whether the sequence plays", checked);
+  if (state.active && (!state.currentCue || state.currentCue.no === null))
+    return unavailable("the sequence plays but its current cue was not reported (needs bridge 0.32.0)", checked);
+  if (state.active && Math.abs((state.currentCue!.no as number) - expected.cue) < 1e-6) return { status: "matched", checked, expected, actual };
+  return {
+    status: "mismatched",
+    checked,
+    expected,
+    actual,
+    detail: state.active
+      ? `the sequence is in cue ${state.currentCue!.no} (${state.currentCue!.name ?? "unnamed"}), not ${cue}; a Follow or a 0 s Time trigger can move it on within a frame`
+      : "the sequence is not playing a frame after Goto",
+  };
+}
 
 async function gotoCue(ctx: ToolContext, args: GotoArgs): Promise<OperationResult> {
   const op = "goto_cue";
@@ -516,19 +539,25 @@ async function gotoCue(ctx: ToolContext, args: GotoArgs): Promise<OperationResul
     name: "goto",
     run: () => commandStep(ctx.bridge, "goto", `Goto ${refOf(target)}${fade !== undefined ? ` Fade ${fmtTime(fade)}` : ""}`, ctx.requestTimeoutMs),
   });
-  const { steps } = await ctx.mutations.run(() => runSteps(plan));
+  const { steps, verification, playbackState } = await ctx.mutations.run(async () => {
+    const run = await runSteps(plan);
+    if (args.verify === false) return { ...run, verification: notRequested(), playbackState: undefined };
+    if (!primaryWasSent(run.steps, "goto")) return { ...run, verification: skippedVerification("Goto was not sent"), playbackState: undefined };
+    const state = await stateAfterFrame(ctx.bridge, `Sequence ${target.sequence}`, ctx.requestTimeoutMs);
+    return { ...run, verification: gotoVerification(target.cue, state), playbackState: state };
+  });
   const outcome = outcomeOf(steps);
   const summary =
-    outcome === "succeeded"
-      ? `goto_cue: the console accepted Goto for ${refOf(target)}${fade !== undefined ? ` with Fade ${fmtTime(fade)}` : ""}. ${GOTO_NOTE} Read-back not requested.`
-      : defaultSummary(op, outcome, notRequested(), steps);
+    outcome === "succeeded" && verification.status === "matched"
+      ? `goto_cue: Sequence ${target.sequence} plays cue ${target.cue}${playbackState?.currentCue?.name ? ` (${playbackState.currentCue.name})` : ""} a frame after Goto${fade !== undefined ? ` with Fade ${fmtTime(fade)}` : ""}. The crossfade's completion is not verified.`
+      : defaultSummary(op, outcome, verification, steps);
   return buildResult({
     operation: op,
     target: describeTarget(target),
     steps,
-    verification: notRequested(),
+    verification,
     summary,
-    extra: { ...(fade !== undefined ? { fade } : {}), note: GOTO_NOTE, verificationNote: "The sequence's current cue is not read back; use gma3_cues / gma3_get_object to inspect playback state." },
+    extra: { ...(fade !== undefined ? { fade } : {}), ...(playbackState ? { playbackState } : {}), note: GOTO_NOTE },
   });
 }
 
@@ -664,11 +693,12 @@ export const registerCueTools: RegisterTools = (server, ctx) => {
       title: "Goto a cue (playback)",
       description:
         "PLAYBACK MUTATION: sends `Goto Sequence n Cue c [Fade s]`, which jumps the sequence to that cue and changes live output. " +
-        `${GOTO_NOTE} Refuses (nothing sent) when the cue does not exist. Does not change the selection or the programmer. Verification: not_requested (the current cue is not read back). ${LOCK_CAVEAT}`,
+        `${GOTO_NOTE} Refuses (nothing sent) when the cue does not exist. Does not change the selection or the programmer. Verification: matched when the sequence plays that cue a frame later (playbackState has the cue's number and name; needs bridge 0.32.0). ${LOCK_CAVEAT}`,
       inputSchema: {
         ...sequenceShape,
         ...cueShape,
         fade: z.number().optional().describe("Crossfade time in seconds that overrides the cue's own timing (Goto ... Fade s). 0 is a value."),
+        ...verifyShape,
       },
     },
     (args) => operation(() => gotoCue(ctx, args as GotoArgs)),

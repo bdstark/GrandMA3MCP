@@ -95,6 +95,8 @@ Programmer content per UI channel.
 | `fixtures` | string | Required for scope `fixtures`: `"1 Thru 5"`, `"101 + 103"`, `"Fixture 4.1"`. Groups are refused (ObjectList would return the group object). Compound fixtures are expanded into their subfixture indices. |
 | `max_channels` | integer | Scan budget in UI channels per request (default 5000, max 50000). |
 | `limit`, `offset` | integer | Pagination over the rows (default 200, max 5000). |
+| `fields` | string[] | Compact form (SU-16): keep only these row keys; `fid`, `subfixtureIndex` and `attribute` are always kept. |
+| `by_fixture` | boolean | Compact form (SU-16): `perFixture`, one entry per (sub)fixture with attribute -> value, in place of `rows` ([live-reads.md](live-reads.md#compact-programmer-read)). |
 
 Sends one bridge request: `programmer {scope, fixtures, limit, offset, maxChannels}`. Per (sub)fixture index the op
 calls `GetSubfixture(idx)`, `GetUIChannels(idx)` and, per UI channel, `pcall(GetProgPhaser, ui, false)`.
