@@ -868,7 +868,18 @@ do
   check("programmer: channel budget cuts the scan and reports incomplete coverage", r.ok and r.result.coverage.complete == false and r.result.coverage.scannedFixtures == 2 and r.result.coverage.scannedChannels == 4 and has(r.result.limitations, "channel budget"), json.encode(r))
   check("programmer: the fixture list only covers what was scanned", r.ok and #r.result.scannedFixtures == 2, json.encode(r.result and r.result.scannedFixtures))
 
+  -- SU-11: Fixture 3's Shutter1 channel has two channel functions (Shutter1 1 at DMX 000000..0F0F0F, Shutter1 Strobe at
+  -- 101010..FFFFFF). The console reports `absolute` as a share of the attribute's function range, so Decimal8 32
+  -- (0x202020, in the strobe range) reads 213.33 %; the row must carry the raw 24-bit value for a DMX comparison.
   local savedProg = GetProgPhaser
+  GetProgPhaser = function(ui)
+    if ui == 8 then return { fade = 0, delay = 0, mask_active_value = 1, mask_active_phaser = 0, mask_individual = 0, { channel_function = 0, absolute = 0x202020 / 0x0F0F0F * 100, absolute_value = 0x202020, relative = 0 } } end
+    return emptyPhaser
+  end
+  r = request("programmer", { scope = "fixtures", fixtures = "Fixture 3" })
+  local shRow = r.ok and byAttr(r.result.rows, "Shutter1")
+  check("programmer (SU-11): a multi-function channel's row carries the raw DMX value beside the function-range percent",
+    shRow and shRow.valueRaw == 0x202020 and shRow.value > 100 and shRow.channelFunction == "Shutter1 1" and shRow.stepCount == 1, json.encode(shRow))
   GetProgPhaser = function() return emptyPhaser end
   r = request("programmer", { scope = "all" })
   GetProgPhaser = savedProg

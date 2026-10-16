@@ -437,6 +437,12 @@ wheel slot, but the read-back reported a mismatch:
 The agent recognised it as a unit artifact and carried on. The same mapping is used for decimal16/24 and in
 `gma3_set_attribute`.
 
+**Status:** implemented, no bridge change. Decimal values are verified as DMX values against the programmer
+row's raw 24-bit value, in `gma3_set_attribute`, `gma3_set_attributes` and the looks of `gma3_store_cues`
+([docs/tools/fixtures.md](docs/tools/fixtures.md), probe record
+[su-11-decimal-readback-macos-2.5.1.md](docs/probes/su-11-decimal-readback-macos-2.5.1.md), live test
+`test/live/decimal-readback.live.ts` 1/1 on macOS onPC 2.5.1).
+
 ### Acceptance criteria
 
 - A decimal value on a channel with several functions verifies against the function it falls in (or as a DMX

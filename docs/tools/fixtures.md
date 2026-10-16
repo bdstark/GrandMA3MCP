@@ -141,11 +141,16 @@ programmer for the current selection through the `programmer` bridge op and comp
   attribute is a **mismatch** (the console answers `OK` even then). The scan is read page by page until every
   reported row has been fetched; if it cannot be completed, verification is `unavailable`, not a partial match.
 * Values are compared in the unit that was sent, as percent of the attribute range with a tolerance of
-  0.5 % (8-bit DMX quantisation is 0.39 %): `percent`/`percent_fine` directly; `decimal8/16/24` scaled by
-  their range; `physical` (and `degrees` in `gma3_set_position`) converted through the fixture's own channel
+  0.5 % (8-bit DMX quantisation is 0.39 %): `percent`/`percent_fine` directly; `physical` (and `degrees` in `gma3_set_position`) converted through the fixture's own channel
   function range (`physicalFrom`..`physicalTo` from the same row); `natural` and no unit through the
   attribute's natural readout (`Percent` or `Physical`). When a range or readout is unknown the result is
   `unavailable`, not a guess. A multi-step phaser on the attribute is a mismatch (it is not the static value).
+* `decimal8/16/24` values are compared exactly, as DMX values: the row's raw 24-bit value (`valueRaw`) is cut to
+  its top 8, 16 or 24 bits (SU-11). The row's percent is a share of the attribute's channel-function range, not of
+  the whole channel: Decimal8 104 on a colour wheel whose first function covers DMX 0..127 reads 81.89 %, and a
+  value in a later function reads above 100 %. A mismatch names the DMX value read
+  (`Color1 reads 105 decimal8 (DMX 0x696969, …)`); a row without a raw value is `unavailable`
+  ([probe](../probes/su-11-decimal-readback-macos-2.5.1.md)).
 * A compound fixture appears in the selection only as its parent while the values live on its cells, so a
   parent that lacks the attribute itself gets one follow-up scan of itself and its cells (at most 8 per call),
   and each cell that has the attribute is then judged on its own rows.
