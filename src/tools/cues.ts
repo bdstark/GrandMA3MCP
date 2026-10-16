@@ -509,7 +509,7 @@ export function gotoVerification(cue: string, state: Awaited<ReturnType<typeof s
   const checked = `Sequence ${state.target.replace(/^\s*Sequence\s+(\d+).*$/i, "$1")} plays cue ${cue} a frame after Goto`;
   if (state.notRead) return unavailable(state.notRead, checked);
   const expected = { active: true, cue: Number(cue) };
-  const actual = { active: state.active ?? null, currentCue: state.currentCue ?? null, ...(state.lastCue ? { lastCue: state.lastCue } : {}) };
+  const actual = { active: state.active ?? null, currentCue: state.currentCue ?? null, ...(state.lastCue ? { lastCue: state.lastCue } : {}), ...(state.observedCue ? { observedCue: state.observedCue } : {}) };
   if (state.active === null || state.active === undefined) return unavailable("the console did not report whether the sequence plays", checked);
   if (state.active && (!state.currentCue || state.currentCue.no === null))
     return unavailable("the sequence plays but its current cue was not reported (needs bridge 0.32.0)", checked);

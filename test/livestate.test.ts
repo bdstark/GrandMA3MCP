@@ -39,6 +39,19 @@ test("annotatePlayback: rewrites sequence summaries in place and leaves other ob
   assert.equal(annotatePlayback(undefined), undefined);
 });
 
+test("review round 1: without a readable activity flag a cue is observed, never current", () => {
+  // The bridge reads HasActivePlayback in a pcall: a failed read omits the flag while CurrentCue (sticky) still reads.
+  for (const flag of [undefined, null, "maybe", 1]) {
+    const s = playbackState({ ...(flag === undefined ? {} : { hasActivePlayback: flag }), currentCue: { no: 7, name: "sticky" } });
+    assert.deepEqual(s, { active: null, currentCue: null, observedCue: { no: 7, name: "sticky" } }, `flag ${String(flag)}`);
+  }
+  const seq = annotatePlayback({ name: "S", class: "Sequence", currentCue: { no: 7, name: "sticky" } }) as Record<string, unknown>;
+  assert.equal(seq.currentCue, null, "a known Sequence is annotated even when the activity read is missing");
+  assert.deepEqual(seq.observedCue, { no: 7, name: "sticky" });
+  const on = annotatePlayback({ class: "Sequence", hasActivePlayback: true, currentCue: { no: 7, name: "x" }, observedCue: { no: 1, name: "old" } }) as Record<string, unknown>;
+  assert.equal("observedCue" in on, false);
+});
+
 // ---------------------------------------------------------------------------
 // Compact programmer
 // ---------------------------------------------------------------------------
@@ -122,7 +135,7 @@ test("observe_values (programmer): a failed read is a gap, not a value; attribut
   h.fake.on("programmer", () => {
     n++;
     if (n === 2) throw new Error("busy");
-    return { rows: [{ fid: 101, subfixtureIndex: 0, attribute: "Dimmer", value: 50, present: true }, { fid: 101, subfixtureIndex: 0, attribute: "Pan", value: 1, present: true }] };
+    return { rows: [{ fid: 101, subfixtureIndex: 0, attribute: "Dimmer", value: 50, present: true }, { fid: 101, subfixtureIndex: 0, attribute: "Pan", value: 1, present: true }], coverage: { complete: true } };
   });
   const res = await h.callJson("gma3_observe_values", { fixtures: [101], attributes: ["dimmer"], seconds: 1, interval_ms: 100 });
   assert.equal(res.isError, false, res.text);
@@ -162,11 +175,88 @@ test("observe_values (output): samples raw DMX per fixture and caps the fixture 
 });
 
 test("observe_values: an empty programmer is reported, not watched", async () => {
-  h.fake.on("programmer", () => ({ rows: [] }));
+  h.fake.on("programmer", () => ({ rows: [], coverage: { complete: true } }));
   const res = await h.callJson("gma3_observe_values", { fixtures: "101", seconds: 5 });
   assert.equal(res.result.observed, false);
   assert.match(res.result.reason, /no values/);
   assert.equal(h.fake.requests.filter((r) => r.op === "programmer").length, 1);
+});
+
+// --- review round 1: coverage and availability --------------------------------------------------
+
+const dimRow = (value: number) => ({ fid: 101, subfixtureIndex: 0, attribute: "Dimmer", value, present: true });
+
+test("review round 1: an incomplete programmer read is a gap, never a release", async () => {
+  let n = 0;
+  h.fake.on("programmer", () => (++n === 2 ? { rows: [], coverage: { complete: false } } : { rows: [dimRow(50)], coverage: { complete: true }, total: 1 }));
+  const res = await h.callJson("gma3_observe_values", { fixtures: [101], seconds: 1, interval_ms: 100 });
+  assert.equal(res.isError, false, res.text);
+  assert.equal(res.result.changedChannels, 0, res.text);
+  assert.equal(res.result.unreadSamples, 1);
+  assert.match(res.result.gapReasons[0], /coverage/);
+  assert.deepEqual(res.result.unchanged, [{ fid: 101, subfixtureIndex: 0, attribute: "Dimmer", value: 50 }]);
+});
+
+test("review round 1: an incomplete or truncated first read is not called an empty programmer", async () => {
+  h.fake.on("programmer", () => ({ rows: [], coverage: { complete: false } }));
+  const empty = await h.callJson("gma3_observe_values", { fixtures: "101", seconds: 5 });
+  assert.equal(empty.result.observed, false);
+  assert.match(empty.result.reason, /first read was incomplete/);
+  assert.doesNotMatch(empty.result.reason, /holds no values/);
+  h.fake.on("programmer", () => ({ rows: [dimRow(50)], coverage: { complete: true }, total: 6000, count: 1 }));
+  const capped = await h.callJson("gma3_observe_values", { fixtures: "101", seconds: 5 });
+  assert.equal(capped.result.observed, false);
+  assert.match(capped.result.reason, /1 of 6000 rows/);
+});
+
+test("review round 1: a truncated later page is a gap (programmer and output)", async () => {
+  let n = 0;
+  h.fake.on("programmer", () => (++n === 2 ? { rows: [], coverage: { complete: true }, total: 1 } : { rows: [dimRow(50)], coverage: { complete: true }, total: 1 }));
+  const prog = await h.callJson("gma3_observe_values", { fixtures: [101], seconds: 1, interval_ms: 100 });
+  assert.equal(prog.result.changedChannels, 0, prog.text);
+  assert.equal(prog.result.unreadSamples, 1);
+  let m = 0;
+  h.fake.on("fixtureOutput", () => ({ total: ++m === 2 ? 2 : 1, channels: [{ rtIndex: 1, channel: "Dim", attribute: "Dimmer", universe: 1, address: 1, value: 255 }] }));
+  const out = await h.callJson("gma3_observe_values", { fixtures: 101, source: "output", seconds: 1, interval_ms: 100 });
+  assert.equal(out.result.unreadSamples, 1, out.text);
+  assert.match(out.result.gapReasons[0], /1 of 2 channels/);
+});
+
+test("review round 1: an unreadable output sample is a gap that keeps the last level, not a change", async () => {
+  let n = 0;
+  h.fake.on("fixtureOutput", () => ({ total: 1, channels: [{ rtIndex: 1, channel: "Dim", attribute: "Dimmer", universe: 1, address: 1, value: ++n === 2 ? null : 255 }] }));
+  const res = await h.callJson("gma3_observe_values", { fixtures: 101, source: "output", seconds: 1, interval_ms: 100 });
+  assert.equal(res.isError, false, res.text);
+  assert.equal(res.result.changedChannels, 0, res.text);
+  assert.equal(res.result.unchanged[0].value, 255);
+  assert.equal(res.result.unchanged[0].unreadSamples, 1);
+  const gap = res.result.unchanged[0].unreadable[0];
+  assert.ok(gap.fromMs > 0 && gap.toMs > gap.fromMs, JSON.stringify(gap));
+  assert.equal(res.result.unreadableChannels.length, 1);
+  assert.ok(res.result.outputState, "unreadable channels are explained");
+});
+
+test("review round 1: partially readable output, and a channel that becomes unreadable mid-window", async () => {
+  let n = 0;
+  h.fake.on("fixtureOutput", () => {
+    n++;
+    return {
+      total: 2,
+      channels: [
+        { rtIndex: 1, channel: "Dim", attribute: "Dimmer", universe: 1, address: 1, value: n > 3 ? null : 100 },
+        { rtIndex: 2, channel: "Red", attribute: "ColorRGB_R", universe: 2, address: 1, value: null },
+      ],
+    };
+  });
+  const res = await h.callJson("gma3_observe_values", { fixtures: 101, source: "output", seconds: 1, interval_ms: 100 });
+  assert.equal(res.result.observed, true, res.text);
+  assert.equal(res.result.changedChannels, 0, res.text);
+  const dim = res.result.unchanged.find((c: { attribute: string }) => c.attribute === "Dimmer");
+  assert.equal(dim.value, 100, "the last level is kept");
+  assert.equal(dim.unreadable.at(-1).toMs, null, "still unreadable at the end");
+  const red = res.result.unreadableChannels.find((c: { attribute: string }) => c.attribute === "ColorRGB_R");
+  assert.equal(red.everRead, false);
+  assert.equal(res.result.unchanged.some((c: { attribute: string }) => c.attribute === "ColorRGB_R"), false, "never read is not a value");
 });
 
 // ---------------------------------------------------------------------------
@@ -189,6 +279,7 @@ beforeEach(() => {
   fake.reset();
   playing = { 1: { hasActivePlayback: true, currentCue: { no: 2, name: "Two" } }, 2: { hasActivePlayback: false, currentCue: { no: 5, name: "Five" } } };
   fake.on("object", (args) => {
+    if (args.ref === 'Sequence "Clock"') return { name: "Clock", class: "Sequence", hasActivePlayback: true, currentCue: { no: 4, name: "Four" } };
     const m = String(args.ref).match(/^Sequence (\d+)$/);
     if (!m) throw new Error(`no object found for '${args.ref}'`);
     if (Number(m[1]) === 404) throw new Error(`no object found for '${args.ref}'`);
@@ -246,6 +337,24 @@ test("gma3_cues: several sequences in one read, each with its playback state; a 
   assert.equal(both.isError, true);
 });
 
+test("review round 1: gma3_cues reads the playback state of a named sequence (single and several)", async () => {
+  fake.on("children", () => ({ total: 1, offset: 0, count: 1, items: [{ name: "Cue", fields: { No: "1" } }] }));
+  const one = await call("gma3_cues", { sequence: "Clock" });
+  assert.equal(one.isError, false, one.text);
+  assert.deepEqual(one.json.playback, { active: true, currentCue: { no: 4, name: "Four" } });
+  const many = await call("gma3_cues", { sequences: ["Clock", 1] });
+  assert.deepEqual(many.json.sequences[0].playback, { active: true, currentCue: { no: 4, name: "Four" } });
+  assert.deepEqual(many.json.sequences[1].playback, { active: true, currentCue: { no: 2, name: "Two" } });
+  assert.ok(fake.requests.some((r) => r.op === "object" && r.args.ref === 'Sequence "Clock"'));
+});
+
+test("review round 1: gma3_sequences does not call a sticky cue current when the activity read failed", async () => {
+  fake.on("children", () => ({ total: 1, offset: 0, count: 1, items: [{ name: "A", class: "Sequence", currentCue: { no: 7, name: "sticky" } }] }));
+  const res = await call("gma3_sequences", {});
+  assert.equal(res.json.items[0].currentCue, null);
+  assert.deepEqual(res.json.items[0].observedCue, { no: 7, name: "sticky" });
+});
+
 test("gma3_playback: reads the sequence state a frame after the command", async () => {
   fake.onCommand((command) => {
     if (command === "Off Sequence 1") playing[1] = { hasActivePlayback: false, currentCue: { no: 2, name: "Two" } };
@@ -262,5 +371,5 @@ test("gma3_playback: reads the sequence state a frame after the command", async 
   assert.deepEqual(ex.json.playbackState.currentCue, { no: 1, name: "One" });
 
   const macro = await call("gma3_playback", { action: "go", target: "Macro 5" });
-  assert.match(macro.json.playbackState.notRead, /Sequence n and Executor n/);
+  assert.match(macro.json.playbackState.notRead, /Sequence n, Sequence "name" and Executor n/);
 });

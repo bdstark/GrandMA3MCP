@@ -530,7 +530,11 @@ server.registerTool(
         const ref = typeof s === "number" ? `Sequence ${s}` : `Sequence "${s}"`;
         const cues = (await bridge.request("children", { ref, fields: fields ?? ["No", "Name", "TrigType", "TrigTime", "Command", "Note"], limit, offset })) as Record<string, unknown>;
         const state = await readTargetState(bridge, ref).catch(() => null);
-        const playback = state && !state.notRead ? { active: state.active, currentCue: state.currentCue, ...(state.lastCue ? { lastCue: state.lastCue } : {}) } : null;
+        const playback = state && !state.notRead
+          ? { active: state.active, currentCue: state.currentCue, ...(state.lastCue ? { lastCue: state.lastCue } : {}), ...(state.observedCue ? { observedCue: state.observedCue } : {}) }
+          : state
+            ? { notRead: state.notRead }
+            : null;
         return { ...cues, playback };
       };
       if (sequence !== undefined) return read(sequence);

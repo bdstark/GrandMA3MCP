@@ -12,10 +12,13 @@ Bridge 0.32.0 adds `currentCue {no, name}` to a sequence's summary in the `objec
 `Sequence.CurrentCue` keeps naming the last cue after `Off`. So the server reports a cue as current only while the
 sequence has active playback:
 
-| `hasActivePlayback` | `currentCue` | `lastCue` |
-| --- | --- | --- |
-| true | the cue it is in | (absent) |
-| false | `null` | the cue it stopped in, when the console still names one |
+| `hasActivePlayback` | `currentCue` | `lastCue` | `observedCue` |
+| --- | --- | --- | --- |
+| true | the cue it is in | (absent) | (absent) |
+| false | `null` | the cue it stopped in, when the console still names one | (absent) |
+| missing (the activity read failed) | `null` | (absent) | the cue the console names: current or sticky, unknown |
+
+A sequence is recognised by its class, so it is annotated even when the activity flag is missing.
 
 These reads carry the state:
 
@@ -23,7 +26,9 @@ These reads carry the state:
 - `gma3_executors`: the same fields on `assigned`, for an assigned sequence.
 - `gma3_cues`: `sequence` (one) or `sequences` (1-20 in one read). Each sequence comes with its cues (default
   fields No, Name, TrigType, TrigTime, Command, Note) and `playback {active, currentCue, lastCue}`. With
-  `sequences`, a missing sequence is its own row with `error`; it does not fail the whole read.
+  `sequences`, a missing sequence is its own row with `error`; it does not fail the whole read. A sequence named
+  by name (`"Clock"`, without double quotes inside) is read the same way. When the state cannot be read,
+  `playback` is `{notRead}` with the reason.
 
 ## Read-back after a playback command
 
@@ -63,14 +68,22 @@ Watches values over time on the server side. It is read-only and starts nothing.
 | `interval_ms` | 50-2000, default 200. |
 
 The result lists the `changed` channels. Each has `first`, `last`, `min`/`max`, `changeCount` and up to 20 timed
-`changes` (`ms`, `from`, `to`). `unchanged` lists the channels that held their value. A programmer channel that
-leaves the programmer reads `null` (released). An unread sample is a gap (`unreadSamples`), never a value.
-`resolutionMs` is the sampling granularity.
+`changes` (`ms`, `from`, `to`). `unchanged` lists the channels that held their value. `resolutionMs` is the
+sampling granularity.
+
+Gaps are never values:
+- A sample whose read failed, whose programmer scan was incomplete (`coverage.complete` not true) or whose page
+  was truncated (`total` above the rows returned) is a gap: `unreadSamples` counts them and `gapReasons` says why.
+  An incomplete first read stops the tool (`observed: false`) instead of calling the programmer empty.
+- A programmer channel that leaves the programmer in a complete read reads `null` (released).
+- An output channel without a readable value keeps its last level. The channel carries `unreadSamples` and its
+  `unreadable` intervals (`fromMs`, `toMs`, null while still unreadable), and `unreadableChannels` lists every such
+  channel (`everRead` false when it never had a value) with `outputState`.
 
 Output is checked before sampling. When no channel has a readable value (a universe that is not granted, as on an
 onPC without a grant), the tool samples nothing. It returns `observed: false` with the reason and `outputState`,
 the explanation per universe from [gma3_dmx_output](dmx-output.md). When only some channels are unreadable, the
-rest are watched and `unreadableChannels` lists the others.
+rest are watched and the unreadable ones are reported as gaps.
 
 A running phaser in the programmer reads as its steps, not as a moving value: the programmer holds the steps. Its
 movement shows only in the output.
