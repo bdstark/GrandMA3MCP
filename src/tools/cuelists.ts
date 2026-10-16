@@ -63,7 +63,7 @@ import { cueNo, readSequenceRate } from "./speed.js";
 import { effectAttributes, effectCommands, parsePhaser, parseStep, verifyBuild, type Effect, type Unit } from "./phasers.js";
 import { SEQUENCE_SETTINGS, configureSequence, findReferences, settingValue, type ConfigureSequenceArgs } from "./playback.js";
 import { HeldLock } from "../mutations.js";
-import { resolveVariables, variableRefs, variablesSet } from "./variables.js";
+import { VarTracker, variablePresence, variableRefs } from "./variables.js";
 
 export const MAX_CUES = 100;
 export const MAX_LOOKS = 16;
@@ -126,21 +126,23 @@ function validatePreset(v: Validator, raw: unknown, path: string): PresetSpec | 
  */
 export async function checkCommandVariables(bridge: Gma3Bridge, commands: Array<{ label: string; command: string }>, t: number): Promise<StepResult> {
   const name = "check_variables";
-  const refs = commands.flatMap((c) => variableRefs(c.command).map((r) => ({ ...r, label: c.label, command: c.command })));
-  if (!refs.length) return asRead({ name, status: "succeeded", op: "vars.get", detail: { variables: 0 } });
-  const set = new Set<string>();
-  const needed: Array<{ name: string; label: string }> = [];
-  for (const c of commands) {
-    const sets = variablesSet(c.command);
-    for (const r of variableRefs(c.command)) if (!set.has(r.name) && !sets.some((sv) => sv.name === r.name && sv.statement < r.statement)) needed.push({ name: r.name, label: c.label });
-    for (const sv of sets) set.add(sv.name);
-  }
-  const res = await resolveVariables(bridge, needed.map((x) => x.name), t);
-  const missing = needed.filter((x) => res.get(x.name)?.status === "missing").map((x) => `$${x.name} (${x.label})`);
-  const unknown = needed.filter((x) => res.get(x.name)?.status === "unknown");
-  if (missing.length) return failedRead(name, `variable(s) ${[...new Set(missing)].join(", ")} do not exist as a user or global variable (a command with a missing $variable does nothing); set them with gma3_set_variable first; nothing was sent`);
-  if (unknown.length) return failedRead(name, `the $variables could not be checked (${res.get(unknown[0].name)?.error}); nothing was sent`);
-  return asRead({ name, status: "succeeded", op: "vars.get", detail: { variables: [...new Set(needed.map((x) => x.name))] } });
+  const names = commands.flatMap((c) => variableRefs(c.command).map((r) => r.name));
+  if (!names.length) return asRead({ name, status: "succeeded", op: "vars.get", detail: { variables: 0 } });
+  // In cue order, statement by statement: set/delete effects of earlier commands (a no-value Set*Variable deletes),
+  // otherwise the console's variables (review round 1).
+  const tracker = new VarTracker(await variablePresence(bridge, names, t));
+  const checks = tracker.check(commands.map((c) => ({ command: c.command, runs: true, checked: true })));
+  const missing: string[] = [];
+  const unknown: Array<{ error?: string }> = [];
+  checks.forEach((list, i) => {
+    for (const r of list) {
+      if (r.status === "missing") missing.push(`$${r.name} (${commands[i].label})`);
+      if (r.status === "unknown") unknown.push(r);
+    }
+  });
+  if (missing.length) return failedRead(name, `variable(s) ${[...new Set(missing)].join(", ")} do not exist as a user or global variable when the command runs (a command with a missing $variable does nothing); set them with gma3_set_variable first; nothing was sent`);
+  if (unknown.length) return failedRead(name, `the $variables could not be checked (${unknown[0].error}); nothing was sent`);
+  return asRead({ name, status: "succeeded", op: "vars.get", detail: { variables: [...new Set(names)] } });
 }
 
 /** SU-14: a cue command: one command line (several statements separated by ;), no quotes problems, no control characters. */

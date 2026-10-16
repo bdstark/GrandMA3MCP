@@ -434,6 +434,16 @@ test("SU-15: $variables in macro lines must exist (user or global), unless an ea
   assert.deepEqual(created.result.references[1].refs.map((r: any) => `${r.ref}:${r.status}`), ["$HexCol:exists", "$HexCue:created_earlier"]);
 });
 
+test("SU-15 review 1: a line that deletes a variable (Set*Variable without a value) makes a later use missing", async () => {
+  h.fake.on("vars.get", (a) => ({ items: (a.names as string[]).map((n) => ({ name: n, exists: a.scope === "global" && n === "Kept" })) }));
+  const r = await store({ mode: "create", lines: [{ command: 'SetGlobalVariable "Gone"' }, { command: "Go+ Macro $Gone" }] });
+  assert.equal(r.isError, true);
+  assert.match(JSON.stringify(r.result), /\$Gone does not exist/);
+  const r2 = await store({ mode: "create", lines: [{ command: 'DeleteGlobalVariable "Kept"' }, { command: "Echo $Kept" }] });
+  assert.match(JSON.stringify(r2.result), /\$Kept does not exist/);
+  assert.equal(con.commands.length, 0);
+});
+
 // ---------------------------------------------------------------------------
 // gma3_run_macro and gma3_macros
 // ---------------------------------------------------------------------------

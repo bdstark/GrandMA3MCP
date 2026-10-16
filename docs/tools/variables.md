@@ -41,7 +41,8 @@ Each variable comes back with `global` and/or `user` (`exists`, `value`, `type`)
 | `delete` | `true` deletes the variable (no value) |
 | `verify` | read back and compare value and type (default true) |
 
-One `vars.set` or `vars.delete`, then a `vars.get` read-back: the value and type must match, or for a delete the
+One `vars.set` or `vars.delete`, then a `vars.get` read-back: the value (exactly, as variables are typed values) and
+the type must match, or for a delete the
 variable must be gone. A write the console ignores is `mismatched`. Batch form: `variables: [{scope, name, value,
 type} | {scope, name, delete: true}]`, see [Batch forms](README.md#batch-forms-su-12).
 
@@ -49,8 +50,10 @@ type} | {scope, name, delete: true}]`, see [Batch forms](README.md#batch-forms-s
 
 - `gma3_store_macro` and `gma3_edit_macro_line` check every `$variable` of a line outside quotes, like an object
   reference. It must exist as a user or global variable, or be set by an earlier executable line or statement
-  (`SetGlobalVariable` / `SetUserVariable`). A missing one refuses the call before anything is sent; `raw: true` skips
-  the check.
+  (`SetGlobalVariable` / `SetUserVariable` with a value). A `Set*Variable "x"` without a value, or
+  `Delete*Variable "x"`, deletes it: a later use is missing. The effects are followed in order, statement by statement;
+  deleting a user variable uncovers a global one of the same name. A missing variable refuses the call before anything
+  is sent; `raw: true` skips the check.
 - Cue commands (`gma3_store_cues`, `gma3_build_chase`, `gma3_edit_cues`) are checked the same way, in cue order: a
   command setting a variable counts for the cues after it.
 - On a bridge older than 0.31.0 the check cannot be made, so a line or command with a `$variable` is refused with a

@@ -81,13 +81,93 @@ export function variableRefs(command: string): Array<{ name: string; statement: 
   return out;
 }
 
-/** The variables a command line sets (SetGlobalVariable / SetUserVariable "name" ...), with their statement. */
-export function variablesSet(command: string): Array<{ name: string; statement: number; scope: VarScope }> {
-  const out: Array<{ name: string; statement: number; scope: VarScope }> = [];
+export interface VarEffect {
+  name: string;
+  statement: number;
+  scope: VarScope;
+  action: "set" | "delete";
+}
+
+/**
+ * What the statements of a command line do to variables, in order (review round 1): `SetGlobalVariable "x" <value>`
+ * (or `At ...`) sets x; `SetGlobalVariable "x"` with no value and `DeleteGlobalVariable "x"` delete it; the same for
+ * user variables.
+ */
+export function variableEffects(command: string): VarEffect[] {
+  const out: VarEffect[] = [];
   statements(command).forEach((st, i) => {
-    const m = st.text.trim().match(/^Set(Global|User)Variable\s+(?:"([^"]+)"|'([^']+)'|(\S+))/i);
-    if (m) out.push({ name: m[2] ?? m[3] ?? m[4], statement: i, scope: m[1].toLowerCase() === "global" ? "global" : "user" });
+    const m = st.text.trim().match(/^(Set|Delete)(Global|User)Variable\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*(.*)$/i);
+    if (!m) return;
+    const scope: VarScope = m[2].toLowerCase() === "global" ? "global" : "user";
+    const action = m[1].toLowerCase() === "delete" || m[6].trim() === "" ? "delete" : "set";
+    out.push({ name: m[3] ?? m[4] ?? m[5], statement: i, scope, action });
   });
+  return out;
+}
+
+/** The variables a command line sets (not the ones it deletes), with their statement. */
+export function variablesSet(command: string): Array<{ name: string; statement: number; scope: VarScope }> {
+  return variableEffects(command).filter((e) => e.action === "set").map(({ name, statement, scope }) => ({ name, statement, scope }));
+}
+
+/** A variable's existence per scope on the console: true, false, or null when it could not be read. */
+export type VarPresence = { user: boolean | null; global: boolean | null; error?: string };
+
+/**
+ * Follows a sequence of command lines (macro lines, cue commands) and says, for each $reference in order, whether it
+ * resolves when it runs: a user or a global variable exists at that point, by the earlier statements' set/delete
+ * effects or else as on the console. A user variable shadows a global one; deleting it uncovers the global one.
+ * Within a statement the references are read before its own effects apply.
+ */
+export class VarTracker {
+  private effects = new Map<string, { user?: boolean; global?: boolean }>();
+  constructor(private consoleState: Map<string, VarPresence>) {}
+  /** Apply the effects of statements (e.g. of an earlier line that runs). */
+  apply(effects: VarEffect[]): void {
+    for (const e of effects) {
+      const cur = this.effects.get(e.name) ?? {};
+      cur[e.scope] = e.action === "set";
+      this.effects.set(e.name, cur);
+    }
+  }
+  /** Whether `name` resolves now: from an earlier effect (created_earlier), on the console (exists), missing or unknown. */
+  resolve(name: string): { status: "created_earlier" | "exists" | "missing" | "unknown"; error?: string } {
+    const eff = this.effects.get(name) ?? {};
+    const con = this.consoleState.get(name);
+    const scopeState = (sc: VarScope): boolean | null => (eff[sc] !== undefined ? (eff[sc] as boolean) : con ? con[sc] : null);
+    const [u, g] = [scopeState("user"), scopeState("global")];
+    if (u === true || g === true) return { status: eff.user === true || (u !== true && eff.global === true) ? "created_earlier" : "exists" };
+    if (u === null || g === null) return { status: "unknown", error: con?.error ?? "not checked" };
+    return { status: "missing" };
+  }
+  /** Check every line in order; each line's references are judged statement by statement, before its effects. */
+  check(lines: Array<{ command: string; runs: boolean; checked: boolean }>): Array<Array<{ name: string; status: "created_earlier" | "exists" | "missing" | "unknown"; error?: string }>> {
+    return lines.map((l) => {
+      const refs = variableRefs(l.command);
+      const effects = variableEffects(l.command);
+      const out: Array<{ name: string; status: "created_earlier" | "exists" | "missing" | "unknown"; error?: string }> = [];
+      const stmts = new Set([...refs.map((r) => r.statement), ...effects.map((e) => e.statement)]);
+      for (const si of [...stmts].sort((a, b) => a - b)) {
+        if (l.checked) for (const r of refs.filter((x) => x.statement === si)) out.push({ name: r.name, ...this.resolve(r.name) });
+        if (l.runs) this.apply(effects.filter((e) => e.statement === si));
+      }
+      return out;
+    });
+  }
+}
+
+/** Each name's existence per scope on the console (null when it could not be read). */
+export async function variablePresence(bridge: Gma3Bridge, names: string[], t?: number): Promise<Map<string, VarPresence>> {
+  const out = new Map<string, VarPresence>();
+  const uniq = [...new Set(names)];
+  if (!uniq.length) return out;
+  try {
+    const [u, g] = [await readVariables(bridge, "user", uniq, t), await readVariables(bridge, "global", uniq, t)];
+    uniq.forEach((n, i) => out.set(n, { user: u.items[i]?.exists === true, global: g.items[i]?.exists === true }));
+  } catch (err) {
+    const error = unknownOp(err) ? NEEDS_BRIDGE : err instanceof Error ? err.message : String(err);
+    for (const n of uniq) out.set(n, { user: null, global: null, error });
+  }
   return out;
 }
 
@@ -101,24 +181,6 @@ export async function readVariables(bridge: Gma3Bridge, scope: VarScope, names: 
     user = r.user ?? user;
   }
   return { items, user };
-}
-
-/**
- * Whether each name resolves as a $variable: a user variable (it shadows a global one) or a global one. A name is
- * `unknown` when the bridge could not be asked.
- */
-export async function resolveVariables(bridge: Gma3Bridge, names: string[], t?: number): Promise<Map<string, { status: "exists" | "missing" | "unknown"; scope?: VarScope; error?: string }>> {
-  const out = new Map<string, { status: "exists" | "missing" | "unknown"; scope?: VarScope; error?: string }>();
-  const uniq = [...new Set(names)];
-  if (!uniq.length) return out;
-  try {
-    const [u, g] = [await readVariables(bridge, "user", uniq, t), await readVariables(bridge, "global", uniq, t)];
-    uniq.forEach((n, i) => out.set(n, u.items[i]?.exists ? { status: "exists", scope: "user" } : g.items[i]?.exists ? { status: "exists", scope: "global" } : { status: "missing" }));
-  } catch (err) {
-    const error = unknownOp(err) ? NEEDS_BRIDGE : err instanceof Error ? err.message : String(err);
-    for (const n of uniq) out.set(n, { status: "unknown", error });
-  }
-  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -201,7 +263,8 @@ interface SetArgs {
   verify?: unknown;
 }
 
-const sameValue = (a: unknown, b: unknown) => (typeof a === "number" && typeof b === "number" ? Math.abs(a - b) < 1e-9 : a === b);
+/** Variables are typed values, not measurements: the read-back must be exactly the value sent (review round 1). */
+const sameValue = (a: unknown, b: unknown) => a === b;
 
 export async function setVariable(ctx: ToolContext, raw: SetArgs): Promise<OperationResult> {
   const op = raw.delete === true ? "delete_variable" : "set_variable";

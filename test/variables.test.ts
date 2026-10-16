@@ -1,7 +1,7 @@
 import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { startHarness, type Harness } from "./helpers/tool-harness.ts";
-import { registerVariableTools, variableRefs, variablesSet } from "../src/tools/variables.ts";
+import { registerVariableTools, variableRefs, variablesSet, variableEffects, VarTracker } from "../src/tools/variables.ts";
 
 /** Global and user variables as the bridge's vars.* ops (0.31.0) answer, with an optional write the console ignores. */
 class Vars {
@@ -134,4 +134,37 @@ test("gma3_set_variable batch: several variables, one read-back each; an old bri
   const old = await h.callJson("gma3_set_variable", { scope: "global", name: "X", value: 1 });
   assert.equal(old.isError, true);
   assert.match(JSON.stringify(old.result), /bridge 0\.31\.0/);
+});
+
+test("review 1: a no-value Set*Variable and Delete*Variable delete; the tracker follows set/delete in order, with shadowing", () => {
+  assert.deepEqual(variableEffects('SetGlobalVariable "Gone"; SetGlobalVariable "A" 1; DeleteUserVariable B; SetUserVariable "C" At Sequence 1 Property "Name"'), [
+    { name: "Gone", statement: 0, scope: "global", action: "delete" },
+    { name: "A", statement: 1, scope: "global", action: "set" },
+    { name: "B", statement: 2, scope: "user", action: "delete" },
+    { name: "C", statement: 3, scope: "user", action: "set" },
+  ]);
+  const consoleState = new Map([["Gone", { user: false, global: false }], ["Kept", { user: false, global: true }], ["Both", { user: true, global: true }]]);
+  const run = (lines: string[]) => new VarTracker(consoleState).check(lines.map((command) => ({ command, runs: true, checked: true }))).map((l) => l.map((r) => `${r.name}:${r.status}`));
+  // The reviewer's case: deleting a missing variable, then using it, is missing (same line and the next line).
+  assert.deepEqual(run(['SetGlobalVariable "Gone"; Go+ Macro $Gone']), [["Gone:missing"]]);
+  assert.deepEqual(run(['SetGlobalVariable "Gone"', "Go+ Macro $Gone"]), [[], ["Gone:missing"]]);
+  // Deleting an existing variable makes a later use missing; setting it again makes it created_earlier.
+  assert.deepEqual(run(['DeleteGlobalVariable "Kept"; Echo $Kept', 'SetGlobalVariable "Kept" 2; Echo $Kept']), [["Kept:missing"], ["Kept:created_earlier"]]);
+  // Shadowing: deleting the user variable uncovers the global one.
+  assert.deepEqual(run(['SetUserVariable "Both"; Echo $Both']), [["Both:exists"]]);
+  // A reference in the same statement as its own set is read before the set.
+  assert.deepEqual(run(['SetGlobalVariable "Gone" $Gone']), [["Gone:missing"]]);
+});
+
+test("review 1: the read-back compares the value exactly: an ignored write of a tiny double is a mismatch", async () => {
+  vars.sets.global.set("Ratio", 0);
+  vars.doubles.add("global/Ratio");
+  vars.ignoreWrites = true;
+  for (const value of [5e-10, -5e-10]) {
+    const r = await h.callJson("gma3_set_variable", { scope: "global", name: "Ratio", value, type: "double" });
+    assert.equal(r.result.verification.status, "mismatched", `${value}: ${JSON.stringify(r.result.verification)}`);
+  }
+  vars.ignoreWrites = false;
+  const ok = await h.callJson("gma3_set_variable", { scope: "global", name: "Ratio", value: 5e-10, type: "double" });
+  assert.equal(ok.result.verification.status, "matched");
 });

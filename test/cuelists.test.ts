@@ -1020,6 +1020,11 @@ test("SU-15: cue commands' $variables must exist or be set by an earlier cue com
     assert.deepEqual(c.commands, [], "nothing was sent");
     const ok = await h.callJson("gma3_store_cues", { sequence: 991, mode: "create", exclusive: true, cues: [{ cue: 1, command: 'SetGlobalVariable "HexCue" 2' }, { cue: 2, command: "Goto Sequence $HexCol Cue $HexCue" }] });
     assert.equal(ok.isError, false, JSON.stringify(ok.result).slice(0, 1500));
+    // Review round 1: a cue command that deletes the variable (no value) leaves later uses missing.
+    const del = await h.callJson("gma3_store_cues", { sequence: 992, mode: "create", exclusive: true, cues: [{ cue: 1, command: 'SetGlobalVariable "Gone"; Go+ Macro $Gone' }] });
+    assert.match(errors(del), /\$Gone \(cue 1\) do not exist/);
+    const del2 = await h.callJson("gma3_store_cues", { sequence: 992, mode: "create", exclusive: true, cues: [{ cue: 1, command: 'DeleteGlobalVariable "HexCol"' }, { cue: 2, command: "Go+ Macro $HexCol" }] });
+    assert.match(errors(del2), /\$HexCol \(cue 2\) do not exist/);
     const edit = await h.callJson("gma3_edit_cues", { sequence: 991, cues: [1], command: "Go+ Macro $Nope" });
     assert.match(errors(edit), /\$Nope \(cue 1\) do not exist/);
   } finally {
