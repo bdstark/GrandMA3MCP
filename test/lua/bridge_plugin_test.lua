@@ -2477,6 +2477,17 @@ do
   check("su20 review: show.answer needs the expected target", r.ok == false and r.error:find("bad%-args") and #clicks == 0, J(r))
   r = request("show.answer", { expectTitle = "Change show file name?", expectTarget = "Show B", button = "OK", exclusive = true })
   check("su20: show.answer clicks the OK button of the expected dialog naming the expected show", r.ok and r.result.clicked == "OK" and #clicks == 3 and clicks[1] == "move@1", J({ r, clicks }))
+  -- Review 2 of PR #66: "Joe's Show" contains "'s Show'"; the whole message binds the target.
+  local nclicks = #clicks
+  modal = ui("MessageBox", "MsgBox", nil, { ui("TitleBar", "Title", "Change show file name and overwrite existing show file?"), ui("TextBox", "Text", "You are going to change the show file name and overwrite the file with the name\n'Joe's Show' that already exists.\nDo you want to continue ?"), ui("Button", "Button 1", "OK"), ui("Button", "Button 2", "Cancel") })
+  r = request("show.answer", { expectTitle = "Change show file name and overwrite existing show file?", expectTarget = "s Show", button = "OK", exclusive = true })
+  check("su20 review 2: a dialog for Joe's Show is not answered for s Show", r.ok == false and r.error:find("wrong%-target") and #clicks == nclicks, J({ r, clicks }))
+  r = request("show.answer", { expectTitle = "Change show file name and overwrite existing show file?", expectTarget = "Joe's Show", button = "OK", exclusive = true })
+  check("su20 review 2: the same dialog is answered for its own complete name", r.ok and r.result.clicked == "OK" and #clicks == nclicks + 3, J({ r, clicks }))
+  modal = msgbox("Change show file name?", "Show B")
+  modal = ui("MessageBox", "MsgBox", nil, { ui("TitleBar", "Title", "Change show file name?"), ui("TextBox", "Text", "Something else entirely 'Show B'?"), ui("Button", "Button 1", "OK") })
+  r = request("show.answer", { expectTitle = "Change show file name?", expectTarget = "Show B", button = "OK", exclusive = true })
+  check("su20 review 2: a message that is not the probed one is refused even when it quotes the name", r.ok == false and r.error:find("wrong%-target"), J(r))
   modal = nil
   r = request("show.answer", { expectTitle = "Change show file name?", expectTarget = "Show B", button = "OK", exclusive = true })
   check("su20: show.answer with no dialog open is an error", r.ok == false and r.error:find("no%-modal"), J(r))

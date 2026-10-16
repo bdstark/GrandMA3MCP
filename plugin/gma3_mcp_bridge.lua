@@ -5249,6 +5249,13 @@ end)()
 -------------------------------------------------------------------------------
 ;(function()
   local SAVE_TITLES = { ["Change show file name?"] = true, ["Change show file name and overwrite existing show file?"] = true }
+  -- The whole message each dialog shows for a target (live, whitespace collapsed): the target is bound by the complete
+  -- text, never by a substring ("Joe's Show" contains "'s Show'"; review of PR #66).
+  local SAVE_TEXTS = {
+    ["Change show file name?"] = function(n) return "Do you intend to change the show file name to '" .. n .. "'?" end,
+    ["Change show file name and overwrite existing show file?"] = function(n) return "You are going to change the show file name and overwrite the file with the name '" .. n .. "' that already exists. Do you want to continue ?" end,
+  }
+  local function squash(t) return (tostring(t):gsub("%s+", " "):gsub("^ ", ""):gsub(" $", "")) end
   local function currentShow()
     local ok, v = pcall(function() return Root().MANetSocket:Get("ShowFile") end)
     return ok and v and tostring(v) or nil
@@ -5346,8 +5353,8 @@ end)()
     if modalError then raise("[modal-unknown] the dialog cannot be read (" .. modalError .. "); nothing was clicked") end
     if not md then raise("[no-modal] no dialog is open") end
     if md.title ~= args.expectTitle then raise("[wrong-modal] the open dialog is " .. tostring(md.title) .. ", not " .. args.expectTitle .. "; nothing was clicked") end
-    if type(md.text) ~= "string" or not md.text:find("'" .. target .. "'", 1, true) then
-      raise("[wrong-target] the open dialog does not name '" .. target .. "' (" .. tostring(md.text) .. "); nothing was clicked")
+    if type(md.text) ~= "string" or squash(md.text) ~= SAVE_TEXTS[args.expectTitle](target) then
+      raise("[wrong-target] the open dialog's message is not the one for '" .. target .. "' (" .. tostring(md.text) .. "); nothing was clicked")
     end
     local target
     local function find(h)

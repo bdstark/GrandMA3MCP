@@ -48,6 +48,15 @@ export interface ShowFiles {
 
 export const RENAME_TITLE = "Change show file name?";
 export const OVERWRITE_TITLE = "Change show file name and overwrite existing show file?";
+/**
+ * The whole message each SaveShow dialog shows for a show (live, whitespace collapsed). A dialog is ours only when its
+ * message is exactly this: a substring check would take "Joe's Show" for "s Show" (review of PR #66).
+ */
+export const DIALOG_TEXT: Record<string, (name: string) => string> = {
+  [RENAME_TITLE]: (n) => `Do you intend to change the show file name to '${n}'?`,
+  [OVERWRITE_TITLE]: (n) => `You are going to change the show file name and overwrite the file with the name '${n}' that already exists. Do you want to continue ?`,
+};
+export const squash = (t: string) => t.replace(/\s+/g, " ").trim();
 const NEEDS_BRIDGE = "the console runs an older bridge plugin without the show ops (bridge 0.35.0); update the plugin";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const POLL_MS = 150;
@@ -151,7 +160,6 @@ export async function saveShow(ctx: ToolContext, raw: Record<string, unknown>): 
     let foreign: Modal | undefined;
     let unknownModal: string | undefined;
     let unread = 0;
-    const quoted = `'${to}'`;
     while (Date.now() - t0 < timeoutMs) {
       await sleep(POLL_MS);
       let now: ShowFiles;
@@ -170,7 +178,7 @@ export async function saveShow(ctx: ToolContext, raw: Record<string, unknown>): 
       }
       unknownModal = undefined;
       if (now.modal) {
-        const ours = !answered && expect && now.modal.title === expect && typeof now.modal.text === "string" && now.modal.text.includes(quoted);
+        const ours = !answered && expect && now.modal.title === expect && typeof now.modal.text === "string" && squash(now.modal.text) === DIALOG_TEXT[expect](to);
         if (ours) {
           try {
             await ctx.bridge.request("show.answer", { expectTitle: expect, expectTarget: to, button: "OK", exclusive: true }, t);
