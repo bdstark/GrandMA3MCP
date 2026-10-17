@@ -42,6 +42,7 @@ import {
   type Verification,
 } from "../results.js";
 import { ValidationError, Validator, finiteNumber } from "../validate.js";
+import { currentPoolBridge, dataPoolShape, inDataPool } from "./datapool.js";
 
 // ---------------------------------------------------------------------------
 // Model
@@ -232,6 +233,7 @@ const CHECKED = new Set(["sequence", "macro", "group", "preset", "matricks", "pa
 const spelling: Record<string, string> = { sequence: "Sequence", macro: "Macro", group: "Group", preset: "Preset", matricks: "MAtricks", page: "Page", timecode: "Timecode", appearance: "Appearance", master: "Master", plugin: "Plugin", quickey: "Quickey", view: "View", cue: "Cue", part: "Part" };
 const isId = (t: string | undefined) => !!t && (/^\d+(\.\d+)*$/.test(t) || /^"[^"]*"$/.test(t) || /^'[^']*'$/.test(t));
 const RANGE = new Set(["thru", "+", "-", "if", "*"]);
+const isPoolNo = (t: string | undefined) => !!t && /^\d+$/.test(t);
 
 export interface Reference {
   ref: string;
@@ -249,7 +251,9 @@ export function references(command: string): { refs: Reference[]; skipped: strin
     for (let i = 0; i < toks.length; i++) {
       const kw = toks[i].toLowerCase();
       if (!CHECKED.has(kw) || !isId(toks[i + 1])) continue;
-      let ref = `${spelling[kw]} ${toks[i + 1]}`;
+      // "DataPool n Sequence m": the object of data pool n, not of the current one.
+      const pool = /^datapool$/i.test(toks[i - 2] ?? "") && isPoolNo(toks[i - 1]) ? `DataPool ${toks[i - 1]} ` : "";
+      let ref = `${pool}${spelling[kw]} ${toks[i + 1]}`;
       let j = i + 2;
       if (kw === "sequence") {
         while (/^(cue|part)$/i.test(toks[j] ?? "") && isId(toks[j + 1])) {
@@ -305,6 +309,8 @@ export function storedBy(lines: RefLine[]): Set<string> {
  * lines before these) or earlier among `lines`, count as created; a disabled or non-executing Store creates nothing.
  */
 export async function checkReferences(bridge: Gma3Bridge, n: number, lines: RefLine[], firstLine: number, prior: RefLine[] = []): Promise<LineCheck[]> {
+  // A macro line runs in the current data pool, whichever pool holds the macro.
+  bridge = currentPoolBridge(bridge);
   const cache = new Map<string, Awaited<ReturnType<typeof exists>>>();
   const created = storedBy(prior);
   // SU-15: $variables, judged in order: set/delete effects of executable lines (prior lines first, then these, statement
@@ -353,6 +359,7 @@ export type EditedLine = RefLine & { origin?: number; written?: boolean };
  * that do not exist in the show either. Lines keep their identity through `origin`, never matched by text.
  */
 export async function brokenDependents(bridge: Gma3Bridge, n: number, beforeLines: RefLine[], afterLines: EditedLine[]): Promise<string[]> {
+  bridge = currentPoolBridge(bridge);
   const out: string[] = [];
   const cache = new Map<string, Awaited<ReturnType<typeof exists>>>();
   for (let j = 0; j < afterLines.length; j++) {
@@ -1034,9 +1041,9 @@ export const registerMacroTools: RegisterTools = (server, ctx) => {
       description:
         "Read-only. Without macro: the macro pool (number, name, line count; offset/limit, default 100). With macro: its name, note, lock, CLI, the line it is running now (null when idle) and every line exactly as stored (command, wait as seconds / \"follow\" / \"go\", enabled, add_to_cmdline, execute, name, note; a name of null is the default). " +
         "check_references: true also lists the objects each line refers to (Sequence, Cue, Macro, Group, Preset, MAtricks, Page, Master, ...) and whether they exist.",
-      inputSchema: { macro: z.number().optional(), offset: z.number().optional(), limit: z.number().optional(), check_references: z.boolean().optional() },
+      inputSchema: { ...dataPoolShape, macro: z.number().optional(), offset: z.number().optional(), limit: z.number().optional(), check_references: z.boolean().optional() },
     },
-    async (args) => readOnly(() => readMacros(ctx, args)),
+    async (args) => readOnly(() => readMacros(inDataPool(ctx, args), args)),
   );
 
   server.registerTool(
@@ -1049,6 +1056,7 @@ export const registerMacroTools: RegisterTools = (server, ctx) => {
         "The console rewrites command text outside quotes (trims, collapses spaces, expands abbreviated keywords): every line is read back and compared exactly; a rewritten line is a mismatch unless accept_console_form: true (it is reported in rewritten either way). " +
         BATCH_NOTE,
       inputSchema: {
+        ...dataPoolShape,
         macro: z.number().optional().describe("Macro number. Required unless macros is given."),
         mode: z.enum(["create", "replace", "append"]).optional().describe("Required (per macro or for the whole batch)."),
         lines: z.array(lineSchema).optional().describe("Required unless macros is given."),
@@ -1069,7 +1077,7 @@ export const registerMacroTools: RegisterTools = (server, ctx) => {
       operation(() =>
         (args as Record<string, unknown>).macros !== undefined
           ? runBatchCall(args as Record<string, unknown>, {
-              ctx,
+              ctx: inDataPool(ctx, args),
               operation: "store_macro",
               listKey: "macros",
               identityKeys: ["macro", "lines", "name", "note"],
@@ -1078,7 +1086,7 @@ export const registerMacroTools: RegisterTools = (server, ctx) => {
               check: (items) => duplicates(items.map((it) => String(it.macro))).map((m) => `Macro ${m} appears more than once in macros`),
               run: (it, c) => storeMacro(c, it as unknown as StoreArgs),
             })
-          : storeMacro(ctx, args),
+          : storeMacro(inDataPool(ctx, args), args),
       ),
   );
 
@@ -1091,6 +1099,7 @@ export const registerMacroTools: RegisterTools = (server, ctx) => {
         "Batch form (edits): the edits run in order, each against the macro as the earlier edits left it (line numbers shift after an insert, move or remove); once an edit on a macro does not succeed, the later edits on that macro are not attempted. " +
         BATCH_NOTE,
       inputSchema: {
+        ...dataPoolShape,
         macro: z.number().optional().describe("Macro number. Required unless edits is given (it may then be a default for every edit)."),
         action: z.enum(["insert", "set", "move", "remove"]).optional().describe("Required unless edits is given."),
         line: z.number().optional().describe("Required unless edits is given."),
@@ -1118,7 +1127,7 @@ export const registerMacroTools: RegisterTools = (server, ctx) => {
       operation(() =>
         (args as Record<string, unknown>).edits !== undefined
           ? runBatchCall(args as Record<string, unknown>, {
-              ctx,
+              ctx: inDataPool(ctx, args),
               operation: "edit_macro_line",
               listKey: "edits",
               identityKeys: ["action", "line", "to", "command"],
@@ -1126,7 +1135,7 @@ export const registerMacroTools: RegisterTools = (server, ctx) => {
               key: (it) => `Macro ${String(it.macro)}`,
               run: (it, c) => editMacroLine(c, it as unknown as EditArgs),
             })
-          : editMacroLine(ctx, args),
+          : editMacroLine(inDataPool(ctx, args), args),
       ),
   );
 
@@ -1136,8 +1145,8 @@ export const registerMacroTools: RegisterTools = (server, ctx) => {
       title: "Run (Go+) or stop (Off) a macro and observe it",
       description:
         "EXECUTES: action go sends Go+ Macro N (starts it, or continues it after a Go wait); off sends Off Macro N. Then OBSERVES the macro's running line over time, on the server side (no Lua loop needed), for observe_seconds (default 3, max 60): finished, paused_at_go (a manual wait), running, idle. The result separates dispatched (the command was accepted) from observed (the run state seen); it never claims that every line succeeded, because a failing line does not stop a macro. Lines with a (prompt) ask the operator for input.",
-      inputSchema: { macro: z.number(), action: z.enum(["go", "off"]), observe_seconds: z.number().optional(), interval_ms: z.number().optional() },
+      inputSchema: { ...dataPoolShape, macro: z.number(), action: z.enum(["go", "off"]), observe_seconds: z.number().optional(), interval_ms: z.number().optional() },
     },
-    async (args) => operation(() => runMacro(ctx, args)),
+    async (args) => operation(() => runMacro(inDataPool(ctx, args), args)),
   );
 };
