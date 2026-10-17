@@ -25,10 +25,18 @@ export const dataPoolShape = {
 const POOL_KEYWORDS = new Set(["sequence", "macro", "group", "preset", "matricks", "page", "timecode", "world", "filter", "layout", "plugin", "quickey"]);
 
 /**
- * Write `DataPool n` before every data-pool object keyword of a reference or command line, outside
- * quotes, unless it already follows an explicit `DataPool <id>`.
+ * A statement may not start with "DataPool n Group m" or "DataPool n Preset p" (onPC 2.x: "Illegal object"), so a bare
+ * group or preset call at the start of a statement is written with the keyword the console implies: SelFix (select the
+ * group's fixtures) and At (apply the preset). "DataPool n Sequence m" and the others are accepted as they are.
  */
-export function scopeText(text: string, dataPool: number): string {
+const STATEMENT_START: Record<string, string> = { group: "SelFix", preset: "At" };
+
+/**
+ * Write `DataPool n` before every data-pool object keyword of a reference or command line, outside
+ * quotes, unless it already follows an explicit `DataPool <id>`. A command line (`command`) also gets the keyword a
+ * statement-leading group or preset needs (STATEMENT_START); an object reference does not.
+ */
+export function scopeText(text: string, dataPool: number, command = false): string {
   const tokens = text.match(/"[^"]*"?|'[^']*'?|\s+|[^\s"']+/g) ?? [];
   const words: number[] = [];
   tokens.forEach((t, i) => {
@@ -39,7 +47,8 @@ export function scopeText(text: string, dataPool: number): string {
     const prev = words[w - 1] !== undefined ? tokens[words[w - 1]] : undefined;
     const prev2 = words[w - 2] !== undefined ? tokens[words[w - 2]] : undefined;
     if (prev2 !== undefined && /^datapools?$/i.test(prev2) && prev !== undefined && /^\d+$|^"/.test(prev)) continue;
-    tokens[i] = `DataPool ${dataPool} ${tokens[i]}`;
+    const lead = command && (prev === undefined || prev.endsWith(";") ? STATEMENT_START[tokens[i].toLowerCase()] : undefined);
+    tokens[i] = `${lead ? `${lead} ` : ""}DataPool ${dataPool} ${tokens[i]}`;
   }
   return tokens.join("");
 }
@@ -94,7 +103,7 @@ export function scopedBridge(bridge: Gma3Bridge, dataPool: number | undefined): 
   scoped.request = async function <T = unknown>(op: string, args: Record<string, unknown> = {}, timeoutMs?: number): Promise<T> {
     const a: Record<string, unknown> = { ...args };
     if (typeof a.ref === "string") a.ref = await scopeRef(a.ref, timeoutMs);
-    if (op === "cmd" && typeof a.command === "string") a.command = scopeText(a.command, dataPool);
+    if (op === "cmd" && typeof a.command === "string") a.command = scopeText(a.command, dataPool, true);
     if (op === "preset.context" && a.pool !== undefined) return presetContext(base, dataPool, a, timeoutMs) as Promise<T>;
     return base.request<T>(op, a, timeoutMs);
   } as Gma3Bridge["request"];
@@ -115,7 +124,7 @@ async function presetContext(base: Gma3Bridge, dataPool: number, args: Record<st
   const h = res?.items?.[0];
   out.pool =
     h && !h.invalid && h.class === "Presets"
-      ? { no: Number(h.fields?.No ?? no), exists: true, name: h.fields?.Name ?? h.name, presetMode: h.fields?.PresetMode, inputFilter: h.fields?.InputFilter }
+      ? { no: Number.parseInt(String(h.fields?.No ?? no), 10) || no, exists: true, name: h.fields?.Name ?? h.name, presetMode: h.fields?.PresetMode, inputFilter: h.fields?.InputFilter }
       : { no, exists: false };
   return out;
 }

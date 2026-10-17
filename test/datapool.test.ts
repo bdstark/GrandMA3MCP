@@ -20,10 +20,17 @@ function stubBridge(answer: (op: string, args: Record<string, unknown>) => unkno
 test("scopeText writes DataPool n before every data-pool object keyword outside quotes", () => {
   assert.equal(scopeText("Sequence 5 Cue 2", 2), "DataPool 2 Sequence 5 Cue 2");
   assert.equal(scopeText("Store Sequence 5 Cue 1 /Merge /NoConfirmation", 3), "Store DataPool 3 Sequence 5 Cue 1 /Merge /NoConfirmation");
-  assert.equal(scopeText("Group 3 + Group 4; Preset 4.2 Thru 4.5", 2), "DataPool 2 Group 3 + DataPool 2 Group 4; DataPool 2 Preset 4.2 Thru 4.5");
+  assert.equal(scopeText("Group 3 + Group 4; Preset 4.2 Thru 4.5", 2), "DataPool 2 Group 3 + DataPool 2 Group 4; DataPool 2 Preset 4.2 Thru 4.5", "a reference gets no SelFix/At");
+  assert.equal(scopeText("Group 3 + Group 4; Preset 4.2 Thru 4.5", 2, true), "SelFix DataPool 2 Group 3 + DataPool 2 Group 4; At DataPool 2 Preset 4.2 Thru 4.5");
   assert.equal(scopeText('Label Macro 7 "Sequence 1"', 2), 'Label DataPool 2 Macro 7 "Sequence 1"', "quoted text is kept");
   assert.equal(scopeText("DataPool 4 Sequence 1", 2), "DataPool 4 Sequence 1", "an explicit data pool is kept");
   assert.equal(scopeText("Fixture 1 Thru 5 At 50", 2), "Fixture 1 Thru 5 At 50", "fixtures do not live in a data pool");
+  // Checked on onPC: a statement may not start with "DataPool n Group m" or "DataPool n Preset p".
+  assert.equal(scopeText("Group 9901", 1, true), "SelFix DataPool 1 Group 9901");
+  assert.equal(scopeText("Preset 4.1", 1, true), "At DataPool 1 Preset 4.1");
+  assert.equal(scopeText("ClearSelection; Group 3; Preset 4.1", 1, true), "ClearSelection; SelFix DataPool 1 Group 3; At DataPool 1 Preset 4.1");
+  assert.equal(scopeText("Fixture 1 At Preset 4.1", 1), "Fixture 1 At DataPool 1 Preset 4.1");
+  assert.equal(scopeText("Sequence 9901", 1), "DataPool 1 Sequence 9901");
 });
 
 test("scopedBridge: no data pool is the bridge itself; refs, commands and DataPool.<Pool> paths are scoped", async () => {
@@ -58,7 +65,7 @@ test("scopedBridge: preset.context reads the preset pool of the chosen data pool
   const { bridge, sent } = stubBridge((op) =>
     op === "preset.context"
       ? { preferencesReadable: true, preferences: { StoreLook: "No" } }
-      : { items: [{ class: "Presets", name: "Color", fields: { No: "4", Name: "Color", PresetMode: "Selective", InputFilter: "Yes" } }] },
+      : { items: [{ class: "Presets", name: "Color", fields: { No: "4 (1000)", Name: "Color", PresetMode: "Selective", InputFilter: "Yes" } }] },
   );
   const res = (await scopedBridge(bridge, 3).request("preset.context", { pool: 4 })) as Record<string, unknown>;
   assert.deepEqual(res.pool, { no: 4, exists: true, name: "Color", presetMode: "Selective", inputFilter: "Yes" });
