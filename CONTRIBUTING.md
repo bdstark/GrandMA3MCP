@@ -29,7 +29,7 @@ State whether a Lua change is needed and why; prefer the existing structured ope
 ## Set up and check a change
 
 Fork the repository, create a branch from current `main`, and install Node.js 22 and a stock Lua 5.4+
-interpreter. Node 20 and 22 are the current CI matrix. From the repository root:
+interpreter. Node 24 is the current CI matrix. From the repository root:
 
 ```sh
 npm ci

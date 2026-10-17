@@ -7,8 +7,8 @@ This guide runs onPC and the MCP server on the same Mac. For two computers, also
 
 ## 1. Get and build the server
 
-Install grandMA3 onPC, Git and Node.js with npm. Node.js 22 is used by this project's CI and Docker
-image; the package requires Node.js 18 or newer. Launch onPC once to create its resource folders.
+Install grandMA3 onPC, Git and Node.js with npm. Node.js 24 is used by this project's CI and Docker
+image; the package requires Node.js 24 or newer. Launch onPC once to create its resource folders.
 Run these commands in Terminal:
 
 ```bash

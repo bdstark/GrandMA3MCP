@@ -39,9 +39,9 @@ console keyboard state; per-instance ownership does not provide cross-plugin arb
 
 | Environment or path | Evidence | What it establishes |
 | --- | --- | --- |
-| Ubuntu CI, Node.js 20 and 22, Lua 5.4 | [CI configuration](../.github/workflows/ci.yml), [successful run for the reviewed revision](https://github.com/bdstark/gma3-mcp/actions/runs/37956866987) | Clean dependency installation, TypeScript build and automated suite with Lua harnesses. This is not a Linux onPC qualification. |
+| Ubuntu CI, Node.js 24, Lua 5.4 | [CI configuration](../.github/workflows/ci.yml), [successful run for the reviewed revision](https://github.com/bdstark/gma3-mcp/actions/runs/37956866987) | Clean dependency installation, TypeScript build and automated suite with Lua harnesses. This is not a Linux onPC qualification. |
 | Local macOS review, Node.js 26.11.0 | Build, 251 automated tests (none skipped), 865 assertions across three Lua harnesses | Review-time checks against fake bridges and stubbed console APIs; no new live console mutations. |
-| Node.js 18 | Declared package minimum | Not included in the current CI matrix; prefer the documented Node.js 22 setup until the minimum is separately tested. |
+| Node.js 24 | Declared package minimum | The current CI matrix. |
 | Windows Node.js server | [Setup instructions](setup/windows.md) | No Windows CI job or current end-to-end qualification recorded. |
 | Docker, SSH remote access and individual MCP client setup flows | [Docker guide](docker.md), [SSH guide](remote-access.md), platform setup guides | Documented deployment paths; not equivalent to a recorded end-to-end test of every host/client combination. |
 

@@ -13,7 +13,7 @@ npm run test:live  # live console tests; see test/live/README.md (opt-in, modifi
 ```
 
 `npm test` is the one command that runs every automated check without a live console; `.github/workflows/ci.yml`
-runs the build and the same suite on every push and pull request (Node 20 and 22, with Lua 5.4 installed so
+runs the build and the same suite on every push and pull request (Node 24, with Lua 5.4 installed so
 the plugin harness is not skipped).
 
 The suite in `test/` has no extra dependencies:
