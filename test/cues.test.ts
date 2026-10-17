@@ -24,6 +24,8 @@ const fmtTime = (v: unknown) => {
 class FakeShow {
   objects = new Map<string, Props>();
   selected: number | null = 900;
+  /** Data pool of the selected sequence (1 = the current pool, as the fake show's DataPool reports). */
+  selectedPool = 1;
   /** When true, a reference into a sequence that has no objects raises like ObjectList() returning nil. */
   missingThrows = false;
   /** When true, Delete answers OK but leaves the cue in place. */
@@ -98,9 +100,10 @@ class FakeShow {
         const n = Number(seq[1]);
         return { name: `Seq ${n}`, class: "Sequence", addr: `14.14.1.7.${n}`, ...(this.playback.get(n) ?? { hasActivePlayback: false }) };
       }
+      if (norm(String(ref)) === "datapool") return { name: "Default", class: "Pool", addr: "14.14.1" };
       if (norm(String(ref)) !== "selectedsequence") throw new Error(`no object found for '${ref}'`);
       if (this.selected === null) throw new Error("no object found for 'SelectedSequence'");
-      return { name: `Seq ${this.selected}`, class: "Sequence", index: this.selected, addr: `14.14.1.7.${this.selected}` };
+      return { name: `Seq ${this.selected}`, class: "Sequence", index: this.selected, addr: `14.14.${this.selectedPool}.7.${this.selected}` };
     });
     fake.onCommand((command) => this.exec(command));
   }
@@ -340,6 +343,24 @@ test("store_cue: exactly one of sequence / use_selected_sequence; the selected s
   assert.equal(none.result.outcome, "failed");
   assert.equal(none.result.steps[0].status, "failed");
   assert.equal(h.fake.commands.length, 1);
+});
+
+// Seen on onPC: the selected sequence can live in another data pool than the current one. Its number would then name
+// the current pool's sequence of that number, so the call is refused before anything is sent.
+test("selected sequence in another data pool than the current one: refused, nothing sent", async () => {
+  show.selected = 905;
+  show.selectedPool = 2;
+  try {
+    for (const [tool, extra] of [["gma3_delete_cue", {}], ["gma3_store_cue", { mode: "create" }], ["gma3_set_cue_timing", { fade: 1 }]] as const) {
+      const before = h.fake.commands.length;
+      const r = await h.callJson(tool, { use_selected_sequence: true, cue: 1, ...extra });
+      assert.equal(r.isError, true, tool);
+      assert.match(r.result.summary, /not in the current data pool \(address 14\.14\.2\.7\.905\)/, tool);
+      assert.equal(h.fake.commands.length, before, `${tool}: nothing was sent`);
+    }
+  } finally {
+    show.selectedPool = 1;
+  }
 });
 
 test("store_cue: a bridge that raises 'no objects found' for a missing sequence is treated as absent", async () => {

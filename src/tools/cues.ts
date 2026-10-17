@@ -180,22 +180,26 @@ function resolveSequenceStep(ctx: ToolContext, target: Target): { name: string; 
         },
         ctx.requestTimeoutMs,
       );
-      // The selected sequence lives in the current data pool: with data_pool, its number names a sequence of that
-      // pool only when the selected sequence is in it; otherwise the same number is another pool's sequence.
+      // The selected sequence can live in any data pool (onPC: selected in DataPool 1 while DataPool 2 is current). Its
+      // number names a sequence of the target pool (data_pool, or the current pool without it) only when the selected
+      // sequence is in that pool; otherwise the same number is another pool's sequence.
       const dataPool = dataPoolOf(ctx.bridge);
-      if (step.status !== "succeeded" || dataPool === undefined) return step;
+      if (step.status !== "succeeded") return step;
+      const poolRef = dataPool === undefined ? "DataPool" : `DataPool ${dataPool}`;
+      const poolLabel = dataPool === undefined ? "the current data pool" : poolRef;
+      const hint = dataPool === undefined ? "Pass an explicit sequence with data_pool, or select a sequence of the current data pool" : "Pass an explicit sequence, or select a sequence of that data pool";
       const refuse = (error: string) => {
         target.sequence = undefined;
-        return asRead({ name, status: "failed", op: "object", error, detail: { dataPool, selectedAddr: addr ?? null } });
+        return asRead({ name, status: "failed", op: "object", error, detail: { dataPool: dataPool ?? "current", selectedAddr: addr ?? null } });
       };
       let poolAddr: string | undefined;
       try {
-        poolAddr = ((await ctx.bridge.request("object", { ref: `DataPool ${dataPool}`, properties: false, children: false, schema: false }, ctx.requestTimeoutMs)) as { addr?: string } | null)?.addr;
+        poolAddr = ((await ctx.bridge.request("object", { ref: poolRef, properties: false, children: false, schema: false }, ctx.requestTimeoutMs)) as { addr?: string } | null)?.addr;
       } catch {
         poolAddr = undefined;
       }
-      if (!addr || !poolAddr) return refuse(`could not check that the selected sequence is in DataPool ${dataPool}; nothing was sent. Pass an explicit sequence`);
-      if (!addr.startsWith(`${poolAddr}.`)) return refuse(`the selected sequence is not in DataPool ${dataPool} (address ${addr}); nothing was sent. Pass an explicit sequence, or select a sequence of that data pool`);
+      if (!addr || !poolAddr) return refuse(`could not check that the selected sequence is in ${poolLabel}; nothing was sent. Pass an explicit sequence`);
+      if (!addr.startsWith(`${poolAddr}.`)) return refuse(`the selected sequence is not in ${poolLabel} (address ${addr}); nothing was sent. ${hint}`);
       return step;
     },
   };
