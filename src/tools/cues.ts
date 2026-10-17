@@ -59,6 +59,7 @@ import {
 } from "../validate.js";
 import { cueRef, exists, readFields } from "./common.js";
 import { stateAfterFrame } from "./livestate.js";
+import { dataPoolShape, inDataPool } from "./datapool.js";
 
 // ---------------------------------------------------------------------------
 // Console vocabulary
@@ -617,6 +618,7 @@ export const registerCueTools: RegisterTools = (server, ctx) => {
       title: "Store a cue",
       description: storeDescription("Store the programmer content as a cue of a sequence (create, merge or overwrite), optionally with a name and cue timing (seconds)."),
       inputSchema: {
+        ...dataPoolShape,
         ...sequenceShape,
         ...cueShape,
         mode: z.enum(["create", "merge", "overwrite"]).describe("create: refuse if the cue exists. merge: /Merge into an existing cue. overwrite: /Overwrite an existing cue. Exactly one mode."),
@@ -625,7 +627,7 @@ export const registerCueTools: RegisterTools = (server, ctx) => {
         ...verifyShape,
       },
     },
-    (args) => operation(() => storeCue(ctx, args as StoreArgs, "cue")),
+    (args) => operation(() => storeCue(inDataPool(ctx, args), args as StoreArgs, "cue")),
   );
 
   server.registerTool(
@@ -636,6 +638,7 @@ export const registerCueTools: RegisterTools = (server, ctx) => {
         "Store the programmer content into a part of a cue (Store Sequence n Cue c Part p). Part 0 is the main part that every cue has, so storing to part 0 is the same as storing the cue; parts 1..999 hold values with their own timing.",
       ),
       inputSchema: {
+        ...dataPoolShape,
         ...sequenceShape,
         ...cueShape,
         part: z.number().describe("Part number 0..999. 0 is the cue's main part (always exists once the cue exists); mode create therefore refuses part 0 of an existing cue."),
@@ -645,7 +648,7 @@ export const registerCueTools: RegisterTools = (server, ctx) => {
         ...verifyShape,
       },
     },
-    (args) => operation(() => storeCue(ctx, args as StoreArgs, "part")),
+    (args) => operation(() => storeCue(inDataPool(ctx, args), args as StoreArgs, "part")),
   );
 
   server.registerTool(
@@ -657,6 +660,7 @@ export const registerCueTools: RegisterTools = (server, ctx) => {
         "Only the given fields are changed. Refuses (nothing sent) when the cue part does not exist. No command-line command is sent; selection and programmer are untouched. " +
         `Reads the changed fields back from the part. Stored fixture values are not touched or verified. ${LOCK_CAVEAT}`,
       inputSchema: {
+        ...dataPoolShape,
         ...sequenceShape,
         ...cueShape,
         part: z.number().optional().describe("Part number (default 0 = the cue's main part)."),
@@ -665,7 +669,7 @@ export const registerCueTools: RegisterTools = (server, ctx) => {
         ...verifyShape,
       },
     },
-    (args) => operation(() => setCueTiming(ctx, args as TimingArgs)),
+    (args) => operation(() => setCueTiming(inDataPool(ctx, args), args as TimingArgs)),
   );
 
   server.registerTool(
@@ -677,6 +681,7 @@ export const registerCueTools: RegisterTools = (server, ctx) => {
         "Sets the cue's TrigType and then TrigTime via Set(); no command-line command is sent, selection and programmer are untouched. Refuses (nothing sent) when the cue does not exist. " +
         `Reads TrigType and TrigTime back. ${LOCK_CAVEAT}`,
       inputSchema: {
+        ...dataPoolShape,
         ...sequenceShape,
         ...cueShape,
         trigger: z.enum(["go", "time", "follow", "sound", "bpm"]).describe("Trigger type (console TrigType: Go, Time, Follow, Sound, BPM)."),
@@ -684,7 +689,7 @@ export const registerCueTools: RegisterTools = (server, ctx) => {
         ...verifyShape,
       },
     },
-    (args) => operation(() => setCueTrigger(ctx, args as TriggerArgs)),
+    (args) => operation(() => setCueTrigger(inDataPool(ctx, args), args as TriggerArgs)),
   );
 
   server.registerTool(
@@ -695,13 +700,14 @@ export const registerCueTools: RegisterTools = (server, ctx) => {
         "PLAYBACK MUTATION: sends `Goto Sequence n Cue c [Fade s]`, which jumps the sequence to that cue and changes live output. " +
         `${GOTO_NOTE} Refuses (nothing sent) when the cue does not exist. Does not change the selection or the programmer. Verification: matched when the sequence plays that cue a frame later (playbackState has the cue's number and name; needs bridge 0.32.0). ${LOCK_CAVEAT}`,
       inputSchema: {
+        ...dataPoolShape,
         ...sequenceShape,
         ...cueShape,
         fade: z.number().optional().describe("Crossfade time in seconds that overrides the cue's own timing (Goto ... Fade s). 0 is a value."),
         ...verifyShape,
       },
     },
-    (args) => operation(() => gotoCue(ctx, args as GotoArgs)),
+    (args) => operation(() => gotoCue(inDataPool(ctx, args), args as GotoArgs)),
   );
 
   server.registerTool(
@@ -711,8 +717,8 @@ export const registerCueTools: RegisterTools = (server, ctx) => {
       description:
         "Delete exactly one explicit cue with `Delete Sequence n Cue c /NoConfirmation`. Ranges (Thru, +) are rejected. Checks the cue exists first and refuses (nothing sent) when it does not. " +
         `Verifies by reading existence back: matched when gone, mismatched when it still exists, unavailable when unreadable. Does not change the selection or the programmer. Never retried. ${LOCK_CAVEAT}`,
-      inputSchema: { ...sequenceShape, ...cueShape, ...verifyShape },
+      inputSchema: { ...dataPoolShape, ...sequenceShape, ...cueShape, ...verifyShape },
     },
-    (args) => operation(() => deleteCue(ctx, args as DeleteArgs)),
+    (args) => operation(() => deleteCue(inDataPool(ctx, args), args as DeleteArgs)),
   );
 };

@@ -54,6 +54,7 @@ import {
   type Verification,
 } from "../results.js";
 import { ValidationError, Validator, objectNumber } from "../validate.js";
+import { dataPoolShape, inDataPool } from "./datapool.js";
 
 // ---------------------------------------------------------------------------
 // Vocabulary
@@ -981,6 +982,7 @@ export const registerPlaybackTools: RegisterTools = (server, ctx) => {
         COMMON +
         " Batch form (sequences): the same settings on a list of sequences and ranges (\"1 Thru 17\"), each configured, checked and read back on its own; the result has one line per sequence (detail: true for every step).",
       inputSchema: {
+        ...dataPoolShape,
         sequence: z.number().optional().describe("Sequence number (must exist). Required unless sequences is given."),
         sequences: z
           .array(z.union([z.number(), z.string()]))
@@ -997,11 +999,12 @@ export const registerPlaybackTools: RegisterTools = (server, ctx) => {
     async (args) =>
       operation(async () => {
         const a = args as Record<string, unknown>;
-        if (a.sequences === undefined) return configureSequence(ctx, a as ConfigureSequenceArgs);
+        const scoped = inDataPool(ctx, a);
+        if (a.sequences === undefined) return configureSequence(scoped, a as ConfigureSequenceArgs);
         const expanded = expandSequenceList(a.sequences);
         if ("error" in expanded) return batchRefused("configure_sequence", "sequences", [expanded.error]);
         return runBatchCall({ ...a, sequences: expanded.numbers.map((sequence) => ({ sequence })) }, {
-          ctx,
+          ctx: scoped,
           operation: "configure_sequence",
           listKey: "sequences",
           identityKeys: ["sequence"],

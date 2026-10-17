@@ -53,6 +53,7 @@ import {
   type Verification,
 } from "../results.js";
 import { ValidationError, Validator, attributeName, describe, finiteNumber, objectName } from "../validate.js";
+import { dataPoolShape, inDataPool } from "./datapool.js";
 
 // ---------------------------------------------------------------------------
 // Shapes the bridge returns
@@ -884,13 +885,14 @@ export const registerPresetTools: RegisterTools = (server, ctx) => {
         "Read-only. preset: \"<pool>.<number>\" returns what the preset actually stores: per fixture and attribute the mode the value was stored in (selective; global, held by the lowest FID of a fixture type; universal, one holder), value (percent) or steps (each with absolute/relative, width, trans, accel, decel and the preset it integrates; absent layers are the console defaults width/trans 100, accel/decel 0), the phaser layers speedBpm, phase (degrees), measure (beats) and speedMaster (absent: 60 BPM, phase 0), fade/delay, and the source preset of an embedded value; plus PresetMode, StoredData, lock, how many objects reference it, " +
         "and its dependencies (embedded sources) followed recursively with validity (a deleted source is an invalid dependency) and whether that inspection was complete. pool: <n> returns the pool's default mode and input filter and the operator's store preferences (the defaults a store would otherwise use). Needs bridge 0.22.0.",
       inputSchema: {
+        ...dataPoolShape,
         preset: z.string().optional().describe('Preset as "<pool>.<number>", e.g. "4.12".'),
         pool: z.number().optional().describe("Preset pool number (1-9 feature groups, 21-25 All pools)."),
       },
     },
     async (args) => {
       try {
-        return json(await presetInfo(ctx, args as { preset?: string; pool?: number }));
+        return json(await presetInfo(inDataPool(ctx, args), args as { preset?: string; pool?: number }));
       } catch (err) {
         return { content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }], isError: true };
       }
@@ -911,6 +913,7 @@ export const registerPresetTools: RegisterTools = (server, ctx) => {
         "Batch form (presets): each preset from explicit content instead of the programmer: fixtures (ids or ranges: the target and the scope) with presets, intensity and/or values, or looks. They are built one by one in the console's Preview environment (its own programmer; the operator's Normal programmer and the output are not touched, checked before and after): from an empty Preview programmer, each look is checked right after its commands, then this tool's store, checks and read-back run there. A preset that fails does not stop the others. " +
         BATCH_NOTE,
       inputSchema: {
+        ...dataPoolShape,
         preset: z.string().optional().describe('Target preset "<pool>.<number>", e.g. "4.12" or "23.1". Required unless presets is given.'),
         fixtures: z.array(z.union([z.string(), z.number()])).optional().describe('Scope: fixture ids or "a Thru b" ranges; every programmer value must belong to them. Required unless presets is given (it is then the default target of every preset\'s content).'),
         mode: z.enum(MODES).optional().describe("Preset mode the data is stored in."),
@@ -952,10 +955,11 @@ export const registerPresetTools: RegisterTools = (server, ctx) => {
     async (args) =>
       operation(async () => {
         const a = args as Record<string, unknown>;
-        if (a.presets === undefined) return storePreset(ctx, a as unknown as StorePresetArgs);
+        const scoped = inDataPool(ctx, a);
+        if (a.presets === undefined) return storePreset(scoped, a as unknown as StorePresetArgs);
         const split = batchItems(a, "presets", ["preset", "name", "looks"]);
         if ("errors" in split) return batchRefused("store_preset", "presets", split.errors);
-        return storePresetsFromContent(ctx, split.items, { detail: a.detail === true, verify: a.verify !== false, stopOnFailure: a.stop_on_failure === true });
+        return storePresetsFromContent(scoped, split.items, { detail: a.detail === true, verify: a.verify !== false, stopOnFailure: a.stop_on_failure === true });
       }),
   );
 };
