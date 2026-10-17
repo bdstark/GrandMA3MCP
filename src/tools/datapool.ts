@@ -48,6 +48,11 @@ export function scopeText(text: string, dataPool: number): string {
 const SCOPE = Symbol("dataPoolScope");
 type Scoped = Gma3Bridge & { [SCOPE]?: { dataPool: number; base: Gma3Bridge } };
 
+/** The data pool a scoped bridge addresses; undefined for the current data pool. */
+export function dataPoolOf(bridge: Gma3Bridge): number | undefined {
+  return (bridge as Scoped)[SCOPE]?.dataPool;
+}
+
 /** The bridge that addresses the current data pool (the given one when it is not scoped). */
 export function currentPoolBridge(bridge: Gma3Bridge): Gma3Bridge {
   return (bridge as Scoped)[SCOPE]?.base ?? bridge;

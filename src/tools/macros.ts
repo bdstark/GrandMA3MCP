@@ -42,7 +42,7 @@ import {
   type Verification,
 } from "../results.js";
 import { ValidationError, Validator, finiteNumber } from "../validate.js";
-import { currentPoolBridge, dataPoolShape, inDataPool } from "./datapool.js";
+import { currentPoolBridge, dataPoolOf, dataPoolShape, inDataPool } from "./datapool.js";
 
 // ---------------------------------------------------------------------------
 // Model
@@ -305,12 +305,40 @@ export function storedBy(lines: RefLine[]): Set<string> {
 }
 
 /**
+ * Which references name macro `n` itself, given the bridge it is addressed through (scoped to its data pool or not).
+ * A macro line runs in the current data pool: "Macro n" is the macro itself only when it lives there, and
+ * "DataPool p Macro n" only when p is its pool. Returns the current-pool bridge to check every other reference with.
+ */
+function selfReference(bridge: Gma3Bridge, n: number): { base: Gma3Bridge; isSelf: (key: string) => Promise<boolean> } {
+  const pool = dataPoolOf(bridge);
+  const base = currentPoolBridge(bridge);
+  const current = new Map<number, Promise<boolean>>();
+  const isCurrent = (p: number) => {
+    if (!current.has(p)) {
+      const addr = (ref: string) => base.request("object", { ref, properties: false, children: false, schema: false }).then((o) => (o as { addr?: string } | null)?.addr);
+      current.set(p, Promise.all([addr("DataPool"), addr(`DataPool ${p}`)]).then(([a, b]) => !!a && a === b, () => false));
+    }
+    return current.get(p)!;
+  };
+  const isSelf = async (key: string) => {
+    const m = key.match(/^(?:datapool (\d+) )?macro (\d+)(?:\.\d+)?$/);
+    if (!m || Number(m[2]) !== n) return false;
+    const refPool = m[1] !== undefined ? Number(m[1]) : undefined;
+    if (refPool === pool) return true;
+    if (refPool !== undefined && pool !== undefined) return false;
+    return isCurrent((refPool ?? pool)!);
+  };
+  return { base, isSelf };
+}
+
+/**
  * Checks every non-raw line's references in order. Objects stored by an executable line, among `prior` (the macro's
  * lines before these) or earlier among `lines`, count as created; a disabled or non-executing Store creates nothing.
  */
 export async function checkReferences(bridge: Gma3Bridge, n: number, lines: RefLine[], firstLine: number, prior: RefLine[] = []): Promise<LineCheck[]> {
   // A macro line runs in the current data pool, whichever pool holds the macro.
-  bridge = currentPoolBridge(bridge);
+  const self = selfReference(bridge, n);
+  bridge = self.base;
   const cache = new Map<string, Awaited<ReturnType<typeof exists>>>();
   const created = storedBy(prior);
   // SU-15: $variables, judged in order: set/delete effects of executable lines (prior lines first, then these, statement
@@ -326,7 +354,7 @@ export async function checkReferences(bridge: Gma3Bridge, n: number, lines: RefL
     for (const r of refs) {
       const key = r.ref.toLowerCase();
       if (!l.raw) {
-        if (key === `macro ${n}` || key.startsWith(`macro ${n}.`)) check.refs.push({ ref: r.ref, status: "this_macro" });
+        if (await self.isSelf(key)) check.refs.push({ ref: r.ref, status: "this_macro" });
         else if (r.stores) check.refs.push({ ref: r.ref, status: "stored_here" });
         else if (created.has(key)) check.refs.push({ ref: r.ref, status: "created_earlier" });
         else {
@@ -359,7 +387,8 @@ export type EditedLine = RefLine & { origin?: number; written?: boolean };
  * that do not exist in the show either. Lines keep their identity through `origin`, never matched by text.
  */
 export async function brokenDependents(bridge: Gma3Bridge, n: number, beforeLines: RefLine[], afterLines: EditedLine[]): Promise<string[]> {
-  bridge = currentPoolBridge(bridge);
+  const self = selfReference(bridge, n);
+  bridge = self.base;
   const out: string[] = [];
   const cache = new Map<string, Awaited<ReturnType<typeof exists>>>();
   for (let j = 0; j < afterLines.length; j++) {
@@ -369,7 +398,7 @@ export async function brokenDependents(bridge: Gma3Bridge, n: number, beforeLine
     const refs = references(l.command).refs;
     for (const [k, r] of refs.entries()) {
       const key = r.ref.toLowerCase();
-      if (r.stores || key === `macro ${n}` || key.startsWith(`macro ${n}.`)) continue;
+      if (r.stores || (await self.isSelf(key))) continue;
       if (!availableAt(beforeLines, l.origin, k).has(key) || availableAt(afterLines, j, k).has(key)) continue;
       if (!cache.has(key)) cache.set(key, await exists(bridge, r.ref));
       const e = cache.get(key)!;

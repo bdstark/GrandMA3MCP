@@ -59,7 +59,7 @@ import {
 } from "../validate.js";
 import { cueRef, exists, readFields } from "./common.js";
 import { stateAfterFrame } from "./livestate.js";
-import { dataPoolShape, inDataPool } from "./datapool.js";
+import { dataPoolOf, dataPoolShape, inDataPool } from "./datapool.js";
 
 // ---------------------------------------------------------------------------
 // Console vocabulary
@@ -161,8 +161,9 @@ function resolveSequenceStep(ctx: ToolContext, target: Target): { name: string; 
   const name = "resolve_sequence";
   return {
     name,
-    run: () =>
-      readStep(
+    run: async () => {
+      let addr: string | undefined;
+      const step = await readStep(
         ctx.bridge,
         name,
         "object",
@@ -174,10 +175,29 @@ function resolveSequenceStep(ctx: ToolContext, target: Target): { name: string; 
             return { name, status: "failed", op: "object", error: "no sequence is selected on the console; pass an explicit sequence", detail: res };
           }
           target.sequence = idx;
+          addr = (obj as { addr?: string }).addr;
           return { name, status: "succeeded", op: "object", detail: { sequence: idx, name: obj.name } };
         },
         ctx.requestTimeoutMs,
-      ),
+      );
+      // The selected sequence lives in the current data pool: with data_pool, its number names a sequence of that
+      // pool only when the selected sequence is in it; otherwise the same number is another pool's sequence.
+      const dataPool = dataPoolOf(ctx.bridge);
+      if (step.status !== "succeeded" || dataPool === undefined) return step;
+      const refuse = (error: string) => {
+        target.sequence = undefined;
+        return asRead({ name, status: "failed", op: "object", error, detail: { dataPool, selectedAddr: addr ?? null } });
+      };
+      let poolAddr: string | undefined;
+      try {
+        poolAddr = ((await ctx.bridge.request("object", { ref: `DataPool ${dataPool}`, properties: false, children: false, schema: false }, ctx.requestTimeoutMs)) as { addr?: string } | null)?.addr;
+      } catch {
+        poolAddr = undefined;
+      }
+      if (!addr || !poolAddr) return refuse(`could not check that the selected sequence is in DataPool ${dataPool}; nothing was sent. Pass an explicit sequence`);
+      if (!addr.startsWith(`${poolAddr}.`)) return refuse(`the selected sequence is not in DataPool ${dataPool} (address ${addr}); nothing was sent. Pass an explicit sequence, or select a sequence of that data pool`);
+      return step;
+    },
   };
 }
 
