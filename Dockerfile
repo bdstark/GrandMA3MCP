@@ -11,7 +11,7 @@
 # Mount the grandMA3 install folder read-only to enable gma3_help:
 #   -v "$HOME/MALightingTechnology:/gma3:ro" -e GMA3_INSTALL_DIR=/gma3
 
-FROM node:22-alpine AS build
+FROM node:24-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json tsconfig.json ./
 RUN npm ci
@@ -19,7 +19,7 @@ COPY src ./src
 COPY scripts/stamp-build.mjs ./scripts/
 RUN npm run build
 
-FROM node:22-alpine
+FROM node:24-alpine
 WORKDIR /app
 ENV NODE_ENV=production \
     GMA3_BRIDGE_HOST=host.docker.internal \

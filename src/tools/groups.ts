@@ -64,6 +64,7 @@ import {
   type Verification,
 } from "../results.js";
 import { ValidationError, Validator, describe, finiteNumber, objectName, objectNumber } from "../validate.js";
+import { dataPoolShape, inDataPool } from "./datapool.js";
 
 // ---------------------------------------------------------------------------
 // Fixture ids and grid items
@@ -1131,11 +1132,11 @@ export const registerGroupTools: RegisterTools = (server, ctx) => {
         "Read-only. With group: the stored fixtures of Group <n> (in the console's stored order, which is patch order) with their selection-grid X/Y/Z cells, PreserveGridPositions, lock, shared cells, bounds and gap count, read from the group's stored data (nothing is selected). " +
         "Without group: the current selection in the order it was selected, with its grid cells (MAtricks-transformed when MAtricks is active). Distributions follow the cells, not the list order. Fixture ids are FIDs or dotted cell ids (\"501.1\"). " +
         "Grid cells are the selection grid MAtricks and phasers use, not physical stage positions. Needs bridge 0.21.0.",
-      inputSchema: { group: z.number().optional().describe("Group number; omit to read the current selection.") },
+      inputSchema: { ...dataPoolShape, group: z.number().optional().describe("Group number; omit to read the current selection.") },
     },
     async (args) => {
       try {
-        return json(await selectionGrid(ctx, args as { group?: number }));
+        return json(await selectionGrid(inDataPool(ctx, args), args as { group?: number }));
       } catch (err) {
         return { content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }], isError: true };
       }
@@ -1155,6 +1156,7 @@ export const registerGroupTools: RegisterTools = (server, ctx) => {
         "rows: rows of different lengths spread over one width (align spread, start or center); ranges run in their own direction (\"402.36 Thru 402.1\"). " +
         BATCH_NOTE,
       inputSchema: {
+        ...dataPoolShape,
         group: z.number().optional().describe("Group number (1-9999). Required unless groups is given."),
         name: z.string().optional().describe("Group name (a new group is otherwise named by the console)."),
         items: z.array(z.object({ fixture: fixtureEntry.describe('Fixture id: 401 or "501.1".'), x: z.number(), y: z.number(), z: z.number().optional() })).optional().describe("Explicit list; each fixture once. The cells define the order distributions follow (the console stores the group in patch order)."),
@@ -1176,7 +1178,7 @@ export const registerGroupTools: RegisterTools = (server, ctx) => {
       operation(() =>
         (args as Record<string, unknown>).groups !== undefined
           ? runBatchCall(args as Record<string, unknown>, {
-              ctx,
+              ctx: inDataPool(ctx, args),
               operation: "store_group",
               listKey: "groups",
               identityKeys: ["group", "items", "arrangement", "name"],
@@ -1185,7 +1187,7 @@ export const registerGroupTools: RegisterTools = (server, ctx) => {
               check: (items) => duplicates(items.map((it) => String(it.group))).map((g) => `Group ${g} appears more than once in groups`),
               run: (it, c) => storeGroup(c, it as unknown as StoreGroupArgs),
             })
-          : storeGroup(ctx, args as StoreGroupArgs),
+          : storeGroup(inDataPool(ctx, args), args as StoreGroupArgs),
       ),
   );
 

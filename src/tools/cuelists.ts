@@ -64,6 +64,7 @@ import { effectAttributes, effectCommands, parsePhaser, parseStep, verifyBuild, 
 import { SEQUENCE_SETTINGS, configureSequence, findReferences, settingValue, type ConfigureSequenceArgs } from "./playback.js";
 import { HeldLock } from "../mutations.js";
 import { VarTracker, variablePresence, variableRefs } from "./variables.js";
+import { dataPoolShape, inDataPool } from "./datapool.js";
 
 export const MAX_CUES = 100;
 export const MAX_LOOKS = 16;
@@ -1785,6 +1786,7 @@ export const registerCueListTools: RegisterTools = (server, ctx) => {
         " Batch form (sequences): several sequences, each {sequence, sequence_name, mode, fixtures, cues}, each built in its own Preview session with these checks. " +
         BATCH_NOTE,
       inputSchema: {
+        ...dataPoolShape,
         sequence: z.number().optional().describe("Sequence number. Required unless sequences is given."),
         sequence_name: z.string().optional(),
         mode: z.enum(["create", "merge", "overwrite"]).optional().describe("Required (per sequence or for the whole batch)."),
@@ -1808,9 +1810,10 @@ export const registerCueListTools: RegisterTools = (server, ctx) => {
     (args) =>
       operation(() => {
         const a = args as Record<string, unknown>;
-        if (a.sequences === undefined) return storeCues(ctx, a).then((r) => compactCueResult(r, a.detail === true));
+        const scoped = inDataPool(ctx, a);
+        if (a.sequences === undefined) return storeCues(scoped, a).then((r) => compactCueResult(r, a.detail === true));
         return runBatchCall(a, {
-          ctx,
+          ctx: scoped,
           operation: "store_cues",
           listKey: "sequences",
           identityKeys: ["sequence", "sequence_name", "cues"],
@@ -1832,6 +1835,7 @@ export const registerCueListTools: RegisterTools = (server, ctx) => {
         "Choose the cues with exactly one of cues (a list), from/to (a range, either end optional) or all: true; names are given in cue order, one per cue. " +
         "Refuses (nothing sent) when the sequence or a listed cue does not exist, or the number of names differs. One Set() per property, cue by cue; stops at the first failure and reports every cue. Reads the written properties back per cue. Stored values and the programmer are not touched.",
       inputSchema: {
+        ...dataPoolShape,
         sequence: z.number(),
         cues: z.array(z.union([z.number(), z.string()])).optional(),
         from: z.union([z.number(), z.string()]).optional(),
@@ -1848,7 +1852,7 @@ export const registerCueListTools: RegisterTools = (server, ctx) => {
         verify: z.boolean().optional(),
       },
     },
-    (args) => operation(() => editCues(ctx, args as Record<string, unknown>)),
+    (args) => operation(() => editCues(inDataPool(ctx, args), args as Record<string, unknown>)),
   );
 
   server.registerTool(
@@ -1861,6 +1865,7 @@ export const registerCueListTools: RegisterTools = (server, ctx) => {
         " sequence_settings and protect_running as in gma3_store_cues. Then, unless observe: false, PLAYS the chase (Goto cue 1, live output) and OBSERVES it over time on the server side (no Lua loop needed), sampling its current cue to verify one cycle: the cue order through the wrap and each step against step_seconds / the sequence's rate. A cycle longer than observe_max_seconds (default 45, at most 120; keep it under your client's request timeout) is observed from a late cue through the wrap instead. The chase is switched off afterwards unless leave_running: true. " +
         COMPACT_NOTE,
       inputSchema: {
+        ...dataPoolShape,
         sequence: z.number().describe("An empty or new sequence."),
         name: z.string().optional().describe("Sequence name."),
         fixtures: z.string().optional().describe("Target for every step that does not name its own fixtures."),
@@ -1879,6 +1884,6 @@ export const registerCueListTools: RegisterTools = (server, ctx) => {
         detail: batchOptionShape.detail,
       },
     },
-    (args) => operation(() => buildChase(ctx, args as Record<string, unknown>).then((r) => compactCueResult(r, (args as Record<string, unknown>).detail === true))),
+    (args) => operation(() => buildChase(inDataPool(ctx, args), args as Record<string, unknown>).then((r) => compactCueResult(r, (args as Record<string, unknown>).detail === true))),
   );
 };

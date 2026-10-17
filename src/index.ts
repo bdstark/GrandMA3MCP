@@ -9,6 +9,7 @@ import { CHEATSHEET } from "./cheatsheet.js";
 import { MutationLock } from "./mutations.js";
 import { serverBuild } from "./buildinfo.js";
 import { operation, type ToolContext } from "./tools/context.js";
+import { dataPoolShape, scopedBridge } from "./tools/datapool.js";
 import { registerFixtureTools } from "./tools/fixtures.js";
 import { COMMAND_FALLBACK_NOTE, LUA_FALLBACK_NOTE, serverInstructions } from "./discovery.js";
 import { registerCueTools } from "./tools/cues.js";
@@ -504,14 +505,15 @@ server.registerTool(
     description:
       "List all sequences in the selected data pool with cue count, whether they have active playback, and the current cue (currentCue {no, name} while it plays; lastCue: the cue it stopped in, after Off). Needs bridge 0.32.0 for the cue.",
     inputSchema: {
+      ...dataPoolShape,
       fields: z.array(z.string()).optional().describe("Extra property names to include per sequence"),
       limit: z.number().int().positive().optional(),
       offset: z.number().int().nonnegative().optional(),
     },
   },
-  async ({ fields, limit, offset }) =>
+  async ({ data_pool, fields, limit, offset }) =>
     run(async () => {
-      const res = (await bridge.request("children", { ref: "DataPool.Sequences", fields, limit, offset, playback: true })) as any;
+      const res = (await scopedBridge(bridge, data_pool).request("children", { ref: "DataPool.Sequences", fields, limit, offset, playback: true })) as any;
       if (Array.isArray(res?.items)) res.items.forEach(annotatePlayback);
       return res;
     }),
@@ -525,6 +527,7 @@ server.registerTool(
       "List the cues of one sequence (sequence) or several (sequences, up to 20) with cue number, name, trigger (TrigType, TrigTime) and command, plus each sequence's playback state " +
       "(playback: active, currentCue {no, name} while it plays, lastCue after Off; bridge 0.32.0).",
     inputSchema: {
+      ...dataPoolShape,
       sequence: z.union([z.number(), z.string()]).optional().describe("Sequence number or name"),
       sequences: z.array(z.union([z.number(), z.string()])).optional().describe("Several sequences in one read (instead of sequence)"),
       fields: z.array(z.string()).optional().describe("Property names per cue (default: No, Name, TrigType, TrigTime, Command, Note)"),
@@ -532,14 +535,15 @@ server.registerTool(
       offset: z.number().int().nonnegative().optional(),
     },
   },
-  async ({ sequence, sequences, fields, limit, offset }) =>
+  async ({ data_pool, sequence, sequences, fields, limit, offset }) =>
     run(async () => {
+      const b = scopedBridge(bridge, data_pool);
       if ((sequence === undefined) === (sequences === undefined)) throw new Error("give exactly one of sequence or sequences");
       if (sequences !== undefined && (sequences.length < 1 || sequences.length > 20)) throw new Error("sequences must list 1 to 20 sequences");
       const read = async (s: number | string) => {
         const ref = typeof s === "number" ? `Sequence ${s}` : `Sequence "${s}"`;
-        const cues = (await bridge.request("children", { ref, fields: fields ?? ["No", "Name", "TrigType", "TrigTime", "Command", "Note"], limit, offset })) as Record<string, unknown>;
-        const state = await readTargetState(bridge, ref).catch(() => null);
+        const cues = (await b.request("children", { ref, fields: fields ?? ["No", "Name", "TrigType", "TrigTime", "Command", "Note"], limit, offset })) as Record<string, unknown>;
+        const state = await readTargetState(b, ref).catch(() => null);
         const playback = state && !state.notRead
           ? { active: state.active, currentCue: state.currentCue, ...(state.lastCue ? { lastCue: state.lastCue } : {}), ...(state.observedCue ? { observedCue: state.observedCue } : {}) }
           : state
