@@ -147,9 +147,11 @@ export function stepFromError(name: string, err: unknown, extra: Partial<StepRes
  * Send one command-line command through the bridge and classify the console's feedback.
  * Never retries. A dispatched transport failure is an `unknown` step.
  */
-export async function commandStep(bridge: Gma3Bridge, name: string, command: string, timeoutMs?: number): Promise<StepResult> {
+export async function commandStep(bridge: Gma3Bridge, name: string, sent: string, timeoutMs?: number): Promise<StepResult> {
+  // The step reports the command line the console receives (a data_pool bridge rewrites it).
+  const command = bridge.sentCommand?.(sent) ?? sent;
   try {
-    const res = (await bridge.request("cmd", { command }, timeoutMs)) as { feedback?: unknown } | null;
+    const res = (await bridge.request("cmd", { command: sent }, timeoutMs)) as { feedback?: unknown } | null;
     const feedback = res && typeof res === "object" && "feedback" in res ? res.feedback : res;
     const cls = classifyFeedback(feedback);
     const fb = feedback === undefined || feedback === null ? null : String(feedback);

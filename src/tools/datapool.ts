@@ -100,6 +100,7 @@ export function scopedBridge(bridge: Gma3Bridge, dataPool: number | undefined): 
 
   const scoped = Object.create(base) as Scoped;
   scoped[SCOPE] = { dataPool, base };
+  scoped.sentCommand = (command: string) => scopeText(command, dataPool, true);
   scoped.request = async function <T = unknown>(op: string, args: Record<string, unknown> = {}, timeoutMs?: number): Promise<T> {
     const a: Record<string, unknown> = { ...args };
     if (typeof a.ref === "string") a.ref = await scopeRef(a.ref, timeoutMs);

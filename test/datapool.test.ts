@@ -91,15 +91,17 @@ test("gma3_delete_cue with data_pool addresses that data pool; without it, the c
       gone = true;
       return { feedback: "OK" };
     });
-    const { isError } = await h.callJson("gma3_delete_cue", { data_pool: 2, sequence: 900, cue: 3 });
+    const { result, isError } = await h.callJson("gma3_delete_cue", { data_pool: 2, sequence: 900, cue: 3 });
     assert.equal(isError, false);
+    assert.equal(result.steps.find((s: { name: string }) => s.name === "delete")?.command, "Delete DataPool 2 Sequence 900 Cue 3 /NoConfirmation", "the step shows the command as sent");
     assert.ok(h.fake.requests.filter((r) => r.op === "objects").every((r) => r.args.ref === "DataPool 2 Sequence 900 Cue 3"));
     assert.equal(h.fake.requests.find((r) => r.op === "cmd")?.args.command, "Delete DataPool 2 Sequence 900 Cue 3 /NoConfirmation");
 
     h.fake.requests.length = 0;
     gone = false;
-    await h.callJson("gma3_delete_cue", { sequence: 900, cue: 3 });
+    const plain = await h.callJson("gma3_delete_cue", { sequence: 900, cue: 3 });
     assert.equal(h.fake.requests.find((r) => r.op === "cmd")?.args.command, "Delete Sequence 900 Cue 3 /NoConfirmation");
+    assert.equal(plain.result.steps.find((s: { name: string }) => s.name === "delete")?.command, "Delete Sequence 900 Cue 3 /NoConfirmation");
   } finally {
     await h.close();
   }

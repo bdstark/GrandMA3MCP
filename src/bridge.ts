@@ -168,6 +168,11 @@ export class Gma3Bridge {
     }
   }
 
+  /** The command line the console receives for `command` (a data_pool bridge rewrites it; see tools/datapool.ts). */
+  sentCommand(command: string): string {
+    return command;
+  }
+
   async request<T = unknown>(op: string, args: Record<string, unknown> = {}, timeoutMs?: number): Promise<T> {
     await this.connect();
     const sock = this.socket;
